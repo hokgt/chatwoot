@@ -104,3 +104,7 @@ CLAUDE.local.md
 .pnpm-store/*
 local/
 Procfile.worktree
+
+# Local deployment backups/config snapshots
+.env.bak-*
+backups/
