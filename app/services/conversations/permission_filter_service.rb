@@ -7,6 +7,10 @@ class Conversations::PermissionFilterService
     @account = account
   end
 
+  def self.allowed?(conversation, user, account)
+    new(account.conversations, user, account).perform.exists?(id: conversation.id)
+  end
+
   def perform
     return conversations if user_role == 'administrator'
 

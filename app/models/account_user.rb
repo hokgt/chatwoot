@@ -57,6 +57,10 @@ class AccountUser < ApplicationRecord
     administrator? ? ['administrator'] : ['agent']
   end
 
+  def can_manage_all_conversations?
+    administrator? || permissions.include?('conversation_manage')
+  end
+
   def push_event_data
     {
       id: id,

@@ -183,13 +183,19 @@ class Api::V1::Accounts::ConversationsController < Api::V1::Accounts::BaseContro
   end
 
   def assign_conversation
+    return unless Current.account_user&.can_manage_all_conversations?
+
     @conversation.assignee = current_user
     @conversation.save!
   end
 
   def conversation
     @conversation ||= Current.account.conversations.find_by!(display_id: params[:id])
-    authorize @conversation, :show?
+    render_conversation_forbidden unless policy(@conversation).show?
+  end
+
+  def render_conversation_forbidden
+    render json: { error: 'You are not authorized to access this conversation' }, status: :forbidden
   end
 
   def inbox

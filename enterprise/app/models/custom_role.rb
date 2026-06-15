@@ -37,6 +37,29 @@ class CustomRole < ApplicationRecord
     knowledge_base_manage
   ].freeze
 
+  CONVERSATION_PERMISSIONS = %w[
+    conversation_manage
+    conversation_unassigned_manage
+    conversation_participating_manage
+  ].freeze
+
   validates :name, presence: true
-  validates :permissions, inclusion: { in: PERMISSIONS }
+  validate :permissions_are_known
+  validate :exactly_one_conversation_permission
+
+  private
+
+  def permissions_are_known
+    unknown_permissions = permissions - PERMISSIONS
+    return if unknown_permissions.blank?
+
+    errors.add(:permissions, "contains unsupported permissions: #{unknown_permissions.join(', ')}")
+  end
+
+  def exactly_one_conversation_permission
+    selected_conversation_permissions = permissions & CONVERSATION_PERMISSIONS
+    return if selected_conversation_permissions.one?
+
+    errors.add(:permissions, 'must include exactly one conversation permission')
+  end
 end

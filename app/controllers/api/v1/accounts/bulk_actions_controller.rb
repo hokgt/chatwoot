@@ -1,5 +1,7 @@
 class Api::V1::Accounts::BulkActionsController < Api::V1::Accounts::BaseController
   def create
+    return render_assignment_forbidden if conversation_assignment_action? && !can_manage_conversation_assignment?
+
     case normalized_type
     when 'Conversation'
       enqueue_conversation_job
@@ -14,6 +16,22 @@ class Api::V1::Accounts::BulkActionsController < Api::V1::Accounts::BaseControll
   end
 
   private
+
+  def conversation_assignment_action?
+    return false unless normalized_type == 'Conversation'
+
+    fields = conversation_params[:fields]
+    fields&.key?(:assignee_id) || fields&.key?('assignee_id') ||
+      fields&.key?(:team_id) || fields&.key?('team_id')
+  end
+
+  def can_manage_conversation_assignment?
+    Current.account_user&.can_manage_all_conversations?
+  end
+
+  def render_assignment_forbidden
+    render json: { error: 'You are not authorized to assign conversations' }, status: :forbidden
+  end
 
   def normalized_type
     params[:type].to_s.camelize
