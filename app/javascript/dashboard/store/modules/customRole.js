@@ -37,7 +37,7 @@ export const actions = {
   createCustomRole: async function createCustomRole({ commit }, customRoleObj) {
     commit(types.default.SET_CUSTOM_ROLE_UI_FLAG, { creatingItem: true });
     try {
-      const response = await CustomRoleAPI.create(customRoleObj);
+      const response = await CustomRoleAPI.create({ custom_role: customRoleObj });
       commit(types.default.ADD_CUSTOM_ROLE, response.data);
       commit(types.default.SET_CUSTOM_ROLE_UI_FLAG, { creatingItem: false });
       return response.data;
@@ -53,7 +53,7 @@ export const actions = {
   ) {
     commit(types.default.SET_CUSTOM_ROLE_UI_FLAG, { updatingItem: true });
     try {
-      const response = await CustomRoleAPI.update(id, updateObj);
+      const response = await CustomRoleAPI.update(id, { custom_role: updateObj });
       commit(types.default.EDIT_CUSTOM_ROLE, response.data);
       commit(types.default.SET_CUSTOM_ROLE_UI_FLAG, { updatingItem: false });
       return response.data;

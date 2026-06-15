@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted, watch } from 'vue';
+import { ref, reactive, computed, onMounted } from 'vue';
 import { useStore } from 'dashboard/composables/store';
 import { useI18n } from 'vue-i18n';
 import { useVuelidate } from '@vuelidate/core';
@@ -7,9 +7,7 @@ import { required, minLength } from '@vuelidate/validators';
 import { useAlert } from 'dashboard/composables';
 import {
   AVAILABLE_CUSTOM_ROLE_PERMISSIONS,
-  MANAGE_ALL_CONVERSATION_PERMISSIONS,
-  CONVERSATION_UNASSIGNED_PERMISSIONS,
-  CONVERSATION_PARTICIPATING_PERMISSIONS,
+  CONVERSATION_PERMISSIONS,
 } from 'dashboard/constants/permissions.js';
 
 import Button from 'dashboard/components-next/button/Button.vue';
@@ -33,6 +31,7 @@ const { t } = useI18n();
 
 const name = ref('');
 const description = ref('');
+const selectedConversationPermission = ref('');
 const selectedPermissions = ref([]);
 
 const nameInput = ref(null);
@@ -45,14 +44,19 @@ const addCustomRole = reactive({
 const rules = computed(() => ({
   name: { required, minLength: minLength(2) },
   description: { required },
-  selectedPermissions: { required, minLength: minLength(1) },
+  selectedConversationPermission: { required },
 }));
 
-const v$ = useVuelidate(rules, { name, description, selectedPermissions });
+const v$ = useVuelidate(rules, {
+  name,
+  description,
+  selectedConversationPermission,
+});
 
 const resetForm = () => {
   name.value = '';
   description.value = '';
+  selectedConversationPermission.value = '';
   selectedPermissions.value = [];
   v$.value.$reset();
 };
@@ -60,40 +64,15 @@ const resetForm = () => {
 const populateEditForm = () => {
   name.value = props.selectedRole.name || '';
   description.value = props.selectedRole.description || '';
-  selectedPermissions.value = props.selectedRole.permissions || [];
+  const permissions = props.selectedRole.permissions || [];
+  selectedConversationPermission.value =
+    permissions.find(permission =>
+      CONVERSATION_PERMISSIONS.includes(permission)
+    ) || '';
+  selectedPermissions.value = permissions.filter(
+    permission => !CONVERSATION_PERMISSIONS.includes(permission)
+  );
 };
-
-watch(
-  selectedPermissions,
-  (newValue, oldValue) => {
-    // Check if manage all conversation permission is added or removed
-    const hasAddedManageAllConversation =
-      newValue.includes(MANAGE_ALL_CONVERSATION_PERMISSIONS) &&
-      !oldValue.includes(MANAGE_ALL_CONVERSATION_PERMISSIONS);
-    const hasRemovedManageAllConversation =
-      oldValue.includes(MANAGE_ALL_CONVERSATION_PERMISSIONS) &&
-      !newValue.includes(MANAGE_ALL_CONVERSATION_PERMISSIONS);
-
-    if (hasAddedManageAllConversation) {
-      // If manage all conversation permission is added,
-      // then add unassigned and participating permissions automatically
-      selectedPermissions.value = [
-        ...new Set([
-          ...selectedPermissions.value,
-          CONVERSATION_UNASSIGNED_PERMISSIONS,
-          CONVERSATION_PARTICIPATING_PERMISSIONS,
-        ]),
-      ];
-    } else if (hasRemovedManageAllConversation) {
-      // If manage all conversation permission is removed,
-      // then only remove manage all conversation permission
-      selectedPermissions.value = selectedPermissions.value.filter(
-        p => p !== MANAGE_ALL_CONVERSATION_PERMISSIONS
-      );
-    }
-  },
-  { deep: true }
-);
 
 onMounted(() => {
   if (props.mode === 'edit') {
@@ -122,7 +101,10 @@ const handleCustomRole = async () => {
     const roleData = {
       name: name.value,
       description: description.value,
-      permissions: selectedPermissions.value,
+      permissions: [
+        selectedConversationPermission.value,
+        ...selectedPermissions.value,
+      ],
     };
 
     if (props.mode === 'edit') {
@@ -186,12 +168,33 @@ const isSubmitDisabled = computed(
       </div>
 
       <div class="w-full">
-        <label :class="{ 'text-n-ruby-9': v$.selectedPermissions.$error }">
+        <label
+          :class="{ 'text-n-ruby-9': v$.selectedConversationPermission.$error }"
+        >
           {{ $t('CUSTOM_ROLE.FORM.PERMISSIONS.LABEL') }}
         </label>
         <div class="flex flex-col gap-2.5 mb-4 mt-2">
           <div
-            v-for="permission in AVAILABLE_CUSTOM_ROLE_PERMISSIONS"
+            v-for="permission in CONVERSATION_PERMISSIONS"
+            :key="permission"
+            class="flex items-center"
+          >
+            <input
+              :id="permission"
+              v-model="selectedConversationPermission"
+              type="radio"
+              :value="permission"
+              name="conversation_permission"
+              class="ltr:mr-2 rtl:ml-2"
+            />
+            <label :for="permission" class="text-sm font-normal">
+              {{ $t(`CUSTOM_ROLE.PERMISSIONS.${permission.toUpperCase()}`) }}
+            </label>
+          </div>
+          <div
+            v-for="permission in AVAILABLE_CUSTOM_ROLE_PERMISSIONS.filter(
+              item => !CONVERSATION_PERMISSIONS.includes(item)
+            )"
             :key="permission"
             class="flex items-center"
           >

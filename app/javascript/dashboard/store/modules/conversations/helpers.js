@@ -91,8 +91,17 @@ export const applyRoleFilter = (
   }
 
   const conversationAssignee = conversation.meta.assignee;
+  const conversationParticipants =
+    conversation.meta?.participants ||
+    conversation.participants ||
+    conversation.conversation_participants ||
+    [];
   const isUnassigned = !conversationAssignee;
   const isAssignedToUser = conversationAssignee?.id === currentUserId;
+  const isParticipant = conversationParticipants.some(
+    participant =>
+      participant?.id === currentUserId || participant?.user_id === currentUserId
+  );
 
   // Check unassigned management permission
   if (permissions.includes('conversation_unassigned_manage')) {
@@ -101,7 +110,7 @@ export const applyRoleFilter = (
 
   // Check participating conversation management permission
   if (permissions.includes('conversation_participating_manage')) {
-    return isAssignedToUser;
+    return isAssignedToUser || isParticipant;
   }
 
   return false;

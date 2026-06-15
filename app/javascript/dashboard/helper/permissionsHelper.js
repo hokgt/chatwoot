@@ -16,6 +16,14 @@ export const getUserPermissions = (user, accountId) => {
   return currentAccount.permissions || [];
 };
 
+export const canManageConversationAssignment = (user, accountId) => {
+  const permissions = getUserPermissions(user, accountId);
+  return (
+    permissions.includes('administrator') ||
+    permissions.includes('conversation_manage')
+  );
+};
+
 export const getUserRole = (user, accountId) => {
   const currentAccount = getCurrentAccount(user, accountId) || {};
   if (currentAccount.custom_role_id) {

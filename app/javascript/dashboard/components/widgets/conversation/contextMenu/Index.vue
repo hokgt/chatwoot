@@ -11,6 +11,7 @@ import MenuItem from './menuItem.vue';
 import MenuItemWithSubmenu from './menuItemWithSubmenu.vue';
 import wootConstants from 'dashboard/constants/globals';
 import AgentLoadingPlaceholder from './agentLoadingPlaceholder.vue';
+import { canManageConversationAssignment } from 'dashboard/helper/permissionsHelper';
 
 const MENU = {
   MARK_AS_READ: 'mark-as-read',
@@ -185,6 +186,12 @@ export default {
       currentUser: 'getCurrentUser',
       currentAccountId: 'getCurrentAccountId',
     }),
+    canAssignConversations() {
+      return canManageConversationAssignment(
+        this.currentUser,
+        this.currentAccountId
+      );
+    },
     filteredAgentOnAvailability() {
       const agents = this.$store.getters[
         'inboxAssignableAgents/getAssignableAgents'
@@ -352,7 +359,7 @@ export default {
         />
       </MenuItemWithSubmenu>
       <MenuItemWithSubmenu
-        v-if="isAllowed([MENU.AGENT])"
+        v-if="canAssignConversations && isAllowed([MENU.AGENT])"
         :option="agentMenuConfig"
         :sub-menu-available="!!assignableAgents.length"
       >
@@ -368,7 +375,7 @@ export default {
         </template>
       </MenuItemWithSubmenu>
       <MenuItemWithSubmenu
-        v-if="isAllowed([MENU.TEAM])"
+        v-if="canAssignConversations && isAllowed([MENU.TEAM])"
         :option="teamMenuConfig"
         :sub-menu-available="!!teams.length"
       >

@@ -10,6 +10,7 @@ import { CONVERSATION_PRIORITY } from '../../../../shared/constants/messages';
 import { CONVERSATION_EVENTS } from '../../../helper/AnalyticsHelper/events';
 import { useTrack } from 'dashboard/composables';
 import NextButton from 'dashboard/components-next/button/Button.vue';
+import { canManageConversationAssignment } from 'dashboard/helper/permissionsHelper';
 
 export default {
   components: {
@@ -66,6 +67,7 @@ export default {
       currentChat: 'getSelectedChat',
       currentUser: 'getCurrentUser',
       teams: 'teams/getTeams',
+      currentAccountId: 'getCurrentAccountId',
     }),
     hasAnAssignedTeam() {
       return !!this.currentChat?.meta?.team;
@@ -148,7 +150,16 @@ export default {
           });
       },
     },
+    canAssignConversations() {
+      return canManageConversationAssignment(
+        this.currentUser,
+        this.currentAccountId
+      );
+    },
     showSelfAssign() {
+      if (!this.canAssignConversations) {
+        return false;
+      }
       if (!this.assignedAgent) {
         return true;
       }
@@ -231,6 +242,7 @@ export default {
         </template>
       </ContactDetailsItem>
       <MultiselectDropdown
+        v-if="canAssignConversations"
         :options="agentsList"
         :selected-item="assignedAgent"
         :multiselector-title="$t('AGENT_MGMT.MULTI_SELECTOR.TITLE.AGENT')"
@@ -250,6 +262,7 @@ export default {
         :title="$t('CONVERSATION_SIDEBAR.TEAM_LABEL')"
       />
       <MultiselectDropdown
+        v-if="canAssignConversations"
         :options="teamsList"
         :selected-item="assignedTeam"
         :multiselector-title="$t('AGENT_MGMT.MULTI_SELECTOR.TITLE.TEAM')"

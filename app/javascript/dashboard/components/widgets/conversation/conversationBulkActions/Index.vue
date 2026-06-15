@@ -6,6 +6,7 @@ import { findSnoozeTime } from 'dashboard/helper/snoozeHelpers';
 import { emitter } from 'shared/helpers/mitt';
 import { useBulkActions } from 'dashboard/composables/chatlist/useBulkActions.js';
 import wootConstants from 'dashboard/constants/globals';
+import { canManageConversationAssignment } from 'dashboard/helper/permissionsHelper';
 import {
   CMD_BULK_ACTION_SNOOZE_CONVERSATION,
   CMD_BULK_ACTION_REOPEN_CONVERSATION,
@@ -65,6 +66,12 @@ const {
 } = useBulkActions();
 
 const getConversationById = useMapGetter('getConversationById');
+const currentUser = useMapGetter('getCurrentUser');
+const currentAccountId = useMapGetter('getCurrentAccountId');
+
+const canAssignConversations = computed(() =>
+  canManageConversationAssignment(currentUser.value, currentAccountId.value)
+);
 
 const appliedLabelsForSelection = computed(() => {
   const applied = new Set();
@@ -187,11 +194,13 @@ onUnmounted(() => {
             @update="onUpdateConversations"
           />
           <BulkAgentActions
+            v-if="canAssignConversations"
             :selected-inboxes="selectedInboxes"
             :conversation-count="conversations.length"
             @select="onAssignAgent"
           />
           <BulkTeamActions
+            v-if="canAssignConversations"
             :conversation-count="conversations.length"
             @select="onAssignTeam"
           />
