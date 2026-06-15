@@ -56,13 +56,13 @@ RSpec.describe 'Conversations API', type: :request do
         create(:inbox_member, user: agent, inbox: conversation.inbox)
       end
 
-      it 'returns unauthorized for unassigned conversation without permission' do
+      it 'returns forbidden for unassigned conversation without permission' do
         custom_role = create(:custom_role, account: account, permissions: ['conversation_participating_manage'])
         account.account_users.find_by(user_id: agent.id).update!(custom_role: custom_role)
 
         get "/api/v1/accounts/#{account.id}/conversations/#{conversation.display_id}", headers: agent.create_new_auth_token
 
-        expect(response).to have_http_status(:unauthorized)
+        expect(response).to have_http_status(:forbidden)
       end
 
       it 'returns the conversation when permission allows managing unassigned conversations, including when assigned to agent' do
@@ -197,12 +197,12 @@ RSpec.describe 'Conversations API', type: :request do
     context 'when agent has limited access' do
       let(:limited_agent) { create(:user, account: account, role: :agent) }
 
-      it 'returns unauthorized for unassigned conversation without permission' do
+      it 'returns forbidden for unassigned conversation without permission' do
         get "/api/v1/accounts/#{account.id}/conversations/#{conversation.display_id}/reporting_events",
             headers: limited_agent.create_new_auth_token,
             as: :json
 
-        expect(response).to have_http_status(:unauthorized)
+        expect(response).to have_http_status(:forbidden)
       end
 
       it 'returns reporting events when agent is assigned to the conversation' do

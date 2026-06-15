@@ -108,6 +108,51 @@ RSpec.describe 'Conversation Messages API', type: :request do
       end
     end
 
+    context 'when an agent has conversation_participating_manage custom role' do
+      let(:agent) { create(:user, account: account, role: :agent) }
+      let(:custom_role) { create(:custom_role, account: account, permissions: ['conversation_participating_manage']) }
+      let(:params) { { content: 'restricted-scope-message', private: true } }
+
+      before do
+        create(:inbox_member, inbox: conversation.inbox, user: agent)
+        account.account_users.find_by(user_id: agent.id).update!(role: :agent, custom_role: custom_role)
+      end
+
+      it 'returns forbidden and does not create a message for unrelated conversations' do
+        post api_v1_account_conversation_messages_url(account_id: account.id, conversation_id: conversation.display_id),
+             params: params,
+             headers: agent.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:forbidden)
+        expect(conversation.messages.count).to eq(0)
+      end
+
+      it 'allows replying to conversations assigned to the agent' do
+        conversation.update!(assignee: agent)
+
+        post api_v1_account_conversation_messages_url(account_id: account.id, conversation_id: conversation.display_id),
+             params: params,
+             headers: agent.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(conversation.messages.count).to eq(1)
+      end
+
+      it 'allows replying to conversations where the agent participates' do
+        create(:conversation_participant, account: account, conversation: conversation, user: agent)
+
+        post api_v1_account_conversation_messages_url(account_id: account.id, conversation_id: conversation.display_id),
+             params: params,
+             headers: agent.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(conversation.messages.count).to eq(1)
+      end
+    end
+
     context 'when it is an authenticated agent bot' do
       let!(:agent_bot) { create(:agent_bot) }
 

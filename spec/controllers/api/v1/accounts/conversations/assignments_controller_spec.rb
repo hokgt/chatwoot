@@ -36,10 +36,12 @@ RSpec.describe 'Conversation Assignment API', type: :request do
 
     context 'when it is an authenticated user with access to the inbox' do
       let(:agent) { create(:user, account: account, role: :agent) }
+      let(:supervisor_role) { create(:custom_role, account: account, permissions: ['conversation_manage']) }
       let(:agent_bot) { create(:agent_bot, account: account) }
       let(:team) { create(:team, account: account) }
 
       before do
+        agent.current_account_user.update!(custom_role: supervisor_role)
         create(:inbox_member, inbox: conversation.inbox, user: agent)
       end
 
@@ -92,6 +94,68 @@ RSpec.describe 'Conversation Assignment API', type: :request do
       end
     end
 
+
+    context 'with custom role assignment permissions' do
+      let(:assignee) { create(:user, account: account, role: :agent) }
+      let(:sales_role) { create(:custom_role, account: account, name: 'Sales', permissions: ['conversation_participating_manage']) }
+      let(:marketing_role) { create(:custom_role, account: account, name: 'Marketing', permissions: ['conversation_participating_manage']) }
+      let(:supervisor_role) { create(:custom_role, account: account, name: 'Supervisor', permissions: ['conversation_manage']) }
+      let(:sales_agent) { create(:user, account: account, role: :agent) }
+      let(:marketing_agent) { create(:user, account: account, role: :agent) }
+      let(:supervisor) { create(:user, account: account, role: :agent) }
+      let(:administrator) { create(:user, account: account, role: :administrator) }
+
+      before do
+        [assignee, sales_agent, marketing_agent, supervisor, administrator].each do |user|
+          create(:inbox_member, inbox: conversation.inbox, user: user)
+        end
+        sales_agent.current_account_user.update!(custom_role: sales_role)
+        marketing_agent.current_account_user.update!(custom_role: marketing_role)
+        supervisor.current_account_user.update!(custom_role: supervisor_role)
+        administrator.current_account_user.update!(custom_role: sales_role)
+      end
+
+      it 'returns 403 for Sales when assigning via direct API' do
+        post api_v1_account_conversation_assignments_url(account_id: account.id, conversation_id: conversation.display_id),
+             params: { assignee_id: assignee.id },
+             headers: sales_agent.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:forbidden)
+        expect(conversation.reload.assignee).to be_nil
+      end
+
+      it 'returns 403 for Marketing when assigning via direct API' do
+        post api_v1_account_conversation_assignments_url(account_id: account.id, conversation_id: conversation.display_id),
+             params: { assignee_id: assignee.id },
+             headers: marketing_agent.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:forbidden)
+        expect(conversation.reload.assignee).to be_nil
+      end
+
+      it 'allows Supervisor to assign via direct API' do
+        post api_v1_account_conversation_assignments_url(account_id: account.id, conversation_id: conversation.display_id),
+             params: { assignee_id: assignee.id },
+             headers: supervisor.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(conversation.reload.assignee).to eq(assignee)
+      end
+
+      it 'allows Administrator to assign via direct API' do
+        post api_v1_account_conversation_assignments_url(account_id: account.id, conversation_id: conversation.display_id),
+             params: { assignee_id: assignee.id },
+             headers: administrator.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(conversation.reload.assignee).to eq(assignee)
+      end
+    end
+
     context 'when it is an authenticated bot with access to the inbox' do
       let(:agent_bot) { create(:agent_bot, account: account) }
       let(:agent) { create(:user, account: account, role: :agent) }
@@ -138,8 +202,10 @@ RSpec.describe 'Conversation Assignment API', type: :request do
 
     context 'when conversation already has an assignee' do
       let(:agent) { create(:user, account: account, role: :agent) }
+      let(:supervisor_role) { create(:custom_role, account: account, permissions: ['conversation_manage']) }
 
       before do
+        agent.current_account_user.update!(custom_role: supervisor_role)
         create(:inbox_member, inbox: conversation.inbox, user: agent)
         conversation.update!(assignee: agent)
       end
@@ -163,8 +229,10 @@ RSpec.describe 'Conversation Assignment API', type: :request do
     context 'when conversation already has a team' do
       let(:agent) { create(:user, account: account, role: :agent) }
       let(:team) { create(:team, account: account) }
+      let(:supervisor_role) { create(:custom_role, account: account, permissions: ['conversation_manage']) }
 
       before do
+        agent.current_account_user.update!(custom_role: supervisor_role)
         conversation.update!(team: team)
         create(:inbox_member, inbox: conversation.inbox, user: agent)
       end

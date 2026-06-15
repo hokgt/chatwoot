@@ -231,3 +231,43 @@ describe ConversationFinder do
     end
   end
 end
+
+
+RSpec.describe ConversationFinder, 'custom role conversation visibility' do
+  let(:account) { create(:account) }
+  let(:agent) { create(:user, account: account, role: :agent) }
+  let(:other_agent) { create(:user, account: account, role: :agent) }
+  let(:inbox) { create(:inbox, account: account, enable_auto_assignment: false) }
+  let!(:assigned_conversation) { create(:conversation, account: account, inbox: inbox, assignee: agent) }
+  let!(:participated_conversation) { create(:conversation, account: account, inbox: inbox, assignee: other_agent) }
+  let!(:unrelated_assigned_conversation) { create(:conversation, account: account, inbox: inbox, assignee: other_agent) }
+  let!(:unrelated_unassigned_conversation) { create(:conversation, account: account, inbox: inbox, assignee: nil) }
+
+  before do
+    create(:inbox_member, user: agent, inbox: inbox)
+    create(:conversation_participant, account: account, conversation: participated_conversation, user: agent)
+    custom_role = create(:custom_role, account: account, permissions: ['conversation_participating_manage'])
+    account.account_users.find_by(user_id: agent.id).update!(role: :agent, custom_role: custom_role)
+    Current.account = account
+  end
+
+  it 'keeps assignee_type=all scoped to assigned or participated conversations' do
+    result = described_class.new(agent, { assignee_type: 'all' }).perform
+
+    expect(result[:conversations].map(&:id)).to match_array([assigned_conversation.id, participated_conversation.id])
+    expect(result[:count]).to include(mine_count: 1, unassigned_count: 0, all_count: 2, assigned_count: 2)
+  end
+
+  it 'keeps assignee_type=unassigned scoped to allowed unassigned conversations only' do
+    result = described_class.new(agent, { assignee_type: 'unassigned' }).perform
+
+    expect(result[:conversations].map(&:id)).to be_empty
+    expect(result[:count]).to include(mine_count: 1, unassigned_count: 0, all_count: 2, assigned_count: 2)
+  end
+
+  it 'returns meta counts from the restricted relation' do
+    result = described_class.new(agent, {}).perform_meta_only
+
+    expect(result[:count]).to eq(mine_count: 1, assigned_count: 2, unassigned_count: 0, all_count: 2)
+  end
+end
