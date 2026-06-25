@@ -1,9 +1,9 @@
-import { INSTALLATION_TYPES } from dashboard/constants/installationTypes;
+import { INSTALLATION_TYPES } from "dashboard/constants/installationTypes";
 
 export const CONVERSATION_PERMISSIONS = [
-  conversation_manage,
-  conversation_unassigned_manage,
-  conversation_participating_manage,
+  "conversation_manage",
+  "conversation_unassigned_manage",
+  "conversation_participating_manage",
 ];
 
 export const customRoleInstallationTypes = [
@@ -13,11 +13,11 @@ export const customRoleInstallationTypes = [
 ];
 
 export const canManageConversationAssignment = permissions =>
-  permissions.includes(administrator) || permissions.includes(conversation_manage);
+  permissions.includes("administrator") || permissions.includes("conversation_manage");
 
 export const splitConversationPermission = permissions => ({
   selectedConversationPermission:
-    permissions.find(permission => CONVERSATION_PERMISSIONS.includes(permission)) || ,
+    permissions.find(permission => CONVERSATION_PERMISSIONS.includes(permission)) || null,
   selectedPermissions: permissions.filter(
     permission => !CONVERSATION_PERMISSIONS.includes(permission)
   ),
