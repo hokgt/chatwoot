@@ -37,6 +37,10 @@ for file in   app/builders/agent_builder.rb   app/controllers/api/v1/accounts/ag
   require_marker "$file" "WIJAYA_CUSTOM_END custom_roles_rbac"
 done
 
+# enterprise_extension_compat
+require_marker "config/initializers/01_inject_enterprise_edition_module.rb" "WIJAYA_CUSTOM_START enterprise_extension_compat"
+require_marker "config/initializers/01_inject_enterprise_edition_module.rb" "WIJAYA_CUSTOM_END enterprise_extension_compat"
+
 if [[ "$missing" -ne 0 ]]; then
   exit 1
 fi

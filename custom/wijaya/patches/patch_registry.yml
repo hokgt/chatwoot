@@ -66,3 +66,15 @@ patches:
       - spec/enterprise/policies/conversation_policy_spec.rb
       - spec/enterprise/services/enterprise/conversations/permission_filter_service_spec.rb
       - spec/finders/conversation_finder_spec.rb
+  - id: enterprise_extension_compat
+    name: Enterprise Extension Custom Namespace Compat
+    battery: custom/wijaya/batteries/enterprise_extension_compat
+    description: >
+      Guards const_get_maybe_false against non-module receivers (false) when
+      ChatwootApp.extensions includes 'custom' but no Custom module namespace
+      is defined at the Object level. Without this guard, Rails environment
+      loading crashes during assets:precompile and at runtime.
+    custom_files: []
+    core_hook_touchpoints:
+      - config/initializers/01_inject_enterprise_edition_module.rb
+    tests: []

@@ -80,7 +80,10 @@ module InjectEnterpriseEditionModule
   end
 
   def const_get_maybe_false(mod, name)
-    mod&.const_defined?(name, false) && mod&.const_get(name, false)
+    # WIJAYA_CUSTOM_START enterprise_extension_compat
+    return false unless mod.respond_to?(:const_defined?)
+    # WIJAYA_CUSTOM_END enterprise_extension_compat
+    mod.const_defined?(name, false) && mod.const_get(name, false)
   end
 end
 
