@@ -1,3 +1,5 @@
+require Rails.root.join('custom/wijaya/batteries/custom_roles/hooks')
+
 class Api::V1::Accounts::Conversations::BaseController < Api::V1::Accounts::BaseController
   before_action :conversation
 
@@ -9,6 +11,8 @@ class Api::V1::Accounts::Conversations::BaseController < Api::V1::Accounts::Base
   end
 
   def render_conversation_forbidden
-    render json: { error: 'You are not authorized to access this conversation' }, status: :forbidden
+    # WIJAYA_CUSTOM_START custom_roles_rbac
+    render json: Wijaya::Batteries::CustomRoles::Hooks.conversation_forbidden_response, status: :forbidden
+    # WIJAYA_CUSTOM_END custom_roles_rbac
   end
 end

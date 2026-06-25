@@ -37,7 +37,9 @@ export const actions = {
   createCustomRole: async function createCustomRole({ commit }, customRoleObj) {
     commit(types.default.SET_CUSTOM_ROLE_UI_FLAG, { creatingItem: true });
     try {
+      // WIJAYA_CUSTOM_START custom_roles_rbac
       const response = await CustomRoleAPI.create({ custom_role: customRoleObj });
+      // WIJAYA_CUSTOM_END custom_roles_rbac
       commit(types.default.ADD_CUSTOM_ROLE, response.data);
       commit(types.default.SET_CUSTOM_ROLE_UI_FLAG, { creatingItem: false });
       return response.data;
@@ -53,7 +55,9 @@ export const actions = {
   ) {
     commit(types.default.SET_CUSTOM_ROLE_UI_FLAG, { updatingItem: true });
     try {
+      // WIJAYA_CUSTOM_START custom_roles_rbac
       const response = await CustomRoleAPI.update(id, { custom_role: updateObj });
+      // WIJAYA_CUSTOM_END custom_roles_rbac
       commit(types.default.EDIT_CUSTOM_ROLE, response.data);
       commit(types.default.SET_CUSTOM_ROLE_UI_FLAG, { updatingItem: false });
       return response.data;

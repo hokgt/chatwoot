@@ -1,3 +1,5 @@
+require Rails.root.join('custom/wijaya/batteries/custom_roles/hooks')
+
 class Api::V1::Accounts::Conversations::AssignmentsController < Api::V1::Accounts::Conversations::BaseController
   skip_before_action :conversation
   before_action :ensure_assignment_allowed, only: [:create], unless: :agent_bot_request?
@@ -17,9 +19,11 @@ class Api::V1::Accounts::Conversations::AssignmentsController < Api::V1::Account
   private
 
   def ensure_assignment_allowed
-    return if Current.account_user&.can_manage_all_conversations?
+    # WIJAYA_CUSTOM_START custom_roles_rbac
+    return if Wijaya::Batteries::CustomRoles::Hooks.can_manage_all_conversations?(Current.account_user)
 
-    render json: { error: 'You are not authorized to assign conversations' }, status: :forbidden
+    render json: Wijaya::Batteries::CustomRoles::Hooks.assignment_forbidden_response, status: :forbidden
+    # WIJAYA_CUSTOM_END custom_roles_rbac
   end
 
   def agent_bot_request?

@@ -1,6 +1,8 @@
 # Mostly modeled after the intial implementation of the service based on 360 Dialog
 # https://docs.360dialog.com/whatsapp-api/whatsapp-api/media
 # https://developers.facebook.com/docs/whatsapp/api/media/
+require_relative '../../../custom/wijaya/batteries/ads_tracking/hooks'
+
 class Whatsapp::IncomingMessageBaseService
   include ::Whatsapp::IncomingMessageServiceHelpers
   include ::Whatsapp::IncomingMessageIdentifierHelper
@@ -161,6 +163,9 @@ class Whatsapp::IncomingMessageBaseService
   def create_message(message, source_id: nil)
     content_attrs = outgoing_echo ? { external_echo: true } : {}
     content_attrs[:in_reply_to_external_id] = @in_reply_to_external_id if @in_reply_to_external_id.present?
+    # WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+    add_ads_referral_content_attributes(content_attrs, message)
+    # WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
 
     @message = @conversation.messages.build(
       content: message_content(message),
@@ -174,6 +179,18 @@ class Whatsapp::IncomingMessageBaseService
       content_attributes: content_attrs
     )
   end
+
+  # WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+  def add_ads_referral_content_attributes(content_attrs, message)
+    Wijaya::Batteries::AdsTracking::Hooks.append_ads_referral!(
+      content_attributes: content_attrs,
+      channel: :whatsapp,
+      referral: message[:referral],
+      conversation: @conversation,
+      outgoing_echo: outgoing_echo
+    )
+  end
+  # WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
 
   def attach_contact(contact)
     phones = contact[:phones]

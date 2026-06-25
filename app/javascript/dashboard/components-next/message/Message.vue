@@ -43,6 +43,9 @@ import FormBubble from './bubbles/Form.vue';
 import VoiceCallBubble from './bubbles/VoiceCall.vue';
 
 import MessageError from './MessageError.vue';
+// WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+import AdsReferral from '../../../../../custom/wijaya/batteries/ads_tracking/frontend/AdsReferral.vue';
+// WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
 import ContextMenu from 'dashboard/modules/conversations/components/MessageContextMenu.vue';
 import { useBranding } from 'shared/composables/useBranding';
 
@@ -359,6 +362,10 @@ const isMessageDeleted = computed(() => {
   return props.contentAttributes?.deleted;
 });
 
+// WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+const adsReferral = computed(() => props.contentAttributes?.adsReferral || null);
+// WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
+
 const payloadForContextMenu = computed(() => {
   return {
     id: props.id,
@@ -564,7 +571,12 @@ provideMessageContext({
         }"
         @contextmenu="openContextMenu($event)"
       >
-        <Component :is="componentToRender" />
+        <!-- WIJAYA_CUSTOM_START ads_tracking_ctwa_referral -->
+        <div class="min-w-0">
+          <AdsReferral v-if="adsReferral" :referral="adsReferral" />
+          <Component :is="componentToRender" />
+        </div>
+        <!-- WIJAYA_CUSTOM_END ads_tracking_ctwa_referral -->
       </div>
       <MessageError
         v-if="contentAttributes.externalError"

@@ -1,3 +1,5 @@
+require Rails.root.join('custom/wijaya/batteries/custom_roles/hooks')
+
 class Api::V1::Accounts::ConversationsController < Api::V1::Accounts::BaseController
   include Events::Types
   include DateRangeHelper
@@ -183,7 +185,9 @@ class Api::V1::Accounts::ConversationsController < Api::V1::Accounts::BaseContro
   end
 
   def assign_conversation
-    return unless Current.account_user&.can_manage_all_conversations?
+    # WIJAYA_CUSTOM_START custom_roles_rbac
+    return unless Wijaya::Batteries::CustomRoles::Hooks.can_manage_all_conversations?(Current.account_user)
+    # WIJAYA_CUSTOM_END custom_roles_rbac
 
     @conversation.assignee = current_user
     @conversation.save!
@@ -195,7 +199,9 @@ class Api::V1::Accounts::ConversationsController < Api::V1::Accounts::BaseContro
   end
 
   def render_conversation_forbidden
-    render json: { error: 'You are not authorized to access this conversation' }, status: :forbidden
+    # WIJAYA_CUSTOM_START custom_roles_rbac
+    render json: Wijaya::Batteries::CustomRoles::Hooks.conversation_forbidden_response, status: :forbidden
+    # WIJAYA_CUSTOM_END custom_roles_rbac
   end
 
   def inbox

@@ -6,7 +6,9 @@ import { findSnoozeTime } from 'dashboard/helper/snoozeHelpers';
 import { emitter } from 'shared/helpers/mitt';
 import { useBulkActions } from 'dashboard/composables/chatlist/useBulkActions.js';
 import wootConstants from 'dashboard/constants/globals';
+// WIJAYA_CUSTOM_START custom_roles_rbac
 import { canManageConversationAssignment } from 'dashboard/helper/permissionsHelper';
+// WIJAYA_CUSTOM_END custom_roles_rbac
 import {
   CMD_BULK_ACTION_SNOOZE_CONVERSATION,
   CMD_BULK_ACTION_REOPEN_CONVERSATION,
@@ -66,12 +68,14 @@ const {
 } = useBulkActions();
 
 const getConversationById = useMapGetter('getConversationById');
+// WIJAYA_CUSTOM_START custom_roles_rbac
 const currentUser = useMapGetter('getCurrentUser');
 const currentAccountId = useMapGetter('getCurrentAccountId');
 
 const canAssignConversations = computed(() =>
   canManageConversationAssignment(currentUser.value, currentAccountId.value)
 );
+// WIJAYA_CUSTOM_END custom_roles_rbac
 
 const appliedLabelsForSelection = computed(() => {
   const applied = new Set();

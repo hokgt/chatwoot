@@ -1,3 +1,5 @@
+require Rails.root.join('custom/wijaya/batteries/custom_roles/hooks')
+
 # == Schema Information
 #
 # Table name: account_users
@@ -57,9 +59,11 @@ class AccountUser < ApplicationRecord
     administrator? ? ['administrator'] : ['agent']
   end
 
+  # WIJAYA_CUSTOM_START custom_roles_rbac
   def can_manage_all_conversations?
-    administrator? || permissions.include?('conversation_manage')
+    Wijaya::Batteries::CustomRoles::Hooks.can_manage_all_conversations?(self)
   end
+  # WIJAYA_CUSTOM_END custom_roles_rbac
 
   def push_event_data
     {

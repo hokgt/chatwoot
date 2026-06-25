@@ -1,3 +1,5 @@
+require_relative '../../../../custom/wijaya/batteries/ads_tracking/hooks'
+
 class Messages::Instagram::BaseMessageBuilder < Messages::Messenger::MessageBuilder
   attr_reader :messaging
 
@@ -169,8 +171,23 @@ class Messages::Instagram::BaseMessageBuilder < Messages::Messenger::MessageBuil
 
     params[:content_attributes][:external_echo] = true if @outgoing_echo
     params[:content_attributes][:is_unsupported] = true if message_is_unsupported?
+    # WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+    add_ads_referral_content_attributes(params[:content_attributes])
+    # WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
     params
   end
+
+  # WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+  def add_ads_referral_content_attributes(content_attributes)
+    Wijaya::Batteries::AdsTracking::Hooks.append_ads_referral!(
+      content_attributes: content_attributes,
+      channel: :instagram,
+      referral: @messaging[:referral],
+      conversation: conversation,
+      outgoing_echo: @outgoing_echo
+    )
+  end
+  # WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
 
   def message_already_exists?
     find_message_by_source_id(@messaging[:message][:mid]).present?

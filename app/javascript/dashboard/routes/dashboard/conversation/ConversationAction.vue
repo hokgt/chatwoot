@@ -10,7 +10,9 @@ import { CONVERSATION_PRIORITY } from '../../../../shared/constants/messages';
 import { CONVERSATION_EVENTS } from '../../../helper/AnalyticsHelper/events';
 import { useTrack } from 'dashboard/composables';
 import NextButton from 'dashboard/components-next/button/Button.vue';
+// WIJAYA_CUSTOM_START custom_roles_rbac
 import { canManageConversationAssignment } from 'dashboard/helper/permissionsHelper';
+// WIJAYA_CUSTOM_END custom_roles_rbac
 
 export default {
   components: {
@@ -150,16 +152,20 @@ export default {
           });
       },
     },
+    // WIJAYA_CUSTOM_START custom_roles_rbac
     canAssignConversations() {
       return canManageConversationAssignment(
         this.currentUser,
         this.currentAccountId
       );
     },
+    // WIJAYA_CUSTOM_END custom_roles_rbac
     showSelfAssign() {
+      // WIJAYA_CUSTOM_START custom_roles_rbac
       if (!this.canAssignConversations) {
         return false;
       }
+      // WIJAYA_CUSTOM_END custom_roles_rbac
       if (!this.assignedAgent) {
         return true;
       }

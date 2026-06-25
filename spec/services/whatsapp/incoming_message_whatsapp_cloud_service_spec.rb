@@ -189,6 +189,42 @@ describe Whatsapp::IncomingMessageWhatsappCloudService do
       end
     end
 
+
+    context 'when WhatsApp referral data is present' do
+      let(:text_referral_params) do
+        {
+          phone_number: whatsapp_channel.phone_number,
+          object: 'whatsapp_business_account',
+          entry: [{
+            changes: [{
+              value: {
+                contacts: [{ profile: { name: 'Sojan Jose' }, wa_id: '2423423243' }],
+                messages: [{
+                  from: '2423423243', id: 'wamid.referral-message-1', timestamp: '1664799904', type: 'text', text: { body: 'interested' },
+                  referral: { source_url: 'https://facebook.com/ad/wa-1', source_id: 'wa-ad-1', source_type: 'ad', headline: 'WA Ad', body: 'WA Body', media_type: 'image', image_url: 'https://example.com/wa.jpg', ctwa_clid: 'wa-click-1' }
+                }]
+              }
+            }]
+          }]
+        }.with_indifferent_access
+      end
+
+      it 'stores normalized ads_referral on the first inbound message' do
+        described_class.new(inbox: whatsapp_channel.inbox, params: text_referral_params).perform
+        expect(whatsapp_channel.inbox.messages.first.content_attributes['ads_referral']).to include('channel' => 'whatsapp', 'source_id' => 'wa-ad-1', 'source_url' => 'https://facebook.com/ad/wa-1', 'source_type' => 'ad', 'headline' => 'WA Ad', 'body' => 'WA Body', 'image_url' => 'https://example.com/wa.jpg', 'ctwa_clid' => 'wa-click-1')
+      end
+
+      it 'does not write ads_referral on subsequent inbound messages' do
+        described_class.new(inbox: whatsapp_channel.inbox, params: text_referral_params).perform
+        second_params = text_referral_params.deep_dup
+        second_params[:entry][0][:changes][0][:value][:messages][0][:id] = 'wamid.referral-message-2'
+        second_params[:entry][0][:changes][0][:value][:messages][0][:text][:body] = 'second'
+        second_params[:entry][0][:changes][0][:value][:messages][0][:referral][:source_id] = 'wa-ad-2'
+        described_class.new(inbox: whatsapp_channel.inbox, params: second_params).perform
+        expect(whatsapp_channel.inbox.messages.order(:created_at).last.content_attributes['ads_referral']).to be_nil
+      end
+    end
+
     context 'when invalid params' do
       it 'will not throw error' do
         described_class.new(inbox: whatsapp_channel.inbox, params: { phone_number: whatsapp_channel.phone_number,

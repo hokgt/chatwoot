@@ -1,3 +1,5 @@
+require Rails.root.join('custom/wijaya/batteries/custom_roles/hooks')
+
 class ConversationFinder
   attr_reader :current_user, :current_account, :params
 
@@ -141,9 +143,9 @@ class ConversationFinder
       conversation_ids = current_account.mentions.where(user: current_user).pluck(:conversation_id)
       @conversations = @conversations.where(id: conversation_ids)
     when 'participating'
-      @conversations = @conversations.left_joins(:conversation_participants)
-                                     .where(conversation_participants: { user_id: current_user.id })
-                                     .distinct
+      # WIJAYA_CUSTOM_START custom_roles_rbac
+      @conversations = Wijaya::Batteries::CustomRoles::Hooks.participating_filter(@conversations, current_user)
+      # WIJAYA_CUSTOM_END custom_roles_rbac
     when 'unattended'
       @conversations = @conversations.unattended
     end

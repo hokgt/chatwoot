@@ -1,7 +1,9 @@
-module Enterprise::AccountUser
-  def permissions
-    return super if administrator?
+require Rails.root.join('custom/wijaya/batteries/custom_roles/hooks')
 
-    custom_role.present? ? (custom_role.permissions + ['custom_role']) : super
+module Enterprise::AccountUser
+  # WIJAYA_CUSTOM_START custom_roles_rbac
+  def permissions
+    Wijaya::Batteries::CustomRoles::Hooks.account_user_permissions(self, super)
   end
+  # WIJAYA_CUSTOM_END custom_roles_rbac
 end

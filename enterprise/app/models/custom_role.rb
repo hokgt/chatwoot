@@ -1,3 +1,5 @@
+require Rails.root.join('custom/wijaya/batteries/custom_roles/hooks')
+
 # == Schema Information
 #
 # Table name: custom_roles
@@ -37,11 +39,9 @@ class CustomRole < ApplicationRecord
     knowledge_base_manage
   ].freeze
 
-  CONVERSATION_PERMISSIONS = %w[
-    conversation_manage
-    conversation_unassigned_manage
-    conversation_participating_manage
-  ].freeze
+  # WIJAYA_CUSTOM_START custom_roles_rbac
+  CONVERSATION_PERMISSIONS = Wijaya::Batteries::CustomRoles::Hooks::CONVERSATION_PERMISSIONS
+  # WIJAYA_CUSTOM_END custom_roles_rbac
 
   validates :name, presence: true
   validate :permissions_are_known
@@ -49,17 +49,13 @@ class CustomRole < ApplicationRecord
 
   private
 
+  # WIJAYA_CUSTOM_START custom_roles_rbac
   def permissions_are_known
-    unknown_permissions = permissions - PERMISSIONS
-    return if unknown_permissions.blank?
-
-    errors.add(:permissions, "contains unsupported permissions: #{unknown_permissions.join(', ')}")
+    Wijaya::Batteries::CustomRoles::Hooks.validate_known_permissions!(self, PERMISSIONS)
   end
 
   def exactly_one_conversation_permission
-    selected_conversation_permissions = permissions & CONVERSATION_PERMISSIONS
-    return if selected_conversation_permissions.one?
-
-    errors.add(:permissions, 'must include exactly one conversation permission')
+    Wijaya::Batteries::CustomRoles::Hooks.validate_exactly_one_conversation_permission!(self)
   end
+  # WIJAYA_CUSTOM_END custom_roles_rbac
 end

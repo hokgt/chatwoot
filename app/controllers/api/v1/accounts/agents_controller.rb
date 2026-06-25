@@ -1,3 +1,5 @@
+require Rails.root.join('custom/wijaya/batteries/custom_roles/hooks')
+
 class Api::V1::Accounts::AgentsController < Api::V1::Accounts::BaseController
   before_action :fetch_agent, except: [:create, :index, :bulk_create]
   before_action :check_authorization
@@ -69,11 +71,15 @@ class Api::V1::Accounts::AgentsController < Api::V1::Accounts::BaseController
   end
 
   def account_user_attributes
-    [:role, :availability, :auto_offline, :custom_role_id]
+    # WIJAYA_CUSTOM_START custom_roles_rbac
+    Wijaya::Batteries::CustomRoles::Hooks.permitted_agent_account_user_attributes([:role, :availability, :auto_offline])
+    # WIJAYA_CUSTOM_END custom_roles_rbac
   end
 
   def allowed_agent_params
-    [:name, :email, :role, :availability, :auto_offline, :custom_role_id]
+    # WIJAYA_CUSTOM_START custom_roles_rbac
+    Wijaya::Batteries::CustomRoles::Hooks.permitted_agent_attributes([:name, :email, :role, :availability, :auto_offline])
+    # WIJAYA_CUSTOM_END custom_roles_rbac
   end
 
   def agent_params
@@ -81,7 +87,9 @@ class Api::V1::Accounts::AgentsController < Api::V1::Accounts::BaseController
   end
 
   def new_agent_params
-    params.require(:agent).permit(:email, :name, :role, :availability, :auto_offline, :custom_role_id)
+    # WIJAYA_CUSTOM_START custom_roles_rbac
+    params.require(:agent).permit(*Wijaya::Batteries::CustomRoles::Hooks.permitted_agent_attributes([:email, :name, :role, :availability, :auto_offline]))
+    # WIJAYA_CUSTOM_END custom_roles_rbac
   end
 
   def agents

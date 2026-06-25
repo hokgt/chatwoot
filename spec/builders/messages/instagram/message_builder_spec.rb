@@ -56,6 +56,31 @@ describe Messages::Instagram::MessageBuilder do
       expect(message.content).to eq('This is the first message from the customer')
     end
 
+
+    context 'when Instagram referral data is present on the first message payload' do
+      it 'stores normalized ads_referral on the first inbound message' do
+        messaging = dm_params[:entry][0]['messaging'][0]
+        messaging[:referral] = { source: 'ADS', type: 'OPEN_THREAD', ref: 'ig-ref', ad_id: 'ig-ad-1' }
+        create_instagram_contact_for_sender(messaging['sender']['id'], instagram_inbox)
+        described_class.new(messaging, instagram_inbox).perform
+        expect(instagram_inbox.messages.first.content_attributes['ads_referral']).to include('channel' => 'instagram', 'source_id' => 'ig-ad-1', 'source_type' => 'ad', 'ref' => 'ig-ref', 'headline' => nil, 'image_url' => nil, 'video_url' => nil)
+      end
+
+      it 'does not write ads_referral on subsequent inbound messages' do
+        messaging = dm_params[:entry][0]['messaging'][0]
+        messaging[:referral] = { source: 'ADS', type: 'OPEN_THREAD', ref: 'ig-ref', ad_id: 'ig-ad-1' }
+        create_instagram_contact_for_sender(messaging['sender']['id'], instagram_inbox)
+        described_class.new(messaging, instagram_inbox).perform
+        second_messaging = dm_params.deep_dup[:entry][0]['messaging'][0]
+        second_messaging['sender']['id'] = messaging['sender']['id']
+        second_messaging['message']['mid'] = 'message-id-2'
+        second_messaging['message']['text'] = 'second message'
+        second_messaging[:referral] = { source: 'ADS', type: 'OPEN_THREAD', ad_id: 'ig-ad-2' }
+        described_class.new(second_messaging, instagram_inbox).perform
+        expect(instagram_inbox.messages.order(:created_at).last.content_attributes['ads_referral']).to be_nil
+      end
+    end
+
     it 'discard echo message already sent by chatwoot' do
       messaging = dm_params[:entry][0]['messaging'][0]
       contact = create_instagram_contact_for_sender(messaging['sender']['id'], instagram_inbox)

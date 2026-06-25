@@ -1,3 +1,5 @@
+require Rails.root.join('custom/wijaya/batteries/custom_roles/hooks')
+
 # The AgentBuilder class is responsible for creating a new agent.
 # It initializes with necessary attributes and provides a perform method
 # to create a user and account user in a transaction.
@@ -46,12 +48,15 @@ class AgentBuilder
       account_id: account.id,
       user_id: @user.id,
       inviter_id: inviter.id
-    }.merge({
-      role: role,
-      availability: availability,
-      auto_offline: auto_offline,
-      custom_role_id: custom_role_id
-    }.compact))
+    }.merge(
+      # WIJAYA_CUSTOM_START custom_roles_rbac
+      Wijaya::Batteries::CustomRoles::Hooks.agent_builder_account_user_attributes({
+        role: role,
+        availability: availability,
+        auto_offline: auto_offline
+      }, custom_role_id)
+      # WIJAYA_CUSTOM_END custom_roles_rbac
+    ))
   end
 end
 

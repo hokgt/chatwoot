@@ -89,6 +89,29 @@ describe Messages::Facebook::MessageBuilder do
       expect(message.content_attributes['external_echo']).to be true
     end
 
+
+    context 'when Messenger referral data is present' do
+      before do
+        allow(Koala::Facebook::API).to receive(:new).and_return(fb_object)
+        allow(fb_object).to receive(:get_object).and_return({ first_name: 'Jane', last_name: 'Dae', profile_pic: 'https://chatwoot-assets.local/sample.png' }.with_indifferent_access)
+      end
+
+      let(:referral_message_object) do
+        { messaging: { sender: { id: '3383290475046708' }, recipient: { id: facebook_channel.page_id }, message: { mid: 'm_referral_1', text: 'messenger ad click', referral: { ref: 'custom-ref', ad_id: 'msg-ad-1', source: 'ADS', type: 'OPEN_THREAD', ads_context_data: { ad_title: 'Messenger Ad', photo_url: 'https://example.com/msg.jpg', video_url: 'https://example.com/msg-video.jpg', post_id: 'post-1', product_id: 'product-1' } } } } }.to_json
+      end
+
+      it 'stores normalized ads_referral on the first inbound message' do
+        described_class.new(Integrations::Facebook::MessageParser.new(referral_message_object), facebook_channel.inbox).perform
+        referral = facebook_channel.inbox.messages.find_by(source_id: 'm_referral_1').content_attributes['ads_referral']
+        expect(referral).to include('channel' => 'messenger', 'source_id' => 'msg-ad-1', 'source_type' => 'ad', 'headline' => 'Messenger Ad', 'image_url' => 'https://example.com/msg.jpg', 'video_url' => 'https://example.com/msg-video.jpg', 'ref' => 'custom-ref', 'post_id' => 'post-1', 'product_id' => 'product-1')
+      end
+
+      it 'does not write ads_referral when the referral is absent' do
+        message_builder
+        expect(facebook_channel.inbox.messages.first.content_attributes['ads_referral']).to be_nil
+      end
+    end
+
     context 'when message contains a reel attachment' do
       let(:reel_message_object) do
         {

@@ -11,7 +11,9 @@ import MenuItem from './menuItem.vue';
 import MenuItemWithSubmenu from './menuItemWithSubmenu.vue';
 import wootConstants from 'dashboard/constants/globals';
 import AgentLoadingPlaceholder from './agentLoadingPlaceholder.vue';
+// WIJAYA_CUSTOM_START custom_roles_rbac
 import { canManageConversationAssignment } from 'dashboard/helper/permissionsHelper';
+// WIJAYA_CUSTOM_END custom_roles_rbac
 
 const MENU = {
   MARK_AS_READ: 'mark-as-read',
@@ -186,12 +188,14 @@ export default {
       currentUser: 'getCurrentUser',
       currentAccountId: 'getCurrentAccountId',
     }),
+    // WIJAYA_CUSTOM_START custom_roles_rbac
     canAssignConversations() {
       return canManageConversationAssignment(
         this.currentUser,
         this.currentAccountId
       );
     },
+    // WIJAYA_CUSTOM_END custom_roles_rbac
     filteredAgentOnAvailability() {
       const agents = this.$store.getters[
         'inboxAssignableAgents/getAssignableAgents'

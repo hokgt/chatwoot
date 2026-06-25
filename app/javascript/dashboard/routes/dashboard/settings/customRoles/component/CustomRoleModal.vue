@@ -5,10 +5,15 @@ import { useI18n } from 'vue-i18n';
 import { useVuelidate } from '@vuelidate/core';
 import { required, minLength } from '@vuelidate/validators';
 import { useAlert } from 'dashboard/composables';
+import { AVAILABLE_CUSTOM_ROLE_PERMISSIONS } from 'dashboard/constants/permissions.js';
+// WIJAYA_CUSTOM_START custom_roles_rbac
 import {
-  AVAILABLE_CUSTOM_ROLE_PERMISSIONS,
   CONVERSATION_PERMISSIONS,
-} from 'dashboard/constants/permissions.js';
+  splitConversationPermission,
+  buildCustomRolePermissions,
+  nonConversationPermissions,
+} from '../../../../../../../../custom/wijaya/batteries/custom_roles/frontend/permissions';
+// WIJAYA_CUSTOM_END custom_roles_rbac
 
 import Button from 'dashboard/components-next/button/Button.vue';
 
@@ -64,14 +69,11 @@ const resetForm = () => {
 const populateEditForm = () => {
   name.value = props.selectedRole.name || '';
   description.value = props.selectedRole.description || '';
-  const permissions = props.selectedRole.permissions || [];
-  selectedConversationPermission.value =
-    permissions.find(permission =>
-      CONVERSATION_PERMISSIONS.includes(permission)
-    ) || '';
-  selectedPermissions.value = permissions.filter(
-    permission => !CONVERSATION_PERMISSIONS.includes(permission)
-  );
+  // WIJAYA_CUSTOM_START custom_roles_rbac
+  const splitPermissions = splitConversationPermission(props.selectedRole.permissions || []);
+  selectedConversationPermission.value = splitPermissions.selectedConversationPermission;
+  selectedPermissions.value = splitPermissions.selectedPermissions;
+  // WIJAYA_CUSTOM_END custom_roles_rbac
 };
 
 onMounted(() => {
@@ -101,10 +103,12 @@ const handleCustomRole = async () => {
     const roleData = {
       name: name.value,
       description: description.value,
-      permissions: [
+      // WIJAYA_CUSTOM_START custom_roles_rbac
+      permissions: buildCustomRolePermissions(
         selectedConversationPermission.value,
-        ...selectedPermissions.value,
-      ],
+        selectedPermissions.value
+      ),
+      // WIJAYA_CUSTOM_END custom_roles_rbac
     };
 
     if (props.mode === 'edit') {
@@ -192,8 +196,8 @@ const isSubmitDisabled = computed(
             </label>
           </div>
           <div
-            v-for="permission in AVAILABLE_CUSTOM_ROLE_PERMISSIONS.filter(
-              item => !CONVERSATION_PERMISSIONS.includes(item)
+            v-for="permission in nonConversationPermissions(
+              AVAILABLE_CUSTOM_ROLE_PERMISSIONS
             )"
             :key="permission"
             class="flex items-center"

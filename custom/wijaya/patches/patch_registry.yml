@@ -1,0 +1,68 @@
+# Wijaya Corp Chatwoot custom patch registry
+# Keep this file updated for every core hook and custom battery touchpoint.
+
+patches:
+  - id: ads_tracking_ctwa_referral
+    name: Ads Tracking / CTWA referral attribution
+    battery: custom/wijaya/batteries/ads_tracking
+    description: >
+      Normalizes Meta WhatsApp CTWA, Messenger, and Instagram referral payloads
+      into message content_attributes.ads_referral and renders an ad preview above
+      the first inbound message bubble.
+    custom_files:
+      - custom/wijaya/batteries/ads_tracking/referral_parser.rb
+      - custom/wijaya/batteries/ads_tracking/hooks.rb
+      - custom/wijaya/batteries/ads_tracking/frontend/AdsReferral.vue
+    core_hook_touchpoints:
+      - app/services/whatsapp/incoming_message_base_service.rb
+      - app/builders/messages/facebook/message_builder.rb
+      - app/builders/messages/instagram/base_message_builder.rb
+      - lib/integrations/facebook/message_parser.rb
+      - app/javascript/dashboard/components-next/message/Message.vue
+    tests:
+      - spec/services/meta_ads_referral_parser_spec.rb
+      - spec/services/whatsapp/incoming_message_whatsapp_cloud_service_spec.rb
+      - spec/builders/messages/facebook/message_builder_spec.rb
+      - spec/builders/messages/instagram/message_builder_spec.rb
+
+  - id: custom_roles_rbac
+    name: Custom Roles RBAC
+    battery: custom/wijaya/batteries/custom_roles
+    description: >
+      Centralizes Wijaya custom role RBAC behavior for conversation visibility,
+      assignment authorization, custom role validation, agent role assignment,
+      and frontend role/permission UX while keeping Chatwoot core changes as
+      minimal hook calls.
+    custom_files:
+      - custom/wijaya/batteries/custom_roles/hooks.rb
+      - custom/wijaya/batteries/custom_roles/frontend/permissions.js
+    core_hook_touchpoints:
+      - app/builders/agent_builder.rb
+      - app/controllers/api/v1/accounts/agents_controller.rb
+      - app/controllers/api/v1/accounts/bulk_actions_controller.rb
+      - app/controllers/api/v1/accounts/conversations/assignments_controller.rb
+      - app/controllers/api/v1/accounts/conversations/base_controller.rb
+      - app/controllers/api/v1/accounts/conversations_controller.rb
+      - app/finders/conversation_finder.rb
+      - app/javascript/dashboard/components/widgets/conversation/contextMenu/Index.vue
+      - app/javascript/dashboard/components/widgets/conversation/conversationBulkActions/Index.vue
+      - app/javascript/dashboard/helper/permissionsHelper.js
+      - app/javascript/dashboard/routes/dashboard/conversation/ConversationAction.vue
+      - app/javascript/dashboard/routes/dashboard/settings/customRoles/Index.vue
+      - app/javascript/dashboard/routes/dashboard/settings/customRoles/component/CustomRoleModal.vue
+      - app/javascript/dashboard/routes/dashboard/settings/customRoles/customRole.routes.js
+      - app/models/account_user.rb
+      - app/services/conversations/permission_filter_service.rb
+      - enterprise/app/models/custom_role.rb
+      - enterprise/app/models/enterprise/account_user.rb
+      - enterprise/app/policies/enterprise/conversation_policy.rb
+      - enterprise/app/services/enterprise/conversations/permission_filter_service.rb
+    tests:
+      - spec/controllers/api/v1/accounts/bulk_actions_controller_spec.rb
+      - spec/controllers/api/v1/accounts/conversations/assignments_controller_spec.rb
+      - spec/controllers/api/v1/accounts/conversations/messages_controller_spec.rb
+      - spec/enterprise/controllers/api/v1/accounts/conversations_controller_spec.rb
+      - spec/enterprise/controllers/api/v1/accounts/custom_roles_controller_spec.rb
+      - spec/enterprise/policies/conversation_policy_spec.rb
+      - spec/enterprise/services/enterprise/conversations/permission_filter_service_spec.rb
+      - spec/finders/conversation_finder_spec.rb

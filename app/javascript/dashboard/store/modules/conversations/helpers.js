@@ -91,17 +91,21 @@ export const applyRoleFilter = (
   }
 
   const conversationAssignee = conversation.meta.assignee;
+  // WIJAYA_CUSTOM_START custom_roles_rbac
   const conversationParticipants =
     conversation.meta?.participants ||
     conversation.participants ||
     conversation.conversation_participants ||
     [];
+  // WIJAYA_CUSTOM_END custom_roles_rbac
   const isUnassigned = !conversationAssignee;
   const isAssignedToUser = conversationAssignee?.id === currentUserId;
+  // WIJAYA_CUSTOM_START custom_roles_rbac
   const isParticipant = conversationParticipants.some(
     participant =>
       participant?.id === currentUserId || participant?.user_id === currentUserId
   );
+  // WIJAYA_CUSTOM_END custom_roles_rbac
 
   // Check unassigned management permission
   if (permissions.includes('conversation_unassigned_manage')) {

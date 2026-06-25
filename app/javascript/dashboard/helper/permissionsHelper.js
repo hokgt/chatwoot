@@ -16,13 +16,14 @@ export const getUserPermissions = (user, accountId) => {
   return currentAccount.permissions || [];
 };
 
+// WIJAYA_CUSTOM_START custom_roles_rbac
+import { canManageConversationAssignment as canManageConversationAssignmentByPermissions } from '../../../../custom/wijaya/batteries/custom_roles/frontend/permissions';
+
 export const canManageConversationAssignment = (user, accountId) => {
   const permissions = getUserPermissions(user, accountId);
-  return (
-    permissions.includes('administrator') ||
-    permissions.includes('conversation_manage')
-  );
+  return canManageConversationAssignmentByPermissions(permissions);
 };
+// WIJAYA_CUSTOM_END custom_roles_rbac
 
 export const getUserRole = (user, accountId) => {
   const currentAccount = getCurrentAccount(user, accountId) || {};

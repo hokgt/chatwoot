@@ -1,3 +1,5 @@
+require Rails.root.join('custom/wijaya/batteries/custom_roles/hooks')
+
 class Conversations::PermissionFilterService
   attr_reader :conversations, :user, :account
 
@@ -7,9 +9,11 @@ class Conversations::PermissionFilterService
     @account = account
   end
 
+  # WIJAYA_CUSTOM_START custom_roles_rbac
   def self.allowed?(conversation, user, account)
-    new(account.conversations, user, account).perform.exists?(id: conversation.id)
+    Wijaya::Batteries::CustomRoles::Hooks.conversation_allowed?(conversation, user, account)
   end
+  # WIJAYA_CUSTOM_END custom_roles_rbac
 
   def perform
     return conversations if user_role == 'administrator'

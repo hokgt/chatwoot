@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative '../../../custom/wijaya/batteries/ads_tracking/hooks'
+
 class Integrations::Facebook::MessageParser
   def initialize(response_json)
     @response = JSON.parse(response_json)
@@ -67,6 +69,12 @@ class Integrations::Facebook::MessageParser
   def in_reply_to_external_id
     @messaging.dig('message', 'reply_to', 'mid')
   end
+
+  # WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+  def referral
+    Wijaya::Batteries::AdsTracking::Hooks.facebook_referral(@messaging)
+  end
+  # WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
 end
 
 # Sample Response

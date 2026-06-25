@@ -1,5 +1,7 @@
 import { FEATURE_FLAGS } from '../../../../featureFlags';
-import { INSTALLATION_TYPES } from 'dashboard/constants/installationTypes';
+// WIJAYA_CUSTOM_START custom_roles_rbac
+import { customRoleInstallationTypes } from '../../../../../../../custom/wijaya/batteries/custom_roles/frontend/permissions';
+// WIJAYA_CUSTOM_END custom_roles_rbac
 import { frontendURL } from 'dashboard/helper/URLHelper';
 
 import SettingsWrapper from '../SettingsWrapper.vue';
@@ -20,11 +22,9 @@ export default {
           name: 'custom_roles_list',
           meta: {
             featureFlag: FEATURE_FLAGS.CUSTOM_ROLES,
-            installationTypes: [
-              INSTALLATION_TYPES.CLOUD,
-              INSTALLATION_TYPES.ENTERPRISE,
-              INSTALLATION_TYPES.COMMUNITY,
-            ],
+            // WIJAYA_CUSTOM_START custom_roles_rbac
+            installationTypes: customRoleInstallationTypes,
+            // WIJAYA_CUSTOM_END custom_roles_rbac
             permissions: ['administrator'],
           },
           component: CustomRolesHome,

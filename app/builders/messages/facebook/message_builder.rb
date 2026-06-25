@@ -4,6 +4,8 @@
 #    based on this we are showing "not sent from chatwoot" message in frontend
 #    Hence there is no need to set user_id in message for outgoing echo messages.
 
+require_relative '../../../../custom/wijaya/batteries/ads_tracking/hooks'
+
 class Messages::Facebook::MessageBuilder < Messages::Messenger::MessageBuilder
   attr_reader :response
 
@@ -117,6 +119,9 @@ class Messages::Facebook::MessageBuilder < Messages::Messenger::MessageBuilder
       in_reply_to_external_id: response.in_reply_to_external_id
     }
     content_attributes[:external_echo] = true if @outgoing_echo
+    # WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+    add_ads_referral_content_attributes(content_attributes)
+    # WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
 
     {
       account_id: conversation.account_id,
@@ -129,6 +134,18 @@ class Messages::Facebook::MessageBuilder < Messages::Messenger::MessageBuilder
       sender: @outgoing_echo ? nil : @contact_inbox.contact
     }
   end
+
+  # WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+  def add_ads_referral_content_attributes(content_attributes)
+    Wijaya::Batteries::AdsTracking::Hooks.append_ads_referral!(
+      content_attributes: content_attributes,
+      channel: :messenger,
+      referral: response.referral,
+      conversation: conversation,
+      outgoing_echo: @outgoing_echo
+    )
+  end
+  # WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
 
   def process_contact_params_result(result)
     {
