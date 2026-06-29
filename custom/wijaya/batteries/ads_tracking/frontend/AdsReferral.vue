@@ -42,7 +42,7 @@ const shouldRender = computed(
       :href="openUrl || undefined"
       :target="openUrl ? '_blank' : undefined"
       :rel="openUrl ? 'noopener noreferrer' : undefined"
-      class="group mb-1 block max-w-[min(17.5rem,80vw)] overflow-hidden rounded-xl border border-n-weak bg-n-slate-3 text-xs text-n-slate-12 no-underline transition-shadow hover:shadow-md"
+      class="ads-referral-card group mb-1 block overflow-hidden rounded-xl border border-n-weak bg-n-slate-3 text-xs text-n-slate-12 no-underline transition-shadow hover:shadow-md"
     >
       <div v-if="mediaUrl" class="relative">
         <img
@@ -91,3 +91,9 @@ const shouldRender = computed(
     </component>
   </template>
 </template>
+
+<style scoped>
+.ads-referral-card {
+  width: min(17.5rem, 80vw);
+}
+</style>
