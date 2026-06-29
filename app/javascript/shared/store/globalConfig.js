@@ -5,6 +5,9 @@ const {
   API_CHANNEL_NAME: apiChannelName,
   API_CHANNEL_THUMBNAIL: apiChannelThumbnail,
   APP_VERSION: appVersion,
+  // WIJAYA_CUSTOM_START development_version
+  WIJAYA_DEV_VERSION: wijayaDevVersion,
+  // WIJAYA_CUSTOM_END development_version
   AZURE_APP_ID: azureAppId,
   BRAND_NAME: brandName,
   CHATWOOT_INBOX_TOKEN: chatwootInboxToken,
@@ -31,6 +34,9 @@ const state = {
   apiChannelName,
   apiChannelThumbnail,
   appVersion,
+  // WIJAYA_CUSTOM_START development_version
+  wijayaDevVersion,
+  // WIJAYA_CUSTOM_END development_version
   azureAppId,
   brandName,
   chatwootInboxToken,

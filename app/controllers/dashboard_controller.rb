@@ -1,3 +1,7 @@
+# WIJAYA_CUSTOM_START development_version
+require Rails.root.join('custom/wijaya/batteries/development_version/hooks')
+# WIJAYA_CUSTOM_END development_version
+
 class DashboardController < ActionController::Base
   include SwitchLocale
 
@@ -69,6 +73,9 @@ class DashboardController < ActionController::Base
   def app_config
     {
       APP_VERSION: Chatwoot.config[:version],
+      # WIJAYA_CUSTOM_START development_version
+      WIJAYA_DEV_VERSION: Wijaya::Batteries::DevelopmentVersion::Hooks.current_version,
+      # WIJAYA_CUSTOM_END development_version
       VAPID_PUBLIC_KEY: VapidService.public_key,
       ENABLE_ACCOUNT_SIGNUP: GlobalConfigService.load('ENABLE_ACCOUNT_SIGNUP', 'false'),
       FB_APP_ID: GlobalConfigService.load('FB_APP_ID', ''),

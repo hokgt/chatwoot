@@ -41,6 +41,21 @@ done
 require_marker "config/initializers/01_inject_enterprise_edition_module.rb" "WIJAYA_CUSTOM_START enterprise_extension_compat"
 require_marker "config/initializers/01_inject_enterprise_edition_module.rb" "WIJAYA_CUSTOM_END enterprise_extension_compat"
 
+# development_version
+require_file custom/wijaya/batteries/development_version/version.yml
+require_file custom/wijaya/batteries/development_version/CHANGELOG.md
+require_file custom/wijaya/batteries/development_version/hooks.rb
+require_file custom/wijaya/batteries/development_version/scripts/bump_version.rb
+require_file custom/wijaya/batteries/development_version/README.md
+
+for file in \
+  app/controllers/dashboard_controller.rb \
+  app/javascript/shared/store/globalConfig.js \
+  app/javascript/dashboard/routes/dashboard/settings/account/components/BuildInfo.vue; do
+  require_marker "$file" "WIJAYA_CUSTOM_START development_version"
+  require_marker "$file" "WIJAYA_CUSTOM_END development_version"
+done
+
 if [[ "$missing" -ne 0 ]]; then
   exit 1
 fi

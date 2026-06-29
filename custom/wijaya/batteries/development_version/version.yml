@@ -1,0 +1,4 @@
+# Wijaya internal development version (independent of official Chatwoot versioning).
+# Managed via custom/wijaya/batteries/development_version/scripts/bump_version.rb
+# Format: MAJOR.MINOR.PATCH (semantic versioning)
+version: 0.1.0

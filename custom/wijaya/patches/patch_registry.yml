@@ -78,3 +78,25 @@ patches:
     core_hook_touchpoints:
       - config/initializers/01_inject_enterprise_edition_module.rb
     tests: []
+
+  - id: development_version
+    name: Wijaya Internal Development Versioning
+    battery: custom/wijaya/batteries/development_version
+    description: >
+      Independent semantic versioning for Wijaya custom development, starting at
+      v0.1.0 and decoupled from official Chatwoot versioning. Stores the version
+      and changelog in-tree so it survives upstream updates, exposes it to the
+      frontend globalConfig via a minimal dashboard_controller hook, and renders
+      it on General Settings alongside the official Chatwoot version and build SHA.
+    custom_files:
+      - custom/wijaya/batteries/development_version/version.yml
+      - custom/wijaya/batteries/development_version/CHANGELOG.md
+      - custom/wijaya/batteries/development_version/hooks.rb
+      - custom/wijaya/batteries/development_version/scripts/bump_version.rb
+      - custom/wijaya/batteries/development_version/README.md
+    core_hook_touchpoints:
+      - app/controllers/dashboard_controller.rb
+      - app/javascript/shared/store/globalConfig.js
+      - app/javascript/dashboard/routes/dashboard/settings/account/components/BuildInfo.vue
+    tests:
+      - spec/custom/wijaya/development_version_hooks_spec.rb
