@@ -79,6 +79,45 @@ patches:
       - config/initializers/01_inject_enterprise_edition_module.rb
     tests: []
 
+  - id: meta_ads_team_routing
+    name: Meta Ads Ad ID -> Team Routing
+    battery: custom/wijaya/batteries/meta_ads_team_routing
+    description: >
+      Account-scoped mapping of Meta Ads Ad IDs (normalized referral source_id) to
+      Chatwoot Teams. A central routing service injects only conversation_params[:team_id]
+      before Conversation.create! for brand-new WhatsApp/Messenger/Instagram conversations,
+      so Chatwoot's native assignment engine picks up the team naturally. Reuses the
+      existing AdsTracking::ReferralParser for source_id normalization. Never sets
+      assignee_id, never overrides an existing team_id, and leaves organic traffic
+      untouched. Includes an admin-only dashboard API and a Settings -> Wijaya ->
+      Meta Ads Routing management UI.
+    custom_files:
+      - custom/wijaya/batteries/meta_ads_team_routing/routing_rule.rb
+      - custom/wijaya/batteries/meta_ads_team_routing/routing_service.rb
+      - custom/wijaya/batteries/meta_ads_team_routing/hooks.rb
+      - app/controllers/api/v1/accounts/wijaya/meta_ads_team_routing_rules_controller.rb
+      - db/migrate/20260702000000_create_wijaya_meta_ads_team_routing_rules.rb
+      - app/javascript/dashboard/api/metaAdsRouting.js
+      - app/javascript/dashboard/store/modules/metaAdsRouting.js
+      - app/javascript/dashboard/routes/dashboard/settings/wijaya/wijaya.routes.js
+      - app/javascript/dashboard/routes/dashboard/settings/wijaya/Index.vue
+      - app/javascript/dashboard/routes/dashboard/settings/wijaya/RoutingRuleModal.vue
+      - app/javascript/dashboard/i18n/locale/en/wijayaMetaAdsRouting.json
+    core_hook_touchpoints:
+      - app/services/whatsapp/incoming_message_base_service.rb
+      - app/builders/messages/facebook/message_builder.rb
+      - app/builders/messages/instagram/base_message_builder.rb
+      - config/initializers/wijaya_meta_ads_team_routing.rb
+      - config/routes.rb
+      - app/javascript/dashboard/store/index.js
+      - app/javascript/dashboard/routes/dashboard/settings/settings.routes.js
+      - app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+      - app/javascript/dashboard/i18n/locale/en/index.js
+      - app/javascript/dashboard/i18n/locale/en/settings.json
+    tests:
+      - spec/custom/wijaya/meta_ads_team_routing/routing_rule_spec.rb
+      - spec/custom/wijaya/meta_ads_team_routing/routing_service_spec.rb
+
   - id: development_version
     name: Wijaya Internal Development Versioning
     battery: custom/wijaya/batteries/development_version

@@ -39,6 +39,8 @@ import inboxMembers from './modules/inboxMembers';
 import integrations from './modules/integrations';
 import labels from './modules/labels';
 import macros from './modules/macros';
+// WIJAYA_CUSTOM meta_ads_team_routing
+import metaAdsRouting from './modules/metaAdsRouting';
 import notifications from './modules/notifications';
 import portals from './modules/helpCenterPortals';
 import reports from './modules/reports';
@@ -104,6 +106,8 @@ export default createStore({
     integrations,
     labels,
     macros,
+    // WIJAYA_CUSTOM meta_ads_team_routing
+    metaAdsRouting,
     notifications,
     portals,
     reports,

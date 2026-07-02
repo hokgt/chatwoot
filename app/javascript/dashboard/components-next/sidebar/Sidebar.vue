@@ -817,6 +817,15 @@ const menuItems = computed(() => {
           icon: 'i-lucide-shield-plus',
           to: accountScopedRoute('custom_roles_list'),
         },
+        // WIJAYA_CUSTOM_START meta_ads_team_routing
+        {
+          name: 'Settings Meta Ads Routing',
+          label: t('SIDEBAR.META_ADS_ROUTING'),
+          icon: 'i-lucide-route',
+          activeOn: ['wijaya_meta_ads_routing_index'],
+          to: accountScopedRoute('wijaya_meta_ads_routing_index'),
+        },
+        // WIJAYA_CUSTOM_END meta_ads_team_routing
         {
           name: 'Settings Sla',
           label: t('SIDEBAR.SLA'),

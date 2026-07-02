@@ -305,6 +305,12 @@ Rails.application.routes.draw do
             end
           end
 
+          # WIJAYA_CUSTOM_START meta_ads_team_routing
+          namespace :wijaya do
+            resources :meta_ads_team_routing_rules, only: [:index, :show, :create, :update, :destroy]
+          end
+          # WIJAYA_CUSTOM_END meta_ads_team_routing
+
           # Assignment V2 Routes
           resources :assignment_policies do
             resources :inboxes, only: [:index, :create, :destroy], module: :assignment_policies

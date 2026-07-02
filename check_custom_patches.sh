@@ -37,6 +37,36 @@ for file in   app/builders/agent_builder.rb   app/controllers/api/v1/accounts/ag
   require_marker "$file" "WIJAYA_CUSTOM_END custom_roles_rbac"
 done
 
+# meta_ads_team_routing
+require_file custom/wijaya/batteries/meta_ads_team_routing/routing_rule.rb
+require_file custom/wijaya/batteries/meta_ads_team_routing/routing_service.rb
+require_file custom/wijaya/batteries/meta_ads_team_routing/hooks.rb
+require_file app/controllers/api/v1/accounts/wijaya/meta_ads_team_routing_rules_controller.rb
+require_file app/javascript/dashboard/api/metaAdsRouting.js
+require_file app/javascript/dashboard/store/modules/metaAdsRouting.js
+require_file app/javascript/dashboard/routes/dashboard/settings/wijaya/wijaya.routes.js
+require_file app/javascript/dashboard/routes/dashboard/settings/wijaya/Index.vue
+require_file app/javascript/dashboard/routes/dashboard/settings/wijaya/RoutingRuleModal.vue
+require_file app/javascript/dashboard/i18n/locale/en/wijayaMetaAdsRouting.json
+
+for file in \
+  app/services/whatsapp/incoming_message_base_service.rb \
+  app/builders/messages/facebook/message_builder.rb \
+  app/builders/messages/instagram/base_message_builder.rb \
+  config/initializers/wijaya_meta_ads_team_routing.rb \
+  config/routes.rb \
+  app/javascript/dashboard/components-next/sidebar/Sidebar.vue; do
+  require_marker "$file" "WIJAYA_CUSTOM_START meta_ads_team_routing"
+  require_marker "$file" "WIJAYA_CUSTOM_END meta_ads_team_routing"
+done
+
+for file in \
+  app/javascript/dashboard/store/index.js \
+  app/javascript/dashboard/routes/dashboard/settings/settings.routes.js \
+  app/javascript/dashboard/i18n/locale/en/index.js; do
+  require_marker "$file" "WIJAYA_CUSTOM meta_ads_team_routing"
+done
+
 # enterprise_extension_compat
 require_marker "config/initializers/01_inject_enterprise_edition_module.rb" "WIJAYA_CUSTOM_START enterprise_extension_compat"
 require_marker "config/initializers/01_inject_enterprise_edition_module.rb" "WIJAYA_CUSTOM_END enterprise_extension_compat"
