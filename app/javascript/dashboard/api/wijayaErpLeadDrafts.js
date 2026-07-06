@@ -18,6 +18,10 @@ class WijayaErpLeadDraftsAPI extends ApiClient {
   sync(conversationId, fields) {
     return axios.post(`${this.url}/${conversationId}/sync`, { fields });
   }
+
+  options() {
+    return axios.get(`${this.url}/options`);
+  }
 }
 
 export default new WijayaErpLeadDraftsAPI();

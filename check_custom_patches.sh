@@ -73,6 +73,7 @@ require_file custom/wijaya/batteries/erp_lead_sidebar/config.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/lead_draft.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/payload_builder.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/sync_service.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/options_service.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/ErpLeadPanel.vue
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/fieldConfig.js
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/mappings.js

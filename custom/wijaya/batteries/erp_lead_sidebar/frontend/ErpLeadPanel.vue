@@ -1,7 +1,7 @@
 <script setup>
 /* eslint-disable no-use-before-define */
 // WIJAYA_CUSTOM_START erp_lead_sidebar
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import ErpLeadDraftsAPI from 'dashboard/api/wijayaErpLeadDrafts';
 import {
   STATUS_OPTIONS,
@@ -40,6 +40,27 @@ const fields = reactive({
 [...MARKET_CUSTOMER_OPTIONS, ...JENIS_PAKAIAN_OPTIONS].forEach(([, key]) => {
   fields[key] = false;
 });
+
+// Dropdown options are fetched live from their ERPNext source DocTypes (see
+// backend OptionsService). The static arrays from mappings.js are only an
+// offline fallback until the ERP fetch resolves.
+const sourceOptions = ref([...UTM_SOURCE_OPTIONS]);
+const campaignOptions = ref([...UTM_CAMPAIGN_OPTIONS]);
+const industryOptions = ref([...INDUSTRY_OPTIONS]);
+const territoryOptions = ref([...TERRITORY_OPTIONS]);
+
+const loadOptions = async () => {
+  try {
+    const { data } = await ErpLeadDraftsAPI.options();
+    const opts = data.options || {};
+    if (opts.utm_source?.length) sourceOptions.value = opts.utm_source;
+    if (opts.utm_campaign?.length) campaignOptions.value = opts.utm_campaign;
+    if (opts.industry?.length) industryOptions.value = opts.industry;
+    if (opts.territory?.length) territoryOptions.value = opts.territory;
+  } catch {
+    // Best-effort: keep the static fallback options if ERP is unreachable.
+  }
+};
 
 const loading = ref(false);
 const saving = ref(false);
@@ -210,6 +231,7 @@ const createLead = async () => {
 };
 
 watch(() => props.conversationId, loadDraft, { immediate: true });
+onMounted(loadOptions);
 // WIJAYA_CUSTOM_END erp_lead_sidebar
 </script>
 
@@ -301,7 +323,7 @@ watch(() => props.conversationId, loadDraft, { immediate: true });
         />
         <datalist id="wijaya-erp-sources">
           <option
-            v-for="option in UTM_SOURCE_OPTIONS"
+            v-for="option in sourceOptions"
             :key="option"
             :value="option"
           />
@@ -318,7 +340,7 @@ watch(() => props.conversationId, loadDraft, { immediate: true });
         />
         <datalist id="wijaya-erp-campaigns">
           <option
-            v-for="option in UTM_CAMPAIGN_OPTIONS"
+            v-for="option in campaignOptions"
             :key="option"
             :value="option"
           />
@@ -335,7 +357,7 @@ watch(() => props.conversationId, loadDraft, { immediate: true });
         />
         <datalist id="wijaya-erp-industries">
           <option
-            v-for="option in INDUSTRY_OPTIONS"
+            v-for="option in industryOptions"
             :key="option"
             :value="option"
           />
@@ -352,7 +374,7 @@ watch(() => props.conversationId, loadDraft, { immediate: true });
         />
         <datalist id="wijaya-erp-territories">
           <option
-            v-for="option in TERRITORY_OPTIONS"
+            v-for="option in territoryOptions"
             :key="option"
             :value="option"
           />

@@ -23,6 +23,16 @@ module Wijaya
         # Frozen ERPNext DocType we create.
         DOCTYPE = 'Lead'
 
+        # Select-option source DocTypes. Maps the Chatwoot draft field to the
+        # ERPNext DocType whose document `name`s populate that dropdown. This is a
+        # strict whitelist: the options endpoint only ever queries these DocTypes.
+        OPTION_DOCTYPES = {
+          'utm_source' => 'UTM Source',
+          'utm_campaign' => 'UTM Campaign',
+          'territory' => 'Territory',
+          'industry' => 'Industry Type'
+        }.freeze
+
         # Allowed values for the required `status` Select field. Order matches the
         # dev-tex contract. `Lead` is the default.
         STATUS_VALUES = %w[

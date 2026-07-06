@@ -133,6 +133,7 @@ patches:
       - custom/wijaya/batteries/erp_lead_sidebar/lead_draft.rb
       - custom/wijaya/batteries/erp_lead_sidebar/payload_builder.rb
       - custom/wijaya/batteries/erp_lead_sidebar/sync_service.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/options_service.rb
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/ErpLeadPanel.vue
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/fieldConfig.js
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/mappings.js

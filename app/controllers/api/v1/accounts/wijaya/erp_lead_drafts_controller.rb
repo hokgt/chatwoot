@@ -1,10 +1,17 @@
 # WIJAYA_CUSTOM_START erp_lead_sidebar
 class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::BaseController
-  before_action :set_conversation
-  before_action :set_draft
+  before_action :set_conversation, except: [:options]
+  before_action :set_draft, except: [:options]
 
   def show
     render json: serialize(@draft)
+  end
+
+  # Populates the sidebar select dropdowns from their ERPNext source DocTypes.
+  def options
+    render json: { options: ::Wijaya::Batteries::ErpLeadSidebar::OptionsService.new.fetch_all }
+  rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError => e
+    render json: { error: e.message, options: {} }, status: :bad_gateway
   end
 
   def update

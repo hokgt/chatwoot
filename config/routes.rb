@@ -317,6 +317,9 @@ Rails.application.routes.draw do
               member do
                 post :sync
               end
+              collection do
+                get :options
+              end
             end
           end
           # WIJAYA_CUSTOM_END erp_lead_sidebar
