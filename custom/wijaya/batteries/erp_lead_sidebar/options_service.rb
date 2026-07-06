@@ -25,7 +25,12 @@ module Wijaya
         def fetch_all
           raise SyncError, 'ERPNext connection is not configured' unless Config.erp_configured?
 
-          Config::OPTION_DOCTYPES.transform_values { |doctype| fetch_names(doctype) }
+          Config::OPTION_DOCTYPES.to_h do |field, doctype|
+            [field, fetch_names(doctype)]
+          rescue SyncError => e
+            Rails.logger.warn("Wijaya ERP Lead options fetch skipped for #{doctype}: #{e.message}") if defined?(Rails)
+            [field, []]
+          end
         end
 
         private
