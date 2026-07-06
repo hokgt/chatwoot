@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_06_11_184600) do
+ActiveRecord::Schema[7.1].define(version: 2026_07_06_000000) do
   # These extensions should be enabled to support this database
   enable_extension "pg_stat_statements"
   enable_extension "pg_trgm"
@@ -1327,6 +1327,21 @@ ActiveRecord::Schema[7.1].define(version: 2026_06_11_184600) do
     t.index ["account_id", "url"], name: "index_webhooks_on_account_id_and_url", unique: true
   end
 
+  create_table "wijaya_erp_lead_drafts", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.bigint "conversation_id", null: false
+    t.jsonb "fields", default: {}, null: false
+    t.jsonb "last_payload", default: {}, null: false
+    t.string "sync_status", default: "draft", null: false
+    t.string "erp_lead_id"
+    t.text "last_error"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id", "conversation_id"], name: "index_wijaya_erp_lead_drafts_on_account_conversation", unique: true
+    t.index ["account_id"], name: "index_wijaya_erp_lead_drafts_on_account_id"
+    t.index ["conversation_id"], name: "index_wijaya_erp_lead_drafts_on_conversation_id"
+  end
+
   create_table "working_hours", force: :cascade do |t|
     t.bigint "inbox_id"
     t.bigint "account_id"
@@ -1347,6 +1362,8 @@ ActiveRecord::Schema[7.1].define(version: 2026_06_11_184600) do
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
   add_foreign_key "inboxes", "portals"
   add_foreign_key "user_sessions", "users"
+  add_foreign_key "wijaya_erp_lead_drafts", "accounts"
+  add_foreign_key "wijaya_erp_lead_drafts", "conversations"
   create_trigger("accounts_after_insert_row_tr", :generated => true, :compatibility => 1).
       on("accounts").
       after(:insert).

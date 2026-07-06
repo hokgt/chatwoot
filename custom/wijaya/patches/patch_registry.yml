@@ -118,6 +118,34 @@ patches:
       - spec/custom/wijaya/meta_ads_team_routing/routing_rule_spec.rb
       - spec/custom/wijaya/meta_ads_team_routing/routing_service_spec.rb
 
+
+  - id: erp_lead_sidebar
+    name: ERPNext Lead Sidebar Form
+    battery: custom/wijaya/batteries/erp_lead_sidebar
+    description: >
+      Chatwoot-owned ERPNext Lead creation sidebar for conversations. Stores a
+      resilient local draft per conversation, autofills only approved fields from
+      contact/Meta Ads metadata, converts Market Customer and Jenis Pakaian visual
+      checkbox groups into the documented ERP integer fields, and syncs a strict
+      Phase 1 Lead payload to ERPNext without Lead Activity child rows.
+    custom_files:
+      - custom/wijaya/batteries/erp_lead_sidebar/config.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/lead_draft.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/payload_builder.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/sync_service.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/ErpLeadPanel.vue
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/fieldConfig.js
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/mappings.js
+      - app/controllers/api/v1/accounts/wijaya/erp_lead_drafts_controller.rb
+      - app/javascript/dashboard/api/wijayaErpLeadDrafts.js
+      - db/migrate/20260706000000_create_wijaya_erp_lead_drafts.rb
+    core_hook_touchpoints:
+      - config/initializers/wijaya_erp_lead_sidebar.rb
+      - config/routes.rb
+      - app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue
+    tests:
+      - spec/custom/wijaya/erp_lead_sidebar/payload_builder_spec.rb
+
   - id: development_version
     name: Wijaya Internal Development Versioning
     battery: custom/wijaya/batteries/development_version

@@ -67,6 +67,27 @@ for file in \
   require_marker "$file" "WIJAYA_CUSTOM meta_ads_team_routing"
 done
 
+
+# erp_lead_sidebar
+require_file custom/wijaya/batteries/erp_lead_sidebar/config.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/lead_draft.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/payload_builder.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/sync_service.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/ErpLeadPanel.vue
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/fieldConfig.js
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/mappings.js
+require_file app/controllers/api/v1/accounts/wijaya/erp_lead_drafts_controller.rb
+require_file app/javascript/dashboard/api/wijayaErpLeadDrafts.js
+require_file db/migrate/20260706000000_create_wijaya_erp_lead_drafts.rb
+
+for file in \
+  config/initializers/wijaya_erp_lead_sidebar.rb \
+  config/routes.rb \
+  app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue; do
+  require_marker "$file" "WIJAYA_CUSTOM_START erp_lead_sidebar"
+  require_marker "$file" "WIJAYA_CUSTOM_END erp_lead_sidebar"
+done
+
 # enterprise_extension_compat
 require_marker "config/initializers/01_inject_enterprise_edition_module.rb" "WIJAYA_CUSTOM_START enterprise_extension_compat"
 require_marker "config/initializers/01_inject_enterprise_edition_module.rb" "WIJAYA_CUSTOM_END enterprise_extension_compat"

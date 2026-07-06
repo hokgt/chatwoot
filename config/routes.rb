@@ -311,6 +311,16 @@ Rails.application.routes.draw do
           end
           # WIJAYA_CUSTOM_END meta_ads_team_routing
 
+          # WIJAYA_CUSTOM_START erp_lead_sidebar
+          namespace :wijaya do
+            resources :erp_lead_drafts, only: [:show, :update] do
+              member do
+                post :sync
+              end
+            end
+          end
+          # WIJAYA_CUSTOM_END erp_lead_sidebar
+
           # Assignment V2 Routes
           resources :assignment_policies do
             resources :inboxes, only: [:index, :create, :destroy], module: :assignment_policies
