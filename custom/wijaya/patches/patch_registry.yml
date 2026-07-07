@@ -133,6 +133,7 @@ patches:
       - custom/wijaya/batteries/erp_lead_sidebar/lead_draft.rb
       - custom/wijaya/batteries/erp_lead_sidebar/payload_builder.rb
       - custom/wijaya/batteries/erp_lead_sidebar/sync_service.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/refresh_service.rb
       - custom/wijaya/batteries/erp_lead_sidebar/options_service.rb
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/ErpLeadPanel.vue
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/fieldConfig.js
@@ -146,6 +147,7 @@ patches:
       - app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue
     tests:
       - spec/custom/wijaya/erp_lead_sidebar/payload_builder_spec.rb
+      - spec/custom/wijaya/erp_lead_sidebar/refresh_service_smoke.rb
 
   - id: development_version
     name: Wijaya Internal Development Versioning

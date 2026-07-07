@@ -226,6 +226,12 @@ const error = ref('');
 const savedAt = ref(null);
 const syncStatus = ref('draft');
 const erpLeadId = ref('');
+// ERP freshness reconciliation surfaced by the backend RefreshService on load:
+// `refreshMessage` explains whether local fields were refreshed from ERP or kept,
+// and `conflict` flags the "local unsynced draft vs newer ERP data" case so the
+// banner renders as a warning the agent must resolve via Update Lead.
+const refreshMessage = ref('');
+const conflict = ref(false);
 let saveTimer = null;
 
 const messages = computed(
@@ -308,13 +314,18 @@ const loadDraft = async () => {
     const { data } = await ErpLeadDraftsAPI.show(props.conversationId);
     applyOptions(data.options);
     const existingFields = data.fields || {};
-    applyFields(
-      Object.keys(existingFields).length ? existingFields : buildAutofill()
-    );
+    const hasExisting = Object.keys(existingFields).length > 0;
+    // Stored/ERP-refreshed fields are applied as-is; only a first-time draft with
+    // no stored fields falls back to client autofill.
+    applyFields(hasExisting ? existingFields : buildAutofill());
     syncStatus.value = data.sync_status || 'draft';
     erpLeadId.value = data.erp_lead_id || '';
+    refreshMessage.value = data.message || '';
+    conflict.value = Boolean(data.conflict);
     if (data.last_error) error.value = data.last_error;
-    scheduleSave(0);
+    // Only autosave the generated autofill for a brand-new draft. Opening an
+    // existing (incl. ERP-refreshed) draft must NOT mark it dirty.
+    if (!hasExisting) scheduleSave(0);
   } catch (e) {
     applyFields(buildAutofill());
     error.value = e?.response?.data?.error || 'Unable to load ERP Lead draft';
@@ -401,6 +412,15 @@ watch(() => props.conversationId, loadDraft, { immediate: true });
     <template v-else>
       <div v-if="erpLeadId" class="rounded-md bg-n-teal-3 text-n-teal-11 p-2">
         ERP Lead created: <strong>{{ erpLeadId }}</strong>
+      </div>
+      <div v-if="conflict" class="rounded-md bg-n-amber-3 text-n-amber-11 p-2">
+        {{ refreshMessage }}
+      </div>
+      <div
+        v-else-if="refreshMessage"
+        class="rounded-md bg-n-teal-3 text-n-teal-11 p-2"
+      >
+        {{ refreshMessage }}
       </div>
       <div v-if="error" class="rounded-md bg-n-ruby-3 text-n-ruby-11 p-2">
         {{ error }}

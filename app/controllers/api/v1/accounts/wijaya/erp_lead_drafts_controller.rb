@@ -4,7 +4,8 @@ class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::Ba
   before_action :set_draft, except: [:options]
 
   def show
-    render json: serialize(@draft).merge(options: option_values)
+    refresh = refresh_from_erp
+    render json: serialize(@draft).merge(options: option_values).merge(refresh)
   end
 
   # Populates the sidebar select dropdowns from their ERPNext source DocTypes.
@@ -30,6 +31,16 @@ class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::Ba
   end
 
   private
+
+  # Reconcile the linked ERP Lead into the draft before serialize so the sidebar
+  # opens on current ERP data (or a conflict/warning when local edits are unsynced
+  # or ERP is unreachable). Never breaks show if refresh fails.
+  def refresh_from_erp
+    ::Wijaya::Batteries::ErpLeadSidebar::RefreshService.new(@draft).perform
+  rescue StandardError => e
+    Rails.logger.warn("Wijaya ERP Lead refresh unavailable for draft show: #{e.message}")
+    {}
+  end
 
   def option_values
     ::Wijaya::Batteries::ErpLeadSidebar::OptionsService.new.fetch_all

@@ -8,6 +8,7 @@ Rails.application.config.to_prepare do
   require Rails.root.join('custom/wijaya/batteries/erp_lead_sidebar/lead_draft').to_s
   require Rails.root.join('custom/wijaya/batteries/erp_lead_sidebar/payload_builder').to_s
   require Rails.root.join('custom/wijaya/batteries/erp_lead_sidebar/sync_service').to_s
+  require Rails.root.join('custom/wijaya/batteries/erp_lead_sidebar/refresh_service').to_s
   require Rails.root.join('custom/wijaya/batteries/erp_lead_sidebar/options_service').to_s
 end
 # WIJAYA_CUSTOM_END erp_lead_sidebar
