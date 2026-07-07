@@ -1,7 +1,7 @@
 <script setup>
 /* eslint-disable no-use-before-define */
 // WIJAYA_CUSTOM_START erp_lead_sidebar
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import ErpLeadDraftsAPI from 'dashboard/api/wijayaErpLeadDrafts';
 import {
   STATUS_OPTIONS,
@@ -49,7 +49,13 @@ const campaignOptions = ref([...UTM_CAMPAIGN_OPTIONS]);
 const industryOptions = ref([...INDUSTRY_OPTIONS]);
 const territoryOptions = ref([...TERRITORY_OPTIONS]);
 
+// One-shot guard so options are fetched a single time per panel and never on
+// every autosave. Reset on failure so a later conversation switch can retry.
+let optionsLoaded = false;
+
 const loadOptions = async () => {
+  if (optionsLoaded) return;
+  optionsLoaded = true;
   try {
     const { data } = await ErpLeadDraftsAPI.options();
     const opts = data.options || {};
@@ -59,6 +65,7 @@ const loadOptions = async () => {
     if (opts.territory?.length) territoryOptions.value = opts.territory;
   } catch {
     // Best-effort: keep the static fallback options if ERP is unreachable.
+    optionsLoaded = false;
   }
 };
 
@@ -230,8 +237,14 @@ const createLead = async () => {
   }
 };
 
-watch(() => props.conversationId, loadDraft, { immediate: true });
-onMounted(loadOptions);
+watch(
+  () => props.conversationId,
+  () => {
+    loadOptions();
+    loadDraft();
+  },
+  { immediate: true }
+);
 // WIJAYA_CUSTOM_END erp_lead_sidebar
 </script>
 
