@@ -1,7 +1,16 @@
 <script setup>
 /* eslint-disable no-use-before-define */
 // WIJAYA_CUSTOM_START erp_lead_sidebar
-import { computed, reactive, ref, watch } from 'vue';
+import {
+  computed,
+  defineComponent,
+  h,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  watch,
+} from 'vue';
 import ErpLeadDraftsAPI from 'dashboard/api/wijayaErpLeadDrafts';
 import {
   STATUS_OPTIONS,
@@ -65,6 +74,150 @@ const applyOptions = options => {
 // ERP option, and nothing invalid is persisted without being shown.
 const withCurrent = (value, options) =>
   value && !options.includes(value) ? [value, ...options] : options;
+
+// Local searchable dropdown so agents can type-to-filter long ERP option lists
+// (Source/Campaign/Industry/Territory) instead of scrolling a native select.
+// Kept inline as a render-function component to stay within this single-file
+// customization: props/emits mirror a native select (v-model + change).
+const SearchableSelect = defineComponent({
+  name: 'SearchableSelect',
+  props: {
+    modelValue: { type: String, default: '' },
+    options: { type: Array, default: () => [] },
+    placeholder: { type: String, default: 'Search…' },
+  },
+  emits: ['update:modelValue', 'change'],
+  setup(selectProps, { emit }) {
+    const open = ref(false);
+    const query = ref('');
+    const highlight = ref(-1);
+    const rootEl = ref(null);
+
+    const displayOptions = computed(() => ['', ...selectProps.options]);
+
+    const optionLabel = option =>
+      option === '' ? '— Clear —' : String(option);
+
+    const filtered = computed(() => {
+      const q = query.value.trim().toLowerCase();
+      if (!q) return displayOptions.value;
+      return displayOptions.value.filter(option =>
+        optionLabel(option).toLowerCase().includes(q)
+      );
+    });
+
+    const close = () => {
+      open.value = false;
+      query.value = '';
+      highlight.value = -1;
+    };
+
+    const openMenu = () => {
+      open.value = true;
+      query.value = '';
+      highlight.value = -1;
+    };
+
+    const select = option => {
+      emit('update:modelValue', option);
+      emit('change', option);
+      close();
+    };
+
+    const onEnter = () => {
+      const list = filtered.value;
+      if (!list.length) return;
+      if (highlight.value >= 0 && highlight.value < list.length) {
+        select(list[highlight.value]);
+        return;
+      }
+      const q = query.value.trim().toLowerCase();
+      const exact = list.find(option => String(option).toLowerCase() === q);
+      select(exact || list[0]);
+    };
+
+    const move = delta => {
+      const len = filtered.value.length;
+      if (!len) return;
+      open.value = true;
+      highlight.value = (highlight.value + delta + len) % len;
+    };
+
+    const onDocClick = event => {
+      if (rootEl.value && !rootEl.value.contains(event.target)) close();
+    };
+    onMounted(() => document.addEventListener('click', onDocClick));
+    onBeforeUnmount(() => document.removeEventListener('click', onDocClick));
+
+    return () =>
+      h('div', { ref: rootEl, class: 'relative' }, [
+        h('input', {
+          class: 'input',
+          type: 'text',
+          value: open.value ? query.value : selectProps.modelValue,
+          placeholder: selectProps.modelValue || selectProps.placeholder,
+          onFocus: openMenu,
+          onClick: openMenu,
+          onInput: event => {
+            query.value = event.target.value;
+            open.value = true;
+            highlight.value = -1;
+          },
+          onKeydown: event => {
+            if (event.key === 'Escape') {
+              close();
+            } else if (event.key === 'Enter') {
+              event.preventDefault();
+              onEnter();
+            } else if (event.key === 'ArrowDown') {
+              event.preventDefault();
+              move(1);
+            } else if (event.key === 'ArrowUp') {
+              event.preventDefault();
+              move(-1);
+            }
+          },
+        }),
+        open.value
+          ? h(
+              'ul',
+              {
+                class:
+                  'absolute left-0 right-0 z-50 mt-1 max-h-48 overflow-y-auto rounded-md border border-n-weak bg-n-solid-1 py-1 shadow-lg',
+              },
+              filtered.value.length
+                ? filtered.value.map((option, index) =>
+                    h(
+                      'li',
+                      {
+                        key: option || '__empty__',
+                        class: [
+                          'cursor-pointer px-2 py-1 text-n-slate-12',
+                          index === highlight.value
+                            ? 'bg-n-alpha-2'
+                            : 'hover:bg-n-alpha-1',
+                        ],
+                        onMousedown: event => event.preventDefault(),
+                        onClick: () => select(option),
+                        onMouseenter: () => {
+                          highlight.value = index;
+                        },
+                      },
+                      optionLabel(option)
+                    )
+                  )
+                : [
+                    h(
+                      'li',
+                      { class: 'px-2 py-1 text-n-slate-10' },
+                      'No matches'
+                    ),
+                  ]
+            )
+          : null,
+      ]);
+  },
+});
 
 const loading = ref(false);
 const saving = ref(false);
@@ -319,74 +472,38 @@ watch(() => props.conversationId, loadDraft, { immediate: true });
 
       <label class="flex flex-col gap-1">
         <span>Source</span>
-        <select
+        <SearchableSelect
           v-model="fields.utm_source"
-          class="input"
+          :options="withCurrent(fields.utm_source, sourceOptions)"
           @change="scheduleSave(0)"
-        >
-          <option value="" />
-          <option
-            v-for="option in withCurrent(fields.utm_source, sourceOptions)"
-            :key="option"
-            :value="option"
-          >
-            {{ option }}
-          </option>
-        </select>
+        />
       </label>
 
       <label class="flex flex-col gap-1">
         <span>Campaign</span>
-        <select
+        <SearchableSelect
           v-model="fields.utm_campaign"
-          class="input"
+          :options="withCurrent(fields.utm_campaign, campaignOptions)"
           @change="scheduleSave(0)"
-        >
-          <option value="" />
-          <option
-            v-for="option in withCurrent(fields.utm_campaign, campaignOptions)"
-            :key="option"
-            :value="option"
-          >
-            {{ option }}
-          </option>
-        </select>
+        />
       </label>
 
       <label class="flex flex-col gap-1">
         <span>Industry <span class="text-n-ruby-10">*</span></span>
-        <select
+        <SearchableSelect
           v-model="fields.industry"
-          class="input"
+          :options="withCurrent(fields.industry, industryOptions)"
           @change="scheduleSave(0)"
-        >
-          <option value="" />
-          <option
-            v-for="option in withCurrent(fields.industry, industryOptions)"
-            :key="option"
-            :value="option"
-          >
-            {{ option }}
-          </option>
-        </select>
+        />
       </label>
 
       <label class="flex flex-col gap-1">
         <span>Territory</span>
-        <select
+        <SearchableSelect
           v-model="fields.territory"
-          class="input"
+          :options="withCurrent(fields.territory, territoryOptions)"
           @change="scheduleSave(0)"
-        >
-          <option value="" />
-          <option
-            v-for="option in withCurrent(fields.territory, territoryOptions)"
-            :key="option"
-            :value="option"
-          >
-            {{ option }}
-          </option>
-        </select>
+        />
       </label>
 
       <div class="flex flex-col gap-2">
