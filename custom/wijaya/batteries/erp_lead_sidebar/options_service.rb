@@ -20,13 +20,41 @@ module Wijaya
         # Frappe treats limit_page_length=0 as "return every record".
         LIMIT_PAGE_LENGTH = 0
 
+        # ERPNext's "UTM Source" DocType mixes true ad/campaign sources
+        # (e.g. "Ads Februari 26", "Ads November 25", "Meta Ads April 2026") with
+        # non-ad channels such as "Cold Calling", "Campaign" and "China Homelife".
+        # Pak Ahok requires ERP Lead > Source to only offer ad/campaign-style
+        # values, and the UTM Source records carry no category/disabled flag to
+        # key off, so we allowlist by name. Matching is word/token based on
+        # purpose to avoid false positives:
+        #   * /\bads?\b/i keeps "Ads ..."/"Meta Ads ..." but does NOT fire on
+        #     "COLD LEADS" ("ads" there is inside "leads", no word boundary).
+        #   * /\bmeta\b/i, /iklan/i, /advertisement/i cover the other ad spellings.
+        # "Campaign" and "China Homelife" contain none of these tokens and drop out.
+        AD_SOURCE_PATTERNS = [
+          /\bads?\b/i,
+          /\bmeta\b/i,
+          /iklan/i,
+          /advertisement/i
+        ].freeze
+
+        # Smoke-friendly predicate: true when an ERP UTM Source name looks like an
+        # ad/campaign source and should stay in the Source dropdown.
+        def self.ad_source?(name)
+          AD_SOURCE_PATTERNS.any? { |pattern| pattern.match?(name.to_s) }
+        end
+
         # Returns { 'utm_source' => [...], 'utm_campaign' => [...], ... } keyed by
         # the Chatwoot draft field, with each value a sorted list of ERP names.
+        # The `utm_source` list is narrowed to ad/campaign sources (see
+        # AD_SOURCE_PATTERNS); the other dropdowns pass through unfiltered.
         def fetch_all
           raise SyncError, 'ERPNext connection is not configured' unless Config.erp_configured?
 
           Config::OPTION_DOCTYPES.to_h do |field, doctype|
-            [field, fetch_names(doctype)]
+            names = fetch_names(doctype)
+            names = names.select { |name| self.class.ad_source?(name) } if field == 'utm_source'
+            [field, names]
           rescue SyncError => e
             Rails.logger.warn("Wijaya ERP Lead options fetch skipped for #{doctype}: #{e.message}") if defined?(Rails)
             [field, []]

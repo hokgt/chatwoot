@@ -57,6 +57,15 @@ const applyOptions = options => {
   if (opts.territory?.length) territoryOptions.value = opts.territory;
 };
 
+// The dropdowns are now real <select> controls, so a stored value that is not
+// among the ERP options (e.g. the legacy "WhatsApp" autofill, or a value still
+// loading behind the offline fallback) would otherwise vanish from the UI. We
+// surface it as a temporary leading option instead of silently dropping or
+// clearing it: the agent can see the current value and consciously pick a valid
+// ERP option, and nothing invalid is persisted without being shown.
+const withCurrent = (value, options) =>
+  value && !options.includes(value) ? [value, ...options] : options;
+
 const loading = ref(false);
 const saving = ref(false);
 const syncing = ref(false);
@@ -310,70 +319,74 @@ watch(() => props.conversationId, loadDraft, { immediate: true });
 
       <label class="flex flex-col gap-1">
         <span>Source</span>
-        <input
+        <select
           v-model="fields.utm_source"
           class="input"
-          list="wijaya-erp-sources"
-          @input="scheduleSave()"
-        />
-        <datalist id="wijaya-erp-sources">
+          @change="scheduleSave(0)"
+        >
+          <option value="" />
           <option
-            v-for="option in sourceOptions"
+            v-for="option in withCurrent(fields.utm_source, sourceOptions)"
             :key="option"
             :value="option"
-          />
-        </datalist>
+          >
+            {{ option }}
+          </option>
+        </select>
       </label>
 
       <label class="flex flex-col gap-1">
         <span>Campaign</span>
-        <input
+        <select
           v-model="fields.utm_campaign"
           class="input"
-          list="wijaya-erp-campaigns"
-          @input="scheduleSave()"
-        />
-        <datalist id="wijaya-erp-campaigns">
+          @change="scheduleSave(0)"
+        >
+          <option value="" />
           <option
-            v-for="option in campaignOptions"
+            v-for="option in withCurrent(fields.utm_campaign, campaignOptions)"
             :key="option"
             :value="option"
-          />
-        </datalist>
+          >
+            {{ option }}
+          </option>
+        </select>
       </label>
 
       <label class="flex flex-col gap-1">
         <span>Industry <span class="text-n-ruby-10">*</span></span>
-        <input
+        <select
           v-model="fields.industry"
           class="input"
-          list="wijaya-erp-industries"
-          @input="scheduleSave()"
-        />
-        <datalist id="wijaya-erp-industries">
+          @change="scheduleSave(0)"
+        >
+          <option value="" />
           <option
-            v-for="option in industryOptions"
+            v-for="option in withCurrent(fields.industry, industryOptions)"
             :key="option"
             :value="option"
-          />
-        </datalist>
+          >
+            {{ option }}
+          </option>
+        </select>
       </label>
 
       <label class="flex flex-col gap-1">
         <span>Territory</span>
-        <input
+        <select
           v-model="fields.territory"
           class="input"
-          list="wijaya-erp-territories"
-          @input="scheduleSave()"
-        />
-        <datalist id="wijaya-erp-territories">
+          @change="scheduleSave(0)"
+        >
+          <option value="" />
           <option
-            v-for="option in territoryOptions"
+            v-for="option in withCurrent(fields.territory, territoryOptions)"
             :key="option"
             :value="option"
-          />
-        </datalist>
+          >
+            {{ option }}
+          </option>
+        </select>
       </label>
 
       <div class="flex flex-col gap-2">
