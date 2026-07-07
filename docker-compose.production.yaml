@@ -2,7 +2,7 @@ version: '3'
 
 services:
   base: &base
-    image: chatwoot-wijaya:devbot-11389e7dd
+    image: chatwoot-wijaya:devbot-24be2c08e
     env_file: .env ## Change this file for customized env variables
     volumes:
       - storage_data:/app/storage
