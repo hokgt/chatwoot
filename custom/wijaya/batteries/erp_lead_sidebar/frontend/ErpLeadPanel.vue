@@ -389,6 +389,16 @@ const createLead = async () => {
     );
     syncStatus.value = data.sync_status || 'synced';
     erpLeadId.value = data.erp_lead_id || '';
+    // Sync succeeded: the local draft was pushed to ERP, so the stale
+    // "local unsynced draft vs newer ERP data" conflict no longer applies.
+    // Clear the warning banner and surface a success/info message instead.
+    conflict.value = Boolean(data.conflict);
+    refreshMessage.value =
+      data.message ||
+      (erpLeadId.value
+        ? `ERP Lead ${erpLeadId.value} updated successfully.`
+        : 'ERP Lead synced successfully.');
+    error.value = data.last_error || '';
   } catch (e) {
     error.value =
       e?.response?.data?.error ||

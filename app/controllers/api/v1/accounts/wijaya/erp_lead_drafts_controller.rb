@@ -23,7 +23,8 @@ class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::Ba
   def sync
     @draft.update!(fields: permitted_fields) if params[:fields].present?
     result = ::Wijaya::Batteries::ErpLeadSidebar::SyncService.new(@draft).perform
-    render json: serialize(@draft).merge(payload: result[:payload])
+    success_message = @draft.erp_lead_id.present? ? "ERP Lead #{@draft.erp_lead_id} synced successfully." : 'ERP Lead synced successfully.'
+    render json: serialize(@draft).merge(payload: result[:payload], conflict: false, message: success_message)
   rescue ::Wijaya::Batteries::ErpLeadSidebar::ValidationError,
          ::Wijaya::Batteries::ErpLeadSidebar::SyncError => e
     @draft.update!(sync_status: 'failed', last_error: e.message)
