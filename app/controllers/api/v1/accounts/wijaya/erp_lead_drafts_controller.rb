@@ -4,7 +4,7 @@ class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::Ba
   before_action :set_draft, except: [:options]
 
   def show
-    render json: serialize(@draft)
+    render json: serialize(@draft).merge(options: option_values)
   end
 
   # Populates the sidebar select dropdowns from their ERPNext source DocTypes.
@@ -30,6 +30,13 @@ class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::Ba
   end
 
   private
+
+  def option_values
+    ::Wijaya::Batteries::ErpLeadSidebar::OptionsService.new.fetch_all
+  rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError => e
+    Rails.logger.warn("Wijaya ERP Lead options unavailable for draft show: #{e.message}")
+    {}
+  end
 
   def set_conversation
     # Conversations are addressed by display_id everywhere in the dashboard

@@ -49,24 +49,12 @@ const campaignOptions = ref([...UTM_CAMPAIGN_OPTIONS]);
 const industryOptions = ref([...INDUSTRY_OPTIONS]);
 const territoryOptions = ref([...TERRITORY_OPTIONS]);
 
-// One-shot guard so options are fetched a single time per panel and never on
-// every autosave. Reset on failure so a later conversation switch can retry.
-let optionsLoaded = false;
-
-const loadOptions = async () => {
-  if (optionsLoaded) return;
-  optionsLoaded = true;
-  try {
-    const { data } = await ErpLeadDraftsAPI.options();
-    const opts = data.options || {};
-    if (opts.utm_source?.length) sourceOptions.value = opts.utm_source;
-    if (opts.utm_campaign?.length) campaignOptions.value = opts.utm_campaign;
-    if (opts.industry?.length) industryOptions.value = opts.industry;
-    if (opts.territory?.length) territoryOptions.value = opts.territory;
-  } catch {
-    // Best-effort: keep the static fallback options if ERP is unreachable.
-    optionsLoaded = false;
-  }
+const applyOptions = options => {
+  const opts = options || {};
+  if (opts.utm_source?.length) sourceOptions.value = opts.utm_source;
+  if (opts.utm_campaign?.length) campaignOptions.value = opts.utm_campaign;
+  if (opts.industry?.length) industryOptions.value = opts.industry;
+  if (opts.territory?.length) territoryOptions.value = opts.territory;
 };
 
 const loading = ref(false);
@@ -156,6 +144,7 @@ const loadDraft = async () => {
   error.value = '';
   try {
     const { data } = await ErpLeadDraftsAPI.show(props.conversationId);
+    applyOptions(data.options);
     const existingFields = data.fields || {};
     applyFields(
       Object.keys(existingFields).length ? existingFields : buildAutofill()
@@ -237,14 +226,7 @@ const createLead = async () => {
   }
 };
 
-watch(
-  () => props.conversationId,
-  () => {
-    loadOptions();
-    loadDraft();
-  },
-  { immediate: true }
-);
+watch(() => props.conversationId, loadDraft, { immediate: true });
 // WIJAYA_CUSTOM_END erp_lead_sidebar
 </script>
 
