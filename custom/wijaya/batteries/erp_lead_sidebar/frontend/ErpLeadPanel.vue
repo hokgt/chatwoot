@@ -549,10 +549,16 @@ watch(() => props.conversationId, loadDraft, { immediate: true });
       >
         {{
           syncing
-            ? 'Creating…'
+            ? erpLeadId
+              ? 'Updating…'
+              : 'Creating…'
             : syncStatus === 'failed'
-              ? 'Retry Create Lead'
-              : 'Create Lead'
+              ? erpLeadId
+                ? 'Retry Update Lead'
+                : 'Retry Create Lead'
+              : erpLeadId
+                ? 'Update Lead'
+                : 'Create Lead'
         }}
       </button>
       <div class="text-xs text-n-slate-10">
