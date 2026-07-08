@@ -92,6 +92,10 @@ const SearchableSelect = defineComponent({
     const query = ref('');
     const highlight = ref(-1);
     const rootEl = ref(null);
+    // Selecting an option commits on mousedown, which fires before the trailing
+    // focus/click on the input. This guard swallows that immediate follow-up so
+    // the menu does not close-then-reopen; it is released on the next tick.
+    let suppressReopen = false;
 
     const displayOptions = computed(() => ['', ...selectProps.options]);
 
@@ -113,6 +117,7 @@ const SearchableSelect = defineComponent({
     };
 
     const openMenu = () => {
+      if (suppressReopen) return;
       open.value = true;
       query.value = '';
       highlight.value = -1;
@@ -122,6 +127,12 @@ const SearchableSelect = defineComponent({
       emit('update:modelValue', option);
       emit('change', option);
       close();
+      // Block the focus/click that follows an option mousedown from reopening
+      // the menu; release on the next tick so genuine reopens still work.
+      suppressReopen = true;
+      setTimeout(() => {
+        suppressReopen = false;
+      }, 0);
     };
 
     const onEnter = () => {
@@ -197,8 +208,12 @@ const SearchableSelect = defineComponent({
                             ? 'bg-n-alpha-2'
                             : 'hover:bg-n-alpha-1',
                         ],
-                        onMousedown: event => event.preventDefault(),
-                        onClick: () => select(option),
+                        onMousedown: event => {
+                          // Commit selection here (before blur/click) and keep
+                          // input focus by preventing the default focus shift.
+                          event.preventDefault();
+                          select(option);
+                        },
                         onMouseenter: () => {
                           highlight.value = index;
                         },
