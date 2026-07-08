@@ -28,6 +28,10 @@ class MarineDocument extends ApiClient {
   sync(id) {
     return axios.post(`${this.url}/${id}/sync`);
   }
+
+  delete(id) {
+    return axios.delete(`${this.url}/${id}`);
+  }
 }
 
 export default new MarineDocument();

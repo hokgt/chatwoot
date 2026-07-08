@@ -64,6 +64,20 @@ const connectInbox = async () => {
   }
 };
 
+const disconnectInbox = async inbox => {
+  if (!activeAssistantId.value) return;
+  saving.value = true;
+  try {
+    await MarineInboxesAPI.delete({
+      assistantId: activeAssistantId.value,
+      inboxId: inbox.id,
+    });
+    await fetchInboxes();
+  } finally {
+    saving.value = false;
+  }
+};
+
 onMounted(fetchInboxes);
 </script>
 
@@ -126,9 +140,17 @@ onMounted(fetchInboxes);
           <li
             v-for="inbox in inboxes"
             :key="inbox.id"
-            class="rounded-lg border border-n-weak p-3 font-medium text-n-slate-12"
+            class="flex items-center justify-between gap-3 rounded-lg border border-n-weak p-3"
           >
-            {{ inbox.name }}
+            <span class="font-medium text-n-slate-12">{{ inbox.name }}</span>
+            <button
+              type="button"
+              class="rounded-md border border-n-weak px-2.5 py-1 text-xs font-medium text-n-ruby-11 disabled:opacity-50"
+              :disabled="saving"
+              @click="disconnectInbox(inbox)"
+            >
+              {{ t('MARINE_AI.INBOXES.DISCONNECT') }}
+            </button>
           </li>
         </ul>
       </div>

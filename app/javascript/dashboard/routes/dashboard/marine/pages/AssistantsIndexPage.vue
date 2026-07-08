@@ -15,6 +15,7 @@ const route = useRoute();
 const sectionComponents = {
   marine_assistants_responses_index: ResponsesIndex,
   marine_assistants_responses_pending: ResponsesIndex,
+  marine_assistants_responses_pending_index: ResponsesIndex,
   marine_assistants_documents_index: DocumentsIndex,
   marine_assistants_scenarios_index: ScenariosIndex,
   marine_assistants_playground_index: PlaygroundIndex,

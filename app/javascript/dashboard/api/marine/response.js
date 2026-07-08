@@ -25,6 +25,20 @@ class MarineResponses extends ApiClient {
       },
     });
   }
+
+  update(id, { question, answer, status } = {}) {
+    return axios.patch(`${this.url}/${id}`, {
+      assistant_response: { question, answer, status },
+    });
+  }
+
+  approve(id) {
+    return this.update(id, { status: 'approved' });
+  }
+
+  delete(id) {
+    return axios.delete(`${this.url}/${id}`);
+  }
 }
 
 export default new MarineResponses();

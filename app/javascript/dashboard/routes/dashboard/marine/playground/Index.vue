@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import MarineAssistantAPI from 'dashboard/api/marine/assistant';
 import { useMarineAssistants } from '../composables/useMarineAssistants';
@@ -9,8 +9,13 @@ const { t } = useI18n();
 const { activeAssistant, activeAssistantId, fetchAssistants } =
   useMarineAssistants();
 const message = ref('');
-const response = ref('');
+const result = ref(null);
 const sending = ref(false);
+
+const isHandoff = computed(() => result.value?.action === 'handoff');
+const replyText = computed(() =>
+  isHandoff.value ? '' : result.value?.response || ''
+);
 
 onMounted(fetchAssistants);
 
@@ -22,7 +27,7 @@ const sendMessage = async () => {
       assistantId: activeAssistantId.value,
       messageContent: message.value,
     });
-    response.value = data.response || data.message || '';
+    result.value = data || null;
   } finally {
     sending.value = false;
   }
@@ -67,12 +72,38 @@ const sendMessage = async () => {
         <h2 class="text-base font-medium text-n-slate-12">
           {{ t('MARINE_AI.PLAYGROUND.RESPONSE') }}
         </h2>
-        <p v-if="!response" class="text-sm text-n-slate-11">
+        <p v-if="!result" class="text-sm text-n-slate-11">
           {{ t('MARINE_AI.PLAYGROUND.EMPTY') }}
         </p>
-        <p v-else class="mt-2 whitespace-pre-wrap text-sm text-n-slate-12">
-          {{ response }}
-        </p>
+        <div
+          v-else-if="isHandoff"
+          class="mt-2 rounded-lg border border-n-amber-6 bg-n-amber-3 p-3"
+        >
+          <p class="text-sm font-medium text-n-amber-11">
+            {{ t('MARINE_AI.PLAYGROUND.HANDOFF') }}
+          </p>
+          <p class="mt-1 text-xs text-n-amber-11">
+            {{ t('MARINE_AI.PLAYGROUND.HANDOFF_HINT') }}
+          </p>
+          <p v-if="result.action_reason" class="mt-1 text-xs text-n-slate-11">
+            {{
+              t('MARINE_AI.PLAYGROUND.HANDOFF_REASON', {
+                reason: result.action_reason,
+              })
+            }}
+          </p>
+        </div>
+        <div v-else class="mt-2 space-y-1">
+          <p
+            v-if="result.agent_name"
+            class="text-xs font-medium text-n-slate-11"
+          >
+            {{ result.agent_name }}
+          </p>
+          <p class="whitespace-pre-wrap text-sm text-n-slate-12">
+            {{ replyText }}
+          </p>
+        </div>
       </div>
     </div>
   </MarinePageShell>

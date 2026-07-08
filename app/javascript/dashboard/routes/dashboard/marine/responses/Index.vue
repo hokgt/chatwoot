@@ -1,17 +1,22 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { useRoute } from 'vue-router';
 import MarineResponseAPI from 'dashboard/api/marine/response';
 import { useMarineAssistants } from '../composables/useMarineAssistants';
 import MarinePageShell from '../components/MarinePageShell.vue';
 
 const { t } = useI18n();
+const route = useRoute();
 const { activeAssistantId, fetchAssistants, createDefaultAssistant } =
   useMarineAssistants();
 const loading = ref(false);
 const saving = ref(false);
 const responses = ref([]);
+const statusFilter = ref(route.meta?.defaultStatus || 'all');
 const form = reactive({ question: '', answer: '' });
+
+const statusTabs = ['all', 'pending', 'approved'];
 
 const fetchResponses = async () => {
   loading.value = true;
@@ -23,11 +28,17 @@ const fetchResponses = async () => {
     }
     const { data } = await MarineResponseAPI.get({
       assistantId: activeAssistantId.value,
+      status: statusFilter.value === 'all' ? undefined : statusFilter.value,
     });
     responses.value = data.payload || [];
   } finally {
     loading.value = false;
   }
+};
+
+const setStatusFilter = async value => {
+  statusFilter.value = value;
+  await fetchResponses();
 };
 
 const setupAssistant = async () => {
@@ -62,6 +73,27 @@ const createResponse = async () => {
     saving.value = false;
   }
 };
+
+const approveResponse = async response => {
+  await MarineResponseAPI.approve(response.id);
+  await fetchResponses();
+};
+
+const deleteResponse = async response => {
+  await MarineResponseAPI.delete(response.id);
+  await fetchResponses();
+};
+
+const statusLabel = status =>
+  status === 'pending'
+    ? t('MARINE_AI.FAQS.STATUS_PENDING')
+    : t('MARINE_AI.FAQS.STATUS_APPROVED');
+
+const statusTabLabel = computed(() => value => {
+  if (value === 'pending') return t('MARINE_AI.FAQS.STATUS_PENDING');
+  if (value === 'approved') return t('MARINE_AI.FAQS.STATUS_APPROVED');
+  return t('MARINE_AI.FAQS.STATUS_ALL');
+});
 
 onMounted(fetchResponses);
 </script>
@@ -115,6 +147,23 @@ onMounted(fetchResponses);
         </button>
       </form>
 
+      <div class="flex gap-2">
+        <button
+          v-for="tab in statusTabs"
+          :key="tab"
+          type="button"
+          class="rounded-lg border px-3 py-1.5 text-sm font-medium"
+          :class="
+            statusFilter === tab
+              ? 'border-n-brand bg-n-brand text-white'
+              : 'border-n-weak text-n-slate-11'
+          "
+          @click="setStatusFilter(tab)"
+        >
+          {{ statusTabLabel(tab) }}
+        </button>
+      </div>
+
       <div class="rounded-xl border border-n-weak bg-n-solid-1 p-4">
         <p v-if="loading" class="text-sm text-n-slate-11">
           {{ t('MARINE_AI.FAQS.LOADING') }}
@@ -128,11 +177,42 @@ onMounted(fetchResponses);
             :key="response.id"
             class="rounded-lg border border-n-weak p-3"
           >
-            <div class="font-medium text-n-slate-12">
-              {{ response.question }}
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="font-medium text-n-slate-12">
+                  {{ response.question }}
+                </div>
+                <div class="text-sm text-n-slate-11">
+                  {{ response.answer }}
+                </div>
+              </div>
+              <span
+                class="shrink-0 rounded-full px-2 py-0.5 text-xs font-medium"
+                :class="
+                  response.status === 'pending'
+                    ? 'bg-n-amber-3 text-n-amber-11'
+                    : 'bg-n-teal-3 text-n-teal-11'
+                "
+              >
+                {{ statusLabel(response.status) }}
+              </span>
             </div>
-            <div class="text-sm text-n-slate-11">
-              {{ response.answer }}
+            <div class="mt-2 flex gap-2">
+              <button
+                v-if="response.status === 'pending'"
+                type="button"
+                class="rounded-md border border-n-weak px-2.5 py-1 text-xs font-medium text-n-teal-11"
+                @click="approveResponse(response)"
+              >
+                {{ t('MARINE_AI.FAQS.APPROVE') }}
+              </button>
+              <button
+                type="button"
+                class="rounded-md border border-n-weak px-2.5 py-1 text-xs font-medium text-n-ruby-11"
+                @click="deleteResponse(response)"
+              >
+                {{ t('MARINE_AI.FAQS.DELETE') }}
+              </button>
             </div>
           </li>
         </ul>

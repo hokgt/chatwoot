@@ -30,7 +30,12 @@
       "QUESTION": "Question",
       "ANSWER": "Answer",
       "ADD": "Add FAQ",
-      "SAVE": "Save FAQ"
+      "SAVE": "Save FAQ",
+      "APPROVE": "Approve",
+      "DELETE": "Delete",
+      "STATUS_ALL": "All",
+      "STATUS_PENDING": "Pending",
+      "STATUS_APPROVED": "Approved"
     },
     "DOCUMENTS": {
       "TITLE": "Knowledge Base",
@@ -38,11 +43,18 @@
       "LOADING": "Loading documents…",
       "EMPTY": "No documents yet for this Marine assistant.",
       "SYNC": "Sync",
+      "DELETE": "Delete",
       "ADD": "Add knowledge document",
       "NAME": "Document name",
       "URL": "Source URL",
       "CONTENT": "Paste knowledge content for Marine Cell",
-      "SAVE": "Save document"
+      "SAVE": "Save document",
+      "STATUS_AVAILABLE": "Available",
+      "STATUS_IN_PROGRESS": "In progress",
+      "SYNC_SYNCED": "Synced",
+      "SYNC_SYNCING": "Syncing",
+      "SYNC_FAILED": "Sync failed",
+      "SYNC_NONE": "Not synced"
     },
     "SCENARIOS": {
       "TITLE": "Scenarios",
@@ -56,7 +68,10 @@
       "SEND": "Send",
       "SENDING": "Generating response…",
       "RESPONSE": "Assistant response",
-      "EMPTY": "Send a message to see the Marine assistant's response."
+      "EMPTY": "Send a message to see the Marine assistant's response.",
+      "HANDOFF": "Marine would hand off to a human agent",
+      "HANDOFF_HINT": "No confident knowledge base match was found for this message.",
+      "HANDOFF_REASON": "Reason: {reason}"
     },
     "INBOXES": {
       "TITLE": "Inboxes",
@@ -64,7 +79,8 @@
       "LOADING": "Loading inboxes…",
       "EMPTY": "This Marine assistant is not connected to any inbox yet.",
       "SELECT": "Select an inbox",
-      "CONNECT": "Connect inbox"
+      "CONNECT": "Connect inbox",
+      "DISCONNECT": "Disconnect"
     },
     "TOOLS": {
       "TITLE": "Tools",

@@ -59,6 +59,28 @@ const createDocument = async () => {
   }
 };
 
+const syncDocument = async document => {
+  await MarineDocumentAPI.sync(document.id);
+  await fetchDocuments();
+};
+
+const deleteDocument = async document => {
+  await MarineDocumentAPI.delete(document.id);
+  await fetchDocuments();
+};
+
+const statusLabel = status =>
+  status === 'available'
+    ? t('MARINE_AI.DOCUMENTS.STATUS_AVAILABLE')
+    : t('MARINE_AI.DOCUMENTS.STATUS_IN_PROGRESS');
+
+const syncStatusLabel = syncStatus => {
+  if (syncStatus === 'synced') return t('MARINE_AI.DOCUMENTS.SYNC_SYNCED');
+  if (syncStatus === 'syncing') return t('MARINE_AI.DOCUMENTS.SYNC_SYNCING');
+  if (syncStatus === 'failed') return t('MARINE_AI.DOCUMENTS.SYNC_FAILED');
+  return t('MARINE_AI.DOCUMENTS.SYNC_NONE');
+};
+
 onMounted(fetchDocuments);
 </script>
 
@@ -129,18 +151,60 @@ onMounted(fetchDocuments);
             :key="document.id"
             class="rounded-lg border border-n-weak p-3"
           >
-            <div class="font-medium text-n-slate-12">
-              {{ document.name }}
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="font-medium text-n-slate-12">
+                  {{ document.name }}
+                </div>
+                <a
+                  v-if="document.external_link"
+                  :href="document.external_link"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="text-sm text-n-blue-11 break-all"
+                >
+                  {{ document.external_link }}
+                </a>
+              </div>
+              <div class="flex shrink-0 flex-col items-end gap-1">
+                <span
+                  class="rounded-full px-2 py-0.5 text-xs font-medium"
+                  :class="
+                    document.status === 'available'
+                      ? 'bg-n-teal-3 text-n-teal-11'
+                      : 'bg-n-amber-3 text-n-amber-11'
+                  "
+                >
+                  {{ statusLabel(document.status) }}
+                </span>
+                <span
+                  class="rounded-full px-2 py-0.5 text-xs font-medium"
+                  :class="
+                    document.sync_status === 'failed'
+                      ? 'bg-n-ruby-3 text-n-ruby-11'
+                      : 'bg-n-alpha-2 text-n-slate-11'
+                  "
+                >
+                  {{ syncStatusLabel(document.sync_status) }}
+                </span>
+              </div>
             </div>
-            <a
-              v-if="document.external_link"
-              :href="document.external_link"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="text-sm text-n-blue-11 break-all"
-            >
-              {{ document.external_link }}
-            </a>
+            <div class="mt-2 flex gap-2">
+              <button
+                type="button"
+                class="rounded-md border border-n-weak px-2.5 py-1 text-xs font-medium text-n-slate-12"
+                @click="syncDocument(document)"
+              >
+                {{ t('MARINE_AI.DOCUMENTS.SYNC') }}
+              </button>
+              <button
+                type="button"
+                class="rounded-md border border-n-weak px-2.5 py-1 text-xs font-medium text-n-ruby-11"
+                @click="deleteDocument(document)"
+              >
+                {{ t('MARINE_AI.DOCUMENTS.DELETE') }}
+              </button>
+            </div>
           </li>
         </ul>
       </div>

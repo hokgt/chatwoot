@@ -21,6 +21,12 @@ const assistantRoutes = [
     meta,
   },
   {
+    path: frontendURL('accounts/:accountId/marine/:assistantId/faqs/pending'),
+    component: MarineAssistantsIndex,
+    name: 'marine_assistants_responses_pending_index',
+    meta: { ...meta, defaultStatus: 'pending' },
+  },
+  {
     path: frontendURL('accounts/:accountId/marine/:assistantId/documents'),
     component: MarineDocumentsIndex,
     name: 'marine_assistants_documents_index',
