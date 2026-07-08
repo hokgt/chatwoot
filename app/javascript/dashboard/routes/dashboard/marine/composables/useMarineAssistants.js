@@ -23,11 +23,30 @@ export function useMarineAssistants() {
     return assistants.value;
   };
 
+  const createDefaultAssistant = async () => {
+    const { data } = await MarineAssistantAPI.create({
+      assistant: {
+        name: 'Marine Assistant',
+        description: 'Wijaya local Marine AI assistant',
+        config: {
+          instructions:
+            'Answer from Marine knowledge base. Hand off to an agent when confidence is low.',
+          handoff_message:
+            'I will connect you to one of our agents for further assistance.',
+          temperature: '0.2',
+        },
+      },
+    });
+    await fetchAssistants();
+    return data;
+  };
+
   return {
     assistants,
     loadingAssistants,
     activeAssistant,
     activeAssistantId,
     fetchAssistants,
+    createDefaultAssistant,
   };
 }

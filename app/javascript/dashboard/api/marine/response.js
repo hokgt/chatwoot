@@ -14,6 +14,17 @@ class MarineResponses extends ApiClient {
       },
     });
   }
+
+  create({ assistantId, question, answer, status = 'approved' } = {}) {
+    return axios.post(this.url, {
+      assistant_response: {
+        assistant_id: assistantId,
+        question,
+        answer,
+        status,
+      },
+    });
+  }
 }
 
 export default new MarineResponses();

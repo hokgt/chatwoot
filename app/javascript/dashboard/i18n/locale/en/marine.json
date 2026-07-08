@@ -19,7 +19,8 @@
     },
     "EMPTY_ASSISTANT": {
       "TITLE": "No Marine assistant yet",
-      "DESCRIPTION": "Create a Marine assistant first, then this section will load its data."
+      "DESCRIPTION": "Create a Marine assistant first, then this section will load its data.",
+      "CREATE": "Create Marine assistant"
     },
     "FAQS": {
       "TITLE": "FAQs",
@@ -27,14 +28,21 @@
       "LOADING": "Loading FAQs…",
       "EMPTY": "No FAQs yet for this Marine assistant.",
       "QUESTION": "Question",
-      "ANSWER": "Answer"
+      "ANSWER": "Answer",
+      "ADD": "Add FAQ",
+      "SAVE": "Save FAQ"
     },
     "DOCUMENTS": {
       "TITLE": "Knowledge Base",
       "DESCRIPTION": "Documents Marine AI learns from to generate grounded responses.",
       "LOADING": "Loading documents…",
       "EMPTY": "No documents yet for this Marine assistant.",
-      "SYNC": "Sync"
+      "SYNC": "Sync",
+      "ADD": "Add knowledge document",
+      "NAME": "Document name",
+      "URL": "Source URL",
+      "CONTENT": "Paste knowledge content for Marine Cell",
+      "SAVE": "Save document"
     },
     "SCENARIOS": {
       "TITLE": "Scenarios",
@@ -54,7 +62,9 @@
       "TITLE": "Inboxes",
       "DESCRIPTION": "Inboxes connected to this Marine assistant.",
       "LOADING": "Loading inboxes…",
-      "EMPTY": "This Marine assistant is not connected to any inbox yet."
+      "EMPTY": "This Marine assistant is not connected to any inbox yet.",
+      "SELECT": "Select an inbox",
+      "CONNECT": "Connect inbox"
     },
     "TOOLS": {
       "TITLE": "Tools",
@@ -65,13 +75,26 @@
       "TITLE": "Settings",
       "DESCRIPTION": "Marine assistant configuration and account level Marine preferences.",
       "LOADING": "Loading Marine configuration…",
+      "STATUS_TITLE": "Marine AI status",
+      "STATUS_HINT": "Marine AI runs locally for this account with no Chatwoot hub or premium gate.",
+      "STATUS": "Marine AI",
+      "HUB": "Hub",
+      "HUB_LOCAL": "Local (no hub)",
+      "ACCOUNT": "Account ID",
+      "DEFAULT_MODEL": "Default model",
+      "FEATURE_ASSISTANT": "Assistant",
+      "FEATURE_KNOWLEDGE_BASE": "Knowledge base",
+      "FEATURE_HANDOFF": "Handoff",
+      "ENABLED": "Enabled",
+      "DISABLED": "Disabled",
       "ASSISTANT": "Assistant",
       "INSTRUCTIONS": "Instructions",
       "TEMPERATURE": "Temperature",
       "MODELS": "Models",
       "FEATURES": "Features",
       "NONE": "Not configured"
-    }
+    },
+    "SAVING": "Saving…"
   },
   "MARINE_SETTINGS": {
     "TITLE": "Marine AI Settings",

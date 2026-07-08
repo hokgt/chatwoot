@@ -28,7 +28,17 @@ module Wijaya
           'knowledge_base' => true,
           'handoff' => true
         }.merge(marine_features || {})
-        { models: marine_models || {}, features: features }.with_indifferent_access
+        models = marine_models || {}
+        {
+          enabled: true,
+          hub: 'local',
+          remote_hub: false,
+          account_id: id,
+          default_model: models['default'].presence || 'local-knowledge-base',
+          assistants_count: marine_assistants.count,
+          models: models,
+          features: features
+        }.with_indifferent_access
       end
     end
   end

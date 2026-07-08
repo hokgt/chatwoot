@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import MarinePreferencesAPI from 'dashboard/api/marine/preferences';
 import { useMarineAssistants } from '../composables/useMarineAssistants';
@@ -8,14 +8,68 @@ import MarinePageShell from '../components/MarinePageShell.vue';
 const { t } = useI18n();
 const { activeAssistant, fetchAssistants } = useMarineAssistants();
 const loading = ref(false);
-const preferences = ref({ models: {}, features: {} });
+const preferences = ref({
+  enabled: true,
+  hub: 'local',
+  remote_hub: false,
+  account_id: null,
+  default_model: null,
+  models: {},
+  features: {},
+});
+
+const yesNo = value =>
+  value ? t('MARINE_AI.SETTINGS.ENABLED') : t('MARINE_AI.SETTINGS.DISABLED');
+
+const statusRows = computed(() => {
+  const features = preferences.value.features || {};
+  return [
+    {
+      key: 'status',
+      label: t('MARINE_AI.SETTINGS.STATUS'),
+      value: yesNo(preferences.value.enabled),
+    },
+    {
+      key: 'hub',
+      label: t('MARINE_AI.SETTINGS.HUB'),
+      value: t('MARINE_AI.SETTINGS.HUB_LOCAL'),
+    },
+    {
+      key: 'account',
+      label: t('MARINE_AI.SETTINGS.ACCOUNT'),
+      value: preferences.value.account_id ?? t('MARINE_AI.SETTINGS.NONE'),
+    },
+    {
+      key: 'model',
+      label: t('MARINE_AI.SETTINGS.DEFAULT_MODEL'),
+      value: preferences.value.default_model || t('MARINE_AI.SETTINGS.NONE'),
+    },
+    {
+      key: 'assistant',
+      label: t('MARINE_AI.SETTINGS.FEATURE_ASSISTANT'),
+      value: yesNo(features.assistant),
+    },
+    {
+      key: 'knowledge_base',
+      label: t('MARINE_AI.SETTINGS.FEATURE_KNOWLEDGE_BASE'),
+      value: yesNo(features.knowledge_base),
+    },
+    {
+      key: 'handoff',
+      label: t('MARINE_AI.SETTINGS.FEATURE_HANDOFF'),
+      value: yesNo(features.handoff),
+    },
+  ];
+});
 
 const fetchSettings = async () => {
   loading.value = true;
   try {
     await fetchAssistants();
     const { data } = await MarinePreferencesAPI.get();
-    preferences.value = data || { models: {}, features: {} };
+    if (data) {
+      preferences.value = { ...preferences.value, ...data };
+    }
   } finally {
     loading.value = false;
   }
@@ -38,6 +92,25 @@ onMounted(fetchSettings);
       </p>
     </div>
     <div v-else class="grid gap-4">
+      <section class="rounded-xl border border-n-weak bg-n-solid-1 p-4">
+        <h2 class="text-base font-medium text-n-slate-12">
+          {{ t('MARINE_AI.SETTINGS.STATUS_TITLE') }}
+        </h2>
+        <p class="mt-1 text-sm text-n-slate-11">
+          {{ t('MARINE_AI.SETTINGS.STATUS_HINT') }}
+        </p>
+        <dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+          <div
+            v-for="row in statusRows"
+            :key="row.key"
+            class="flex items-center justify-between gap-3 rounded-lg border border-n-weak px-3 py-2"
+          >
+            <dt class="text-n-slate-11">{{ row.label }}</dt>
+            <dd class="font-medium text-n-slate-12">{{ row.value }}</dd>
+          </div>
+        </dl>
+      </section>
+
       <section class="rounded-xl border border-n-weak bg-n-solid-1 p-4">
         <h2 class="text-base font-medium text-n-slate-12">
           {{ t('MARINE_AI.SETTINGS.ASSISTANT') }}
@@ -74,28 +147,6 @@ onMounted(fetchSettings);
             </dd>
           </div>
         </dl>
-      </section>
-
-      <section class="rounded-xl border border-n-weak bg-n-solid-1 p-4">
-        <h2 class="text-base font-medium text-n-slate-12">
-          {{ t('MARINE_AI.SETTINGS.MODELS') }}
-        </h2>
-        <pre
-          class="mt-3 overflow-auto rounded-lg bg-n-alpha-black1 p-3 text-xs text-n-slate-12"
-        >
-          {{ JSON.stringify(preferences.models || {}, null, 2) }}
-        </pre>
-      </section>
-
-      <section class="rounded-xl border border-n-weak bg-n-solid-1 p-4">
-        <h2 class="text-base font-medium text-n-slate-12">
-          {{ t('MARINE_AI.SETTINGS.FEATURES') }}
-        </h2>
-        <pre
-          class="mt-3 overflow-auto rounded-lg bg-n-alpha-black1 p-3 text-xs text-n-slate-12"
-        >
-          {{ JSON.stringify(preferences.features || {}, null, 2) }}
-        </pre>
       </section>
     </div>
   </MarinePageShell>

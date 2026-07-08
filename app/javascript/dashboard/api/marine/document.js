@@ -14,6 +14,17 @@ class MarineDocument extends ApiClient {
     });
   }
 
+  create({ assistantId, name, externalLink, content } = {}) {
+    return axios.post(this.url, {
+      document: {
+        assistant_id: assistantId,
+        name,
+        external_link: externalLink,
+        content,
+      },
+    });
+  }
+
   sync(id) {
     return axios.post(`${this.url}/${id}/sync`);
   }
