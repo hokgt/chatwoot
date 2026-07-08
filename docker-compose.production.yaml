@@ -2,7 +2,7 @@ version: '3'
 
 services:
   base: &base
-    image: chatwoot-wijaya:devbot-dropdown-close-f43c6da96-20260708100032
+    image: chatwoot-wijaya:devbot-marine-516d6d847-20260708134856
     env_file: .env ## Change this file for customized env variables
     volumes:
       - storage_data:/app/storage
