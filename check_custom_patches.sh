@@ -109,6 +109,47 @@ for file in \
   require_marker "$file" "WIJAYA_CUSTOM_END development_version"
 done
 
+# marine_ai
+require_file custom/wijaya/marine/loader.rb
+require_file custom/wijaya/marine/app/models/marine/assistant.rb
+require_file custom/wijaya/marine/app/models/marine/document.rb
+require_file custom/wijaya/marine/app/models/marine/assistant_response.rb
+require_file custom/wijaya/marine/app/models/marine_inbox.rb
+require_file custom/wijaya/marine/app/models/concerns/wijaya/marine/account_extensions.rb
+require_file custom/wijaya/marine/app/models/concerns/wijaya/marine/inbox_extensions.rb
+require_file custom/wijaya/marine/app/services/wijaya/marine/hooks.rb
+require_file custom/wijaya/marine/app/services/marine/llm/assistant_chat_service.rb
+require_file custom/wijaya/marine/app/services/marine/llm/embedding_service.rb
+require_file custom/wijaya/marine/app/jobs/marine/conversation/response_builder_job.rb
+require_file custom/wijaya/marine/app/jobs/marine/documents/response_builder_job.rb
+require_file custom/wijaya/marine/app/jobs/marine/llm/update_embedding_job.rb
+require_file custom/wijaya/marine/app/policies/marine/assistant_policy.rb
+require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistants_controller.rb
+require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/documents_controller.rb
+require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
+require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
+require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/preferences_controller.rb
+require_file db/migrate/20260708010000_create_wijaya_marine_tables.rb
+require_file db/migrate/20260708010001_create_wijaya_marine_inboxes.rb
+require_file app/javascript/dashboard/api/marine/assistant.js
+require_file app/javascript/dashboard/routes/dashboard/marine/Index.vue
+require_file app/javascript/dashboard/routes/dashboard/marine/marine.routes.js
+require_file app/javascript/dashboard/routes/dashboard/settings/marine/Index.vue
+require_file app/javascript/dashboard/routes/dashboard/settings/marine/marine.routes.js
+require_file app/javascript/dashboard/i18n/locale/en/marine.json
+
+for file in \
+  config/initializers/wijaya_marine_ai.rb \
+  config/routes.rb \
+  app/services/message_templates/hook_execution_service.rb \
+  app/javascript/dashboard/routes/dashboard/dashboard.routes.js \
+  app/javascript/dashboard/routes/dashboard/settings/settings.routes.js \
+  app/javascript/dashboard/components-next/sidebar/Sidebar.vue \
+  app/javascript/dashboard/i18n/locale/en/index.js; do
+  require_marker "$file" "WIJAYA_CUSTOM_START marine_ai"
+  require_marker "$file" "WIJAYA_CUSTOM_END marine_ai"
+done
+
 if [[ "$missing" -ne 0 ]]; then
   exit 1
 fi

@@ -505,6 +505,29 @@ const menuItems = computed(() => {
         },
       ],
     },
+
+    // WIJAYA_CUSTOM_START marine_ai
+    {
+      name: 'Marine',
+      icon: 'i-lucide-ship-wheel',
+      label: t('SIDEBAR.MARINE_AI'),
+      activeOn: ['marine_assistants_index'],
+      children: [
+        {
+          name: 'Marine Dashboard',
+          label: t('SIDEBAR.MARINE_AI'),
+          activeOn: ['marine_assistants_index'],
+          to: accountScopedRoute('marine_assistants_index'),
+        },
+        {
+          name: 'Marine Settings',
+          label: t('SIDEBAR.MARINE_SETTINGS'),
+          activeOn: ['marine_settings_index'],
+          to: accountScopedRoute('marine_settings_index'),
+        },
+      ],
+    },
+    // WIJAYA_CUSTOM_END marine_ai
     {
       name: 'Contacts',
       label: t('SIDEBAR.CONTACTS'),

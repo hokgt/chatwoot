@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_07_06_000000) do
+ActiveRecord::Schema[7.1].define(version: 2026_07_08_010001) do
   # These extensions should be enabled to support this database
   enable_extension "pg_stat_statements"
   enable_extension "pg_trgm"
@@ -974,6 +974,67 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_06_000000) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["account_id"], name: "index_macros_on_account_id"
+  end
+
+  create_table "marine_assistant_responses", force: :cascade do |t|
+    t.string "question", null: false
+    t.text "answer", null: false
+    t.vector "embedding", limit: 1536
+    t.bigint "assistant_id", null: false
+    t.bigint "account_id", null: false
+    t.bigint "documentable_id"
+    t.string "documentable_type"
+    t.integer "status", default: 1, null: false
+    t.boolean "edited", default: false, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_marine_assistant_responses_on_account_id"
+    t.index ["assistant_id"], name: "index_marine_assistant_responses_on_assistant_id"
+    t.index ["documentable_id", "documentable_type"], name: "idx_marine_asst_resp_on_documentable"
+    t.index ["embedding"], name: "vector_idx_marine_knowledge_entries_embedding", using: :ivfflat
+    t.index ["status"], name: "index_marine_assistant_responses_on_status"
+  end
+
+  create_table "marine_assistants", force: :cascade do |t|
+    t.string "name", null: false
+    t.bigint "account_id", null: false
+    t.string "description"
+    t.jsonb "config", default: {}, null: false
+    t.jsonb "guardrails"
+    t.jsonb "response_guidelines"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_marine_assistants_on_account_id"
+  end
+
+  create_table "marine_documents", force: :cascade do |t|
+    t.string "name"
+    t.text "external_link", null: false
+    t.text "content"
+    t.bigint "assistant_id", null: false
+    t.bigint "account_id", null: false
+    t.integer "status", default: 0, null: false
+    t.integer "sync_status"
+    t.datetime "last_synced_at"
+    t.datetime "last_sync_attempted_at"
+    t.jsonb "metadata", default: {}
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index "assistant_id, md5(external_link)", name: "idx_marine_documents_on_assistant_id_and_external_link_md5", unique: true
+    t.index ["account_id", "assistant_id", "sync_status", "last_synced_at"], name: "idx_marine_documents_on_account_assistant_sync_stats"
+    t.index ["account_id", "sync_status"], name: "index_marine_documents_on_account_id_and_sync_status"
+    t.index ["account_id"], name: "index_marine_documents_on_account_id"
+    t.index ["assistant_id"], name: "index_marine_documents_on_assistant_id"
+    t.index ["status"], name: "index_marine_documents_on_status"
+  end
+
+  create_table "marine_inboxes", force: :cascade do |t|
+    t.bigint "marine_assistant_id", null: false
+    t.bigint "inbox_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["inbox_id"], name: "index_marine_inboxes_on_inbox_id", unique: true
+    t.index ["marine_assistant_id", "inbox_id"], name: "idx_marine_inboxes_on_assistant_and_inbox", unique: true
   end
 
   create_table "mentions", force: :cascade do |t|

@@ -92,6 +92,22 @@ Rails.application.routes.draw do
               post :follow_up
             end
           end
+          # WIJAYA_CUSTOM_START marine_ai
+          # Marine AI — independent custom assistant feature (no captain feature flag).
+          namespace :marine do
+            resource :preferences, only: [:show, :update]
+            resources :assistants do
+              member do
+                post :playground
+              end
+              resources :inboxes, only: [:index, :create, :destroy], param: :inbox_id
+            end
+            resources :assistant_responses
+            resources :documents, only: [:index, :show, :create, :destroy] do
+              post :sync, on: :member
+            end
+          end
+          # WIJAYA_CUSTOM_END marine_ai
           resource :saml_settings, only: [:show, :create, :update, :destroy]
           resources :agent_bots, only: [:index, :create, :show, :update, :destroy] do
             delete :avatar, on: :member

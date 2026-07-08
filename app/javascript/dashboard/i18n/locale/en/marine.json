@@ -1,0 +1,24 @@
+{
+  "SIDEBAR": {
+    "MARINE_AI": "Marine AI",
+    "MARINE_RESPONSES": "FAQs",
+    "MARINE_DOCUMENTS": "Knowledge Base",
+    "MARINE_SCENARIOS": "Scenarios",
+    "MARINE_PLAYGROUND": "Playground",
+    "MARINE_INBOXES": "Inboxes",
+    "MARINE_SETTINGS": "Settings"
+  },
+  "MARINE_AI": {
+    "DASHBOARD": {
+      "TITLE": "Marine AI",
+      "DESCRIPTION": "Wijaya independent AI assistant: Cell knowledge base, Charge response generation, and Terminal handoff.",
+      "ASSISTANTS": "Assistants",
+      "LOADING": "Loading Marine assistants…",
+      "EMPTY": "No Marine assistants yet. Use the API to create one, then connect it to an inbox."
+    }
+  },
+  "MARINE_SETTINGS": {
+    "TITLE": "Marine AI Settings",
+    "DESCRIPTION": "Marine AI is enabled locally for all accounts and does not use Chatwoot premium gates or hub checks."
+  }
+}

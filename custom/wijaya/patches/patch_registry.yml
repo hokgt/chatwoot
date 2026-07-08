@@ -170,3 +170,48 @@ patches:
       - app/javascript/dashboard/routes/dashboard/settings/account/components/BuildInfo.vue
     tests:
       - spec/custom/wijaya/development_version_hooks_spec.rb
+
+
+  - id: marine_ai
+    name: Marine AI
+    battery: custom/wijaya/marine
+    description: >
+      Independent Wijaya AI assistant inspired by Chatwoot Captain AI v4.15.1.
+      Provides Marine Cell knowledge storage, Marine Charge response generation,
+      and Marine Terminal/Circuit human handoff without Chatwoot Hub, Abacus,
+      premium license, enterprise plan, or captain_integration gates.
+    custom_files:
+      - custom/wijaya/marine/loader.rb
+      - custom/wijaya/marine/app/models/marine/assistant.rb
+      - custom/wijaya/marine/app/models/marine/document.rb
+      - custom/wijaya/marine/app/models/marine/assistant_response.rb
+      - custom/wijaya/marine/app/models/marine_inbox.rb
+      - custom/wijaya/marine/app/jobs/marine/conversation/response_builder_job.rb
+      - custom/wijaya/marine/app/jobs/marine/documents/response_builder_job.rb
+      - custom/wijaya/marine/app/jobs/marine/llm/update_embedding_job.rb
+      - custom/wijaya/marine/app/services/marine/llm/assistant_chat_service.rb
+      - custom/wijaya/marine/app/services/marine/llm/embedding_service.rb
+      - custom/wijaya/marine/app/services/wijaya/marine/hooks.rb
+      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistants_controller.rb
+      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/documents_controller.rb
+      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
+      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
+      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/preferences_controller.rb
+      - custom/wijaya/marine/app/policies/marine/assistant_policy.rb
+      - app/javascript/dashboard/api/marine/assistant.js
+      - app/javascript/dashboard/i18n/locale/en/marine.json
+      - db/migrate/20260708010000_create_wijaya_marine_tables.rb
+      - db/migrate/20260708010001_create_wijaya_marine_inboxes.rb
+      - app/javascript/dashboard/routes/dashboard/marine/Index.vue
+      - app/javascript/dashboard/routes/dashboard/marine/marine.routes.js
+      - app/javascript/dashboard/routes/dashboard/settings/marine/Index.vue
+      - app/javascript/dashboard/routes/dashboard/settings/marine/marine.routes.js
+    core_hook_touchpoints:
+      - config/initializers/wijaya_marine_ai.rb
+      - config/routes.rb
+      - app/services/message_templates/hook_execution_service.rb
+      - app/javascript/dashboard/routes/dashboard/dashboard.routes.js
+      - app/javascript/dashboard/routes/dashboard/settings/settings.routes.js
+      - app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+      - app/javascript/dashboard/i18n/locale/en/index.js
+    tests: []

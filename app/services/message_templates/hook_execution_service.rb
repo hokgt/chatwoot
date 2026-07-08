@@ -17,9 +17,15 @@ class MessageTemplates::HookExecutionService
     ::MessageTemplates::Template::OutOfOffice.new(conversation: conversation).perform if should_send_out_of_office_message?
     ::MessageTemplates::Template::Greeting.new(conversation: conversation).perform if should_send_greeting?
     ::MessageTemplates::Template::EmailCollect.new(conversation: conversation).perform if inbox.enable_email_collect && should_send_email_collect?
+    # WIJAYA_CUSTOM_START marine_ai
+    Wijaya::Marine::Hooks.after_message_template_trigger(conversation: conversation, inbox: inbox, message: message)
+    # WIJAYA_CUSTOM_END marine_ai
   end
 
   def should_send_out_of_office_message?
+    # WIJAYA_CUSTOM_START marine_ai
+    return false if defined?(Wijaya::Marine::Hooks) && Wijaya::Marine::Hooks.marine_handling_conversation?(conversation: conversation, inbox: inbox)
+    # WIJAYA_CUSTOM_END marine_ai
     return false if conversation.campaign.present?
     # should not send if its a tweet message
     return false if conversation.tweet?
@@ -37,6 +43,9 @@ class MessageTemplates::HookExecutionService
   end
 
   def should_send_greeting?
+    # WIJAYA_CUSTOM_START marine_ai
+    return false if defined?(Wijaya::Marine::Hooks) && Wijaya::Marine::Hooks.marine_handling_conversation?(conversation: conversation, inbox: inbox)
+    # WIJAYA_CUSTOM_END marine_ai
     return false if conversation.campaign.present?
     # should not send if its a tweet message
     return false if conversation.tweet?
@@ -50,6 +59,9 @@ class MessageTemplates::HookExecutionService
 
   # TODO: we should be able to reduce this logic once we have a toggle for email collect messages
   def should_send_email_collect?
+    # WIJAYA_CUSTOM_START marine_ai
+    return false if defined?(Wijaya::Marine::Hooks) && Wijaya::Marine::Hooks.marine_handling_conversation?(conversation: conversation, inbox: inbox)
+    # WIJAYA_CUSTOM_END marine_ai
     return false if conversation.campaign.present?
 
     !contact_has_email? && inbox.web_widget? && !email_collect_was_sent?
