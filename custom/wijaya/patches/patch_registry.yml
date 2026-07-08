@@ -202,11 +202,25 @@ patches:
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/preferences_controller.rb
       - custom/wijaya/marine/app/policies/marine/assistant_policy.rb
       - app/javascript/dashboard/api/marine/assistant.js
+      - app/javascript/dashboard/api/marine/response.js
+      - app/javascript/dashboard/api/marine/document.js
+      - app/javascript/dashboard/api/marine/inboxes.js
+      - app/javascript/dashboard/api/marine/preferences.js
       - app/javascript/dashboard/i18n/locale/en/marine.json
       - db/migrate/20260708010000_create_wijaya_marine_tables.rb
       - db/migrate/20260708010001_create_wijaya_marine_inboxes.rb
       - app/javascript/dashboard/routes/dashboard/marine/Index.vue
       - app/javascript/dashboard/routes/dashboard/marine/marine.routes.js
+      - app/javascript/dashboard/routes/dashboard/marine/pages/AssistantsIndexPage.vue
+      - app/javascript/dashboard/routes/dashboard/marine/composables/useMarineAssistants.js
+      - app/javascript/dashboard/routes/dashboard/marine/components/MarinePageShell.vue
+      - app/javascript/dashboard/routes/dashboard/marine/responses/Index.vue
+      - app/javascript/dashboard/routes/dashboard/marine/documents/Index.vue
+      - app/javascript/dashboard/routes/dashboard/marine/scenarios/Index.vue
+      - app/javascript/dashboard/routes/dashboard/marine/playground/Index.vue
+      - app/javascript/dashboard/routes/dashboard/marine/inboxes/Index.vue
+      - app/javascript/dashboard/routes/dashboard/marine/tools/Index.vue
+      - app/javascript/dashboard/routes/dashboard/marine/settings/Index.vue
       - app/javascript/dashboard/routes/dashboard/settings/marine/Index.vue
       - app/javascript/dashboard/routes/dashboard/settings/marine/marine.routes.js
     core_hook_touchpoints:

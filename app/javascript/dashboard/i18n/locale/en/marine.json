@@ -1,20 +1,76 @@
 {
-  "SIDEBAR": {
-    "MARINE_AI": "Marine AI",
-    "MARINE_RESPONSES": "FAQs",
-    "MARINE_DOCUMENTS": "Knowledge Base",
-    "MARINE_SCENARIOS": "Scenarios",
-    "MARINE_PLAYGROUND": "Playground",
-    "MARINE_INBOXES": "Inboxes",
-    "MARINE_SETTINGS": "Settings"
-  },
   "MARINE_AI": {
+    "SIDEBAR": {
+      "MARINE_AI": "Marine AI",
+      "RESPONSES": "FAQs",
+      "DOCUMENTS": "Knowledge Base",
+      "SCENARIOS": "Scenarios",
+      "PLAYGROUND": "Playground",
+      "INBOXES": "Inboxes",
+      "TOOLS": "Tools",
+      "SETTINGS": "Settings"
+    },
     "DASHBOARD": {
       "TITLE": "Marine AI",
       "DESCRIPTION": "Wijaya independent AI assistant: Cell knowledge base, Charge response generation, and Terminal handoff.",
       "ASSISTANTS": "Assistants",
       "LOADING": "Loading Marine assistants…",
       "EMPTY": "No Marine assistants yet. Use the API to create one, then connect it to an inbox."
+    },
+    "EMPTY_ASSISTANT": {
+      "TITLE": "No Marine assistant yet",
+      "DESCRIPTION": "Create a Marine assistant first, then this section will load its data."
+    },
+    "FAQS": {
+      "TITLE": "FAQs",
+      "DESCRIPTION": "Question and answer pairs Marine AI uses to respond to customers.",
+      "LOADING": "Loading FAQs…",
+      "EMPTY": "No FAQs yet for this Marine assistant.",
+      "QUESTION": "Question",
+      "ANSWER": "Answer"
+    },
+    "DOCUMENTS": {
+      "TITLE": "Knowledge Base",
+      "DESCRIPTION": "Documents Marine AI learns from to generate grounded responses.",
+      "LOADING": "Loading documents…",
+      "EMPTY": "No documents yet for this Marine assistant.",
+      "SYNC": "Sync"
+    },
+    "SCENARIOS": {
+      "TITLE": "Scenarios",
+      "DESCRIPTION": "Guided Marine AI scenarios. Manage scenarios through the Marine API.",
+      "EMPTY": "No Marine scenarios configured yet."
+    },
+    "PLAYGROUND": {
+      "TITLE": "Playground",
+      "DESCRIPTION": "Test how the Marine assistant responds to a message.",
+      "PLACEHOLDER": "Type a message to test the assistant…",
+      "SEND": "Send",
+      "SENDING": "Generating response…",
+      "RESPONSE": "Assistant response",
+      "EMPTY": "Send a message to see the Marine assistant's response."
+    },
+    "INBOXES": {
+      "TITLE": "Inboxes",
+      "DESCRIPTION": "Inboxes connected to this Marine assistant.",
+      "LOADING": "Loading inboxes…",
+      "EMPTY": "This Marine assistant is not connected to any inbox yet."
+    },
+    "TOOLS": {
+      "TITLE": "Tools",
+      "DESCRIPTION": "Custom tools available to Marine AI. Manage tools through the Marine API.",
+      "EMPTY": "No Marine tools configured yet."
+    },
+    "SETTINGS": {
+      "TITLE": "Settings",
+      "DESCRIPTION": "Marine assistant configuration and account level Marine preferences.",
+      "LOADING": "Loading Marine configuration…",
+      "ASSISTANT": "Assistant",
+      "INSTRUCTIONS": "Instructions",
+      "TEMPERATURE": "Temperature",
+      "MODELS": "Models",
+      "FEATURES": "Features",
+      "NONE": "Not configured"
     }
   },
   "MARINE_SETTINGS": {
