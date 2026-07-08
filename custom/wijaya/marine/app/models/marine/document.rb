@@ -27,10 +27,11 @@ class Marine::Document < ApplicationRecord
 
   private
 
+  # Marine Cell: when source content changes, rebuild local knowledge entries.
   def enqueue_response_builder_job
     return if destroyed?
     return unless content.present?
-    return unless previous_changes.key?(id) || previous_changes.key?(content)
+    return unless previous_changes.key?('id') || previous_changes.key?('content')
 
     Marine::Documents::ResponseBuilderJob.perform_later(self)
   end

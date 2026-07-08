@@ -4,14 +4,17 @@ class Marine::Documents::ResponseBuilderJob < ApplicationJob
   def perform(document)
     return if document.content.blank?
 
+    # Marine Cell: store a deterministic knowledge entry from the document body.
     question = document.name.presence || document.external_link
     answer = document.content.to_s.truncate(4000)
-    document.responses.find_or_create_by!(question: question) do |response|
-      response.answer = answer
-      response.assistant = document.assistant
-      response.account = document.account
-      response.status = :approved
-    end
+    response = document.responses.find_or_initialize_by(question: question)
+    response.assign_attributes(
+      answer: answer,
+      assistant: document.assistant,
+      account: document.account,
+      status: :approved
+    )
+    response.save!
     document.update!(status: :available) unless document.available?
   end
 end

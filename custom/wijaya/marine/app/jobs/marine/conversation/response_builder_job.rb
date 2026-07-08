@@ -11,7 +11,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     process_response
   rescue StandardError => e
     ChatwootExceptionTracker.new(e, account: conversation.account).capture_exception
-    process_handoff if conversation_pending?
+    process_handoff('charge_error') if conversation_pending?
   ensure
     Current.executed_by = nil
   end
@@ -26,18 +26,29 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
   def process_response
     if @response['action'] == 'handoff' || @response['response'] == 'conversation_handoff'
-      process_handoff
+      process_handoff(@response['action_reason'])
     elsif conversation_pending?
-      @conversation.messages.create!(message_type: :outgoing, account_id: @conversation.account_id, inbox_id: @conversation.inbox_id, sender: @assistant, content: @response['response'], additional_attributes: { agent_name: @response['agent_name'] }.compact)
+      create_marine_reply
       @conversation.account.increment_marine_response_usage if @conversation.account.respond_to?(:increment_marine_response_usage)
     end
   end
 
-  def process_handoff
-    return unless conversation_pending?
+  def create_marine_reply
+    @conversation.messages.create!(
+      message_type: :outgoing,
+      account_id: @conversation.account_id,
+      inbox_id: @conversation.inbox_id,
+      sender: @assistant,
+      content: @response['response'],
+      additional_attributes: {
+        agent_name: @response['agent_name'],
+        marine_cell_response_id: @response['marine_cell_response_id']
+      }.compact
+    )
+  end
 
-    @conversation.messages.create!(message_type: :outgoing, account_id: @conversation.account_id, inbox_id: @conversation.inbox_id, sender: @assistant, content: @assistant.config['handoff_message'].presence || 'Transferring to another agent for further assistance.')
-    @conversation.bot_handoff!
+  def process_handoff(reason = nil)
+    Marine::Circuit::HandoffService.new(conversation: @conversation, assistant: @assistant, reason: reason).perform
   end
 
   def conversation_pending?

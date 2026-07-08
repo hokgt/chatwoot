@@ -118,6 +118,9 @@ require_file custom/wijaya/marine/app/models/marine_inbox.rb
 require_file custom/wijaya/marine/app/models/concerns/wijaya/marine/account_extensions.rb
 require_file custom/wijaya/marine/app/models/concerns/wijaya/marine/inbox_extensions.rb
 require_file custom/wijaya/marine/app/services/wijaya/marine/hooks.rb
+require_file custom/wijaya/marine/app/services/marine/cell/knowledge_base_service.rb
+require_file custom/wijaya/marine/app/services/marine/charge/response_generator.rb
+require_file custom/wijaya/marine/app/services/marine/circuit/handoff_service.rb
 require_file custom/wijaya/marine/app/services/marine/llm/assistant_chat_service.rb
 require_file custom/wijaya/marine/app/services/marine/llm/embedding_service.rb
 require_file custom/wijaya/marine/app/jobs/marine/conversation/response_builder_job.rb

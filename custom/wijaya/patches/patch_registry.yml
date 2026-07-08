@@ -189,6 +189,9 @@ patches:
       - custom/wijaya/marine/app/jobs/marine/conversation/response_builder_job.rb
       - custom/wijaya/marine/app/jobs/marine/documents/response_builder_job.rb
       - custom/wijaya/marine/app/jobs/marine/llm/update_embedding_job.rb
+      - custom/wijaya/marine/app/services/marine/cell/knowledge_base_service.rb
+      - custom/wijaya/marine/app/services/marine/charge/response_generator.rb
+      - custom/wijaya/marine/app/services/marine/circuit/handoff_service.rb
       - custom/wijaya/marine/app/services/marine/llm/assistant_chat_service.rb
       - custom/wijaya/marine/app/services/marine/llm/embedding_service.rb
       - custom/wijaya/marine/app/services/wijaya/marine/hooks.rb
