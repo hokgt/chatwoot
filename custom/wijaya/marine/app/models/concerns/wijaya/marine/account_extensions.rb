@@ -37,8 +37,19 @@ module Wijaya
           default_model: models['default'].presence || 'local-knowledge-base',
           assistants_count: marine_assistants.count,
           models: models,
-          features: features
+          features: features,
+          llm: marine_llm_metadata
         }.with_indifferent_access
+      end
+
+      # Non-secret readiness metadata for the Marine LLM foundation. Never exposes
+      # the API key — only whether one is configured plus the resolved model names.
+      def marine_llm_metadata
+        {
+          configured: ::Marine::Llm::Config.configured?,
+          default_model: ::Marine::Llm::Config.model,
+          embedding_model: ::Marine::Llm::Config.embedding_model
+        }
       end
     end
   end

@@ -194,6 +194,11 @@ patches:
       - custom/wijaya/marine/app/services/marine/circuit/handoff_service.rb
       - custom/wijaya/marine/app/services/marine/llm/assistant_chat_service.rb
       - custom/wijaya/marine/app/services/marine/llm/embedding_service.rb
+      - custom/wijaya/marine/app/services/marine/llm/config.rb
+      - custom/wijaya/marine/app/services/marine/llm/base_service.rb
+      - custom/wijaya/marine/app/services/marine/llm/prompt_renderer.rb
+      - custom/wijaya/marine/app/services/marine/llm/json_response_parser.rb
+      - custom/wijaya/marine/app/services/marine/llm/language_detector.rb
       - custom/wijaya/marine/app/services/wijaya/marine/hooks.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistants_controller.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/documents_controller.rb
@@ -226,9 +231,18 @@ patches:
     core_hook_touchpoints:
       - config/initializers/wijaya_marine_ai.rb
       - config/routes.rb
+      - config/installation_config.yml
+      - app/controllers/super_admin/app_configs_controller.rb
       - app/services/message_templates/hook_execution_service.rb
       - app/javascript/dashboard/routes/dashboard/dashboard.routes.js
       - app/javascript/dashboard/routes/dashboard/settings/settings.routes.js
       - app/javascript/dashboard/components-next/sidebar/Sidebar.vue
       - app/javascript/dashboard/i18n/locale/en/index.js
-    tests: []
+    tests:
+      - spec/custom/wijaya/marine/account_extensions_spec.rb
+      - spec/custom/wijaya/marine/llm/config_spec.rb
+      - spec/custom/wijaya/marine/llm/base_service_spec.rb
+      - spec/custom/wijaya/marine/llm/prompt_renderer_spec.rb
+      - spec/custom/wijaya/marine/llm/json_response_parser_spec.rb
+      - spec/custom/wijaya/marine/llm/language_detector_spec.rb
+      - spec/custom/wijaya/marine/llm/embedding_service_spec.rb

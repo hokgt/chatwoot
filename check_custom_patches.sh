@@ -123,6 +123,11 @@ require_file custom/wijaya/marine/app/services/marine/charge/response_generator.
 require_file custom/wijaya/marine/app/services/marine/circuit/handoff_service.rb
 require_file custom/wijaya/marine/app/services/marine/llm/assistant_chat_service.rb
 require_file custom/wijaya/marine/app/services/marine/llm/embedding_service.rb
+require_file custom/wijaya/marine/app/services/marine/llm/config.rb
+require_file custom/wijaya/marine/app/services/marine/llm/base_service.rb
+require_file custom/wijaya/marine/app/services/marine/llm/prompt_renderer.rb
+require_file custom/wijaya/marine/app/services/marine/llm/json_response_parser.rb
+require_file custom/wijaya/marine/app/services/marine/llm/language_detector.rb
 require_file custom/wijaya/marine/app/jobs/marine/conversation/response_builder_job.rb
 require_file custom/wijaya/marine/app/jobs/marine/documents/response_builder_job.rb
 require_file custom/wijaya/marine/app/jobs/marine/llm/update_embedding_job.rb
@@ -158,6 +163,8 @@ require_file app/javascript/dashboard/i18n/locale/en/marine.json
 for file in \
   config/initializers/wijaya_marine_ai.rb \
   config/routes.rb \
+  config/installation_config.yml \
+  app/controllers/super_admin/app_configs_controller.rb \
   app/services/message_templates/hook_execution_service.rb \
   app/javascript/dashboard/routes/dashboard/dashboard.routes.js \
   app/javascript/dashboard/routes/dashboard/settings/settings.routes.js \
