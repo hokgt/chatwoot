@@ -42,7 +42,13 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       content: @response['response'],
       additional_attributes: {
         agent_name: @response['agent_name'],
-        marine_cell_response_id: @response['marine_cell_response_id']
+        marine_cell_response_id: @response['marine_cell_response_id'],
+        confidence: @response['confidence'],
+        citations: @response['citations'],
+        source_type: @response['source_type'],
+        response_ids: @response['response_ids'],
+        document_ids: @response['document_ids'],
+        fallback_reason: @response['fallback_reason']
       }.compact
     )
   end

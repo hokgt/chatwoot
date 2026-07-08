@@ -190,7 +190,11 @@ patches:
       - custom/wijaya/marine/app/jobs/marine/documents/response_builder_job.rb
       - custom/wijaya/marine/app/jobs/marine/llm/update_embedding_job.rb
       - custom/wijaya/marine/app/services/marine/cell/knowledge_base_service.rb
+      - custom/wijaya/marine/app/services/marine/cell/retriever.rb
+      - custom/wijaya/marine/app/services/marine/cell/retrieval_result.rb
+      - custom/wijaya/marine/app/services/marine/cell/citation_builder.rb
       - custom/wijaya/marine/app/services/marine/charge/response_generator.rb
+      - custom/wijaya/marine/app/services/marine/charge/confidence_scorer.rb
       - custom/wijaya/marine/app/services/marine/circuit/handoff_service.rb
       - custom/wijaya/marine/app/services/marine/llm/assistant_chat_service.rb
       - custom/wijaya/marine/app/services/marine/llm/embedding_service.rb
@@ -246,3 +250,9 @@ patches:
       - spec/custom/wijaya/marine/llm/json_response_parser_spec.rb
       - spec/custom/wijaya/marine/llm/language_detector_spec.rb
       - spec/custom/wijaya/marine/llm/embedding_service_spec.rb
+      - spec/custom/wijaya/marine/cell/retriever_spec.rb
+      - spec/custom/wijaya/marine/cell/retrieval_result_spec.rb
+      - spec/custom/wijaya/marine/cell/citation_builder_spec.rb
+      - spec/custom/wijaya/marine/charge/confidence_scorer_spec.rb
+      - spec/custom/wijaya/marine/charge/response_generator_spec.rb
+      - spec/custom/wijaya/marine/conversation/response_builder_job_spec.rb

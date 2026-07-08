@@ -119,7 +119,11 @@ require_file custom/wijaya/marine/app/models/concerns/wijaya/marine/account_exte
 require_file custom/wijaya/marine/app/models/concerns/wijaya/marine/inbox_extensions.rb
 require_file custom/wijaya/marine/app/services/wijaya/marine/hooks.rb
 require_file custom/wijaya/marine/app/services/marine/cell/knowledge_base_service.rb
+require_file custom/wijaya/marine/app/services/marine/cell/retriever.rb
+require_file custom/wijaya/marine/app/services/marine/cell/retrieval_result.rb
+require_file custom/wijaya/marine/app/services/marine/cell/citation_builder.rb
 require_file custom/wijaya/marine/app/services/marine/charge/response_generator.rb
+require_file custom/wijaya/marine/app/services/marine/charge/confidence_scorer.rb
 require_file custom/wijaya/marine/app/services/marine/circuit/handoff_service.rb
 require_file custom/wijaya/marine/app/services/marine/llm/assistant_chat_service.rb
 require_file custom/wijaya/marine/app/services/marine/llm/embedding_service.rb
