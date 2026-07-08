@@ -203,6 +203,8 @@ patches:
       - custom/wijaya/marine/app/services/marine/llm/prompt_renderer.rb
       - custom/wijaya/marine/app/services/marine/llm/json_response_parser.rb
       - custom/wijaya/marine/app/services/marine/llm/language_detector.rb
+      - custom/wijaya/marine/app/services/marine/llm/translate_query_service.rb
+      - custom/wijaya/marine/app/services/marine/llm/translate_response_service.rb
       - custom/wijaya/marine/app/services/wijaya/marine/hooks.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistants_controller.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/documents_controller.rb
@@ -249,6 +251,8 @@ patches:
       - spec/custom/wijaya/marine/llm/prompt_renderer_spec.rb
       - spec/custom/wijaya/marine/llm/json_response_parser_spec.rb
       - spec/custom/wijaya/marine/llm/language_detector_spec.rb
+      - spec/custom/wijaya/marine/llm/translate_query_service_spec.rb
+      - spec/custom/wijaya/marine/llm/translate_response_service_spec.rb
       - spec/custom/wijaya/marine/llm/embedding_service_spec.rb
       - spec/custom/wijaya/marine/cell/retriever_spec.rb
       - spec/custom/wijaya/marine/cell/retrieval_result_spec.rb

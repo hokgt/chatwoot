@@ -132,6 +132,8 @@ require_file custom/wijaya/marine/app/services/marine/llm/base_service.rb
 require_file custom/wijaya/marine/app/services/marine/llm/prompt_renderer.rb
 require_file custom/wijaya/marine/app/services/marine/llm/json_response_parser.rb
 require_file custom/wijaya/marine/app/services/marine/llm/language_detector.rb
+require_file custom/wijaya/marine/app/services/marine/llm/translate_query_service.rb
+require_file custom/wijaya/marine/app/services/marine/llm/translate_response_service.rb
 require_file custom/wijaya/marine/app/jobs/marine/conversation/response_builder_job.rb
 require_file custom/wijaya/marine/app/jobs/marine/documents/response_builder_job.rb
 require_file custom/wijaya/marine/app/jobs/marine/llm/update_embedding_job.rb
