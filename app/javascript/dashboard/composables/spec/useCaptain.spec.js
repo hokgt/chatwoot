@@ -278,5 +278,34 @@ describe('useCaptain', () => {
         followUpContext: { id: 'm3' },
       });
     });
+
+    it('routes follow-up refinements to Marine tasks for Marine-linked inboxes', async () => {
+      MarineTasksAPI.followUp.mockResolvedValue({
+        data: {
+          message: 'Shorter Marine reply',
+          follow_up_context: { id: 'm5' },
+        },
+      });
+
+      const { followUp } = useCaptain();
+      const result = await followUp({
+        followUpContext: { id: 'previous' },
+        message: 'Make it shorter',
+      });
+
+      expect(MarineTasksAPI.followUp).toHaveBeenCalledWith(
+        {
+          followUpContext: { id: 'previous' },
+          message: 'Make it shorter',
+          conversationId: '123',
+        },
+        undefined
+      );
+      expect(TasksAPI.followUp).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        message: 'Shorter Marine reply',
+        followUpContext: { id: 'm5' },
+      });
+    });
   });
 });
