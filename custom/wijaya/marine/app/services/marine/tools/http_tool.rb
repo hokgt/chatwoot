@@ -1,6 +1,6 @@
 require 'agents'
 
-# Marine-namespaced replica of Captain::Tools::HttpTool. Executes a custom tool's
+# Marine-namespaced HTTP custom-tool executor. Executes a custom tool's
 # HTTP request through SafeFetch (shared resolution, timeouts, redirect handling,
 # and a 1MB response cap) and renders the configured response template. Fully
 # independent of Captain/enterprise and any premium gate.

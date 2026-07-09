@@ -240,6 +240,8 @@ patches:
       - custom/wijaya/marine/app/services/marine/copilot/search_contacts_service.rb
       - custom/wijaya/marine/app/services/marine/copilot/get_contact_service.rb
       - custom/wijaya/marine/app/services/marine/copilot/query_service.rb
+      - custom/wijaya/marine/app/services/marine/agent/scenario_selector.rb
+      - custom/wijaya/marine/app/services/marine/agent/runner.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/copilot_threads_controller.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/copilot_messages_controller.rb
       - custom/wijaya/marine/app/policies/marine/copilot_thread_policy.rb
@@ -328,6 +330,8 @@ patches:
       - spec/custom/wijaya/marine/models/copilot_thread_spec.rb
       - spec/custom/wijaya/marine/models/copilot_message_spec.rb
       - spec/custom/wijaya/marine/copilot/query_service_spec.rb
+      - spec/custom/wijaya/marine/agent/scenario_selector_spec.rb
+      - spec/custom/wijaya/marine/agent/runner_spec.rb
       - spec/custom/wijaya/marine/copilot/search_conversations_service_spec.rb
       - spec/custom/wijaya/marine/copilot/search_contacts_service_spec.rb
       - spec/custom/wijaya/marine/controllers/copilot_threads_controller_spec.rb

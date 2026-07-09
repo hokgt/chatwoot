@@ -162,6 +162,8 @@ require_file custom/wijaya/marine/app/services/marine/copilot/get_conversation_s
 require_file custom/wijaya/marine/app/services/marine/copilot/search_contacts_service.rb
 require_file custom/wijaya/marine/app/services/marine/copilot/get_contact_service.rb
 require_file custom/wijaya/marine/app/services/marine/copilot/query_service.rb
+require_file custom/wijaya/marine/app/services/marine/agent/scenario_selector.rb
+require_file custom/wijaya/marine/app/services/marine/agent/runner.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/copilot_threads_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/copilot_messages_controller.rb
 require_file custom/wijaya/marine/app/policies/marine/copilot_thread_policy.rb

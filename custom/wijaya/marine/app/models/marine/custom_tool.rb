@@ -23,7 +23,7 @@
 #  index_marine_custom_tools_on_account_id           (account_id)
 #  index_marine_custom_tools_on_account_id_and_slug  (account_id,slug) UNIQUE
 #
-# Marine-owned replica of Captain::CustomTool. Independent of Chatwoot Hub,
+# Marine-owned custom tool model. Independent of Chatwoot Hub,
 # pricing plans, premium licensing, and any captain feature flag.
 class Marine::CustomTool < ApplicationRecord
   class LimitExceededError < StandardError; end

@@ -48,7 +48,9 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
         source_type: @response['source_type'],
         response_ids: @response['response_ids'],
         document_ids: @response['document_ids'],
-        fallback_reason: @response['fallback_reason']
+        fallback_reason: @response['fallback_reason'],
+        marine_scenario_id: @response['marine_scenario_id'],
+        orchestration_path: @response['orchestration_path']
       }.compact
     )
   end
