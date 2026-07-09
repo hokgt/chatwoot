@@ -146,6 +146,8 @@ require_file custom/wijaya/marine/app/services/marine/copilot/summary_service.rb
 require_file custom/wijaya/marine/app/services/marine/copilot/rewrite_service.rb
 require_file custom/wijaya/marine/app/services/marine/copilot/translate_service.rb
 require_file custom/wijaya/marine/app/services/marine/copilot/follow_up_service.rb
+require_file custom/wijaya/marine/app/services/marine/memory/contact_notes_service.rb
+require_file custom/wijaya/marine/app/jobs/marine/memory/generate_contact_notes_job.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/tasks_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistants_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/documents_controller.rb
@@ -182,6 +184,7 @@ for file in \
   config/installation_config.yml \
   app/controllers/super_admin/app_configs_controller.rb \
   app/services/message_templates/hook_execution_service.rb \
+  app/models/conversation.rb \
   app/views/api/v1/models/_inbox.json.jbuilder \
   app/javascript/dashboard/routes/dashboard/dashboard.routes.js \
   app/javascript/dashboard/routes/dashboard/settings/settings.routes.js \

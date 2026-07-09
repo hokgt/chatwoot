@@ -11,6 +11,22 @@ module Wijaya
         ChatwootExceptionTracker.new(e, account: conversation.account).capture_exception
       end
 
+      def after_conversation_resolved(conversation)
+        inbox = conversation&.inbox
+        return unless marine_memory_enabled?(conversation, inbox)
+
+        ::Marine::Memory::GenerateContactNotesJob.perform_later(conversation)
+      rescue StandardError => e
+        ChatwootExceptionTracker.new(e, account: conversation&.account).capture_exception
+      end
+
+      def marine_memory_enabled?(conversation, inbox)
+        return false if conversation.blank? || inbox.blank?
+
+        assistant = inbox.respond_to?(:marine_assistant) ? inbox.marine_assistant : nil
+        assistant.present? && assistant.respond_to?(:feature_memory) && assistant.feature_memory.present?
+      end
+
       def marine_handling_conversation?(conversation:, inbox:)
         conversation.pending? && inbox.respond_to?(:marine_assistant) && inbox.marine_assistant.present?
       end

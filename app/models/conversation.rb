@@ -338,6 +338,11 @@ class Conversation < ApplicationRecord
     }.each do |event, condition|
       condition.call && dispatcher_dispatch(event, status_change)
     end
+    # WIJAYA_CUSTOM_START marine_ai
+    if defined?(Wijaya::Marine::Hooks) && saved_change_to_status? && resolved?
+      Wijaya::Marine::Hooks.after_conversation_resolved(self)
+    end
+    # WIJAYA_CUSTOM_END marine_ai
   end
 
   def dispatcher_dispatch(event_name, changed_attributes = nil)
