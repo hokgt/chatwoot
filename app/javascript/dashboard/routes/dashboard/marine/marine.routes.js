@@ -4,6 +4,7 @@ import MarineNavigationPage from './pages/AssistantsIndexPage.vue';
 import MarineAssistantsIndex from './responses/Index.vue';
 import MarineDocumentsIndex from './documents/Index.vue';
 import MarineScenariosIndex from './scenarios/Index.vue';
+import MarineCopilotIndex from './copilot/Index.vue';
 import MarinePlaygroundIndex from './playground/Index.vue';
 import MarineInboxesIndex from './inboxes/Index.vue';
 import MarineToolsIndex from './tools/Index.vue';
@@ -36,6 +37,12 @@ const assistantRoutes = [
     path: frontendURL('accounts/:accountId/marine/:assistantId/scenarios'),
     component: MarineScenariosIndex,
     name: 'marine_assistants_scenarios_index',
+    meta,
+  },
+  {
+    path: frontendURL('accounts/:accountId/marine/:assistantId/copilot'),
+    component: MarineCopilotIndex,
+    name: 'marine_assistants_copilot_index',
     meta,
   },
   {

@@ -5,6 +5,7 @@ import { useRoute } from 'vue-router';
 import ResponsesIndex from '../responses/Index.vue';
 import DocumentsIndex from '../documents/Index.vue';
 import ScenariosIndex from '../scenarios/Index.vue';
+import CopilotIndex from '../copilot/Index.vue';
 import PlaygroundIndex from '../playground/Index.vue';
 import InboxesIndex from '../inboxes/Index.vue';
 import ToolsIndex from '../tools/Index.vue';
@@ -18,6 +19,7 @@ const sectionComponents = {
   marine_assistants_responses_pending_index: ResponsesIndex,
   marine_assistants_documents_index: DocumentsIndex,
   marine_assistants_scenarios_index: ScenariosIndex,
+  marine_assistants_copilot_index: CopilotIndex,
   marine_assistants_playground_index: PlaygroundIndex,
   marine_assistants_inboxes_index: InboxesIndex,
   marine_tools_index: ToolsIndex,

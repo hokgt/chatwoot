@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_07_09_020000) do
+ActiveRecord::Schema[7.1].define(version: 2026_07_09_030000) do
   # These extensions should be enabled to support this database
   enable_extension "pg_stat_statements"
   enable_extension "pg_trgm"
@@ -1007,6 +1007,29 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_09_020000) do
     t.index ["account_id"], name: "index_marine_assistants_on_account_id"
   end
 
+  create_table "marine_copilot_messages", force: :cascade do |t|
+    t.jsonb "message", default: {}, null: false
+    t.integer "message_type", default: 0, null: false
+    t.bigint "account_id", null: false
+    t.bigint "copilot_thread_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_marine_copilot_messages_on_account_id"
+    t.index ["copilot_thread_id"], name: "index_marine_copilot_messages_on_copilot_thread_id"
+  end
+
+  create_table "marine_copilot_threads", force: :cascade do |t|
+    t.string "title", null: false
+    t.bigint "account_id", null: false
+    t.bigint "assistant_id", null: false
+    t.bigint "user_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_marine_copilot_threads_on_account_id"
+    t.index ["assistant_id"], name: "index_marine_copilot_threads_on_assistant_id"
+    t.index ["user_id"], name: "index_marine_copilot_threads_on_user_id"
+  end
+
   create_table "marine_custom_tools", force: :cascade do |t|
     t.bigint "account_id", null: false
     t.string "slug", null: false
@@ -1437,7 +1460,6 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_09_020000) do
     t.index ["account_id"], name: "index_wijaya_erp_lead_drafts_on_account_id"
     t.index ["conversation_id"], name: "index_wijaya_erp_lead_drafts_on_conversation_id"
   end
-
 
   create_table "working_hours", force: :cascade do |t|
     t.bigint "inbox_id"

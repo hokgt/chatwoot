@@ -111,6 +111,9 @@ Rails.application.routes.draw do
               end
               resources :inboxes, only: [:index, :create, :destroy], param: :inbox_id
               resources :scenarios
+              resources :copilot_threads, only: [:index, :show, :create, :destroy] do
+                resources :copilot_messages, only: [:index, :create]
+              end
             end
             resources :assistant_responses
             resources :documents, only: [:index, :show, :create, :destroy] do

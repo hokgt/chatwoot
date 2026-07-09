@@ -232,8 +232,24 @@ patches:
       - custom/wijaya/marine/app/models/marine/scenario.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/scenarios_controller.rb
       - custom/wijaya/marine/app/policies/marine/scenario_policy.rb
+      - custom/wijaya/marine/app/models/marine/copilot_thread.rb
+      - custom/wijaya/marine/app/models/marine/copilot_message.rb
+      - custom/wijaya/marine/app/services/marine/copilot/search_base_service.rb
+      - custom/wijaya/marine/app/services/marine/copilot/search_conversations_service.rb
+      - custom/wijaya/marine/app/services/marine/copilot/get_conversation_service.rb
+      - custom/wijaya/marine/app/services/marine/copilot/search_contacts_service.rb
+      - custom/wijaya/marine/app/services/marine/copilot/get_contact_service.rb
+      - custom/wijaya/marine/app/services/marine/copilot/query_service.rb
+      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/copilot_threads_controller.rb
+      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/copilot_messages_controller.rb
+      - custom/wijaya/marine/app/policies/marine/copilot_thread_policy.rb
+      - custom/wijaya/marine/app/policies/marine/copilot_message_policy.rb
       - db/migrate/20260709010000_create_marine_custom_tools.rb
       - db/migrate/20260709020000_create_marine_scenarios.rb
+      - db/migrate/20260709030000_create_marine_copilot_tables.rb
+      - app/javascript/dashboard/api/marine/copilotThreads.js
+      - app/javascript/dashboard/api/marine/copilotMessages.js
+      - app/javascript/dashboard/routes/dashboard/marine/copilot/Index.vue
       - app/javascript/dashboard/api/marine/scenarios.js
       - app/javascript/dashboard/api/marine/customTools.js
       - app/javascript/dashboard/routes/dashboard/marine/composables/useMarineCustomTools.js
@@ -309,4 +325,11 @@ patches:
       - spec/custom/wijaya/marine/controllers/custom_tools_controller_spec.rb
       - spec/custom/wijaya/marine/models/scenario_spec.rb
       - spec/custom/wijaya/marine/controllers/scenarios_controller_spec.rb
+      - spec/custom/wijaya/marine/models/copilot_thread_spec.rb
+      - spec/custom/wijaya/marine/models/copilot_message_spec.rb
+      - spec/custom/wijaya/marine/copilot/query_service_spec.rb
+      - spec/custom/wijaya/marine/copilot/search_conversations_service_spec.rb
+      - spec/custom/wijaya/marine/copilot/search_contacts_service_spec.rb
+      - spec/custom/wijaya/marine/controllers/copilot_threads_controller_spec.rb
+      - spec/custom/wijaya/marine/controllers/copilot_messages_controller_spec.rb
       - app/javascript/dashboard/composables/spec/useCaptain.spec.js

@@ -5,6 +5,7 @@
       "RESPONSES": "FAQs",
       "DOCUMENTS": "Knowledge Base",
       "SCENARIOS": "Scenarios",
+      "COPILOT": "Ask Marine",
       "PLAYGROUND": "Playground",
       "INBOXES": "Inboxes",
       "TOOLS": "Tools",
@@ -238,6 +239,16 @@
       "MODELS": "Models",
       "FEATURES": "Features",
       "NONE": "Not configured"
+    },
+    "COPILOT": {
+      "TITLE": "Ask Marine",
+      "DESCRIPTION": "Ask natural-language questions about your conversations and contacts. Marine answers with cited records you have access to.",
+      "NEW_THREAD": "New question",
+      "NO_THREADS": "No saved threads yet.",
+      "EMPTY": "Ask a question to get started.",
+      "PLACEHOLDER": "e.g. Which open conversations mention refunds?",
+      "SEND": "Ask",
+      "SENDING": "Asking…"
     },
     "SAVING": "Saving…"
   },

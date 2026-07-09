@@ -8,6 +8,7 @@ class Marine::Assistant < ApplicationRecord
   has_many :marine_inboxes, class_name: 'MarineInbox', foreign_key: :marine_assistant_id, dependent: :destroy_async
   has_many :inboxes, through: :marine_inboxes
   has_many :scenarios, class_name: 'Marine::Scenario', foreign_key: :assistant_id, dependent: :destroy_async
+  has_many :copilot_threads, class_name: 'Marine::CopilotThread', foreign_key: :assistant_id, dependent: :destroy_async
   has_many :messages, as: :sender, dependent: :nullify
 
   store_accessor :config, :temperature, :feature_faq, :feature_memory, :feature_contact_attributes, :product_name, :welcome_message, :handoff_message, :resolution_message, :instructions

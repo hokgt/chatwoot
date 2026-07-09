@@ -541,6 +541,14 @@ const menuItems = computed(() => {
           }),
         },
         {
+          name: 'Copilot',
+          label: t('MARINE_AI.SIDEBAR.COPILOT'),
+          activeOn: ['marine_assistants_copilot_index'],
+          to: accountScopedRoute('marine_assistants_index', {
+            navigationPath: 'marine_assistants_copilot_index',
+          }),
+        },
+        {
           name: 'Playground',
           label: t('MARINE_AI.SIDEBAR.PLAYGROUND'),
           activeOn: ['marine_assistants_playground_index'],
