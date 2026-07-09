@@ -138,6 +138,15 @@ require_file custom/wijaya/marine/app/jobs/marine/conversation/response_builder_
 require_file custom/wijaya/marine/app/jobs/marine/documents/response_builder_job.rb
 require_file custom/wijaya/marine/app/jobs/marine/llm/update_embedding_job.rb
 require_file custom/wijaya/marine/app/policies/marine/assistant_policy.rb
+require_file custom/wijaya/marine/app/policies/marine/tasks_policy.rb
+require_file custom/wijaya/marine/app/services/marine/copilot/base_service.rb
+require_file custom/wijaya/marine/app/services/marine/copilot/conversation_context_builder.rb
+require_file custom/wijaya/marine/app/services/marine/copilot/reply_suggestion_service.rb
+require_file custom/wijaya/marine/app/services/marine/copilot/summary_service.rb
+require_file custom/wijaya/marine/app/services/marine/copilot/rewrite_service.rb
+require_file custom/wijaya/marine/app/services/marine/copilot/translate_service.rb
+require_file custom/wijaya/marine/app/services/marine/copilot/follow_up_service.rb
+require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/tasks_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistants_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/documents_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
@@ -145,6 +154,7 @@ require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/inboxes
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/preferences_controller.rb
 require_file db/migrate/20260708010000_create_wijaya_marine_tables.rb
 require_file db/migrate/20260708010001_create_wijaya_marine_inboxes.rb
+require_file app/javascript/dashboard/api/marine/tasks.js
 require_file app/javascript/dashboard/api/marine/assistant.js
 require_file app/javascript/dashboard/api/marine/response.js
 require_file app/javascript/dashboard/api/marine/document.js
@@ -172,8 +182,11 @@ for file in \
   config/installation_config.yml \
   app/controllers/super_admin/app_configs_controller.rb \
   app/services/message_templates/hook_execution_service.rb \
+  app/views/api/v1/models/_inbox.json.jbuilder \
   app/javascript/dashboard/routes/dashboard/dashboard.routes.js \
   app/javascript/dashboard/routes/dashboard/settings/settings.routes.js \
+  app/javascript/dashboard/composables/useCaptain.js \
+  app/javascript/dashboard/components/widgets/WootWriter/CopilotMenuBar.vue \
   app/javascript/dashboard/components-next/sidebar/Sidebar.vue \
   app/javascript/dashboard/i18n/locale/en/index.js; do
   require_marker "$file" "WIJAYA_CUSTOM_START marine_ai"

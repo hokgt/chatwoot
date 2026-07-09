@@ -78,7 +78,7 @@ export default {
       setReplyMode(newMode);
     };
 
-    const { captainTasksEnabled } = useCaptain();
+    const { captainTasksEnabled, isMarineConversation } = useCaptain();
     const showCopilotMenu = ref(false);
     const copilotToggleRef = ref(null);
 
@@ -120,6 +120,7 @@ export default {
       handleNoteClick,
       REPLY_EDITOR_MODES,
       captainTasksEnabled,
+      isMarineConversation,
       handleCopilotAction,
       showCopilotMenu,
       copilotToggleRef,
@@ -190,6 +191,7 @@ export default {
           :has-selection="false"
           :has-content="hasContent"
           :conversation-id="conversationId"
+          :is-marine-conversation="isMarineConversation"
           class="ltr:right-0 rtl:left-0 bottom-full mb-2"
           @execute-copilot-action="handleCopilotAction"
         />

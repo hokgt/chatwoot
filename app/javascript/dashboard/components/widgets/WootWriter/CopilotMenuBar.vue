@@ -28,6 +28,10 @@ const props = defineProps({
     type: Number,
     default: null,
   },
+  isMarineConversation: {
+    type: Boolean,
+    default: false,
+  },
 });
 
 const emit = defineEmits(['executeCopilotAction']);
@@ -136,11 +140,19 @@ const generalMenuItems = computed(() => {
     });
   }
 
-  items.push({
-    label: t('INTEGRATION_SETTINGS.OPEN_AI.REPLY_OPTIONS.ASK_COPILOT'),
-    key: 'ask_copilot',
-    icon: 'i-fluent-circle-sparkle-24-regular',
-  });
+  // WIJAYA_CUSTOM_START marine_ai
+  // Marine natural-language query is intentionally scoped to the Marine page for
+  // a later commit, so do not open the global Captain Copilot panel for
+  // Marine-linked conversations. Draft/improve/summarize actions still route to
+  // Marine through useCaptain.
+  if (!props.isMarineConversation) {
+    items.push({
+      label: t('INTEGRATION_SETTINGS.OPEN_AI.REPLY_OPTIONS.ASK_COPILOT'),
+      key: 'ask_copilot',
+      icon: 'i-fluent-circle-sparkle-24-regular',
+    });
+  }
+  // WIJAYA_CUSTOM_END marine_ai
 
   return items;
 });

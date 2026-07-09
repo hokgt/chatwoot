@@ -212,6 +212,16 @@ patches:
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/preferences_controller.rb
       - custom/wijaya/marine/app/policies/marine/assistant_policy.rb
+      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/tasks_controller.rb
+      - custom/wijaya/marine/app/policies/marine/tasks_policy.rb
+      - custom/wijaya/marine/app/services/marine/copilot/base_service.rb
+      - custom/wijaya/marine/app/services/marine/copilot/conversation_context_builder.rb
+      - custom/wijaya/marine/app/services/marine/copilot/reply_suggestion_service.rb
+      - custom/wijaya/marine/app/services/marine/copilot/summary_service.rb
+      - custom/wijaya/marine/app/services/marine/copilot/rewrite_service.rb
+      - custom/wijaya/marine/app/services/marine/copilot/translate_service.rb
+      - custom/wijaya/marine/app/services/marine/copilot/follow_up_service.rb
+      - app/javascript/dashboard/api/marine/tasks.js
       - app/javascript/dashboard/api/marine/assistant.js
       - app/javascript/dashboard/api/marine/response.js
       - app/javascript/dashboard/api/marine/document.js
@@ -240,8 +250,11 @@ patches:
       - config/installation_config.yml
       - app/controllers/super_admin/app_configs_controller.rb
       - app/services/message_templates/hook_execution_service.rb
+      - app/views/api/v1/models/_inbox.json.jbuilder
       - app/javascript/dashboard/routes/dashboard/dashboard.routes.js
       - app/javascript/dashboard/routes/dashboard/settings/settings.routes.js
+      - app/javascript/dashboard/composables/useCaptain.js
+      - app/javascript/dashboard/components/widgets/WootWriter/CopilotMenuBar.vue
       - app/javascript/dashboard/components-next/sidebar/Sidebar.vue
       - app/javascript/dashboard/i18n/locale/en/index.js
     tests:
@@ -260,3 +273,10 @@ patches:
       - spec/custom/wijaya/marine/charge/confidence_scorer_spec.rb
       - spec/custom/wijaya/marine/charge/response_generator_spec.rb
       - spec/custom/wijaya/marine/conversation/response_builder_job_spec.rb
+      - spec/custom/wijaya/marine/copilot/reply_suggestion_service_spec.rb
+      - spec/custom/wijaya/marine/copilot/summary_service_spec.rb
+      - spec/custom/wijaya/marine/copilot/rewrite_service_spec.rb
+      - spec/custom/wijaya/marine/copilot/translate_service_spec.rb
+      - spec/custom/wijaya/marine/copilot/follow_up_service_spec.rb
+      - spec/custom/wijaya/marine/controllers/tasks_controller_spec.rb
+      - app/javascript/dashboard/composables/spec/useCaptain.spec.js
