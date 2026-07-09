@@ -115,6 +115,9 @@ Rails.application.routes.draw do
             resources :documents, only: [:index, :show, :create, :destroy] do
               post :sync, on: :member
             end
+            resources :custom_tools, only: [:index, :show, :create, :update, :destroy] do
+              post :test, on: :collection
+            end
           end
           # WIJAYA_CUSTOM_END marine_ai
           resource :saml_settings, only: [:show, :create, :update, :destroy]

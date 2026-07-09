@@ -223,6 +223,20 @@ patches:
       - custom/wijaya/marine/app/services/marine/copilot/follow_up_service.rb
       - custom/wijaya/marine/app/services/marine/memory/contact_notes_service.rb
       - custom/wijaya/marine/app/jobs/marine/memory/generate_contact_notes_job.rb
+      - custom/wijaya/marine/app/models/marine/custom_tool.rb
+      - custom/wijaya/marine/app/models/concerns/marine/toolable.rb
+      - custom/wijaya/marine/app/models/concerns/marine/safe_endpoint_validatable.rb
+      - custom/wijaya/marine/app/services/marine/tools/http_tool.rb
+      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/custom_tools_controller.rb
+      - custom/wijaya/marine/app/policies/marine/custom_tool_policy.rb
+      - db/migrate/20260709010000_create_marine_custom_tools.rb
+      - app/javascript/dashboard/api/marine/customTools.js
+      - app/javascript/dashboard/routes/dashboard/marine/composables/useMarineCustomTools.js
+      - app/javascript/dashboard/routes/dashboard/marine/tools/components/ParamRow.vue
+      - app/javascript/dashboard/routes/dashboard/marine/tools/components/AuthConfig.vue
+      - app/javascript/dashboard/routes/dashboard/marine/tools/components/CustomToolForm.vue
+      - app/javascript/dashboard/routes/dashboard/marine/tools/components/CustomToolCard.vue
+      - app/javascript/dashboard/routes/dashboard/marine/tools/components/CreateCustomToolDialog.vue
       - app/javascript/dashboard/api/marine/tasks.js
       - app/javascript/dashboard/api/marine/assistant.js
       - app/javascript/dashboard/api/marine/response.js
@@ -250,6 +264,7 @@ patches:
       - config/initializers/wijaya_marine_ai.rb
       - config/routes.rb
       - config/installation_config.yml
+      - config/locales/en.yml
       - app/controllers/super_admin/app_configs_controller.rb
       - app/services/message_templates/hook_execution_service.rb
       - app/models/conversation.rb
@@ -285,4 +300,6 @@ patches:
       - spec/custom/wijaya/marine/memory/generate_contact_notes_job_spec.rb
       - spec/custom/wijaya/marine/hooks_spec.rb
       - spec/custom/wijaya/marine/controllers/tasks_controller_spec.rb
+      - spec/custom/wijaya/marine/models/custom_tool_spec.rb
+      - spec/custom/wijaya/marine/controllers/custom_tools_controller_spec.rb
       - app/javascript/dashboard/composables/spec/useCaptain.spec.js

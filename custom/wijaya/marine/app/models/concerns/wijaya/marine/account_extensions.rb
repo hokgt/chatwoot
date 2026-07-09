@@ -8,6 +8,7 @@ module Wijaya
         has_many :marine_assistants, dependent: :destroy_async, class_name: 'Marine::Assistant'
         has_many :marine_assistant_responses, dependent: :destroy_async, class_name: 'Marine::AssistantResponse'
         has_many :marine_documents, dependent: :destroy_async, class_name: 'Marine::Document'
+        has_many :marine_custom_tools, dependent: :destroy_async, class_name: 'Marine::CustomTool'
       end
 
       def marine_usage_limits
