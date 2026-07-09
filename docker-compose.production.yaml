@@ -2,7 +2,7 @@ version: '3'
 
 services:
   base: &base
-    image: chatwoot-wijaya:devbot-marine-multilingual-428325413-20260708182813
+    image: chatwoot-wijaya:devbot-marine-copilot-60e06fd4b-20260709095122
     env_file: .env ## Change this file for customized env variables
     volumes:
       - storage_data:/app/storage
