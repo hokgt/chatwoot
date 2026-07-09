@@ -229,7 +229,12 @@ patches:
       - custom/wijaya/marine/app/services/marine/tools/http_tool.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/custom_tools_controller.rb
       - custom/wijaya/marine/app/policies/marine/custom_tool_policy.rb
+      - custom/wijaya/marine/app/models/marine/scenario.rb
+      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/scenarios_controller.rb
+      - custom/wijaya/marine/app/policies/marine/scenario_policy.rb
       - db/migrate/20260709010000_create_marine_custom_tools.rb
+      - db/migrate/20260709020000_create_marine_scenarios.rb
+      - app/javascript/dashboard/api/marine/scenarios.js
       - app/javascript/dashboard/api/marine/customTools.js
       - app/javascript/dashboard/routes/dashboard/marine/composables/useMarineCustomTools.js
       - app/javascript/dashboard/routes/dashboard/marine/tools/components/ParamRow.vue
@@ -302,4 +307,6 @@ patches:
       - spec/custom/wijaya/marine/controllers/tasks_controller_spec.rb
       - spec/custom/wijaya/marine/models/custom_tool_spec.rb
       - spec/custom/wijaya/marine/controllers/custom_tools_controller_spec.rb
+      - spec/custom/wijaya/marine/models/scenario_spec.rb
+      - spec/custom/wijaya/marine/controllers/scenarios_controller_spec.rb
       - app/javascript/dashboard/composables/spec/useCaptain.spec.js

@@ -58,8 +58,23 @@
     },
     "SCENARIOS": {
       "TITLE": "Scenarios",
-      "DESCRIPTION": "Guided Marine AI scenarios. Manage scenarios through the Marine API.",
-      "EMPTY": "No Marine scenarios configured yet."
+      "DESCRIPTION": "Guided Marine AI scenarios that route conversations to focused instructions and tools.",
+      "LOADING": "Loading scenarios…",
+      "EMPTY": "No Marine scenarios configured yet.",
+      "ADD": "Add scenario",
+      "EDIT": "Edit scenario",
+      "TITLE_LABEL": "Scenario title",
+      "DESCRIPTION_LABEL": "Short description",
+      "INSTRUCTION_LABEL": "Instruction. Reference tools with [Label](tool://tool_slug)",
+      "ENABLED_LABEL": "Enabled",
+      "SAVE": "Save scenario",
+      "CANCEL": "Cancel",
+      "EDIT_ACTION": "Edit",
+      "DELETE": "Delete",
+      "CONFIRM_DELETE": "Confirm delete",
+      "STATUS_ENABLED": "Enabled",
+      "STATUS_DISABLED": "Disabled",
+      "SAVE_ERROR": "Could not save scenario. Please check the instruction and tool references."
     },
     "PLAYGROUND": {
       "TITLE": "Playground",
