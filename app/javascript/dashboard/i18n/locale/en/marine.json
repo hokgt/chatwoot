@@ -173,7 +173,7 @@
     },
     "PLAYGROUND": {
       "TITLE": "Playground",
-      "DESCRIPTION": "Test how the Marine assistant responds to a message.",
+      "DESCRIPTION": "Use this playground to send messages to your Marine assistant and check if it responds accurately, quickly, and in the tone you expect.",
       "PLACEHOLDER": "Type a message to test the assistant…",
       "SEND": "Send",
       "SENDING": "Generating response…",
@@ -181,7 +181,12 @@
       "EMPTY": "Send a message to see the Marine assistant's response.",
       "HANDOFF": "Marine would hand off to a human agent",
       "HANDOFF_HINT": "No confident knowledge base match was found for this message.",
-      "HANDOFF_REASON": "Reason: {reason}"
+      "HANDOFF_REASON": "Reason: {reason}",
+      "USER": "You",
+      "ASSISTANT": "Marine AI",
+      "MESSAGE_PLACEHOLDER": "Type your message...",
+      "HEADER": "Playground",
+      "RESET": "Reset conversation"
     },
     "INBOXES": {
       "TITLE": "Inboxes",
