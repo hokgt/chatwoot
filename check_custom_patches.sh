@@ -193,6 +193,9 @@ require_file app/javascript/dashboard/routes/dashboard/marine/components/Documen
 require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineResponseCard.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/components/CreateResponseDialog.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/components/ResponsePageEmptyState.vue
+require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineInboxCard.vue
+require_file app/javascript/dashboard/routes/dashboard/marine/components/ConnectInboxDialog.vue
+require_file app/javascript/dashboard/routes/dashboard/marine/components/InboxPageEmptyState.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/responses/Index.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/documents/Index.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/scenarios/Index.vue

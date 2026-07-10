@@ -282,6 +282,9 @@ patches:
       - app/javascript/dashboard/routes/dashboard/marine/components/MarineResponseCard.vue
       - app/javascript/dashboard/routes/dashboard/marine/components/CreateResponseDialog.vue
       - app/javascript/dashboard/routes/dashboard/marine/components/ResponsePageEmptyState.vue
+      - app/javascript/dashboard/routes/dashboard/marine/components/MarineInboxCard.vue
+      - app/javascript/dashboard/routes/dashboard/marine/components/ConnectInboxDialog.vue
+      - app/javascript/dashboard/routes/dashboard/marine/components/InboxPageEmptyState.vue
       - app/javascript/dashboard/routes/dashboard/marine/responses/Index.vue
       - app/javascript/dashboard/routes/dashboard/marine/documents/Index.vue
       - app/javascript/dashboard/routes/dashboard/marine/scenarios/Index.vue

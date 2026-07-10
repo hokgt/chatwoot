@@ -1,37 +1,38 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch, nextTick } from 'vue';
 import { useI18n } from 'vue-i18n';
-import InboxesAPI from 'dashboard/api/inboxes';
+import { useRoute } from 'vue-router';
+import { useAlert } from 'dashboard/composables';
+import { parseAPIErrorResponse } from 'dashboard/store/utils/api';
 import MarineInboxesAPI from 'dashboard/api/marine/inboxes';
-import { useMarineAssistants } from '../composables/useMarineAssistants';
-import MarinePageShell from '../components/MarinePageShell.vue';
+
+import MarinePageLayout from '../components/MarinePageLayout.vue';
+import MarineInboxCard from '../components/MarineInboxCard.vue';
+import ConnectInboxDialog from '../components/ConnectInboxDialog.vue';
+import InboxPageEmptyState from '../components/InboxPageEmptyState.vue';
+import Dialog from 'dashboard/components-next/dialog/Dialog.vue';
 
 const { t } = useI18n();
-const { activeAssistantId, fetchAssistants, createDefaultAssistant } =
-  useMarineAssistants();
-const loading = ref(false);
-const saving = ref(false);
-const inboxes = ref([]);
-const allInboxes = ref([]);
-const selectedInboxId = ref('');
+const route = useRoute();
 
-const connectedIds = computed(() => inboxes.value.map(inbox => inbox.id));
-const availableInboxes = computed(() =>
-  allInboxes.value.filter(inbox => !connectedIds.value.includes(inbox.id))
-);
+const loading = ref(false);
+const inboxes = ref([]);
+const dialogType = ref('');
+const selectedInbox = ref(null);
+const connectDialog = ref(null);
+const deleteDialog = ref(null);
+
+const assistantId = computed(() => Number(route.params.assistantId));
 
 const fetchInboxes = async () => {
+  if (!assistantId.value) {
+    inboxes.value = [];
+    return;
+  }
   loading.value = true;
   try {
-    await fetchAssistants();
-    const { data: allData } = await InboxesAPI.get();
-    allInboxes.value = allData.payload || [];
-    if (!activeAssistantId.value) {
-      inboxes.value = [];
-      return;
-    }
     const { data } = await MarineInboxesAPI.get({
-      assistantId: activeAssistantId.value,
+      assistantId: assistantId.value,
     });
     inboxes.value = data.payload || [];
   } finally {
@@ -39,121 +40,91 @@ const fetchInboxes = async () => {
   }
 };
 
-const setupAssistant = async () => {
-  saving.value = true;
-  try {
-    await createDefaultAssistant();
-    await fetchInboxes();
-  } finally {
-    saving.value = false;
-  }
+const handleCreate = () => {
+  dialogType.value = 'create';
+  nextTick(() => connectDialog.value.dialogRef.open());
 };
 
-const connectInbox = async () => {
-  if (!activeAssistantId.value || !selectedInboxId.value) return;
-  saving.value = true;
-  try {
-    await MarineInboxesAPI.create({
-      assistantId: activeAssistantId.value,
-      inboxId: selectedInboxId.value,
-    });
-    selectedInboxId.value = '';
-    await fetchInboxes();
-  } finally {
-    saving.value = false;
-  }
+const handleCreateClose = async () => {
+  dialogType.value = '';
+  await fetchInboxes();
 };
 
-const disconnectInbox = async inbox => {
-  if (!activeAssistantId.value) return;
-  saving.value = true;
+const handleDelete = inbox => {
+  selectedInbox.value = inbox;
+  nextTick(() => deleteDialog.value.open());
+};
+
+const confirmDelete = async () => {
   try {
     await MarineInboxesAPI.delete({
-      assistantId: activeAssistantId.value,
-      inboxId: inbox.id,
+      assistantId: assistantId.value,
+      inboxId: selectedInbox.value.id,
     });
+    useAlert(t('MARINE_AI.INBOXES.DELETE.SUCCESS'));
+    selectedInbox.value = null;
     await fetchInboxes();
+  } catch (error) {
+    useAlert(
+      parseAPIErrorResponse(error) || t('MARINE_AI.INBOXES.DELETE.ERROR')
+    );
   } finally {
-    saving.value = false;
+    deleteDialog.value?.close();
   }
 };
+
+const handleAction = ({ action, id }) => {
+  const inbox = inboxes.value.find(item => item.id === id);
+  if (!inbox) return;
+  if (action === 'delete') handleDelete(inbox);
+};
+
+watch(assistantId, fetchInboxes);
 
 onMounted(fetchInboxes);
 </script>
 
 <template>
-  <MarinePageShell
-    :title="t('MARINE_AI.INBOXES.TITLE')"
-    :description="t('MARINE_AI.INBOXES.DESCRIPTION')"
+  <MarinePageLayout
+    :header-title="t('MARINE_AI.INBOXES.HEADER')"
+    :button-label="t('MARINE_AI.INBOXES.ADD_NEW')"
+    :button-policy="['administrator']"
+    :is-fetching="loading"
+    :is-empty="inboxes.length === 0"
+    :show-pagination-footer="false"
+    @click="handleCreate"
   >
-    <div
-      v-if="!activeAssistantId"
-      class="rounded-xl border border-n-weak bg-n-solid-1 p-4 space-y-3"
-    >
-      <p class="text-sm text-n-slate-11">
-        {{ t('MARINE_AI.EMPTY_ASSISTANT.DESCRIPTION') }}
-      </p>
-      <button
-        type="button"
-        class="rounded-lg bg-n-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-        :disabled="saving"
-        @click="setupAssistant"
-      >
-        {{ t('MARINE_AI.EMPTY_ASSISTANT.CREATE') }}
-      </button>
-    </div>
-    <div v-else class="space-y-4">
-      <form
-        class="rounded-xl border border-n-weak bg-n-solid-1 p-4 flex flex-col gap-3 sm:flex-row"
-        @submit.prevent="connectInbox"
-      >
-        <select
-          v-model="selectedInboxId"
-          class="min-w-0 flex-1 rounded-lg border border-n-weak bg-n-alpha-black1 p-3 text-sm text-n-slate-12"
-        >
-          <option value="">{{ t('MARINE_AI.INBOXES.SELECT') }}</option>
-          <option
-            v-for="inbox in availableInboxes"
-            :key="inbox.id"
-            :value="inbox.id"
-          >
-            {{ inbox.name }}
-          </option>
-        </select>
-        <button
-          type="submit"
-          class="rounded-lg bg-n-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-          :disabled="saving || !selectedInboxId"
-        >
-          {{ saving ? t('MARINE_AI.SAVING') : t('MARINE_AI.INBOXES.CONNECT') }}
-        </button>
-      </form>
+    <template #emptyState>
+      <InboxPageEmptyState @click="handleCreate" />
+    </template>
 
-      <div class="rounded-xl border border-n-weak bg-n-solid-1 p-4">
-        <p v-if="loading" class="text-sm text-n-slate-11">
-          {{ t('MARINE_AI.INBOXES.LOADING') }}
-        </p>
-        <p v-else-if="inboxes.length === 0" class="text-sm text-n-slate-11">
-          {{ t('MARINE_AI.INBOXES.EMPTY') }}
-        </p>
-        <ul v-else class="space-y-2">
-          <li
-            v-for="inbox in inboxes"
-            :key="inbox.id"
-            class="flex items-center justify-between gap-3 rounded-lg border border-n-weak p-3"
-          >
-            <span class="font-medium text-n-slate-12">{{ inbox.name }}</span>
-            <button
-              type="button"
-              class="rounded-md border border-n-weak px-2.5 py-1 text-xs font-medium text-n-ruby-11 disabled:opacity-50"
-              :disabled="saving"
-              @click="disconnectInbox(inbox)"
-            >
-              {{ t('MARINE_AI.INBOXES.DISCONNECT') }}
-            </button>
-          </li>
-        </ul>
+    <template #body>
+      <div class="flex flex-col gap-4">
+        <MarineInboxCard
+          v-for="inbox in inboxes"
+          :id="inbox.id"
+          :key="inbox.id"
+          :inbox="inbox"
+          @action="handleAction"
+        />
       </div>
-    </div>
-  </MarinePageShell>
+    </template>
+
+    <ConnectInboxDialog
+      v-if="dialogType === 'create'"
+      ref="connectDialog"
+      :assistant-id="assistantId"
+      @close="handleCreateClose"
+    />
+
+    <Dialog
+      ref="deleteDialog"
+      type="alert"
+      :title="t('MARINE_AI.INBOXES.DELETE.TITLE')"
+      :description="t('MARINE_AI.INBOXES.DELETE.DESCRIPTION')"
+      :confirm-button-label="t('MARINE_AI.INBOXES.DELETE.CONFIRM')"
+      :cancel-button-label="t('MARINE_AI.INBOXES.DELETE.CANCEL')"
+      @confirm="confirmDelete"
+    />
+  </MarinePageLayout>
 </template>
