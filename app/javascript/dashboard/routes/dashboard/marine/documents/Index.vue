@@ -1,28 +1,56 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, ref, watch, nextTick } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { useRoute } from 'vue-router';
+import { debounce } from '@chatwoot/utils';
+import { useAlert } from 'dashboard/composables';
+import { parseAPIErrorResponse } from 'dashboard/store/utils/api';
 import MarineDocumentAPI from 'dashboard/api/marine/document';
-import { useMarineAssistants } from '../composables/useMarineAssistants';
-import MarinePageShell from '../components/MarinePageShell.vue';
+
+import MarinePageLayout from '../components/MarinePageLayout.vue';
+import MarineDocumentCard from '../components/MarineDocumentCard.vue';
+import CreateDocumentDialog from '../components/CreateDocumentDialog.vue';
+import DocumentPageEmptyState from '../components/DocumentPageEmptyState.vue';
+import Input from 'dashboard/components-next/input/Input.vue';
+import Dialog from 'dashboard/components-next/dialog/Dialog.vue';
 
 const { t } = useI18n();
-const { activeAssistantId, fetchAssistants, createDefaultAssistant } =
-  useMarineAssistants();
+const route = useRoute();
+
 const loading = ref(false);
-const saving = ref(false);
 const documents = ref([]);
-const form = reactive({ name: '', externalLink: '', content: '' });
+const searchQuery = ref('');
+const effectiveQuery = ref('');
+
+const dialogType = ref('');
+const selectedDocument = ref(null);
+const createDialog = ref(null);
+const deleteDialog = ref(null);
+
+const assistantId = computed(() => Number(route.params.assistantId));
+
+const filteredDocuments = computed(() => {
+  const query = effectiveQuery.value.trim().toLowerCase();
+  if (!query) return documents.value;
+  return documents.value.filter(
+    document =>
+      document.name?.toLowerCase().includes(query) ||
+      document.external_link?.toLowerCase().includes(query)
+  );
+});
+
+const hasActiveFilters = computed(() => !!effectiveQuery.value);
+const isEmpty = computed(() => filteredDocuments.value.length === 0);
 
 const fetchDocuments = async () => {
+  if (!assistantId.value) {
+    documents.value = [];
+    return;
+  }
   loading.value = true;
   try {
-    await fetchAssistants();
-    if (!activeAssistantId.value) {
-      documents.value = [];
-      return;
-    }
     const { data } = await MarineDocumentAPI.get({
-      assistantId: activeAssistantId.value,
+      assistantId: assistantId.value,
     });
     documents.value = data.payload || [];
   } finally {
@@ -30,184 +58,132 @@ const fetchDocuments = async () => {
   }
 };
 
-const setupAssistant = async () => {
-  saving.value = true;
-  try {
-    await createDefaultAssistant();
-    await fetchDocuments();
-  } finally {
-    saving.value = false;
-  }
+const debouncedSearch = debounce(() => {
+  effectiveQuery.value = searchQuery.value;
+}, 300);
+
+const clearFilters = () => {
+  searchQuery.value = '';
+  effectiveQuery.value = '';
 };
 
-const createDocument = async () => {
-  if (!activeAssistantId.value || !form.externalLink.trim()) return;
-  saving.value = true;
-  try {
-    await MarineDocumentAPI.create({
-      assistantId: activeAssistantId.value,
-      name: form.name || form.externalLink,
-      externalLink: form.externalLink,
-      content: form.content,
-    });
-    form.name = '';
-    form.externalLink = '';
-    form.content = '';
-    await fetchDocuments();
-  } finally {
-    saving.value = false;
-  }
+const handleCreate = () => {
+  dialogType.value = 'create';
+  nextTick(() => createDialog.value.dialogRef.open());
 };
 
-const syncDocument = async document => {
-  await MarineDocumentAPI.sync(document.id);
+const handleCreateClose = async () => {
+  dialogType.value = '';
   await fetchDocuments();
 };
 
-const deleteDocument = async document => {
-  await MarineDocumentAPI.delete(document.id);
-  await fetchDocuments();
+const handleDelete = document => {
+  selectedDocument.value = document;
+  nextTick(() => deleteDialog.value.open());
 };
 
-const statusLabel = status =>
-  status === 'available'
-    ? t('MARINE_AI.DOCUMENTS.STATUS_AVAILABLE')
-    : t('MARINE_AI.DOCUMENTS.STATUS_IN_PROGRESS');
-
-const syncStatusLabel = syncStatus => {
-  if (syncStatus === 'synced') return t('MARINE_AI.DOCUMENTS.SYNC_SYNCED');
-  if (syncStatus === 'syncing') return t('MARINE_AI.DOCUMENTS.SYNC_SYNCING');
-  if (syncStatus === 'failed') return t('MARINE_AI.DOCUMENTS.SYNC_FAILED');
-  return t('MARINE_AI.DOCUMENTS.SYNC_NONE');
+const confirmDelete = async () => {
+  try {
+    await MarineDocumentAPI.delete(selectedDocument.value.id);
+    useAlert(t('MARINE_AI.DOCUMENTS.DELETE.SUCCESS'));
+    selectedDocument.value = null;
+    await fetchDocuments();
+  } catch (error) {
+    useAlert(parseAPIErrorResponse(error));
+  } finally {
+    deleteDialog.value?.close();
+  }
 };
+
+const handleSync = async id => {
+  try {
+    await MarineDocumentAPI.sync(id);
+    useAlert(t('MARINE_AI.DOCUMENTS.SYNC.QUEUED_MESSAGE'));
+    await fetchDocuments();
+  } catch (error) {
+    useAlert(
+      parseAPIErrorResponse(error) ||
+        t('MARINE_AI.DOCUMENTS.SYNC.ERROR_MESSAGE')
+    );
+  }
+};
+
+const handleAction = ({ action, id }) => {
+  const document = documents.value.find(item => item.id === id);
+  if (!document) return;
+  if (action === 'sync') handleSync(id);
+  else if (action === 'delete') handleDelete(document);
+};
+
+watch(assistantId, () => {
+  clearFilters();
+  fetchDocuments();
+});
 
 onMounted(fetchDocuments);
 </script>
 
 <template>
-  <MarinePageShell
-    :title="t('MARINE_AI.DOCUMENTS.TITLE')"
-    :description="t('MARINE_AI.DOCUMENTS.DESCRIPTION')"
+  <MarinePageLayout
+    :header-title="t('MARINE_AI.DOCUMENTS.HEADER')"
+    :button-label="t('MARINE_AI.DOCUMENTS.ADD_NEW')"
+    :button-policy="['administrator']"
+    :is-fetching="loading"
+    :is-empty="isEmpty"
+    :show-pagination-footer="false"
+    @click="handleCreate"
   >
-    <div
-      v-if="!activeAssistantId"
-      class="rounded-xl border border-n-weak bg-n-solid-1 p-4 space-y-3"
-    >
-      <p class="text-sm text-n-slate-11">
-        {{ t('MARINE_AI.EMPTY_ASSISTANT.DESCRIPTION') }}
-      </p>
-      <button
-        type="button"
-        class="rounded-lg bg-n-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-        :disabled="saving"
-        @click="setupAssistant"
-      >
-        {{ t('MARINE_AI.EMPTY_ASSISTANT.CREATE') }}
-      </button>
-    </div>
-    <div v-else class="space-y-4">
-      <form
-        class="rounded-xl border border-n-weak bg-n-solid-1 p-4 space-y-3"
-        @submit.prevent="createDocument"
-      >
-        <h2 class="text-base font-medium text-n-slate-12">
-          {{ t('MARINE_AI.DOCUMENTS.ADD') }}
-        </h2>
-        <input
-          v-model="form.name"
-          class="w-full rounded-lg border border-n-weak bg-n-alpha-black1 p-3 text-sm text-n-slate-12"
-          :placeholder="t('MARINE_AI.DOCUMENTS.NAME')"
-        />
-        <input
-          v-model="form.externalLink"
-          class="w-full rounded-lg border border-n-weak bg-n-alpha-black1 p-3 text-sm text-n-slate-12"
-          :placeholder="t('MARINE_AI.DOCUMENTS.URL')"
-        />
-        <textarea
-          v-model="form.content"
-          rows="5"
-          class="w-full rounded-lg border border-n-weak bg-n-alpha-black1 p-3 text-sm text-n-slate-12"
-          :placeholder="t('MARINE_AI.DOCUMENTS.CONTENT')"
-        />
-        <button
-          type="submit"
-          class="rounded-lg bg-n-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-          :disabled="saving || !form.externalLink.trim()"
-        >
-          {{ saving ? t('MARINE_AI.SAVING') : t('MARINE_AI.DOCUMENTS.SAVE') }}
-        </button>
-      </form>
+    <template #search>
+      <Input
+        v-model="searchQuery"
+        :placeholder="t('MARINE_AI.DOCUMENTS.SEARCH_PLACEHOLDER')"
+        class="w-64"
+        size="sm"
+        type="search"
+        @input="debouncedSearch"
+      />
+    </template>
 
-      <div class="rounded-xl border border-n-weak bg-n-solid-1 p-4">
-        <p v-if="loading" class="text-sm text-n-slate-11">
-          {{ t('MARINE_AI.DOCUMENTS.LOADING') }}
-        </p>
-        <p v-else-if="documents.length === 0" class="text-sm text-n-slate-11">
-          {{ t('MARINE_AI.DOCUMENTS.EMPTY') }}
-        </p>
-        <ul v-else class="space-y-2">
-          <li
-            v-for="document in documents"
-            :key="document.id"
-            class="rounded-lg border border-n-weak p-3"
-          >
-            <div class="flex items-start justify-between gap-3">
-              <div class="min-w-0">
-                <div class="font-medium text-n-slate-12">
-                  {{ document.name }}
-                </div>
-                <a
-                  v-if="document.external_link"
-                  :href="document.external_link"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="text-sm text-n-blue-11 break-all"
-                >
-                  {{ document.external_link }}
-                </a>
-              </div>
-              <div class="flex shrink-0 flex-col items-end gap-1">
-                <span
-                  class="rounded-full px-2 py-0.5 text-xs font-medium"
-                  :class="
-                    document.status === 'available'
-                      ? 'bg-n-teal-3 text-n-teal-11'
-                      : 'bg-n-amber-3 text-n-amber-11'
-                  "
-                >
-                  {{ statusLabel(document.status) }}
-                </span>
-                <span
-                  class="rounded-full px-2 py-0.5 text-xs font-medium"
-                  :class="
-                    document.sync_status === 'failed'
-                      ? 'bg-n-ruby-3 text-n-ruby-11'
-                      : 'bg-n-alpha-2 text-n-slate-11'
-                  "
-                >
-                  {{ syncStatusLabel(document.sync_status) }}
-                </span>
-              </div>
-            </div>
-            <div class="mt-2 flex gap-2">
-              <button
-                type="button"
-                class="rounded-md border border-n-weak px-2.5 py-1 text-xs font-medium text-n-slate-12"
-                @click="syncDocument(document)"
-              >
-                {{ t('MARINE_AI.DOCUMENTS.SYNC') }}
-              </button>
-              <button
-                type="button"
-                class="rounded-md border border-n-weak px-2.5 py-1 text-xs font-medium text-n-ruby-11"
-                @click="deleteDocument(document)"
-              >
-                {{ t('MARINE_AI.DOCUMENTS.DELETE') }}
-              </button>
-            </div>
-          </li>
-        </ul>
+    <template #emptyState>
+      <DocumentPageEmptyState
+        :has-active-filters="hasActiveFilters"
+        @click="handleCreate"
+        @clear-filters="clearFilters"
+      />
+    </template>
+
+    <template #body>
+      <div class="flex flex-col gap-4">
+        <MarineDocumentCard
+          v-for="document in filteredDocuments"
+          :id="document.id"
+          :key="document.id"
+          :name="document.name || document.external_link"
+          :external-link="document.external_link"
+          :assistant="document.assistant"
+          :created-at="document.created_at"
+          :status="document.status"
+          :sync-status="document.sync_status"
+          @action="handleAction"
+        />
       </div>
-    </div>
-  </MarinePageShell>
+    </template>
+
+    <CreateDocumentDialog
+      v-if="dialogType === 'create'"
+      ref="createDialog"
+      :assistant-id="assistantId"
+      @close="handleCreateClose"
+    />
+
+    <Dialog
+      ref="deleteDialog"
+      type="alert"
+      :title="t('MARINE_AI.DOCUMENTS.DELETE.TITLE')"
+      :description="t('MARINE_AI.DOCUMENTS.DELETE.MESSAGE')"
+      :confirm-button-label="t('MARINE_AI.DOCUMENTS.DELETE.CONFIRM')"
+      :cancel-button-label="t('MARINE_AI.DOCUMENTS.DELETE.CANCEL')"
+      @confirm="confirmDelete"
+    />
+  </MarinePageLayout>
 </template>

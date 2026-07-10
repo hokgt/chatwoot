@@ -185,6 +185,11 @@ require_file app/javascript/dashboard/routes/dashboard/marine/marine.routes.js
 require_file app/javascript/dashboard/routes/dashboard/marine/pages/AssistantsIndexPage.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/composables/useMarineAssistants.js
 require_file app/javascript/dashboard/routes/dashboard/marine/components/MarinePageShell.vue
+require_file app/javascript/dashboard/routes/dashboard/marine/components/MarinePageLayout.vue
+require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantSwitcher.vue
+require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineDocumentCard.vue
+require_file app/javascript/dashboard/routes/dashboard/marine/components/CreateDocumentDialog.vue
+require_file app/javascript/dashboard/routes/dashboard/marine/components/DocumentPageEmptyState.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineResponseCard.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/components/CreateResponseDialog.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/components/ResponsePageEmptyState.vue
