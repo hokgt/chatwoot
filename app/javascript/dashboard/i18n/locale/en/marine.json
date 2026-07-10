@@ -25,18 +25,67 @@
     },
     "FAQS": {
       "TITLE": "FAQs",
+      "HEADER": "FAQs",
       "DESCRIPTION": "Question and answer pairs Marine AI uses to respond to customers.",
       "LOADING": "Loading FAQs…",
       "EMPTY": "No FAQs yet for this Marine assistant.",
       "QUESTION": "Question",
       "ANSWER": "Answer",
       "ADD": "Add FAQ",
+      "ADD_NEW": "Add FAQ",
       "SAVE": "Save FAQ",
       "APPROVE": "Approve",
-      "DELETE": "Delete",
+      "SEARCH_PLACEHOLDER": "Search FAQs...",
       "STATUS_ALL": "All",
       "STATUS_PENDING": "Pending",
-      "STATUS_APPROVED": "Approved"
+      "STATUS_APPROVED": "Approved",
+      "FORM_DESCRIPTION": "Add a question and answer pair that Marine AI can use to respond to customer queries.",
+      "OPTIONS": {
+        "APPROVE": "Approve",
+        "EDIT_RESPONSE": "Edit FAQ",
+        "DELETE_RESPONSE": "Delete FAQ"
+      },
+      "CREATE": {
+        "TITLE": "Create FAQ",
+        "SUCCESS_MESSAGE": "FAQ created successfully",
+        "ERROR_MESSAGE": "Failed to create FAQ"
+      },
+      "EDIT": {
+        "TITLE": "Edit FAQ",
+        "SUCCESS_MESSAGE": "FAQ updated successfully",
+        "ERROR_MESSAGE": "Failed to update FAQ"
+      },
+      "FORM": {
+        "QUESTION": {
+          "LABEL": "Question",
+          "PLACEHOLDER": "Enter the question",
+          "ERROR": "Question is required"
+        },
+        "ANSWER": {
+          "LABEL": "Answer",
+          "PLACEHOLDER": "Enter the answer",
+          "ERROR": "Answer is required"
+        }
+      },
+      "EMPTY_STATE": {
+        "TITLE": "No FAQs yet",
+        "SUBTITLE": "Create your first FAQ to help Marine AI respond to customer queries.",
+        "NO_PENDING_TITLE": "No pending FAQs",
+        "CLEAR_FILTERS": "Clear filters"
+      },
+      "DELETE": {
+        "TITLE": "Delete FAQ",
+        "MESSAGE": "Are you sure you want to delete this FAQ?",
+        "CONFIRM": "Delete",
+        "CANCEL": "Cancel",
+        "SUCCESS": "FAQ deleted successfully"
+      },
+      "DOCUMENTABLE": {
+        "CONVERSATION": "Conversation #{id}"
+      },
+      "SELECTED": "{count} selected",
+      "SELECT_ALL": "Select all ({count})",
+      "UNSELECT_ALL": "Unselect all ({count})"
     },
     "DOCUMENTS": {
       "TITLE": "Knowledge Base",
