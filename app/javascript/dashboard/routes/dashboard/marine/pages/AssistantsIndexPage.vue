@@ -24,8 +24,6 @@ const sectionComponents = {
   marine_assistants_inboxes_index: InboxesIndex,
   marine_tools_index: ToolsIndex,
   marine_assistants_settings_index: SettingsIndex,
-  marine_assistants_guidelines_index: SettingsIndex,
-  marine_assistants_guardrails_index: SettingsIndex,
 };
 
 const activeComponent = computed(() => {

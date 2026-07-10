@@ -9,6 +9,8 @@ import MarinePlaygroundIndex from './playground/Index.vue';
 import MarineInboxesIndex from './inboxes/Index.vue';
 import MarineToolsIndex from './tools/Index.vue';
 import MarineSettingsIndex from './settings/Index.vue';
+import MarineGuardrailsIndex from './guardrails/Index.vue';
+import MarineGuidelinesIndex from './guidelines/Index.vue';
 
 const meta = {
   permissions: ['administrator', 'agent'],
@@ -73,7 +75,7 @@ const assistantRoutes = [
     path: frontendURL(
       'accounts/:accountId/marine/:assistantId/settings/guardrails'
     ),
-    component: MarineSettingsIndex,
+    component: MarineGuardrailsIndex,
     name: 'marine_assistants_guardrails_index',
     meta,
   },
@@ -81,7 +83,7 @@ const assistantRoutes = [
     path: frontendURL(
       'accounts/:accountId/marine/:assistantId/settings/guidelines'
     ),
-    component: MarineSettingsIndex,
+    component: MarineGuidelinesIndex,
     name: 'marine_assistants_guidelines_index',
     meta,
   },
