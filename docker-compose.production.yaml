@@ -2,7 +2,7 @@ version: '3'
 
 services:
   base: &base
-    image: chatwoot-wijaya:devbot-marine-guardrails-a2ad9a1e5
+    image: chatwoot-wijaya:devbot-marine-layout7-9199b3a19
     env_file: .env ## Change this file for customized env variables
     volumes:
       - storage_data:/app/storage
