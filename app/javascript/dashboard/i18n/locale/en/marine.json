@@ -250,6 +250,12 @@
       "SEND": "Ask",
       "SENDING": "Asking…"
     },
+    "ASSISTANT_SWITCHER": {
+      "ASSISTANTS": "Marine Assistants",
+      "SWITCH_ASSISTANT": "Switch assistant",
+      "NEW_ASSISTANT": "New assistant",
+      "EMPTY_LIST": "No Marine assistants found."
+    },
     "SAVING": "Saving…"
   },
   "MARINE_SETTINGS": {
