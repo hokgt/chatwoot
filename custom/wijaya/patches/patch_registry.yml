@@ -275,6 +275,11 @@ patches:
       - app/javascript/dashboard/routes/dashboard/marine/composables/useMarineAssistants.js
       - app/javascript/dashboard/routes/dashboard/marine/components/MarinePageShell.vue
       - app/javascript/dashboard/routes/dashboard/marine/components/MarinePageLayout.vue
+      - app/javascript/dashboard/routes/dashboard/marine/components/MarineSettingsHeader.vue
+      - app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantBasicSettingsForm.vue
+      - app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantSystemSettingsForm.vue
+      - app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantControlItems.vue
+      - app/javascript/dashboard/routes/dashboard/marine/components/MarineDeleteDialog.vue
       - app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantPlayground.vue
       - app/javascript/dashboard/routes/dashboard/marine/components/MarineMessageList.vue
       - app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantSwitcher.vue

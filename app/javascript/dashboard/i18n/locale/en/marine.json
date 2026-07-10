@@ -342,6 +342,55 @@
         }
       }
     },
+    "ASSISTANTS": {
+      "FORM": {
+        "UPDATE": "Update",
+        "NAME": {
+          "LABEL": "Assistant name",
+          "PLACEHOLDER": "Enter assistant name"
+        },
+        "PRODUCT_NAME": {
+          "LABEL": "Product name",
+          "PLACEHOLDER": "Enter product name"
+        },
+        "DESCRIPTION": {
+          "LABEL": "Description",
+          "PLACEHOLDER": "Enter description"
+        },
+        "HANDOFF_MESSAGE": {
+          "LABEL": "Handoff message",
+          "PLACEHOLDER": "Message shown when handing off to an agent"
+        },
+        "RESOLUTION_MESSAGE": {
+          "LABEL": "Resolution message",
+          "PLACEHOLDER": "Message shown when conversation is resolved"
+        },
+        "INSTRUCTIONS": {
+          "LABEL": "Instructions",
+          "PLACEHOLDER": "Enter system instructions for the assistant"
+        },
+        "TEMPERATURE": {
+          "LABEL": "Temperature"
+        },
+        "FEATURES": {
+          "TITLE": "Features",
+          "ALLOW_CONVERSATION_FAQS": "Allow conversation FAQs",
+          "ALLOW_MEMORIES": "Allow memories",
+          "ALLOW_CONTACT_ATTRIBUTES": "Allow contact attributes"
+        }
+      },
+      "EDIT": {
+        "SUCCESS_MESSAGE": "Marine assistant updated successfully",
+        "ERROR_MESSAGE": "Failed to update Marine assistant"
+      },
+      "DELETE": {
+        "TITLE": "Delete assistant",
+        "DESCRIPTION": "Are you sure you want to delete this assistant?",
+        "CONFIRM": "Yes, delete",
+        "SUCCESS_MESSAGE": "Marine assistant deleted successfully",
+        "ERROR_MESSAGE": "Failed to delete Marine assistant"
+      }
+    },
     "SETTINGS": {
       "TITLE": "Settings",
       "DESCRIPTION": "Marine assistant configuration and account level Marine preferences.",
@@ -363,7 +412,34 @@
       "TEMPERATURE": "Temperature",
       "MODELS": "Models",
       "FEATURES": "Features",
-      "NONE": "Not configured"
+      "NONE": "Not configured",
+      "BASIC_SETTINGS": {
+        "TITLE": "Basic settings",
+        "DESCRIPTION": "Configure the assistant's name, product, and features."
+      },
+      "SYSTEM_SETTINGS": {
+        "TITLE": "System settings",
+        "DESCRIPTION": "Configure handoff, resolution, instructions, and temperature."
+      },
+      "CONTROL_ITEMS": {
+        "TITLE": "Advanced controls",
+        "DESCRIPTION": "Configure guardrails and response guidelines.",
+        "OPTIONS": {
+          "GUARDRAILS": {
+            "TITLE": "Guardrails",
+            "DESCRIPTION": "Set boundaries for what the assistant can and cannot do."
+          },
+          "RESPONSE_GUIDELINES": {
+            "TITLE": "Response guidelines",
+            "DESCRIPTION": "Define how the assistant should format responses."
+          }
+        }
+      },
+      "DELETE": {
+        "TITLE": "Delete assistant",
+        "DESCRIPTION": "Once deleted, the assistant and all its data cannot be recovered.",
+        "BUTTON_TEXT": "Delete {assistantName}"
+      }
     },
     "COPILOT": {
       "TITLE": "Ask Marine",

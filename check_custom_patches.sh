@@ -186,6 +186,11 @@ require_file app/javascript/dashboard/routes/dashboard/marine/pages/AssistantsIn
 require_file app/javascript/dashboard/routes/dashboard/marine/composables/useMarineAssistants.js
 require_file app/javascript/dashboard/routes/dashboard/marine/components/MarinePageShell.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/components/MarinePageLayout.vue
+require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineSettingsHeader.vue
+require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantBasicSettingsForm.vue
+require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantSystemSettingsForm.vue
+require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantControlItems.vue
+require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineDeleteDialog.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantPlayground.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineMessageList.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantSwitcher.vue

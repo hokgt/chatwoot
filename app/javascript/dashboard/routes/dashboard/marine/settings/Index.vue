@@ -1,13 +1,30 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
+import { useAlert } from 'dashboard/composables';
+import { parseAPIErrorResponse } from 'dashboard/store/utils/api';
+import MarineAssistantAPI from 'dashboard/api/marine/assistant';
 import MarinePreferencesAPI from 'dashboard/api/marine/preferences';
 import { useMarineAssistants } from '../composables/useMarineAssistants';
-import MarinePageShell from '../components/MarinePageShell.vue';
+
+import Button from 'dashboard/components-next/button/Button.vue';
+import MarinePageLayout from '../components/MarinePageLayout.vue';
+import MarineSettingsHeader from '../components/MarineSettingsHeader.vue';
+import MarineAssistantBasicSettingsForm from '../components/MarineAssistantBasicSettingsForm.vue';
+import MarineAssistantSystemSettingsForm from '../components/MarineAssistantSystemSettingsForm.vue';
+import MarineAssistantControlItems from '../components/MarineAssistantControlItems.vue';
+import MarineDeleteDialog from '../components/MarineDeleteDialog.vue';
 
 const { t } = useI18n();
-const { activeAssistant, fetchAssistants } = useMarineAssistants();
-const loading = ref(false);
+const route = useRoute();
+const router = useRouter();
+
+const { assistants, fetchAssistants } = useMarineAssistants();
+
+const assistant = ref(null);
+const isFetching = ref(false);
+const deleteAssistantDialog = ref(null);
 const preferences = ref({
   enabled: true,
   hub: 'local',
@@ -17,6 +34,8 @@ const preferences = ref({
   models: {},
   features: {},
 });
+
+const assistantId = computed(() => Number(route.params.assistantId));
 
 const yesNo = value =>
   value ? t('MARINE_AI.SETTINGS.ENABLED') : t('MARINE_AI.SETTINGS.DISABLED');
@@ -62,92 +81,190 @@ const statusRows = computed(() => {
   ];
 });
 
-const fetchSettings = async () => {
-  loading.value = true;
+const controlItems = computed(() => [
+  {
+    name: t('MARINE_AI.SETTINGS.CONTROL_ITEMS.OPTIONS.GUARDRAILS.TITLE'),
+    description: t(
+      'MARINE_AI.SETTINGS.CONTROL_ITEMS.OPTIONS.GUARDRAILS.DESCRIPTION'
+    ),
+    routeName: 'marine_assistants_guardrails_index',
+  },
+  {
+    name: t(
+      'MARINE_AI.SETTINGS.CONTROL_ITEMS.OPTIONS.RESPONSE_GUIDELINES.TITLE'
+    ),
+    description: t(
+      'MARINE_AI.SETTINGS.CONTROL_ITEMS.OPTIONS.RESPONSE_GUIDELINES.DESCRIPTION'
+    ),
+    routeName: 'marine_assistants_guidelines_index',
+  },
+]);
+
+const fetchAssistant = async () => {
+  if (!assistantId.value) return;
+  isFetching.value = true;
   try {
-    await fetchAssistants();
-    const { data } = await MarinePreferencesAPI.get();
-    if (data) {
-      preferences.value = { ...preferences.value, ...data };
-    }
+    const { data } = await MarineAssistantAPI.show(assistantId.value);
+    assistant.value = data;
   } finally {
-    loading.value = false;
+    isFetching.value = false;
   }
 };
 
-onMounted(fetchSettings);
+const fetchPreferences = async () => {
+  const { data } = await MarinePreferencesAPI.get();
+  if (data) {
+    preferences.value = { ...preferences.value, ...data };
+  }
+};
+
+const handleSubmit = async updatedAssistant => {
+  try {
+    await MarineAssistantAPI.update(assistantId.value, {
+      assistant: updatedAssistant,
+    });
+    useAlert(t('MARINE_AI.ASSISTANTS.EDIT.SUCCESS_MESSAGE'));
+    await fetchAssistant();
+  } catch (error) {
+    useAlert(
+      parseAPIErrorResponse(error) ||
+        t('MARINE_AI.ASSISTANTS.EDIT.ERROR_MESSAGE')
+    );
+  }
+};
+
+const handleDelete = () => {
+  deleteAssistantDialog.value.dialogRef.open();
+};
+
+const handleDeleteSuccess = async () => {
+  await fetchAssistants();
+  const remainingAssistants = assistants.value.filter(
+    a => a.id !== assistantId.value
+  );
+
+  if (remainingAssistants.length > 0) {
+    router.push({
+      name: 'marine_assistants_settings_index',
+      params: {
+        accountId: route.params.accountId,
+        assistantId: remainingAssistants[0].id,
+      },
+    });
+  } else {
+    router.push({
+      name: 'marine_assistants_create_index',
+      params: { accountId: route.params.accountId },
+    });
+  }
+};
+
+watch(assistantId, fetchAssistant);
+
+onMounted(() => {
+  fetchAssistant();
+  fetchPreferences();
+});
 </script>
 
 <template>
-  <MarinePageShell
-    :title="t('MARINE_AI.SETTINGS.TITLE')"
-    :description="t('MARINE_AI.SETTINGS.DESCRIPTION')"
+  <MarinePageLayout
+    :is-fetching="isFetching"
+    :show-pagination-footer="false"
+    :show-know-more="false"
   >
-    <div
-      v-if="loading"
-      class="rounded-xl border border-n-weak bg-n-solid-1 p-4"
-    >
-      <p class="text-sm text-n-slate-11">
-        {{ t('MARINE_AI.SETTINGS.LOADING') }}
-      </p>
-    </div>
-    <div v-else class="grid gap-4">
-      <section class="rounded-xl border border-n-weak bg-n-solid-1 p-4">
-        <h2 class="text-base font-medium text-n-slate-12">
-          {{ t('MARINE_AI.SETTINGS.STATUS_TITLE') }}
-        </h2>
-        <p class="mt-1 text-sm text-n-slate-11">
-          {{ t('MARINE_AI.SETTINGS.STATUS_HINT') }}
-        </p>
-        <dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
-          <div
-            v-for="row in statusRows"
-            :key="row.key"
-            class="flex items-center justify-between gap-3 rounded-lg border border-n-weak px-3 py-2"
-          >
-            <dt class="text-n-slate-11">{{ row.label }}</dt>
-            <dd class="font-medium text-n-slate-12">{{ row.value }}</dd>
+    <template #body>
+      <div class="gap-6 lg:gap-16 pb-8 grid grid-cols-2">
+        <div class="flex flex-col gap-6">
+          <div class="flex flex-col gap-6">
+            <MarineSettingsHeader
+              :heading="t('MARINE_AI.SETTINGS.BASIC_SETTINGS.TITLE')"
+              :description="t('MARINE_AI.SETTINGS.BASIC_SETTINGS.DESCRIPTION')"
+            />
+            <MarineAssistantBasicSettingsForm
+              :assistant="assistant"
+              @submit="handleSubmit"
+            />
           </div>
-        </dl>
-      </section>
-
-      <section class="rounded-xl border border-n-weak bg-n-solid-1 p-4">
-        <h2 class="text-base font-medium text-n-slate-12">
-          {{ t('MARINE_AI.SETTINGS.ASSISTANT') }}
-        </h2>
-        <dl class="mt-3 grid gap-2 text-sm">
-          <div class="grid gap-1">
-            <dt class="text-n-slate-11">
-              {{ t('MARINE_AI.DASHBOARD.ASSISTANTS') }}
-            </dt>
-            <dd class="text-n-slate-12">
-              {{ activeAssistant?.name || t('MARINE_AI.SETTINGS.NONE') }}
-            </dd>
+          <span class="h-px w-full bg-n-weak mt-2" />
+          <div class="flex flex-col gap-6">
+            <MarineSettingsHeader
+              :heading="t('MARINE_AI.SETTINGS.SYSTEM_SETTINGS.TITLE')"
+              :description="t('MARINE_AI.SETTINGS.SYSTEM_SETTINGS.DESCRIPTION')"
+            />
+            <MarineAssistantSystemSettingsForm
+              :assistant="assistant"
+              @submit="handleSubmit"
+            />
           </div>
-          <div class="grid gap-1">
-            <dt class="text-n-slate-11">
-              {{ t('MARINE_AI.SETTINGS.INSTRUCTIONS') }}
-            </dt>
-            <dd class="whitespace-pre-wrap text-n-slate-12">
-              {{
-                activeAssistant?.config?.instructions ||
-                t('MARINE_AI.SETTINGS.NONE')
-              }}
-            </dd>
+          <span class="h-px w-full bg-n-weak mt-2" />
+          <div class="flex items-end justify-between w-full gap-4">
+            <div class="flex flex-col gap-2">
+              <h6 class="text-n-slate-12 text-base font-medium">
+                {{ t('MARINE_AI.SETTINGS.DELETE.TITLE') }}
+              </h6>
+              <span class="text-n-slate-11 text-sm">
+                {{ t('MARINE_AI.SETTINGS.DELETE.DESCRIPTION') }}
+              </span>
+            </div>
+            <div class="flex-shrink-0">
+              <Button
+                :label="
+                  t('MARINE_AI.SETTINGS.DELETE.BUTTON_TEXT', {
+                    assistantName: assistant?.name,
+                  })
+                "
+                color="ruby"
+                class="max-w-56 !w-fit"
+                @click="handleDelete"
+              />
+            </div>
           </div>
-          <div class="grid gap-1">
-            <dt class="text-n-slate-11">
-              {{ t('MARINE_AI.SETTINGS.TEMPERATURE') }}
-            </dt>
-            <dd class="text-n-slate-12">
-              {{
-                activeAssistant?.config?.temperature ||
-                t('MARINE_AI.SETTINGS.NONE')
-              }}
-            </dd>
+        </div>
+        <div class="flex flex-col gap-6">
+          <div class="flex flex-col gap-6">
+            <MarineSettingsHeader
+              :heading="t('MARINE_AI.SETTINGS.CONTROL_ITEMS.TITLE')"
+              :description="t('MARINE_AI.SETTINGS.CONTROL_ITEMS.DESCRIPTION')"
+            />
+            <div class="flex flex-col gap-6">
+              <MarineAssistantControlItems
+                v-for="item in controlItems"
+                :key="item.name"
+                :control-item="item"
+              />
+            </div>
           </div>
-        </dl>
-      </section>
-    </div>
-  </MarinePageShell>
+          <span class="h-px w-full bg-n-weak mt-2" />
+          <div class="flex flex-col gap-6">
+            <MarineSettingsHeader
+              :heading="t('MARINE_AI.SETTINGS.STATUS_TITLE')"
+              :description="t('MARINE_AI.SETTINGS.STATUS_HINT')"
+            />
+            <dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+              <div
+                v-for="row in statusRows"
+                :key="row.key"
+                class="flex items-center justify-between gap-3 rounded-lg border border-n-weak px-3 py-2"
+              >
+                <dt class="text-n-slate-11">{{ row.label }}</dt>
+                <dd class="font-medium text-n-slate-12">{{ row.value }}</dd>
+              </div>
+            </dl>
+          </div>
+        </div>
+      </div>
+    </template>
+    <MarineDeleteDialog
+      v-if="assistant"
+      ref="deleteAssistantDialog"
+      :entity="assistant"
+      :title="t('MARINE_AI.ASSISTANTS.DELETE.TITLE')"
+      :description="t('MARINE_AI.ASSISTANTS.DELETE.DESCRIPTION')"
+      :confirm-button-label="t('MARINE_AI.ASSISTANTS.DELETE.CONFIRM')"
+      :success-message="t('MARINE_AI.ASSISTANTS.DELETE.SUCCESS_MESSAGE')"
+      :error-message="t('MARINE_AI.ASSISTANTS.DELETE.ERROR_MESSAGE')"
+      @delete-success="handleDeleteSuccess"
+    />
+  </MarinePageLayout>
 </template>
