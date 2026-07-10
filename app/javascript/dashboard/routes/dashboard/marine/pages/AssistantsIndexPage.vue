@@ -1,39 +1,87 @@
 <script setup>
-import { computed } from 'vue';
-import { useRoute } from 'vue-router';
+import { nextTick, onMounted } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
+import { useUISettings } from 'dashboard/composables/useUISettings';
 
-import ResponsesIndex from '../responses/Index.vue';
-import DocumentsIndex from '../documents/Index.vue';
-import ScenariosIndex from '../scenarios/Index.vue';
-import CopilotIndex from '../copilot/Index.vue';
-import PlaygroundIndex from '../playground/Index.vue';
-import InboxesIndex from '../inboxes/Index.vue';
-import ToolsIndex from '../tools/Index.vue';
-import SettingsIndex from '../settings/Index.vue';
+import Spinner from 'dashboard/components-next/spinner/Spinner.vue';
+import { useMarineAssistants } from '../composables/useMarineAssistants';
 
+const router = useRouter();
 const route = useRoute();
+const { uiSettings } = useUISettings();
 
-const sectionComponents = {
-  marine_assistants_responses_index: ResponsesIndex,
-  marine_assistants_responses_pending: ResponsesIndex,
-  marine_assistants_responses_pending_index: ResponsesIndex,
-  marine_assistants_documents_index: DocumentsIndex,
-  marine_assistants_scenarios_index: ScenariosIndex,
-  marine_assistants_copilot_index: CopilotIndex,
-  marine_assistants_playground_index: PlaygroundIndex,
-  marine_assistants_inboxes_index: InboxesIndex,
-  marine_tools_index: ToolsIndex,
-  marine_assistants_settings_index: SettingsIndex,
+const { assistants, fetchAssistants } = useMarineAssistants();
+
+const isAssistantPresent = assistantId => {
+  return !!assistants.value.find(a => a.id === Number(assistantId));
 };
 
-const activeComponent = computed(() => {
-  return (
-    sectionComponents[route.params.navigationPath] ||
-    sectionComponents.marine_assistants_responses_index
-  );
-});
+const routeToView = (name, params) => {
+  router.replace({ name, params, replace: true });
+};
+
+const generateRouterParams = () => {
+  const { marine_last_active_assistant_id: lastActiveAssistantId } =
+    uiSettings.value || {};
+
+  if (isAssistantPresent(lastActiveAssistantId)) {
+    return {
+      assistantId: lastActiveAssistantId,
+    };
+  }
+
+  if (assistants.value.length > 0) {
+    const { id: assistantId } = assistants.value[0];
+    return { assistantId };
+  }
+
+  return null;
+};
+
+const routeToLastActiveAssistant = () => {
+  const params = generateRouterParams();
+
+  // No assistants found, redirect to create page
+  if (!params) {
+    return routeToView('marine_assistants_create_index', {
+      accountId: route.params.accountId,
+    });
+  }
+
+  const { navigationPath } = route.params;
+  const isAValidRoute = [
+    'marine_assistants_responses_index',
+    'marine_assistants_documents_index',
+    'marine_assistants_scenarios_index',
+    'marine_assistants_copilot_index',
+    'marine_assistants_playground_index',
+    'marine_assistants_inboxes_index',
+    'marine_tools_index',
+    'marine_assistants_settings_index',
+  ].includes(navigationPath);
+
+  const navigateTo = isAValidRoute
+    ? navigationPath
+    : 'marine_assistants_responses_index';
+
+  return routeToView(navigateTo, {
+    accountId: route.params.accountId,
+    ...params,
+  });
+};
+
+const performRouting = async () => {
+  await fetchAssistants();
+  nextTick(() => routeToLastActiveAssistant());
+};
+
+onMounted(() => performRouting());
 </script>
 
 <template>
-  <component :is="activeComponent" />
+  <div
+    class="flex items-center justify-center w-full bg-n-surface-1 text-n-slate-11"
+  >
+    <Spinner />
+  </div>
 </template>

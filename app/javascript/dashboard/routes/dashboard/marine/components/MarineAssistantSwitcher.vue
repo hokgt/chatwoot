@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router';
 
 import Button from 'dashboard/components-next/button/Button.vue';
 import Avatar from 'dashboard/components-next/avatar/Avatar.vue';
+import { useUISettings } from 'dashboard/composables/useUISettings';
 import { useMarineAssistants } from '../composables/useMarineAssistants';
 
 const emit = defineEmits(['close', 'createAssistant']);
@@ -12,6 +13,7 @@ const emit = defineEmits(['close', 'createAssistant']);
 const { t } = useI18n();
 const route = useRoute();
 const router = useRouter();
+const { updateUISettings } = useUISettings();
 
 const { assistants, fetchAssistants } = useMarineAssistants();
 
@@ -33,6 +35,8 @@ const handleAssistantChange = async assistant => {
       assistantId: assistant.id,
     },
   });
+
+  updateUISettings({ marine_last_active_assistant_id: assistant.id });
 
   emit('close');
 };
