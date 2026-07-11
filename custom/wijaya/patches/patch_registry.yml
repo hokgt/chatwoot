@@ -144,6 +144,7 @@ patches:
     core_hook_touchpoints:
       - config/initializers/wijaya_erp_lead_sidebar.rb
       - config/routes.rb
+      - app/models/conversation.rb
       - app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue
     tests:
       - spec/custom/wijaya/erp_lead_sidebar/payload_builder_spec.rb

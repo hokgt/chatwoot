@@ -116,6 +116,9 @@ class Conversation < ApplicationRecord
   has_many :notifications, as: :primary_actor, dependent: :destroy_async
   has_many :attachments, through: :messages
   has_many :reporting_events, dependent: :destroy_async
+  # WIJAYA_CUSTOM_START erp_lead_sidebar
+  has_many :wijaya_erp_lead_drafts, dependent: :destroy, class_name: 'Wijaya::ErpLeadDraft'
+  # WIJAYA_CUSTOM_END erp_lead_sidebar
 
   before_save :ensure_snooze_until_reset
   before_create :determine_conversation_status

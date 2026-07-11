@@ -28,11 +28,22 @@ module Wijaya
       end
 
       def marine_handling_conversation?(conversation:, inbox:)
-        conversation.pending? && inbox.respond_to?(:marine_assistant) && inbox.marine_assistant.present?
+        return false unless inbox.respond_to?(:marine_assistant) && inbox.marine_assistant.present?
+        return false if conversation.resolved? || conversation.snoozed?
+        # Marine handles the conversation until a human agent sends a reply.
+        # We check for sender_type 'User' (human) — Marine's own replies use
+        # sender_type 'Marine::Assistant' and must not block subsequent turns.
+        conversation.messages.outgoing.where(private: false).where(sender_type: 'User').empty?
       end
 
       def should_process_marine_response?(conversation, inbox, message)
-        conversation.pending? && message.incoming? && inbox.respond_to?(:marine_assistant) && inbox.marine_assistant.present?
+        return false unless message.incoming?
+        return false unless inbox.respond_to?(:marine_assistant) && inbox.marine_assistant.present?
+        return false if conversation.resolved? || conversation.snoozed?
+        # Marine handles until a human agent replies.  WhatsApp conversations
+        # are created as 'open' (not 'pending' like web widget), so we check
+        # for human (User) outgoing messages instead of the conversation status.
+        conversation.messages.outgoing.where(private: false).where(sender_type: 'User').empty?
       end
 
       def schedule_marine_response(conversation, message)
