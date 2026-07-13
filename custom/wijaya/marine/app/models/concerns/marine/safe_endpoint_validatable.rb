@@ -65,6 +65,9 @@ module Marine::SafeEndpointValidatable
   end
 
   def validate_not_ip_address(uri)
+    # Guard: relative URLs may have no host — validate_endpoint_host already
+    # added an error, so skip to avoid NoMethodError on nil host.
+    return if uri.host.blank?
     # Check for IPv4
     if /\A\d+\.\d+\.\d+\.\d+\z/.match?(uri.host)
       errors.add(:endpoint_url, 'cannot be an IP address, must be a hostname')
