@@ -50,7 +50,12 @@ class Marine::Circuit::HandoffService
   end
 
   def conversation_pending?
+    # Marine should hand off if the conversation is still eligible -- not
+    # resolved or snoozed, and no human agent (sender_type 'User') has sent
+    # an outgoing message.  WhatsApp conversations are 'open' from the start,
+    # not 'pending' like web widget, so we cannot rely on the status alone.
     status = Conversation.uncached { Conversation.where(id: conversation.id).pick(:status) }
-    status == 'pending' || status == Conversation.statuses[:pending]
+    return false if status == 'resolved' || status == 'snoozed'
+    conversation.messages.outgoing.where(private: false).where(sender_type: 'User').empty?
   end
 end
