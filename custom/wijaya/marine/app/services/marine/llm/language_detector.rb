@@ -6,12 +6,21 @@
 class Marine::Llm::LanguageDetector
   UNKNOWN = { language: 'unknown', reliable: false, confidence: 0.0 }.freeze
 
+  # CLD3 is unreliable on very short texts — a single 4-letter word like
+  # "halo" is misidentified as Japanese (ja, 0.90 confidence).  For texts
+  # with fewer than MIN_TOKENS alphanumeric tokens (3+ chars each), we skip
+  # detection entirely and return "unknown" so the translation pipeline
+  # degrades to a no-op instead of mistranslating.
+  MIN_TOKENS = 2
+  TOKEN_PATTERN = /[[:alnum:]]{3,}/.freeze
+
   def initialize(text)
     @text = text.to_s
   end
 
   def detect
     return UNKNOWN if @text.strip.blank?
+    return UNKNOWN if insufficient_tokens?
     return UNKNOWN unless cld3_available?
 
     result = identifier.find_language(@text)
@@ -22,6 +31,13 @@ class Marine::Llm::LanguageDetector
   end
 
   private
+
+  # Returns true when the text has fewer than MIN_TOKENS alphanumeric tokens
+  # of 3+ characters — the zone where CLD3 is unreliable.
+  def insufficient_tokens?
+    tokens = @text.downcase.scan(TOKEN_PATTERN).uniq
+    tokens.length < MIN_TOKENS
+  end
 
   def cld3_available?
     defined?(CLD3::NNetLanguageIdentifier)
