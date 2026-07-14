@@ -41,4 +41,35 @@ RSpec.describe Marine::Llm::Config do
       expect(described_class.configured?).to be(true)
     end
   end
+
+  describe '#api_base with versioned endpoints' do
+    def stub_endpoint(value)
+      allow(InstallationConfig).to receive(:find_by).with(name: 'MARINE_OPEN_AI_ENDPOINT')
+                                                    .and_return(instance_double(InstallationConfig, value: value))
+    end
+
+    it 'does not append /v1 for the Gemini OpenAI-compat endpoint' do
+      stub_endpoint('https://generativelanguage.googleapis.com/v1beta/openai')
+      expect(described_class.api_base).to eq('https://generativelanguage.googleapis.com/v1beta/openai')
+    end
+
+    it 'does not append /v1 when the endpoint already ends with /v1' do
+      stub_endpoint('https://proxy.internal/v1')
+      expect(described_class.api_base).to eq('https://proxy.internal/v1')
+    end
+
+    it 'appends /v1 for a bare endpoint' do
+      stub_endpoint('https://openrouter.ai/api')
+      expect(described_class.api_base).to eq('https://openrouter.ai/api/v1')
+    end
+  end
+
+  describe 'provider delegation' do
+    it 'delegates provider and rubyllm_provider to ProviderConfig' do
+      allow(Marine::Llm::ProviderConfig).to receive(:provider).and_return('anthropic')
+      allow(Marine::Llm::ProviderConfig).to receive(:rubyllm_provider).and_return('anthropic')
+      expect(described_class.provider).to eq('anthropic')
+      expect(described_class.rubyllm_provider).to eq('anthropic')
+    end
+  end
 end

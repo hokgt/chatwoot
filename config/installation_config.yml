@@ -234,6 +234,10 @@
 # Marine keeps its own LLM credentials fully independent from Captain. These keys
 # never fall back to CAPTAIN_* config, so Marine can point at a different provider,
 # model, or endpoint without affecting Captain AI.
+- name: MARINE_LLM_PROVIDER
+  display_title: 'Marine LLM Provider'
+  description: 'The AI provider for Marine AI. Options: openai, openrouter, gemini, anthropic, custom. Default: openai'
+  locked: false
 - name: MARINE_OPEN_AI_API_KEY
   display_title: 'Marine OpenAI API Key'
   description: 'The API key used to authenticate requests to the OpenAI-compatible service for Marine AI.'

@@ -11,6 +11,7 @@ class Marine::Llm::EmbeddingService
   def get_embedding(text)
     return nil if text.blank?
     return nil unless Marine::Llm::Config.configured?
+    return nil unless Marine::Llm::ProviderConfig.supports_embeddings?
 
     context.embed(text, model: Marine::Llm::Config.embedding_model).vectors
   rescue StandardError => e
@@ -22,8 +23,16 @@ class Marine::Llm::EmbeddingService
 
   def context
     @context ||= RubyLLM.context do |config|
-      config.openai_api_key = Marine::Llm::Config.api_key
-      config.openai_api_base = Marine::Llm::Config.api_base
+      case Marine::Llm::Config.rubyllm_provider
+      when 'gemini'
+        config.gemini_api_key = Marine::Llm::Config.api_key
+        config.gemini_api_base = Marine::Llm::Config.api_base
+      when 'anthropic'
+        config.anthropic_api_key = Marine::Llm::Config.api_key
+      else
+        config.openai_api_key = Marine::Llm::Config.api_key
+        config.openai_api_base = Marine::Llm::Config.api_base
+      end
       config.request_timeout = Marine::Llm::BaseService::REQUEST_TIMEOUT
       config.max_retries = Marine::Llm::BaseService::MAX_RETRIES
     end

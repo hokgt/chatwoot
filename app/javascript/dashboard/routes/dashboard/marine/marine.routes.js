@@ -9,6 +9,7 @@ import MarinePlaygroundIndex from './playground/Index.vue';
 import MarineInboxesIndex from './inboxes/Index.vue';
 import MarineToolsIndex from './tools/Index.vue';
 import MarineSettingsIndex from './settings/Index.vue';
+import MarineLLMSettingsIndex from './llm-settings/Index.vue';
 import MarineGuardrailsIndex from './guardrails/Index.vue';
 import MarineGuidelinesIndex from './guidelines/Index.vue';
 
@@ -69,6 +70,12 @@ const assistantRoutes = [
     path: frontendURL('accounts/:accountId/marine/:assistantId/settings'),
     component: MarineSettingsIndex,
     name: 'marine_assistants_settings_index',
+    meta,
+  },
+  {
+    path: frontendURL('accounts/:accountId/marine/:assistantId/llm-settings'),
+    component: MarineLLMSettingsIndex,
+    name: 'marine_assistants_llm_settings_index',
     meta,
   },
   {

@@ -96,6 +96,9 @@ Rails.application.routes.draw do
           # Marine AI — independent custom assistant feature (no captain feature flag).
           namespace :marine do
             resource :preferences, only: [:show, :update]
+            resource :llm_settings, only: [:show, :update] do
+              post :test, on: :collection
+            end
             resources :tasks, only: [] do
               collection do
                 post :reply_suggestion

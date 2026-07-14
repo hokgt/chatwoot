@@ -200,6 +200,8 @@ patches:
       - custom/wijaya/marine/app/services/marine/llm/assistant_chat_service.rb
       - custom/wijaya/marine/app/services/marine/llm/embedding_service.rb
       - custom/wijaya/marine/app/services/marine/llm/config.rb
+      - custom/wijaya/marine/app/services/marine/llm/provider_config.rb
+      - custom/wijaya/marine/app/services/marine/llm/connection_test_service.rb
       - custom/wijaya/marine/app/services/marine/llm/base_service.rb
       - custom/wijaya/marine/app/services/marine/llm/prompt_renderer.rb
       - custom/wijaya/marine/app/services/marine/llm/json_response_parser.rb
@@ -212,6 +214,7 @@ patches:
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/preferences_controller.rb
+      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/llm_settings_controller.rb
       - custom/wijaya/marine/app/policies/marine/assistant_policy.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/tasks_controller.rb
       - custom/wijaya/marine/app/policies/marine/tasks_policy.rb
@@ -267,6 +270,8 @@ patches:
       - app/javascript/dashboard/api/marine/document.js
       - app/javascript/dashboard/api/marine/inboxes.js
       - app/javascript/dashboard/api/marine/preferences.js
+      - app/javascript/dashboard/api/marine/llmSettings.js
+      - app/javascript/dashboard/routes/dashboard/marine/llm-settings/Index.vue
       - app/javascript/dashboard/i18n/locale/en/marine.json
       - db/migrate/20260708010000_create_wijaya_marine_tables.rb
       - db/migrate/20260708010001_create_wijaya_marine_inboxes.rb
@@ -320,6 +325,9 @@ patches:
     tests:
       - spec/custom/wijaya/marine/account_extensions_spec.rb
       - spec/custom/wijaya/marine/llm/config_spec.rb
+      - spec/custom/wijaya/marine/llm/provider_config_spec.rb
+      - spec/custom/wijaya/marine/llm/connection_test_service_spec.rb
+      - spec/custom/wijaya/marine/controllers/llm_settings_controller_spec.rb
       - spec/custom/wijaya/marine/llm/base_service_spec.rb
       - spec/custom/wijaya/marine/llm/prompt_renderer_spec.rb
       - spec/custom/wijaya/marine/llm/json_response_parser_spec.rb

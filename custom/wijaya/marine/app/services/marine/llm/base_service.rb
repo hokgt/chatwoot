@@ -67,13 +67,21 @@ class Marine::Llm::BaseService
   end
 
   def build_chat(resolved_model)
-    context.chat(model: resolved_model, provider: 'openai', assume_model_exists: true)
+    context.chat(model: resolved_model, provider: Marine::Llm::Config.rubyllm_provider, assume_model_exists: true)
   end
 
   def context
     @context ||= RubyLLM.context do |config|
-      config.openai_api_key = api_key
-      config.openai_api_base = api_base
+      case Marine::Llm::Config.rubyllm_provider
+      when 'gemini'
+        config.gemini_api_key = api_key
+        config.gemini_api_base = api_base
+      when 'anthropic'
+        config.anthropic_api_key = api_key
+      else
+        config.openai_api_key = api_key
+        config.openai_api_base = api_base
+      end
       config.request_timeout = REQUEST_TIMEOUT
       config.max_retries = MAX_RETRIES
     end

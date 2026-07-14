@@ -573,6 +573,14 @@ const menuItems = computed(() => {
           }),
         },
         {
+          name: 'LLM Settings',
+          label: t('MARINE_AI.SIDEBAR.LLM_SETTINGS'),
+          activeOn: ['marine_assistants_llm_settings_index'],
+          to: accountScopedRoute('marine_assistants_index', {
+            navigationPath: 'marine_assistants_llm_settings_index',
+          }),
+        },
+        {
           name: 'Settings',
           label: t('MARINE_AI.SIDEBAR.SETTINGS'),
           activeOn: [

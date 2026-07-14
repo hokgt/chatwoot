@@ -24,9 +24,22 @@ module Marine::Llm::Config
     installation_value('MARINE_EMBEDDING_MODEL').presence || DEFAULT_EMBEDDING_MODEL
   end
 
-  # OpenAI-compatible endpoints expect the versioned base (/v1).
+  def provider
+    Marine::Llm::ProviderConfig.provider
+  end
+
+  def rubyllm_provider
+    Marine::Llm::ProviderConfig.rubyllm_provider
+  end
+
+  # OpenAI-compatible endpoints expect the versioned base (/v1). Some providers
+  # (e.g. Gemini's OpenAI-compat endpoint) already carry a version segment, so we
+  # avoid appending a second /v1.
   def api_base
-    "#{endpoint.chomp('/')}/v1"
+    base = endpoint.chomp('/')
+    return base if base.end_with?('/openai') || base.match?(%r{/v\d+(?:beta)?(?:/|$)})
+
+    "#{base}/v1"
   end
 
   def configured?

@@ -128,6 +128,8 @@ require_file custom/wijaya/marine/app/services/marine/circuit/handoff_service.rb
 require_file custom/wijaya/marine/app/services/marine/llm/assistant_chat_service.rb
 require_file custom/wijaya/marine/app/services/marine/llm/embedding_service.rb
 require_file custom/wijaya/marine/app/services/marine/llm/config.rb
+require_file custom/wijaya/marine/app/services/marine/llm/provider_config.rb
+require_file custom/wijaya/marine/app/services/marine/llm/connection_test_service.rb
 require_file custom/wijaya/marine/app/services/marine/llm/base_service.rb
 require_file custom/wijaya/marine/app/services/marine/llm/prompt_renderer.rb
 require_file custom/wijaya/marine/app/services/marine/llm/json_response_parser.rb
@@ -154,6 +156,7 @@ require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/documen
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/preferences_controller.rb
+require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/llm_settings_controller.rb
 require_file custom/wijaya/marine/app/models/marine/copilot_thread.rb
 require_file custom/wijaya/marine/app/models/marine/copilot_message.rb
 require_file custom/wijaya/marine/app/services/marine/copilot/search_base_service.rb
@@ -180,6 +183,8 @@ require_file app/javascript/dashboard/api/marine/response.js
 require_file app/javascript/dashboard/api/marine/document.js
 require_file app/javascript/dashboard/api/marine/inboxes.js
 require_file app/javascript/dashboard/api/marine/preferences.js
+require_file app/javascript/dashboard/api/marine/llmSettings.js
+require_file app/javascript/dashboard/routes/dashboard/marine/llm-settings/Index.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/Index.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/marine.routes.js
 require_file app/javascript/dashboard/routes/dashboard/marine/pages/AssistantsIndexPage.vue

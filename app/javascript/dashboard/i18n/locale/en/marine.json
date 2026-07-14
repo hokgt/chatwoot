@@ -9,7 +9,59 @@
       "PLAYGROUND": "Playground",
       "INBOXES": "Inboxes",
       "TOOLS": "Tools",
+      "LLM_SETTINGS": "AI Provider",
       "SETTINGS": "Settings"
+    },
+    "LLM_SETTINGS": {
+      "TITLE": "AI Provider Settings",
+      "DESCRIPTION": "Configure the AI model and API credentials that Marine AI uses to generate responses.",
+      "PROVIDER": {
+        "LABEL": "Provider",
+        "PLACEHOLDER": "Select a provider",
+        "OPENAI": "OpenAI",
+        "OPENROUTER": "OpenRouter",
+        "GEMINI": "Google Gemini",
+        "ANTHROPIC": "Anthropic Claude",
+        "CUSTOM": "Custom (OpenAI-compatible)"
+      },
+      "MODEL": {
+        "LABEL": "Model",
+        "PLACEHOLDER": "Enter the model name"
+      },
+      "ENDPOINT": {
+        "LABEL": "API Endpoint URL",
+        "PLACEHOLDER": "https://api.openai.com",
+        "HINT": "The base URL for the provider's API. The /v1 path is appended automatically for OpenAI-compatible endpoints."
+      },
+      "API_KEY": {
+        "LABEL": "API Key",
+        "PLACEHOLDER": "Enter the API key",
+        "MASKED": "API key is saved and masked",
+        "CHANGE": "Change",
+        "CANCEL": "Cancel",
+        "HINT": "The API key used to authenticate with the AI provider. Stored securely and never displayed in plaintext after saving."
+      },
+      "EMBEDDING_MODEL": {
+        "LABEL": "Embedding Model (optional)",
+        "PLACEHOLDER": "text-embedding-3-small",
+        "HINT": "Used for generating embeddings for vector similarity search. Leave empty to use the provider default.",
+        "NOT_SUPPORTED": "Embeddings are not supported by this provider. Text search will be used instead."
+      },
+      "TEST": {
+        "BUTTON": "Test Connection",
+        "TESTING": "Testing…",
+        "SUCCESS": "Connection successful. The provider returned a valid response.",
+        "ERROR": "Connection failed: {error}",
+        "HINT": "Validate the credentials and model before saving."
+      },
+      "SAVE": {
+        "BUTTON": "Save Settings",
+        "SAVING": "Saving…",
+        "SUCCESS": "AI provider settings saved successfully.",
+        "ERROR": "Failed to save AI provider settings."
+      },
+      "CONFIGURED": "Configured",
+      "NOT_CONFIGURED": "Not configured"
     },
     "DASHBOARD": {
       "TITLE": "Marine AI",
