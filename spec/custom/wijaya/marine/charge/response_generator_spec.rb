@@ -43,8 +43,14 @@ RSpec.describe Marine::Charge::ResponseGenerator do
     expect(payload['citations']).to be_an(Array)
   end
 
+  # Keep the LLM fallback out of the way by default so handoff assertions stay stable.
+  def stub_llm_unconfigured
+    allow(Marine::Llm::BaseService).to receive(:new).and_return(double(configured?: false))
+  end
+
   it 'hands off using the low-confidence payload when there is no confident match' do
     stub_no_translation
+    stub_llm_unconfigured
     result = Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match')
     allow(knowledge_base).to receive(:retrieve).and_return(result)
 
@@ -55,6 +61,40 @@ RSpec.describe Marine::Charge::ResponseGenerator do
       'action' => 'handoff',
       'action_reason' => 'no_confident_cell_match'
     )
+  end
+
+  it 'uses LLM fallback for conversational response when retrieval fails and LLM is configured' do
+    stub_no_translation
+    llm = double(configured?: true)
+    allow(llm).to receive(:chat).and_return({ ok: true, message: 'Halo! Selamat datang...', error: nil })
+    allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+    allow(assistant).to receive(:config).and_return({ 'instructions' => 'You are Marine.' })
+    result = Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match')
+    allow(knowledge_base).to receive(:retrieve).and_return(result)
+
+    payload = generator.generate(additional_message: 'haloo')
+
+    expect(payload).to include(
+      'response' => 'Halo! Selamat datang...',
+      'action' => 'reply',
+      'agent_name' => 'Marine Bot',
+      'source_type' => 'llm_fallback',
+      'fallback_reason' => 'no_confident_cell_match'
+    )
+  end
+
+  it 'falls back to handoff when LLM is configured but returns an error' do
+    stub_no_translation
+    llm = double(configured?: true)
+    allow(llm).to receive(:chat).and_return({ ok: false, message: nil, error: 'API timeout' })
+    allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+    allow(assistant).to receive(:config).and_return({ 'instructions' => 'You are Marine.' })
+    result = Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match')
+    allow(knowledge_base).to receive(:retrieve).and_return(result)
+
+    payload = generator.generate(additional_message: 'unknown')
+
+    expect(payload).to include('action' => 'handoff', 'action_reason' => 'no_confident_cell_match')
   end
 
   it 'includes language/translation metadata without mutating citations' do
