@@ -58,6 +58,7 @@ const routeToLastActiveAssistant = () => {
     'marine_assistants_inboxes_index',
     'marine_tools_index',
     'marine_assistants_settings_index',
+    'marine_assistants_llm_settings_index',
   ].includes(navigationPath);
 
   const navigateTo = isAValidRoute
