@@ -1,6 +1,15 @@
 class Marine::Charge::ResponseGenerator
   DEFAULT_LANGUAGE = 'en'.freeze
 
+  # RAG grounding budget: at most RAG_MAX_ENTRIES Knowledge Base entries, each
+  # answer truncated to RAG_ENTRY_TRUNCATE chars, keep the system prompt bounded.
+  RAG_MAX_ENTRIES = 20
+  RAG_ENTRY_TRUNCATE = 500
+  RAG_INSTRUCTION = 'Answer ONLY using the information in the Knowledge Base Context above. ' \
+                    'If the answer is not found in the context, say you do not have that information ' \
+                    'and offer to connect the customer with a human agent. ' \
+                    'Never invent or fabricate information.'.freeze
+
   def initialize(assistant:, conversation: nil, source: nil)
     @assistant = assistant
     @conversation = conversation
@@ -19,6 +28,11 @@ class Marine::Charge::ResponseGenerator
       return llm_payload if llm_payload
 
       return handoff_payload(result.fallback_reason, query_translation, nil)
+    end
+
+    if result.confidence < 1.0
+      rag_payload = rag_synthesis_payload(customer_query, message_history, result, query_translation)
+      return rag_payload if rag_payload
     end
 
     response_translation = translate_response(result.answer, query_translation[:source_language])
@@ -82,16 +96,18 @@ class Marine::Charge::ResponseGenerator
     }
   end
 
-  # When retrieval finds no confident FAQ match, let the LLM answer conversationally
-  # (greetings, small talk) using the assistant persona instead of handing off. Returns
-  # nil when the LLM is unconfigured or fails so the caller falls through to handoff.
+  # When retrieval finds no confident FAQ match, answer with Retrieval-Augmented
+  # Generation: ground the LLM in ALL approved Knowledge Base content and forbid it
+  # from inventing facts. This prevents the ungrounded hallucinations (e.g. fabricated
+  # office addresses) that a persona-only prompt produced. Returns nil when the LLM is
+  # unconfigured or fails so the caller falls through to handoff.
   def llm_fallback_payload(customer_query, message_history, fallback_reason, query_translation)
     service = Marine::Llm::BaseService.new(account: llm_account)
     return nil unless service.configured?
 
     result = service.chat(
       messages: messages_with_query(message_history, customer_query),
-      system: fallback_system_prompt
+      system: rag_system_prompt
     )
     return nil unless result[:ok] && result[:message].present?
 
@@ -99,7 +115,7 @@ class Marine::Charge::ResponseGenerator
       'response' => result[:message],
       'action' => 'reply',
       'agent_name' => assistant.name,
-      'source_type' => 'llm_fallback',
+      'source_type' => 'llm_rag',
       'fallback_reason' => fallback_reason,
       'confidence' => 0.0,
       'citations' => [],
@@ -108,7 +124,36 @@ class Marine::Charge::ResponseGenerator
     }.merge(translation_metadata(query_translation, nil))
   end
 
-  def fallback_system_prompt
+  # A non-exact retrieval match (confidence < 1.0) means the top FAQ answer may not
+  # actually address the customer's question (e.g. "Apa itu Textilindo?" matching an
+  # unrelated "Apa itu MOQ" FAQ on shared tokens). Instead of returning that raw
+  # answer, synthesize a grounded reply from ALL approved Knowledge Base content plus
+  # the customer question. Exact matches (confidence 1.0) skip this fast path. Returns
+  # nil when the LLM is unconfigured or fails so the caller returns the raw FAQ answer.
+  def rag_synthesis_payload(customer_query, message_history, result, query_translation)
+    service = Marine::Llm::BaseService.new(account: llm_account)
+    return nil unless service.configured?
+
+    llm_result = service.chat(
+      messages: messages_with_query(message_history, customer_query),
+      system: rag_system_prompt
+    )
+    return nil unless llm_result[:ok] && llm_result[:message].present?
+
+    {
+      'response' => llm_result[:message],
+      'action' => 'reply',
+      'agent_name' => assistant.name,
+      'source_type' => 'llm_rag',
+      'fallback_reason' => nil,
+      'confidence' => result.confidence,
+      'citations' => result.citations,
+      'response_ids' => result.response_ids,
+      'document_ids' => result.document_ids
+    }.merge(translation_metadata(query_translation, nil))
+  end
+
+  def rag_system_prompt
     sections = [assistant.config.to_h['instructions'].to_s.strip.presence]
 
     guardrails = Array(assistant.try(:guardrails)).map(&:to_s).map(&:strip).reject(&:blank?)
@@ -117,7 +162,42 @@ class Marine::Charge::ResponseGenerator
     guidelines = Array(assistant.try(:response_guidelines)).map(&:to_s).map(&:strip).reject(&:blank?)
     sections << "Response Guidelines:\n#{guidelines.map { |g| "- #{g}" }.join("\n")}" if guidelines.any?
 
+    context = knowledge_base_context
+    sections << "Knowledge Base Context:\n#{context}" if context.present?
+    sections << RAG_INSTRUCTION
+
     sections.compact.join("\n\n").presence
+  end
+
+  # Builds the grounding block from every approved FAQ entry and document-backed
+  # response. Each answer is truncated and the entry count is capped so the prompt
+  # stays within the model context window.
+  def knowledge_base_context
+    entries = knowledge_base_entries
+    return nil if entries.empty?
+
+    entries.filter_map do |entry|
+      question = entry.question.to_s.strip
+      answer = entry.answer.to_s.strip
+      next if answer.blank?
+
+      "Q: #{question}\nA: #{answer.truncate(RAG_ENTRY_TRUNCATE)}"
+    end.join("\n\n").presence
+  end
+
+  def knowledge_base_entries
+    return [] unless assistant.respond_to?(:responses)
+
+    approved = assistant.responses.approved
+    # Prioritize document-backed responses (richer content, e.g. the Contact page
+    # with address/phone/email) then fill remaining slots with FAQ entries so the
+    # default scope's low-ID FAQs don't crowd documents out of the RAG context.
+    docs = approved.where.not(documentable_type: nil).limit(RAG_MAX_ENTRIES / 2).to_a
+    faqs = approved.where(documentable_type: nil).limit(RAG_MAX_ENTRIES - docs.size).to_a
+    docs + faqs
+  rescue StandardError => e
+    Rails.logger.warn("Marine::Charge::ResponseGenerator RAG context failed: #{e.message}")
+    []
   end
 
   def messages_with_query(message_history, customer_query)

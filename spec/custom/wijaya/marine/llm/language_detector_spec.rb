@@ -15,6 +15,25 @@ RSpec.describe Marine::Llm::LanguageDetector do
     expect(result[:confidence]).to be_a(Float)
   end
 
+  it 'detects Bahasa Indonesia via keyword heuristic without invoking CLD3' do
+    expect(CLD3::NNetLanguageIdentifier).not_to receive(:new)
+
+    result = described_class.new('Di mana alamat kantor Textilindo?').detect
+
+    expect(result).to eq(described_class::INDONESIAN_RESULT)
+    expect(result[:language]).to eq('id')
+    expect(result[:reliable]).to be(true)
+  end
+
+  it 'detects Indonesian domain-marker queries as id' do
+    expect(described_class.new('Apa email Textilindo?').detect[:language]).to eq('id')
+    expect(described_class.new('Berapa MOQ untuk fabric dyeing?').detect[:language]).to eq('id')
+  end
+
+  it 'does not force id for clearly English text without Indonesian markers' do
+    expect(described_class.new('Where is your head office located?').detect[:language]).not_to eq('id')
+  end
+
   it 'fails safely to unknown when CLD3 raises' do
     fake = instance_double(CLD3::NNetLanguageIdentifier)
     allow(CLD3::NNetLanguageIdentifier).to receive(:new).and_return(fake)

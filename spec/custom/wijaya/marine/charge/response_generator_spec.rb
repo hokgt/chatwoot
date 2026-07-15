@@ -21,10 +21,10 @@ RSpec.describe Marine::Charge::ResponseGenerator do
     )
   end
 
-  it 'returns a reply payload with confidence and citation metadata when confident' do
+  it 'returns a reply payload with confidence and citation metadata on an exact match' do
     stub_no_translation
     response = Marine::AssistantResponse.new(id: 9, question: 'Hi', answer: 'Hello!')
-    result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 0.9)
+    result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 1.0)
     allow(knowledge_base).to receive(:retrieve).and_return(result)
 
     payload = generator.generate(additional_message: 'Hi')
@@ -34,13 +34,57 @@ RSpec.describe Marine::Charge::ResponseGenerator do
       'action' => 'reply',
       'agent_name' => 'Marine Bot',
       'marine_cell_response_id' => 9,
-      'confidence' => 0.9,
+      'confidence' => 1.0,
       'source_type' => 'manual',
       'response_ids' => [9],
       'document_ids' => [],
       'fallback_reason' => nil
     )
     expect(payload['citations']).to be_an(Array)
+  end
+
+  it 'synthesizes a RAG answer for a non-exact match when the LLM is configured' do
+    stub_no_translation
+    allow(assistant).to receive(:config).and_return({ 'instructions' => 'You are Marine.' })
+    response = Marine::AssistantResponse.new(id: 7, question: 'Apa itu MOQ?', answer: 'MOQ is the minimum order quantity.')
+    result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 0.5)
+    allow(knowledge_base).to receive(:retrieve).and_return(result)
+
+    llm = double(configured?: true)
+    captured_system = nil
+    allow(llm).to receive(:chat) do |args|
+      captured_system = args[:system]
+      { ok: true, message: 'Textilindo is a textile manufacturer.', error: nil }
+    end
+    allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+
+    payload = generator.generate(additional_message: 'Apa itu Textilindo?')
+
+    expect(captured_system).to include('Never invent or fabricate information.')
+    expect(payload).to include(
+      'response' => 'Textilindo is a textile manufacturer.',
+      'action' => 'reply',
+      'source_type' => 'llm_rag',
+      'fallback_reason' => nil,
+      'confidence' => 0.5,
+      'response_ids' => [7]
+    )
+  end
+
+  it 'returns the raw FAQ answer for a non-exact match when the LLM is unconfigured' do
+    stub_no_translation
+    stub_llm_unconfigured
+    response = Marine::AssistantResponse.new(id: 7, question: 'Apa itu MOQ?', answer: 'MOQ is the minimum order quantity.')
+    result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 0.5)
+    allow(knowledge_base).to receive(:retrieve).and_return(result)
+
+    payload = generator.generate(additional_message: 'Apa itu Textilindo?')
+
+    expect(payload).to include(
+      'response' => 'MOQ is the minimum order quantity.',
+      'source_type' => 'manual',
+      'confidence' => 0.5
+    )
   end
 
   # Keep the LLM fallback out of the way by default so handoff assertions stay stable.
@@ -63,7 +107,7 @@ RSpec.describe Marine::Charge::ResponseGenerator do
     )
   end
 
-  it 'uses LLM fallback for conversational response when retrieval fails and LLM is configured' do
+  it 'uses RAG-grounded LLM fallback when retrieval fails and LLM is configured' do
     stub_no_translation
     llm = double(configured?: true)
     allow(llm).to receive(:chat).and_return({ ok: true, message: 'Halo! Selamat datang...', error: nil })
@@ -78,9 +122,39 @@ RSpec.describe Marine::Charge::ResponseGenerator do
       'response' => 'Halo! Selamat datang...',
       'action' => 'reply',
       'agent_name' => 'Marine Bot',
-      'source_type' => 'llm_fallback',
+      'source_type' => 'llm_rag',
       'fallback_reason' => 'no_confident_cell_match'
     )
+  end
+
+  it 'grounds the LLM fallback with approved Knowledge Base content' do
+    stub_no_translation
+    kb_entry = Marine::AssistantResponse.new(question: 'Textilindo Contact', answer: 'Office: Jl. Real Address 123, Bandung.')
+    docs_relation = double('docs', limit: [kb_entry])
+    faqs_relation = double('faqs', limit: [])
+    approved = double('approved')
+    allow(approved).to receive(:where).with(no_args).and_return(double('where_chain', not: docs_relation))
+    allow(approved).to receive(:where).with(documentable_type: nil).and_return(faqs_relation)
+    responses_relation = double('responses', approved: approved)
+    allow(assistant).to receive(:responses).and_return(responses_relation)
+    allow(assistant).to receive(:config).and_return({ 'instructions' => 'You are Marine.' })
+
+    llm = double(configured?: true)
+    captured_system = nil
+    allow(llm).to receive(:chat) do |args|
+      captured_system = args[:system]
+      { ok: true, message: 'Our office is at Jl. Real Address 123, Bandung.', error: nil }
+    end
+    allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+    result = Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match')
+    allow(knowledge_base).to receive(:retrieve).and_return(result)
+
+    payload = generator.generate(additional_message: 'Di mana alamat kantor Textilindo?')
+
+    expect(payload['source_type']).to eq('llm_rag')
+    expect(captured_system).to include('Knowledge Base Context:')
+    expect(captured_system).to include('Jl. Real Address 123, Bandung.')
+    expect(captured_system).to include('Never invent or fabricate information.')
   end
 
   it 'falls back to handoff when LLM is configured but returns an error' do
@@ -100,7 +174,7 @@ RSpec.describe Marine::Charge::ResponseGenerator do
   it 'includes language/translation metadata without mutating citations' do
     stub_no_translation
     response = Marine::AssistantResponse.new(id: 9, question: 'Hi', answer: 'Hello!')
-    result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 0.9)
+    result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 1.0)
     allow(knowledge_base).to receive(:retrieve).and_return(result)
 
     payload = generator.generate(additional_message: 'Hi')
@@ -124,7 +198,7 @@ RSpec.describe Marine::Charge::ResponseGenerator do
       double(call: { text: 'Pesanan Anda dalam perjalanan', source_language: 'en', target_language: 'id', translated: true, error: nil })
     )
     response = Marine::AssistantResponse.new(id: 9, question: 'Where is my order', answer: 'Your order is on the way')
-    result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 0.9)
+    result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 1.0)
     allow(knowledge_base).to receive(:retrieve).with('Where is my order', limit: 1).and_return(result)
 
     payload = generator.generate(additional_message: 'Pesanan saya di mana')

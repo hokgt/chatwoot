@@ -38,4 +38,25 @@ RSpec.describe Marine::Cell::Retriever do
       expect(result.fallback_reason).to eq(described_class::LOW_CONFIDENCE_REASON)
     end
   end
+
+  describe '#score' do
+    let(:query_tokens) { retriever.send(:tokenize, 'what is textilindo email') }
+
+    it 'weights answer-field overlap above question-field overlap' do
+      answer_match = Marine::AssistantResponse.new(question: 'Textilindo Contact', answer: 'Our email is sales@textilindo.com')
+      question_only = Marine::AssistantResponse.new(question: 'Textilindo email hours', answer: 'We are open 9-5')
+
+      answer_score = retriever.send(:score, answer_match, query_tokens)
+      question_score = retriever.send(:score, question_only, query_tokens)
+
+      expect(answer_score).to be > question_score
+    end
+
+    it 'boosts document-backed responses' do
+      manual = Marine::AssistantResponse.new(question: 'Textilindo Contact', answer: 'email textilindo info')
+      document = Marine::AssistantResponse.new(question: 'Textilindo Contact', answer: 'email textilindo info', documentable_type: 'Marine::Document')
+
+      expect(retriever.send(:score, document, query_tokens)).to be > retriever.send(:score, manual, query_tokens)
+    end
+  end
 end

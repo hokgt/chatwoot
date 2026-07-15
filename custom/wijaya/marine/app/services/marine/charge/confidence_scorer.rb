@@ -2,6 +2,7 @@ class Marine::Charge::ConfidenceScorer
   TOKEN_PATTERN = /[[:alnum:]]{3,}/
   EXACT_MATCH_SCORE = 1.0
   CONTAINMENT_SCORE = 0.9
+  SUBSET_MATCH_SCORE = 0.85
 
   def self.score(query:, response:, distance: nil)
     new(query: query, response: response, distance: distance).score
@@ -34,10 +35,22 @@ class Marine::Charge::ConfidenceScorer
   end
 
   def blended_score
-    overlap = token_overlap
+    overlap = subset_capped_overlap
     return overlap if @distance.nil?
 
     (overlap + vector_similarity) / 2.0
+  end
+
+  # Full token overlap (all query tokens present) only earns a perfect score when
+  # the query is an exact match of the question. When the query's tokens are merely
+  # a subset of a longer question (e.g. "Apa itu Textilindo?" vs an "Apa itu MOQ ...
+  # Textilindo" FAQ), cap the score below containment so RAG synthesis runs instead
+  # of returning the unrelated FAQ answer verbatim.
+  def subset_capped_overlap
+    overlap = token_overlap
+    return overlap if overlap < 1.0 || normalize(@response.question) == normalize(@query)
+
+    SUBSET_MATCH_SCORE
   end
 
   def token_overlap

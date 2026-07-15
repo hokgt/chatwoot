@@ -4,6 +4,14 @@ class Marine::Cell::Retriever
   DEFAULT_CONFIDENCE_THRESHOLD = 0.15
   NO_MATCH_REASON = 'no_confident_cell_match'.freeze
   LOW_CONFIDENCE_REASON = 'low_confidence_cell_match'.freeze
+  # Candidate pool for in-memory keyword ranking. Kept generous so document-backed
+  # responses (whose question is only the document name) aren't dropped before scoring.
+  CANDIDATE_LIMIT = 500
+  # Answer text carries the substance for document-backed responses, so answer-field
+  # overlap is weighted above question-field overlap, with a small boost for documents.
+  QUESTION_WEIGHT = 1.0
+  ANSWER_WEIGHT = 2.0
+  DOCUMENT_BOOST = 0.1
 
   def initialize(assistant:, threshold: nil)
     @assistant = assistant
@@ -69,7 +77,7 @@ class Marine::Cell::Retriever
     tokens = tokenize(query)
     return base_scope.none if tokens.empty?
 
-    candidates = base_scope.limit(200).to_a
+    candidates = keyword_candidates(tokens)
     ranked = candidates.map { |response| [response, score(response, tokens)] }
                        .select { |_response, value| value >= MIN_SCORE }
                        .sort_by { |_response, value| -value }
@@ -82,12 +90,35 @@ class Marine::Cell::Retriever
                              .order(Arel.sql("array_position(ARRAY[#{ids.join(',')}]::bigint[], id)"))
   end
 
-  def score(response, query_tokens)
-    response_tokens = tokenize([response.question, response.answer].join(' '))
-    return 0.0 if response_tokens.empty?
+  # Narrows the candidate pool to responses whose question OR answer contains any
+  # significant query token, so document answer content is matched in SQL rather than
+  # relying on the default scope order. Falls back to the full pool if nothing matches.
+  def keyword_candidates(tokens)
+    clauses = tokens.map.with_index { |_token, i| "question ILIKE :t#{i} OR answer ILIKE :t#{i}" }.join(' OR ')
+    params = tokens.each_with_index.each_with_object({}) do |(token, i), hash|
+      hash[:"t#{i}"] = "%#{ActiveRecord::Base.sanitize_sql_like(token)}%"
+    end
+    matched = base_scope.where(clauses, params).limit(CANDIDATE_LIMIT).to_a
+    return matched if matched.any?
 
-    overlap = query_tokens & response_tokens
-    overlap.length.to_f / query_tokens.length
+    base_scope.limit(CANDIDATE_LIMIT).to_a
+  end
+
+  def score(response, query_tokens)
+    question_tokens = tokenize(response.question)
+    answer_tokens = tokenize(response.answer)
+    return 0.0 if question_tokens.empty? && answer_tokens.empty?
+
+    question_overlap = (query_tokens & question_tokens).length
+    answer_overlap = (query_tokens & answer_tokens).length
+    weighted = (question_overlap * QUESTION_WEIGHT) + (answer_overlap * ANSWER_WEIGHT)
+    base = weighted.to_f / (query_tokens.length * ANSWER_WEIGHT)
+    base += DOCUMENT_BOOST if document_backed?(response)
+    base
+  end
+
+  def document_backed?(response)
+    response.respond_to?(:documentable_type) && response.documentable_type.to_s == 'Marine::Document'
   end
 
   def tokenize(text)

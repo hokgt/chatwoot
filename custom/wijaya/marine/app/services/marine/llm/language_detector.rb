@@ -14,6 +14,18 @@ class Marine::Llm::LanguageDetector
   MIN_TOKENS = 2
   TOKEN_PATTERN = /[[:alnum:]]{3,}/.freeze
 
+  # Common Bahasa Indonesia function words and domain markers. CLD3 routinely
+  # misidentifies Indonesian text as Latin (la), Sundanese (su), Spanish (es),
+  # Portuguese (pt), Chinese-pinyin (zh-latn), or Greek-latn (el-latn), which
+  # then corrupts the translation pipeline. When any of these markers appear we
+  # short-circuit to 'id' before CLD3 ever runs.
+  INDONESIAN_MARKERS = %w[
+    apa berapa mana bagaimana siapa kapan mengapa untuk dan atau yang ini itu
+    adalah dengan dari ke di jam nomor telepon email alamat kantor buka tutup
+  ].to_set.freeze
+  INDONESIAN_RESULT = { language: 'id', reliable: true, confidence: 1.0 }.freeze
+  WORD_PATTERN = /[[:alpha:]]+/.freeze
+
   def initialize(text)
     @text = text.to_s
   end
@@ -21,6 +33,7 @@ class Marine::Llm::LanguageDetector
   def detect
     return UNKNOWN if @text.strip.blank?
     return UNKNOWN if insufficient_tokens?
+    return INDONESIAN_RESULT if indonesian?
     return UNKNOWN unless cld3_available?
 
     result = identifier.find_language(@text)
@@ -37,6 +50,14 @@ class Marine::Llm::LanguageDetector
   def insufficient_tokens?
     tokens = @text.downcase.scan(TOKEN_PATTERN).uniq
     tokens.length < MIN_TOKENS
+  end
+
+  # Heuristic that runs before CLD3: if the text contains any common Indonesian
+  # marker word, treat it as Bahasa Indonesia. This covers the "di mana" case
+  # ("mana" marker) and domain words like "alamat"/"email"/"nomor".
+  def indonesian?
+    words = @text.downcase.scan(WORD_PATTERN)
+    words.any? { |word| INDONESIAN_MARKERS.include?(word) }
   end
 
   def cld3_available?
