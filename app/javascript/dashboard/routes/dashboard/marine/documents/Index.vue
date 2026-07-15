@@ -99,7 +99,24 @@ const handleSync = async id => {
   try {
     await MarineDocumentAPI.sync(id);
     useAlert(t('MARINE_AI.DOCUMENTS.SYNC.QUEUED_MESSAGE'));
-    await fetchDocuments();
+    setTimeout(async () => {
+      await fetchDocuments();
+      const document = documents.value.find(item => item.id === id);
+      if (!document) return;
+      if (document.sync_status === 'failed') {
+        useAlert(
+          t('MARINE_AI.DOCUMENTS.SYNC.FAILED_MESSAGE', {
+            error: document.metadata?.last_sync_error_code || '',
+          })
+        );
+      } else if (document.sync_status === 'synced') {
+        useAlert(
+          t('MARINE_AI.DOCUMENTS.SYNC.SUCCESS_MESSAGE', {
+            contentLength: document.content?.length || 0,
+          })
+        );
+      }
+    }, 3000);
   } catch (error) {
     useAlert(
       parseAPIErrorResponse(error) ||
@@ -162,7 +179,6 @@ onMounted(fetchDocuments);
           :external-link="document.external_link"
           :assistant="document.assistant"
           :created-at="document.created_at"
-          :status="document.status"
           :sync-status="document.sync_status"
           @action="handleAction"
         />

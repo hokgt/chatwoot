@@ -30,10 +30,6 @@ const props = defineProps({
     type: [Number, String],
     default: '',
   },
-  status: {
-    type: String,
-    default: null,
-  },
   syncStatus: {
     type: String,
     default: null,
@@ -50,9 +46,7 @@ const { t } = useI18n();
 
 const [showActionsDropdown, toggleDropdown] = useToggle();
 
-const canSync = computed(
-  () => props.status === 'available' && props.syncStatus !== 'syncing'
-);
+const canSync = computed(() => props.syncStatus !== 'syncing');
 
 const menuItems = computed(() => {
   const options = [];

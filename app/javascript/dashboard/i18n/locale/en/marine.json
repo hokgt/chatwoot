@@ -180,7 +180,9 @@
       },
       "SYNC": {
         "QUEUED_MESSAGE": "Document sync queued.",
-        "ERROR_MESSAGE": "Failed to sync document."
+        "ERROR_MESSAGE": "Failed to sync document.",
+        "SUCCESS_MESSAGE": "Document synced successfully. {contentLength} characters extracted.",
+        "FAILED_MESSAGE": "Sync failed: {error}"
       },
       "SYNC_STATUS": {
         "SYNCED": "Synced",
