@@ -223,4 +223,196 @@ RSpec.describe Marine::Charge::ResponseGenerator do
     expect(payload).to include('action' => 'handoff', 'action_reason' => 'no_confident_cell_match')
     expect(payload).to have_key('translation_applied')
   end
+
+  describe 'business-time grounding and greeting normalization' do
+    # WIB (Asia/Jakarta) is UTC+7; Rails runs UTC. We travel to UTC instants and let
+    # ActiveSupport timezone conversion derive the local business hour deterministically.
+    def capture_llm_system(message: 'Halo, ada yang bisa dibantu?')
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      captured = { system: nil }
+      allow(llm).to receive(:chat) do |args|
+        captured[:system] = args[:system]
+        { ok: true, message: message, error: nil }
+      end
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      captured
+    end
+
+    def stub_llm_fallback_retrieval
+      result = Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match')
+      allow(knowledge_base).to receive(:retrieve).and_return(result)
+    end
+
+    before do
+      stub_no_translation
+      allow(assistant).to receive(:config).and_return({ 'instructions' => 'You are Marine.' })
+    end
+
+    it 'greets pagi at 09:37 WIB' do
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        captured = capture_llm_system
+        stub_llm_fallback_retrieval
+        generator.generate(additional_message: 'halo')
+        expect(captured[:system]).to include('Selamat pagi').and include('Asia/Jakarta')
+      end
+    end
+
+    it 'greets pagi at 10:56 WIB' do
+      travel_to(Time.utc(2026, 7, 20, 3, 56)) do
+        captured = capture_llm_system
+        stub_llm_fallback_retrieval
+        generator.generate(additional_message: 'halo')
+        expect(captured[:system]).to include('Selamat pagi')
+      end
+    end
+
+    it 'greets siang at the 11:00 WIB boundary' do
+      travel_to(Time.utc(2026, 7, 20, 4, 0)) do
+        captured = capture_llm_system
+        stub_llm_fallback_retrieval
+        generator.generate(additional_message: 'halo')
+        expect(captured[:system]).to include('Selamat siang')
+      end
+    end
+
+    it 'greets sore at the 15:00 WIB boundary' do
+      travel_to(Time.utc(2026, 7, 20, 8, 0)) do
+        captured = capture_llm_system
+        stub_llm_fallback_retrieval
+        generator.generate(additional_message: 'halo')
+        expect(captured[:system]).to include('Selamat sore')
+      end
+    end
+
+    it 'greets malam at the 18:00 WIB boundary' do
+      travel_to(Time.utc(2026, 7, 20, 11, 0)) do
+        captured = capture_llm_system
+        stub_llm_fallback_retrieval
+        generator.generate(additional_message: 'halo')
+        expect(captured[:system]).to include('Selamat malam')
+      end
+    end
+
+    it 'prefers the configured account reporting timezone over the WIB fallback' do
+      account = instance_double(Account, reporting_timezone: 'Asia/Tokyo')
+      conversation = instance_double(Conversation, account: account)
+      scoped = described_class.new(assistant: assistant, conversation: conversation)
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).with(assistant: assistant).and_return(knowledge_base)
+
+      # UTC 09:30 -> Jakarta 16:30 (sore) but Tokyo 18:30 (malam); precedence => malam.
+      travel_to(Time.utc(2026, 7, 20, 9, 30)) do
+        captured = capture_llm_system
+        stub_llm_fallback_retrieval
+        scoped.generate(additional_message: 'halo')
+        expect(captured[:system]).to include('Selamat malam').and include('Asia/Tokyo')
+      end
+    end
+
+    it 'falls back to Asia/Jakarta when the account timezone is blank' do
+      account = instance_double(Account, reporting_timezone: '')
+      conversation = instance_double(Conversation, account: account)
+      scoped = described_class.new(assistant: assistant, conversation: conversation)
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).with(assistant: assistant).and_return(knowledge_base)
+
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        captured = capture_llm_system
+        stub_llm_fallback_retrieval
+        scoped.generate(additional_message: 'halo')
+        expect(captured[:system]).to include('Selamat pagi').and include('Asia/Jakarta')
+      end
+    end
+
+    it 'sends the local-time prompt on the RAG synthesis path too' do
+      response = Marine::AssistantResponse.new(id: 7, question: 'Apa itu MOQ?', answer: 'MOQ is the minimum order quantity.')
+      result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 0.5)
+      allow(knowledge_base).to receive(:retrieve).and_return(result)
+
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        captured = capture_llm_system(message: 'Textilindo adalah produsen tekstil.')
+        generator.generate(additional_message: 'Apa itu Textilindo?')
+        expect(captured[:system]).to include('Selamat pagi')
+      end
+    end
+
+    it 'normalizes an incorrect opening greeting from the LLM' do
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        capture_llm_system(message: 'Halo! Selamat sore, ada yang bisa dibantu?')
+        stub_llm_fallback_retrieval
+        payload = generator.generate(additional_message: 'halo')
+        expect(payload['response']).to eq('Halo! Selamat pagi, ada yang bisa dibantu?')
+      end
+    end
+
+    it 'overrides a stale historical Selamat sore on a morning response' do
+      history = [
+        { role: 'user', content: 'halo' },
+        { role: 'assistant', content: 'Selamat sore! Ada yang bisa dibantu?' }
+      ]
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        capture_llm_system(message: 'Selamat sore, terima kasih sudah menghubungi kami.')
+        stub_llm_fallback_retrieval
+        payload = generator.generate(additional_message: 'halo', message_history: history)
+        expect(payload['response']).to start_with('Selamat pagi')
+      end
+    end
+
+    it 'leaves non-opening greeting mentions untouched' do
+      body = 'Kami tutup pukul lima. Untuk sapaan, ucapkan Selamat sore.'
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        capture_llm_system(message: body)
+        stub_llm_fallback_retrieval
+        payload = generator.generate(additional_message: 'halo')
+        expect(payload['response']).to eq(body)
+      end
+    end
+
+    it 'leaves an opening sentence that merely starts with unrelated prose untouched' do
+      body = 'Kami mengucapkan Selamat sore kepada seluruh pelanggan setia kami.'
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        capture_llm_system(message: body)
+        stub_llm_fallback_retrieval
+        payload = generator.generate(additional_message: 'halo')
+        expect(payload['response']).to eq(body)
+      end
+    end
+
+    it 'does not treat an arbitrary two-word lead-in as an opening greeting' do
+      body = 'Dengan hormat Selamat sore, kami informasikan jadwal pengiriman.'
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        capture_llm_system(message: body)
+        stub_llm_fallback_retrieval
+        payload = generator.generate(additional_message: 'halo')
+        expect(payload['response']).to eq(body)
+      end
+    end
+
+    it 'preserves title-case when swapping the opening greeting' do
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        capture_llm_system(message: 'Selamat Sore, ada yang bisa dibantu?')
+        stub_llm_fallback_retrieval
+        payload = generator.generate(additional_message: 'halo')
+        expect(payload['response']).to eq('Selamat Pagi, ada yang bisa dibantu?')
+      end
+    end
+
+    it 'preserves uppercase when swapping the opening greeting' do
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        capture_llm_system(message: 'SELAMAT SORE, ADA YANG BISA DIBANTU?')
+        stub_llm_fallback_retrieval
+        payload = generator.generate(additional_message: 'halo')
+        expect(payload['response']).to eq('SELAMAT PAGI, ADA YANG BISA DIBANTU?')
+      end
+    end
+
+    it 'leaves an exact FAQ response unchanged even if it contains a greeting' do
+      response = Marine::AssistantResponse.new(id: 9, question: 'Hi', answer: 'Selamat sore! Ada yang bisa dibantu?')
+      result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 1.0)
+      allow(knowledge_base).to receive(:retrieve).and_return(result)
+
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        payload = generator.generate(additional_message: 'Hi')
+        expect(payload['response']).to eq('Selamat sore! Ada yang bisa dibantu?')
+      end
+    end
+  end
 end

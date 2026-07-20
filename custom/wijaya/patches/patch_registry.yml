@@ -195,6 +195,7 @@ patches:
       - custom/wijaya/marine/app/services/marine/cell/retrieval_result.rb
       - custom/wijaya/marine/app/services/marine/cell/citation_builder.rb
       - custom/wijaya/marine/app/services/marine/charge/response_generator.rb
+      - custom/wijaya/marine/app/services/marine/charge/greeting_context.rb
       - custom/wijaya/marine/app/services/marine/charge/confidence_scorer.rb
       - custom/wijaya/marine/app/services/marine/circuit/handoff_service.rb
       - custom/wijaya/marine/app/services/marine/llm/assistant_chat_service.rb

@@ -112,7 +112,7 @@ class Marine::Charge::ResponseGenerator
     return nil unless result[:ok] && result[:message].present?
 
     {
-      'response' => result[:message],
+      'response' => greeting_context.normalize_opening_greeting(result[:message]),
       'action' => 'reply',
       'agent_name' => assistant.name,
       'source_type' => 'llm_rag',
@@ -141,7 +141,7 @@ class Marine::Charge::ResponseGenerator
     return nil unless llm_result[:ok] && llm_result[:message].present?
 
     {
-      'response' => llm_result[:message],
+      'response' => greeting_context.normalize_opening_greeting(llm_result[:message]),
       'action' => 'reply',
       'agent_name' => assistant.name,
       'source_type' => 'llm_rag',
@@ -154,7 +154,7 @@ class Marine::Charge::ResponseGenerator
   end
 
   def rag_system_prompt
-    sections = [assistant.config.to_h['instructions'].to_s.strip.presence]
+    sections = [assistant.config.to_h['instructions'].to_s.strip.presence, greeting_context.system_prompt]
 
     guardrails = Array(assistant.try(:guardrails)).map(&:to_s).map(&:strip).reject(&:blank?)
     sections << "Guardrails:\n#{guardrails.map { |g| "- #{g}" }.join("\n")}" if guardrails.any?
@@ -168,6 +168,10 @@ class Marine::Charge::ResponseGenerator
 
     sections.compact.join("\n\n").presence
   end
+
+  # Marine-battery service owning the authoritative business-time grounding block and
+  # the opening-greeting normalization safety net (see Marine::Charge::GreetingContext).
+  def greeting_context = @greeting_context ||= Marine::Charge::GreetingContext.new(account: llm_account)
 
   # Builds the grounding block from every approved FAQ entry and document-backed
   # response. Each answer is truncated and the entry count is capped so the prompt
