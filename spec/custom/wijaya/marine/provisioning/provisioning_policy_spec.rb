@@ -15,6 +15,12 @@ RSpec.describe Marine::ProvisioningPolicy do
     { user: current_user, account: account, account_user: account_user }
   end
 
+  context 'when the user is an administrator of the account' do
+    let(:current_user) { administrator }
+
+    it { expect(policy.provision?).to be(true) }
+  end
+
   context 'when the user is a SuperAdmin with an administrator membership' do
     let(:current_user) { super_admin }
 
@@ -33,12 +39,6 @@ RSpec.describe Marine::ProvisioningPolicy do
 
   context 'when the user is a SuperAdmin with no membership in the account' do
     let(:current_user) { super_admin }
-
-    it { expect(policy.provision?).to be(false) }
-  end
-
-  context 'when the user is a regular account administrator (not a SuperAdmin)' do
-    let(:current_user) { administrator }
 
     it { expect(policy.provision?).to be(false) }
   end

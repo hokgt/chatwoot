@@ -5,8 +5,8 @@ require 'rails_helper'
 RSpec.describe 'Api::V1::Accounts::Marine::Provisioning', type: :request do
   let(:account) { create(:account) }
   let(:other_account) { create(:account) }
-  # Installation-wide provisioning requires a Chatwoot SuperAdmin who also holds an
-  # administrator membership in the current account.
+  # Installation-wide provisioning is gated to an administrator of the current
+  # account; a SuperAdmin who also holds an administrator membership qualifies too.
   let(:super_admin) { create(:super_admin) }
   let(:admin) { create(:user, account: account, role: :administrator) }
   let(:agent) { create(:user, account: account, role: :agent) }
@@ -29,10 +29,10 @@ RSpec.describe 'Api::V1::Accounts::Marine::Provisioning', type: :request do
       expect(response).to have_http_status(:unauthorized)
     end
 
-    it 'rejects a regular account administrator who is not a SuperAdmin' do
+    it 'authorizes a regular account administrator (no SuperAdmin requirement)' do
       get "/api/v1/accounts/#{account.id}/marine/provisioning",
           headers: admin.create_new_auth_token, as: :json
-      expect(response).to have_http_status(:unauthorized)
+      expect(response).to have_http_status(:success)
     end
 
     it 'rejects a SuperAdmin who is an administrator only in another account' do
@@ -73,11 +73,14 @@ RSpec.describe 'Api::V1::Accounts::Marine::Provisioning', type: :request do
       expect(response).to have_http_status(:unauthorized)
     end
 
-    it 'rejects a regular account administrator who is not a SuperAdmin' do
+    it 'authorizes a regular account administrator (no SuperAdmin requirement)' do
+      service = instance_double(Marine::Provisioning::ProvisionService, call: details)
+      allow(Marine::Provisioning::ProvisionService).to receive(:new).and_return(service)
+
       post "/api/v1/accounts/#{account.id}/marine/provisioning",
            params: { provisioning: { database_name: 'marine_erp', login_username: 'marine_app', password: 'a-strong-password-123' } },
            headers: admin.create_new_auth_token, as: :json
-      expect(response).to have_http_status(:unauthorized)
+      expect(response).to have_http_status(:created)
     end
 
     it 'delegates to the provision service and never echoes the password' do
@@ -112,7 +115,7 @@ RSpec.describe 'Api::V1::Accounts::Marine::Provisioning', type: :request do
   end
 
   describe 'privilege endpoints' do
-    it 'downgrades via the privilege service (SuperAdmin only)' do
+    it 'downgrades via the privilege service' do
       service = instance_double(Marine::Provisioning::PrivilegeService, downgrade_to_writer!: { 'privilege_level' => 'writer' })
       allow(Marine::Provisioning::PrivilegeService).to receive(:new).and_return(service)
 
@@ -129,10 +132,13 @@ RSpec.describe 'Api::V1::Accounts::Marine::Provisioning', type: :request do
       expect(response).to have_http_status(:unauthorized)
     end
 
-    it 'rejects a regular account administrator on revoke_all' do
+    it 'authorizes a regular account administrator on revoke_all (no SuperAdmin requirement)' do
+      service = instance_double(Marine::Provisioning::PrivilegeService, revoke_all!: { 'privilege_level' => 'revoked' })
+      allow(Marine::Provisioning::PrivilegeService).to receive(:new).and_return(service)
+
       post "/api/v1/accounts/#{account.id}/marine/provisioning/revoke_all",
            headers: admin.create_new_auth_token, as: :json
-      expect(response).to have_http_status(:unauthorized)
+      expect(response).to have_http_status(:success)
     end
 
     it 'returns the privilege matrix via the catalog service' do

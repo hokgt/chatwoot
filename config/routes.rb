@@ -98,7 +98,7 @@ Rails.application.routes.draw do
             resource :preferences, only: [:show, :update]
             # WIJAYA_CUSTOM_START marine_ai_provisioning
             # Installation-level PostgreSQL provisioning UI. Restricted to an
-            # installation SuperAdmin who is also the current account's administrator
+            # administrator of the current account only
             # (enforced in Marine::ProvisioningController via Marine::ProvisioningPolicy). GET
             # actions are read-only; all mutations are explicit POSTs.
             resource :provisioning, only: [:show, :create], controller: 'provisioning' do

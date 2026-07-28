@@ -3,7 +3,6 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useAlert } from 'dashboard/composables';
 import { useAdmin } from 'dashboard/composables/useAdmin';
-import { useStoreGetters } from 'dashboard/composables/store';
 import MarineProvisioningAPI from './provisioning';
 
 import Button from 'dashboard/components-next/button/Button.vue';
@@ -20,17 +19,11 @@ const { t } = useI18n({
   fallbackLocale: 'en',
 });
 const { isAdmin } = useAdmin();
-const getters = useStoreGetters();
 
-// Provisioning is installation-wide, so mirror the backend gate exactly: only a
-// Chatwoot installation SuperAdmin who is ALSO an account administrator may see or
-// fetch this section. The backend policy is the real authority; this only hides UI.
-const isSuperAdmin = computed(
-  () => getters.getCurrentUser.value?.type === 'SuperAdmin'
-);
-const canManageProvisioning = computed(
-  () => isAdmin.value && isSuperAdmin.value
-);
+// Provisioning management is gated to an administrator of the current account, so
+// mirror the backend gate exactly: only an account administrator may see or fetch
+// this section. The backend policy is the real authority; this only hides UI.
+const canManageProvisioning = computed(() => isAdmin.value);
 
 const status = ref({
   status: 'not_provisioned',

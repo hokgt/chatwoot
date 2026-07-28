@@ -8,10 +8,10 @@ login's privileges. All SQL orchestration lives in the battery services under
 only delegate; Vue components never contain SQL.
 
 Because the state and actions are installation-wide, every endpoint is restricted
-to a Chatwoot **installation SuperAdmin** who is also an account administrator — a
-regular account administrator (or agent) is denied by `Marine::ProvisioningPolicy`.
-The frontend mirrors this and only renders/fetches the section for a SuperAdmin
-administrator; the backend policy is the real gate.
+to an **administrator of the current account only** — an agent (or a user with no
+administrator membership in the current account) is denied by
+`Marine::ProvisioningPolicy`. The frontend mirrors this and only renders/fetches
+the section for a current-account administrator; the backend policy is the real gate.
 
 ## Why a superuser secret
 

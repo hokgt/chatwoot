@@ -29,12 +29,9 @@ vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: key => key }) }));
 const { alertSpy } = vi.hoisted(() => ({ alertSpy: vi.fn() }));
 vi.mock('dashboard/composables', () => ({ useAlert: alertSpy }));
 
-// SuperAdmin + administrator so the section renders (gating is tested separately).
+// Administrator so the section renders (gating is tested separately).
 vi.mock('dashboard/composables/useAdmin', () => ({
   useAdmin: () => ({ isAdmin: ref(true) }),
-}));
-vi.mock('dashboard/composables/store', () => ({
-  useStoreGetters: () => ({ getCurrentUser: ref({ type: 'SuperAdmin' }) }),
 }));
 
 const { openSpy } = vi.hoisted(() => ({ openSpy: vi.fn() }));

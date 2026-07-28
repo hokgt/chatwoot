@@ -2,7 +2,7 @@
   "MARINE_AI": {
     "PROVISIONING": {
       "TITLE": "Database & Account Setup",
-      "DESCRIPTION": "Provision a dedicated Marine PostgreSQL database and a single login account. This runs only when you click Create and applies to the whole installation, so it is restricted to installation SuperAdmins.",
+      "DESCRIPTION": "Provision a dedicated Marine PostgreSQL database and a single login account. This runs only when you click Create and applies to the whole installation, so it is restricted to administrators of the current account only.",
       "NOT_CONFIGURED": "Provisioning is not available: the server-side provisioning credential is not configured. Contact your administrator.",
       "STATUS": {
         "TITLE": "Status",
