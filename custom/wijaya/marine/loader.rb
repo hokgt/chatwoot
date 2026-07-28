@@ -14,11 +14,23 @@ module Wijaya
         lib
       ].freeze
 
+      # The Marine PostgreSQL provisioning feature lives in its own battery under
+      # custom/wijaya/batteries/marine_ai. Its app/ subtree is autoloaded here so the
+      # Marine::Provisioning services, the provisioning controller, and the
+      # provisioning policy resolve through Zeitwerk exactly like the core marine app.
+      PROVISIONING_BATTERY_ROOT = Rails.root.join('custom/wijaya/batteries/marine_ai')
+      PROVISIONING_AUTOLOAD_DIRS = %w[
+        app/services
+        app/controllers
+        app/policies
+      ].freeze
+
       module_function
 
       def setup!
         ensure_root!
         register_autoload_paths!
+        register_provisioning_battery_paths!
         load_extensions!
         attach_extensions!
       end
@@ -32,6 +44,18 @@ module Wijaya
         AUTOLOAD_DIRS.each do |relative_path|
           path = ROOT.join(relative_path)
           FileUtils.mkdir_p(path, mode: 0o775)
+          next if registered_autoload_path?(path)
+
+          Rails.autoloaders.main.push_dir(path)
+        end
+      end
+
+      def register_provisioning_battery_paths!
+        return unless File.directory?(PROVISIONING_BATTERY_ROOT)
+
+        PROVISIONING_AUTOLOAD_DIRS.each do |relative_path|
+          path = PROVISIONING_BATTERY_ROOT.join(relative_path)
+          next unless File.directory?(path)
           next if registered_autoload_path?(path)
 
           Rails.autoloaders.main.push_dir(path)

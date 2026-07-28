@@ -15,6 +15,9 @@ import MarineAssistantBasicSettingsForm from '../components/MarineAssistantBasic
 import MarineAssistantSystemSettingsForm from '../components/MarineAssistantSystemSettingsForm.vue';
 import MarineAssistantControlItems from '../components/MarineAssistantControlItems.vue';
 import MarineDeleteDialog from '../components/MarineDeleteDialog.vue';
+// WIJAYA_CUSTOM_START marine_ai_provisioning
+import MarineProvisioningSection from '../../../../../../../custom/wijaya/batteries/marine_ai/frontend/MarineProvisioningSection.vue';
+// WIJAYA_CUSTOM_END marine_ai_provisioning
 
 const { t } = useI18n();
 const route = useRoute();
@@ -254,6 +257,12 @@ onMounted(() => {
           </div>
         </div>
       </div>
+      <!-- WIJAYA_CUSTOM_START marine_ai_provisioning -->
+      <span class="h-px w-full bg-n-weak" />
+      <div class="pb-8 pt-6">
+        <MarineProvisioningSection />
+      </div>
+      <!-- WIJAYA_CUSTOM_END marine_ai_provisioning -->
     </template>
     <MarineDeleteDialog
       v-if="assistant"

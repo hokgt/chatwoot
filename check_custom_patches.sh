@@ -237,6 +237,39 @@ for file in \
   require_marker "$file" "WIJAYA_CUSTOM_END marine_ai"
 done
 
+# marine_ai_provisioning
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/errors.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/config.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/identifier_validator.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/connection.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/state_store.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/audit.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/error_sanitizer.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/provision_service.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/privilege_service.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/catalog_service.rb
+require_file custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/provisioning_controller.rb
+require_file custom/wijaya/batteries/marine_ai/app/policies/marine/provisioning_policy.rb
+require_file custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-provisioning.yml
+require_file custom/wijaya/batteries/marine_ai/deploy/marine-provisioning.env.example
+require_file custom/wijaya/batteries/marine_ai/deploy/README.md
+require_file custom/wijaya/batteries/marine_ai/frontend/provisioning.js
+require_file custom/wijaya/batteries/marine_ai/frontend/MarineProvisioningSection.vue
+require_file custom/wijaya/batteries/marine_ai/frontend/MarineProvisioningCredentialsDialog.vue
+# English provisioning strings live inside the battery (local Vue i18n), NOT core marine.json.
+require_file custom/wijaya/batteries/marine_ai/frontend/i18n/en.json
+
+for file in \
+  config/routes.rb \
+  app/javascript/dashboard/routes/dashboard/marine/settings/Index.vue; do
+  require_marker "$file" "WIJAYA_CUSTOM_START marine_ai_provisioning"
+  require_marker "$file" "WIJAYA_CUSTOM_END marine_ai_provisioning"
+done
+
+# The custom loader wires the provisioning battery's app/ subtree into Zeitwerk. This
+# is custom infrastructure (no WIJAYA markers needed); verify the registration text.
+require_marker custom/wijaya/marine/loader.rb "register_provisioning_battery_paths!"
+
 if [[ "$missing" -ne 0 ]]; then
   exit 1
 fi

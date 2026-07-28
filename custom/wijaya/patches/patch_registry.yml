@@ -365,3 +365,61 @@ patches:
       - spec/custom/wijaya/marine/controllers/copilot_threads_controller_spec.rb
       - spec/custom/wijaya/marine/controllers/copilot_messages_controller_spec.rb
       - app/javascript/dashboard/composables/spec/useCaptain.spec.js
+
+  - id: marine_ai_provisioning
+    name: Marine AI PostgreSQL Provisioning UI
+    battery: custom/wijaya/batteries/marine_ai
+    description: >
+      Installation-level, admin-only UI in Marine AI Settings to provision a
+      dedicated Marine PostgreSQL database + a single LOGIN account inside the
+      existing cluster, with an auto-generated internal NOLOGIN owner. All SQL
+      orchestration lives in battery services (advisory-locked, compensating saga;
+      strict identifier validation; sanitized errors; structured audit; catalog-
+      based privilege matrix). Controllers delegate only; Vue holds no SQL. The
+      existing PostgreSQL superuser credential comes solely from a read-only Docker
+      secret file (mounted into rails only) and is never persisted/logged/echoed.
+      Durable NON-SECRET state lives in
+      a single MARINE_PROVISIONING_STATE InstallationConfig row; no password is
+      ever stored. Hardens the existing Chatwoot DB ACL (REVOKE CONNECT FROM
+      PUBLIC + explicit GRANT to the app role) and verifies fresh app connectivity
+      before marking setup complete.
+    custom_files:
+      - custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/errors.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/config.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/identifier_validator.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/connection.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/state_store.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/audit.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/error_sanitizer.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/provision_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/privilege_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/catalog_service.rb
+      - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/provisioning_controller.rb
+      - custom/wijaya/batteries/marine_ai/app/policies/marine/provisioning_policy.rb
+      - custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-provisioning.yml
+      - custom/wijaya/batteries/marine_ai/deploy/marine-provisioning.env.example
+      - custom/wijaya/batteries/marine_ai/deploy/README.md
+      - custom/wijaya/batteries/marine_ai/frontend/provisioning.js
+      - custom/wijaya/batteries/marine_ai/frontend/MarineProvisioningSection.vue
+      - custom/wijaya/batteries/marine_ai/frontend/MarineProvisioningCredentialsDialog.vue
+      - custom/wijaya/batteries/marine_ai/frontend/i18n/en.json
+    core_hook_touchpoints:
+      - config/routes.rb
+      - app/javascript/dashboard/routes/dashboard/marine/settings/Index.vue
+    loader_touchpoints:
+      # Custom infrastructure (no WIJAYA markers). The Marine loader pushes the
+      # provisioning battery's app/ subtree onto the Zeitwerk main autoloader.
+      - custom/wijaya/marine/loader.rb
+    tests:
+      - spec/custom/wijaya/marine/provisioning/identifier_validator_spec.rb
+      - spec/custom/wijaya/marine/provisioning/config_spec.rb
+      - spec/custom/wijaya/marine/provisioning/state_store_spec.rb
+      - spec/custom/wijaya/marine/provisioning/error_sanitizer_spec.rb
+      - spec/custom/wijaya/marine/provisioning/provision_service_spec.rb
+      - spec/custom/wijaya/marine/provisioning/privilege_service_spec.rb
+      - spec/custom/wijaya/marine/provisioning/catalog_service_spec.rb
+      - spec/custom/wijaya/marine/provisioning/provisioning_policy_spec.rb
+      - spec/custom/wijaya/marine/provisioning/connection_spec.rb
+      - spec/custom/wijaya/marine/provisioning/audit_spec.rb
+      - spec/custom/wijaya/marine/controllers/provisioning_controller_spec.rb
+      - app/javascript/dashboard/routes/dashboard/marine/settings/specs/MarineProvisioningSection.spec.js

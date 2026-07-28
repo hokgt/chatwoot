@@ -1,0 +1,40 @@
+# Battery-contained Docker Compose OVERLAY for Marine PostgreSQL provisioning.
+#
+# This file is intentionally kept OUT of the core docker-compose.production.yaml so
+# upstream compose files are never modified. Apply it as an overlay:
+#
+#   docker compose \
+#     -f docker-compose.production.yaml \
+#     -f custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-provisioning.yml \
+#     up -d rails
+#
+# The provisioning UI runs only in the Rails web process, so the superuser secret is
+# mounted READ-ONLY into the `rails` service ONLY — never into `sidekiq`. Only
+# NON-SECRET connection settings are exposed as environment variables. The secret
+# value itself is never committed — see marine-provisioning.env.example and
+# README.md. The Rails app reads the password from the mounted file path given by
+# MARINE_PROVISIONING_PG_PASSWORD_FILE and never from an env var or the app DB.
+#
+# The admin user is the EXISTING PostgreSQL superuser (the same role the deployment
+# already provisions via POSTGRES_USERNAME). No separate bootstrap account is
+# required — only its password, delivered via the read-only secret file below.
+
+services:
+  rails:
+    environment:
+      - MARINE_PROVISIONING_PG_HOST=${MARINE_PROVISIONING_PG_HOST:-postgres}
+      - MARINE_PROVISIONING_PG_PORT=${MARINE_PROVISIONING_PG_PORT:-5432}
+      - MARINE_PROVISIONING_PG_ADMIN_USER=${MARINE_PROVISIONING_PG_ADMIN_USER:-${POSTGRES_USERNAME:-postgres}}
+      - MARINE_PROVISIONING_PG_MAINTENANCE_DB=${MARINE_PROVISIONING_PG_MAINTENANCE_DB:-postgres}
+      - MARINE_PROVISIONING_PG_SSLMODE=${MARINE_PROVISIONING_PG_SSLMODE:-prefer}
+      - MARINE_PROVISIONING_PG_PASSWORD_FILE=/run/secrets/marine_provisioning_pg_password
+    secrets:
+      - source: marine_provisioning_pg_password
+        target: marine_provisioning_pg_password
+        mode: 0400
+
+secrets:
+  marine_provisioning_pg_password:
+    # Point this at a file that exists ONLY on the host / in the secret store and
+    # holds the EXISTING PostgreSQL superuser password. NEVER commit it. See README.md.
+    file: ${MARINE_PROVISIONING_PG_PASSWORD_FILE_HOST:-./secrets/marine_provisioning_pg_password}
