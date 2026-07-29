@@ -11,6 +11,8 @@
         "NEEDS_MANUAL_CLEANUP": "Attention: manual cleanup required",
         "DATABASE_NAME": "Database name",
         "LOGIN_USERNAME": "Login username",
+        "HOST": "Host",
+        "PORT": "Port",
         "PRIVILEGE_LEVEL": "Privilege level",
         "PROVISIONED_AT": "Provisioned at"
       },

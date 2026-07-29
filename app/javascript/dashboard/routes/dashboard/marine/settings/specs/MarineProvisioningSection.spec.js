@@ -121,3 +121,33 @@ describe('MarineProvisioningSection one-time credentials popup', () => {
     expect(alertSpy).toHaveBeenCalled();
   });
 });
+
+describe('MarineProvisioningSection status summary', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // A provisioned installation persists host/port in its status, so the summary
+    // must surface them alongside the database name and login username.
+    getStatus.mockResolvedValue({
+      data: {
+        status: 'active',
+        provisioning_configured: true,
+        database_name: 'marine_erp',
+        login_username: 'marine_app',
+        host: 'db.internal',
+        port: 5432,
+        privilege_level: 'admin',
+      },
+    });
+  });
+
+  it('renders the persisted host and port rows', async () => {
+    const wrapper = mountSection();
+    await flushPromises();
+
+    const summary = wrapper.find('dl').text();
+    expect(summary).toContain('MARINE_AI.PROVISIONING.STATUS.HOST');
+    expect(summary).toContain('db.internal');
+    expect(summary).toContain('MARINE_AI.PROVISIONING.STATUS.PORT');
+    expect(summary).toContain('5432');
+  });
+});

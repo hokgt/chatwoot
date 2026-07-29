@@ -423,3 +423,4 @@ patches:
       - spec/custom/wijaya/marine/provisioning/audit_spec.rb
       - spec/custom/wijaya/marine/controllers/provisioning_controller_spec.rb
       - app/javascript/dashboard/routes/dashboard/marine/settings/specs/MarineProvisioningSection.spec.js
+      - app/javascript/dashboard/routes/dashboard/marine/settings/specs/MarineProvisioningCredentialsDialog.spec.js

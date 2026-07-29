@@ -346,6 +346,28 @@ onUnmounted(() => {
           </dd>
         </div>
         <div
+          v-if="isProvisioned || needsCleanup"
+          class="flex items-center justify-between gap-3 rounded-lg border border-n-weak px-3 py-2"
+        >
+          <dt class="text-n-slate-11">
+            {{ t('MARINE_AI.PROVISIONING.STATUS.HOST') }}
+          </dt>
+          <dd class="font-medium text-n-slate-12 break-all">
+            {{ status.host }}
+          </dd>
+        </div>
+        <div
+          v-if="isProvisioned || needsCleanup"
+          class="flex items-center justify-between gap-3 rounded-lg border border-n-weak px-3 py-2"
+        >
+          <dt class="text-n-slate-11">
+            {{ t('MARINE_AI.PROVISIONING.STATUS.PORT') }}
+          </dt>
+          <dd class="font-medium text-n-slate-12 break-all">
+            {{ status.port }}
+          </dd>
+        </div>
+        <div
           v-if="isProvisioned"
           class="flex items-center justify-between gap-3 rounded-lg border border-n-weak px-3 py-2"
         >
