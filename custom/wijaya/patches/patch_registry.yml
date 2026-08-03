@@ -259,6 +259,8 @@ patches:
       - custom/wijaya/marine/app/services/marine/documents/sop/pdf_extractor.rb
       - custom/wijaya/marine/app/services/marine/documents/sop/image_ocr_service.rb
       - custom/wijaya/marine/app/services/marine/documents/sop/text_normalizer.rb
+      # Commit 1D — deterministic SOP chunk indexing into document-backed knowledge entries.
+      - custom/wijaya/marine/app/services/marine/documents/sop/chunker.rb
       - custom/wijaya/marine/app/jobs/marine/documents/process_job.rb
       - custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing
       - custom/wijaya/batteries/marine_ai/deploy/install_sop_processing_dependencies.sh
@@ -416,6 +418,9 @@ patches:
       - spec/custom/wijaya/marine/documents/sop/image_ocr_service_spec.rb
       - spec/custom/wijaya/marine/documents/create_sop_service_spec.rb
       - spec/custom/wijaya/marine/documents/process_job_spec.rb
+      # Commit 1D — SOP chunk/index pipeline regression coverage.
+      - spec/custom/wijaya/marine/documents/response_builder_job_spec.rb
+      - spec/custom/wijaya/marine/documents/sop/chunker_spec.rb
       - spec/custom/wijaya/marine/documents/sop/extraction_smoke_spec.rb
       - spec/custom/wijaya/marine/controllers/documents_sop_controller_spec.rb
       - spec/custom/wijaya/marine/catalog/product_family_repository_spec.rb

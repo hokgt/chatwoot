@@ -192,6 +192,10 @@ require_file spec/custom/wijaya/marine/documents/create_sop_service_spec.rb
 require_file spec/custom/wijaya/marine/documents/process_job_spec.rb
 require_file spec/custom/wijaya/marine/documents/sop/extraction_smoke_spec.rb
 require_file spec/custom/wijaya/marine/controllers/documents_sop_controller_spec.rb
+# Commit 1D — SOP indexing pipeline
+require_file custom/wijaya/marine/app/services/marine/documents/sop/chunker.rb
+require_file spec/custom/wijaya/marine/documents/sop/chunker_spec.rb
+require_file spec/custom/wijaya/marine/documents/response_builder_job_spec.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/preferences_controller.rb

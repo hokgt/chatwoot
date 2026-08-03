@@ -2,6 +2,7 @@ class Marine::Document < ApplicationRecord
   self.table_name = 'marine_documents'
 
   MAX_SOURCE_FILE_BYTES = 2_097_152 # 2 MiB
+  MAX_CONTENT_CHARS = 200_000
   ALLOWED_SOURCE_FILE_TYPES = %w[application/pdf image/jpeg image/png].freeze
 
   # Opaque per-run claim token for SOP extraction. It lives in the metadata JSON (no
@@ -15,7 +16,8 @@ class Marine::Document < ApplicationRecord
 
   store_accessor :metadata, :content_fingerprint, :last_sync_error_code, :sync_step,
                  :original_filename, :detected_content_type, :original_byte_size,
-                 :processing_method, :page_count, :sync_run_token
+                 :processing_method, :page_count, :sync_run_token, :indexing_status,
+                 :indexed_fingerprint, :indexed_chunk_count, :indexed_at, :indexing_error_code
 
   enum status: { in_progress: 0, available: 1 }
   enum :sync_status, { syncing: 0, synced: 1, failed: 2 }, prefix: :sync
@@ -24,7 +26,7 @@ class Marine::Document < ApplicationRecord
   # Website sources are URL-backed.
   validates :external_link, presence: true, uniqueness: { scope: :assistant_id }, if: :website?
   validates :external_link, absence: true, unless: :website?
-  validates :content, length: { maximum: 200_000 }
+  validates :content, length: { maximum: MAX_CONTENT_CHARS }
   validates :content, absence: true, if: :product_catalog?
 
   # Product catalog / SOP sources are file-backed and never carry a family/website URL mismatch.

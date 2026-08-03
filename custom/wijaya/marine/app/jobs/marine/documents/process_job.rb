@@ -6,8 +6,8 @@
 # and the synced/available state. It is idempotent and safe to re-run (reprocess), and
 # a stale/concurrent run can never overwrite a newer file's result.
 #
-# It NEVER creates Marine::AssistantResponse, chunks, embeddings, or citations, and
-# never calls ResponseBuilderJob — that indexing pipeline is Commit 1D. For a
+# After guarded extraction succeeds it enqueues the Commit 1D ResponseBuilderJob with
+# the exact content fingerprint; indexing remains isolated from OCR and stale-run safe. For a
 # product_catalog it is a strict safe no-op (catalogs are never extracted). Website
 # documents are not routed here; their sync path is unchanged.
 require 'digest'
@@ -68,32 +68,51 @@ module Marine
         mark_failed(document, 'sop_extraction_failed', blob_id, token)
       end
 
-      # Atomic success write, guarded against stale/concurrent runs by BOTH the blob id we
-      # extracted AND our run token: under a row lock, if a newer upload replaced the file
-      # OR a newer run re-claimed the document, this older run yields (no-op). Idempotent —
-      # a re-run that produces the same fingerprint on an already-synced document is a
-      # no-op. The run token is cleared on this terminal transition.
+      # Atomic success write, guarded by blob id + run token. Commit 1D indexing is queued
+      # only after this transaction commits, with the exact persisted fingerprint. A stale
+      # run therefore cannot enqueue an index replacement for newer extracted content.
       def save_success(document, result, blob_id, token)
         fingerprint = Digest::SHA256.hexdigest(result.content)
 
-        Marine::Document.transaction do
+        persisted = Marine::Document.transaction do
           locked = Marine::Document.lock.find(document.id)
-          return unless owns_run?(locked, blob_id, token)
-          return if locked.sync_synced? && locked.content_fingerprint == fingerprint
+          next false unless owns_run?(locked, blob_id, token)
 
-          locked.assign_attributes(
-            content: result.content,
-            status: :available,
-            sync_status: :synced,
-            last_synced_at: Time.current,
-            last_sync_error_code: nil,
-            processing_method: result.processing_method,
-            page_count: result.page_count,
-            content_fingerprint: fingerprint,
-            sync_run_token: nil
-          )
-          locked.save!
+          locked.update!(success_attributes(result, fingerprint))
+          true
         end
+        enqueue_indexing(document, fingerprint) if persisted
+      end
+
+      def success_attributes(result, fingerprint)
+        {
+          content: result.content, status: :available, sync_status: :synced,
+          last_synced_at: Time.current, last_sync_error_code: nil,
+          processing_method: result.processing_method, page_count: result.page_count,
+          content_fingerprint: fingerprint, sync_run_token: nil,
+          indexing_status: 'pending', indexing_error_code: nil
+        }
+      end
+
+      # Broker failure never downgrades extracted synced/available content. Persist only a
+      # stable index error guarded by the same fingerprint and log only the exception class.
+      def enqueue_indexing(document, fingerprint)
+        Marine::Documents::ResponseBuilderJob.perform_later(document, fingerprint)
+      rescue StandardError => e
+        Rails.logger.error({ tag: 'marine.sop.index_enqueue_error', error_class: e.class.name }.to_json)
+        mark_index_enqueue_failed(document, fingerprint)
+      end
+
+      def mark_index_enqueue_failed(document, fingerprint)
+        Marine::Document.transaction do
+          locked = Marine::Document.lock.find_by(id: document.id)
+          next unless locked&.sop_document? && locked.sync_synced?
+          next unless locked.content_fingerprint == fingerprint
+
+          locked.update!(indexing_status: 'failed', indexing_error_code: 'sop_index_enqueue_failed')
+        end
+      rescue StandardError => e
+        Rails.logger.error({ tag: 'marine.sop.index_enqueue_failed_persist', error_class: e.class.name }.to_json)
       end
 
       # Records only the stable sanitized error code, guarded by BOTH blob id and run

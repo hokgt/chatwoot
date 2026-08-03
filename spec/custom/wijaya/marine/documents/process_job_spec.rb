@@ -51,13 +51,36 @@ RSpec.describe Marine::Documents::ProcessJob do
       expect(document.source_file).to be_attached
     end
 
-    it 'creates no AssistantResponse and enqueues no response builder / embedding work' do
+    it 'enqueues Commit 1D indexing with the exact fingerprint without creating responses inline' do
       stub_extraction
-      expect(Marine::Documents::ResponseBuilderJob).not_to receive(:perform_later)
-
       document = sop_document
-      expect { described_class.perform_now(document) }
-        .not_to change(Marine::AssistantResponse, :count)
+      fingerprint = Digest::SHA256.hexdigest(result.content)
+
+      expect do
+        expect { described_class.perform_now(document) }.not_to change(Marine::AssistantResponse, :count)
+      end.to have_enqueued_job(Marine::Documents::ResponseBuilderJob).with(document, fingerprint)
+
+      expect(document.reload.indexing_status).to eq('pending')
+    end
+
+    it 'keeps extracted content synced and records a stable code if indexing enqueue fails' do
+      stub_extraction
+      document = sop_document
+      allow(Marine::Documents::ResponseBuilderJob).to receive(:perform_later)
+        .and_raise(StandardError, '/secret/path broker raw message')
+      expect(Rails.logger).to receive(:error) do |payload|
+        expect(payload).to include('marine.sop.index_enqueue_error', 'StandardError')
+        expect(payload).not_to include('secret', 'raw message')
+      end
+
+      expect { described_class.perform_now(document) }.not_to raise_error
+
+      document.reload
+      expect(document).to be_sync_synced
+      expect(document).to be_available
+      expect(document.content).to eq(result.content)
+      expect(document.indexing_status).to eq('failed')
+      expect(document.indexing_error_code).to eq('sop_index_enqueue_failed')
     end
   end
 
