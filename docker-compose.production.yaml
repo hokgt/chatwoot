@@ -2,10 +2,11 @@ version: '3'
 
 services:
   base: &base
-    image: chatwoot-wijaya:devbot-e49f93495
+    image: chatwoot-wijaya:devbot-5096a6da9
     env_file: .env ## Change this file for customized env variables
     volumes:
       - storage_data:/app/storage
+      - ${MARINE_CATALOG_PG_PASSWORD_FILE_HOST:?set MARINE_CATALOG_PG_PASSWORD_FILE_HOST}:${MARINE_CATALOG_PG_PASSWORD_FILE:?set MARINE_CATALOG_PG_PASSWORD_FILE}:ro
 
   rails:
     <<: *base
