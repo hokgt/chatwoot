@@ -9,7 +9,9 @@ class Marine::Document < ApplicationRecord
   has_many :responses, class_name: 'Marine::AssistantResponse', dependent: :destroy, as: :documentable
   has_one_attached :source_file
 
-  store_accessor :metadata, :content_fingerprint, :last_sync_error_code, :sync_step
+  store_accessor :metadata, :content_fingerprint, :last_sync_error_code, :sync_step,
+                 :original_filename, :detected_content_type, :original_byte_size,
+                 :processing_method, :page_count
 
   enum status: { in_progress: 0, available: 1 }
   enum :sync_status, { syncing: 0, synced: 1, failed: 2 }, prefix: :sync
@@ -50,10 +52,13 @@ class Marine::Document < ApplicationRecord
 
   # Marine Cell: when source content changes, rebuild local knowledge entries.
   # Product catalogs are handled by a dedicated pipeline (Commit 1B) and never
-  # enqueue the URL/content response builder.
+  # enqueue the URL/content response builder. SOP documents are extracted by the
+  # dedicated Commit 1C Marine::Documents::ProcessJob and must NOT create any
+  # AssistantResponse (that indexing pipeline is Commit 1D).
   def enqueue_response_builder_job
     return if destroyed?
     return if product_catalog?
+    return if sop_document?
     return unless content.present?
     return unless previous_changes.key?('id') || previous_changes.key?('content')
 

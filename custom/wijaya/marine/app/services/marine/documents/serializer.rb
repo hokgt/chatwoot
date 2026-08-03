@@ -16,7 +16,12 @@ module Marine
       module_function
 
       def call(document)
-        document.as_json.merge('source_file' => file_metadata(document))
+        json = document.as_json.merge('source_file' => file_metadata(document))
+        # SOP extracted text is internal knowledge-base content, never returned by the
+        # documents API. The `content` key is preserved (stable shape) but always nil for
+        # sop_document. Website/product_catalog serialization is unchanged.
+        json['content'] = nil if document.sop_document?
+        json
       end
 
       def file_metadata(document)

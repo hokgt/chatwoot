@@ -250,6 +250,18 @@ patches:
       - custom/wijaya/marine/app/services/marine/catalog/product_family_repository.rb
       - custom/wijaya/marine/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
       - custom/wijaya/marine/docs/product_catalog_db.md
+      # Commit 1C — SOP extraction + OCR foundation (safe command runner, PDF/image
+      # extraction with page-level OCR fallback, SOP create service + async job, and the
+      # battery-owned OCR runtime derivative image).
+      - custom/wijaya/marine/app/services/marine/documents/command_runner.rb
+      - custom/wijaya/marine/app/services/marine/documents/create_sop_service.rb
+      - custom/wijaya/marine/app/services/marine/documents/sop/extraction_service.rb
+      - custom/wijaya/marine/app/services/marine/documents/sop/pdf_extractor.rb
+      - custom/wijaya/marine/app/services/marine/documents/sop/image_ocr_service.rb
+      - custom/wijaya/marine/app/services/marine/documents/sop/text_normalizer.rb
+      - custom/wijaya/marine/app/jobs/marine/documents/process_job.rb
+      - custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing
+      - custom/wijaya/batteries/marine_ai/deploy/install_sop_processing_dependencies.sh
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/preferences_controller.rb
@@ -395,6 +407,15 @@ patches:
       - spec/custom/wijaya/marine/documents/upload_validator_spec.rb
       - spec/custom/wijaya/marine/documents/product_catalog_service_spec.rb
       - spec/custom/wijaya/marine/documents/active_storage_analysis_guard_spec.rb
+      # Commit 1C — SOP extraction + OCR foundation
+      - spec/custom/wijaya/marine/documents/command_runner_spec.rb
+      - spec/custom/wijaya/marine/documents/sop/text_normalizer_spec.rb
+      - spec/custom/wijaya/marine/documents/sop/pdf_extractor_spec.rb
+      - spec/custom/wijaya/marine/documents/sop/image_ocr_service_spec.rb
+      - spec/custom/wijaya/marine/documents/create_sop_service_spec.rb
+      - spec/custom/wijaya/marine/documents/process_job_spec.rb
+      - spec/custom/wijaya/marine/documents/sop/extraction_smoke_spec.rb
+      - spec/custom/wijaya/marine/controllers/documents_sop_controller_spec.rb
       - spec/custom/wijaya/marine/catalog/product_family_repository_spec.rb
       - spec/custom/wijaya/marine/catalog/connection_spec.rb
       - spec/custom/wijaya/marine/controllers/documents_controller_spec.rb

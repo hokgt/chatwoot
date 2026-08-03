@@ -170,6 +170,16 @@ require_file custom/wijaya/marine/app/services/marine/catalog/connection.rb
 require_file custom/wijaya/marine/app/services/marine/catalog/product_family_repository.rb
 require_file custom/wijaya/marine/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
 require_file custom/wijaya/marine/docs/product_catalog_db.md
+# Commit 1C — SOP extraction + OCR foundation
+require_file custom/wijaya/marine/app/services/marine/documents/command_runner.rb
+require_file custom/wijaya/marine/app/services/marine/documents/create_sop_service.rb
+require_file custom/wijaya/marine/app/services/marine/documents/sop/extraction_service.rb
+require_file custom/wijaya/marine/app/services/marine/documents/sop/pdf_extractor.rb
+require_file custom/wijaya/marine/app/services/marine/documents/sop/image_ocr_service.rb
+require_file custom/wijaya/marine/app/services/marine/documents/sop/text_normalizer.rb
+require_file custom/wijaya/marine/app/jobs/marine/documents/process_job.rb
+require_file custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing
+require_file custom/wijaya/batteries/marine_ai/deploy/install_sop_processing_dependencies.sh
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/preferences_controller.rb

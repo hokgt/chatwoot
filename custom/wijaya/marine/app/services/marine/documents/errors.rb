@@ -44,6 +44,66 @@ module Marine
           super
         end
       end
+
+      # The document's source kind cannot be synced/reprocessed (e.g. a product
+      # catalog, which is never OCRed/extracted). -> 422
+      class NotSyncableError < ServiceError
+        def initialize(message = 'This document type cannot be synced', i18n_key: 'MARINE.DOCUMENTS.ERRORS.NOT_SYNCABLE')
+          super
+        end
+      end
+
+      # Queuing the asynchronous SOP reprocessing job failed (e.g. the job broker is
+      # unavailable). The document has already been rolled back to a stable failed
+      # state; the client gets a sanitized, deterministic error. -> 503
+      class EnqueueFailedError < ServiceError
+        def initialize(message = 'The document could not be queued for processing', i18n_key: 'MARINE.DOCUMENTS.ERRORS.ENQUEUE_FAILED')
+          super
+        end
+      end
+
+      # Internal, sanitized SOP extraction/OCR failures. These are NEVER surfaced to
+      # the API (SOP processing is asynchronous); they are caught by the SOP processing
+      # job and persisted ONLY as a stable `last_sync_error_code`. They deliberately do
+      # NOT inherit from ServiceError so they can never be caught by the controller's
+      # `rescue_from ServiceError` and leak. The message is a fixed, safe, generic
+      # sentence — never a path, command line, raw stderr, or file content.
+      class SopProcessingError < StandardError
+        attr_reader :error_code
+
+        def initialize(error_code)
+          @error_code = error_code
+          super('The document could not be processed')
+        end
+      end
+
+      class SopPageLimitExceededError < SopProcessingError
+        def initialize = super('sop_page_limit_exceeded')
+      end
+
+      class SopPdfInvalidError < SopProcessingError
+        def initialize = super('sop_pdf_invalid')
+      end
+
+      class SopExtractionFailedError < SopProcessingError
+        def initialize = super('sop_extraction_failed')
+      end
+
+      class SopOcrFailedError < SopProcessingError
+        def initialize = super('sop_ocr_failed')
+      end
+
+      class SopOcrTimeoutError < SopProcessingError
+        def initialize = super('sop_ocr_timeout')
+      end
+
+      class SopNoReadableTextError < SopProcessingError
+        def initialize = super('sop_no_readable_text')
+      end
+
+      class SopProcessingDependencyUnavailableError < SopProcessingError
+        def initialize = super('sop_processing_dependency_unavailable')
+      end
     end
   end
 end
