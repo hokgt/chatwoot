@@ -69,6 +69,7 @@ module Wijaya
       def load_extensions!
         require_dependency ROOT.join('app/models/concerns/wijaya/marine/account_extensions').to_s
         require_dependency ROOT.join('app/models/concerns/wijaya/marine/inbox_extensions').to_s
+        require_dependency ROOT.join('app/models/concerns/wijaya/marine/active_storage_analysis_guard').to_s
         require_dependency ROOT.join('app/services/wijaya/marine/hooks').to_s
       end
 
@@ -76,6 +77,9 @@ module Wijaya
         Rails.application.config.to_prepare do
           Account.include Wijaya::Marine::AccountExtensions unless Account < Wijaya::Marine::AccountExtensions
           Inbox.include Wijaya::Marine::InboxExtensions unless Inbox < Wijaya::Marine::InboxExtensions
+          unless ActiveStorage::Attachment < Wijaya::Marine::ActiveStorageAnalysisGuard
+            ActiveStorage::Attachment.prepend Wijaya::Marine::ActiveStorageAnalysisGuard
+          end
         end
       end
     end

@@ -7,4 +7,6 @@ class Marine::AssistantPolicy < ApplicationPolicy
   def destroy? = @account_user.administrator?
   def tools? = @account_user.administrator?
   def sync? = @account_user.administrator?
+  def product_families? = true
+  def product_catalog? = @account_user.administrator?
 end

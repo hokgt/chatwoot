@@ -159,6 +159,17 @@ require_file custom/wijaya/marine/app/jobs/marine/memory/generate_contact_notes_
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/tasks_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistants_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/documents_controller.rb
+# Commit 1B — Product Catalog backend
+require_file custom/wijaya/marine/app/services/marine/documents/errors.rb
+require_file custom/wijaya/marine/app/services/marine/documents/upload_validator.rb
+require_file custom/wijaya/marine/app/services/marine/documents/serializer.rb
+require_file custom/wijaya/marine/app/services/marine/documents/product_catalog_service.rb
+require_file custom/wijaya/marine/app/services/marine/catalog/errors.rb
+require_file custom/wijaya/marine/app/services/marine/catalog/config.rb
+require_file custom/wijaya/marine/app/services/marine/catalog/connection.rb
+require_file custom/wijaya/marine/app/services/marine/catalog/product_family_repository.rb
+require_file custom/wijaya/marine/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
+require_file custom/wijaya/marine/docs/product_catalog_db.md
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/preferences_controller.rb

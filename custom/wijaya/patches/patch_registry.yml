@@ -239,6 +239,17 @@ patches:
       - custom/wijaya/marine/app/services/wijaya/marine/hooks.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistants_controller.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/documents_controller.rb
+      # Commit 1B — Product Catalog backend (upload storage + read-only family repo)
+      - custom/wijaya/marine/app/services/marine/documents/errors.rb
+      - custom/wijaya/marine/app/services/marine/documents/upload_validator.rb
+      - custom/wijaya/marine/app/services/marine/documents/serializer.rb
+      - custom/wijaya/marine/app/services/marine/documents/product_catalog_service.rb
+      - custom/wijaya/marine/app/services/marine/catalog/errors.rb
+      - custom/wijaya/marine/app/services/marine/catalog/config.rb
+      - custom/wijaya/marine/app/services/marine/catalog/connection.rb
+      - custom/wijaya/marine/app/services/marine/catalog/product_family_repository.rb
+      - custom/wijaya/marine/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
+      - custom/wijaya/marine/docs/product_catalog_db.md
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
       - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/preferences_controller.rb
@@ -381,6 +392,12 @@ patches:
       - spec/custom/wijaya/marine/controllers/tasks_controller_spec.rb
       - spec/custom/wijaya/marine/models/custom_tool_spec.rb
       - spec/custom/wijaya/marine/models/document_spec.rb
+      - spec/custom/wijaya/marine/documents/upload_validator_spec.rb
+      - spec/custom/wijaya/marine/documents/product_catalog_service_spec.rb
+      - spec/custom/wijaya/marine/documents/active_storage_analysis_guard_spec.rb
+      - spec/custom/wijaya/marine/catalog/product_family_repository_spec.rb
+      - spec/custom/wijaya/marine/catalog/connection_spec.rb
+      - spec/custom/wijaya/marine/controllers/documents_controller_spec.rb
       - spec/factories/marine/document.rb
       - spec/custom/wijaya/marine/controllers/custom_tools_controller_spec.rb
       - spec/custom/wijaya/marine/models/scenario_spec.rb

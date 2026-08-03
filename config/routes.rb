@@ -132,6 +132,10 @@ Rails.application.routes.draw do
             resources :assistant_responses
             resources :documents, only: [:index, :show, :create, :destroy] do
               post :sync, on: :member
+              collection do
+                get :product_families
+                post :product_catalog
+              end
             end
             resources :custom_tools, only: [:index, :show, :create, :update, :destroy] do
               post :test, on: :collection
