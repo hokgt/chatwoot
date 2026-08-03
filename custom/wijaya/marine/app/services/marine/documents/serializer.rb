@@ -21,7 +21,15 @@ module Marine
         # documents API. The `content` key is preserved (stable shape) but always nil for
         # sop_document. Website/product_catalog serialization is unchanged.
         json['content'] = nil if document.sop_document?
+        # The per-run SOP claim token is an internal concurrency primitive and must never
+        # leave the backend. `as_json` includes the metadata JSON, so strip it here.
+        strip_processing_token!(json)
         json
+      end
+
+      def strip_processing_token!(json)
+        metadata = json['metadata']
+        metadata.delete(Marine::Document::SYNC_RUN_TOKEN_KEY) if metadata.is_a?(Hash)
       end
 
       def file_metadata(document)

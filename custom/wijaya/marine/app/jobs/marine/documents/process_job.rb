@@ -11,53 +11,74 @@
 # product_catalog it is a strict safe no-op (catalogs are never extracted). Website
 # documents are not routed here; their sync path is unchanged.
 require 'digest'
+require 'securerandom'
 
 module Marine
   module Documents
     class ProcessJob < ApplicationJob
-      queue_as :low
+      # Runs on a DEDICATED marine_sop queue (not shared :low) so SOP extraction/OCR is
+      # only ever picked up by the isolated, resource-capped marine_sop_worker service.
+      # The main sidekiq config never lists marine_sop, so normal workers never run it.
+      queue_as :marine_sop
 
-      def perform(document)
+      # expected_blob_id and run_token are OPTIONAL so jobs already queued before this
+      # change (serialized with only the document) still run: a legacy invocation simply
+      # claims the currently-attached blob and mints its own run token.
+      def perform(document, expected_blob_id = nil, run_token = nil)
         return unless document.sop_document?
         return unless document.source_file.attached?
 
-        process(document)
+        claim = claim_run(document, expected_blob_id, run_token)
+        return unless claim
+
+        blob_id, token = claim
+        process(document, blob_id, token)
       end
 
       private
 
-      def process(document)
-        source_blob_id = document.source_file.blob.id
-        mark_syncing(document)
+      # Atomically claims this run under a row lock: only if the still-attached blob
+      # matches the one the enqueuer expected (when supplied) do we mark the document
+      # syncing and stamp our run token. Returns [blob_id, token] on a successful claim,
+      # or nil when a newer upload already superseded the expected blob (no-op).
+      def claim_run(document, expected_blob_id, run_token)
+        Marine::Document.transaction do
+          locked = Marine::Document.lock.find(document.id)
+          next nil unless locked.source_file.attached?
 
+          current_blob_id = locked.source_file.blob.id
+          next nil if expected_blob_id.present? && expected_blob_id != current_blob_id
+
+          token = run_token.presence || SecureRandom.uuid
+          locked.update!(sync_status: :syncing, last_sync_attempted_at: Time.current, sync_run_token: token)
+          [current_blob_id, token]
+        end
+      end
+
+      def process(document, blob_id, token)
         result = Sop::ExtractionService.new(blob: document.source_file.blob).call
-        save_success(document, result, source_blob_id)
+        save_success(document, result, blob_id, token)
       rescue Marine::Documents::Errors::SopProcessingError => e
-        mark_failed(document, e.error_code, source_blob_id)
+        mark_failed(document, e.error_code, blob_id, token)
       rescue StandardError => e
         # Any unexpected failure from download/extraction/tool orchestration is
         # collapsed to a stable code; we log ONLY a structured tag + error_class so
         # Sidekiq can never persist a raw message, backtrace, path, argv or content.
         Rails.logger.error({ tag: 'marine.sop.process_error', error_class: e.class.name }.to_json)
-        mark_failed(document, 'sop_extraction_failed', source_blob_id)
+        mark_failed(document, 'sop_extraction_failed', blob_id, token)
       end
 
-      def mark_syncing(document)
-        document.update!(sync_status: :syncing, last_sync_attempted_at: Time.current)
-      end
-
-      # Atomic success write, guarded against stale/concurrent runs: under a row lock we
-      # re-check that the still-attached blob matches the one we actually extracted; if a
-      # newer file has replaced it, this older run yields to the newer one. Idempotent —
+      # Atomic success write, guarded against stale/concurrent runs by BOTH the blob id we
+      # extracted AND our run token: under a row lock, if a newer upload replaced the file
+      # OR a newer run re-claimed the document, this older run yields (no-op). Idempotent —
       # a re-run that produces the same fingerprint on an already-synced document is a
-      # no-op. Only content/metadata/state change; the original file is untouched.
-      def save_success(document, result, source_blob_id)
+      # no-op. The run token is cleared on this terminal transition.
+      def save_success(document, result, blob_id, token)
         fingerprint = Digest::SHA256.hexdigest(result.content)
 
         Marine::Document.transaction do
           locked = Marine::Document.lock.find(document.id)
-          current_blob_id = locked.source_file.attached? ? locked.source_file.blob.id : nil
-          return if current_blob_id != source_blob_id
+          return unless owns_run?(locked, blob_id, token)
           return if locked.sync_synced? && locked.content_fingerprint == fingerprint
 
           locked.assign_attributes(
@@ -68,32 +89,44 @@ module Marine
             last_sync_error_code: nil,
             processing_method: result.processing_method,
             page_count: result.page_count,
-            content_fingerprint: fingerprint
+            content_fingerprint: fingerprint,
+            sync_run_token: nil
           )
           locked.save!
         end
       end
 
-      # Keeps the original file and any prior extracted content; records only the stable
-      # sanitized error code. Guarded against stale/concurrent runs exactly like the
-      # success path: under a row lock we re-check that the still-attached blob matches
-      # the one this run actually processed. If a newer file has replaced it, an older
-      # failed run must NOT mark the document failed and clobber the newer run — it
-      # no-ops.
-      def mark_failed(document, error_code, source_blob_id)
+      # Records only the stable sanitized error code, guarded by BOTH blob id and run
+      # token exactly like the success path: a stale/superseded run no-ops. If a prior
+      # successful run already produced good content for this same file, a later
+      # duplicate/concurrent FAILURE must NOT downgrade it — we preserve the last good
+      # synced/available content and simply release the run claim.
+      def mark_failed(document, error_code, blob_id, token)
         Marine::Document.transaction do
           locked = Marine::Document.lock.find(document.id)
-          current_blob_id = locked.source_file.attached? ? locked.source_file.blob.id : nil
-          return if current_blob_id != source_blob_id
+          return unless owns_run?(locked, blob_id, token)
 
-          locked.update!(
-            sync_status: :failed,
-            last_sync_attempted_at: Time.current,
-            last_sync_error_code: error_code
-          )
+          if locked.content.present?
+            locked.update!(status: :available, sync_status: :synced, last_sync_error_code: nil, sync_run_token: nil)
+          else
+            locked.update!(
+              sync_status: :failed,
+              last_sync_attempted_at: Time.current,
+              last_sync_error_code: error_code,
+              sync_run_token: nil
+            )
+          end
         end
       rescue StandardError => e
         Rails.logger.error({ tag: 'marine.sop.process_failed_persist', error_class: e.class.name }.to_json)
+      end
+
+      # A transition is applied only when the locked row STILL carries the exact blob we
+      # processed AND the exact run token we claimed. Either mismatch means a newer upload
+      # or a newer run superseded us.
+      def owns_run?(locked, blob_id, token)
+        current_blob_id = locked.source_file.attached? ? locked.source_file.blob.id : nil
+        current_blob_id == blob_id && locked.sync_run_token == token
       end
     end
   end

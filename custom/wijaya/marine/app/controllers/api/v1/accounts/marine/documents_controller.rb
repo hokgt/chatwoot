@@ -125,14 +125,16 @@ class Api::V1::Accounts::Marine::DocumentsController < Api::V1::Accounts::BaseCo
 
   # Queues SOP reprocessing. A broker failure must NOT leak a raw exception or leave the
   # document stuck syncing: roll it back to a stable failed state and surface a
-  # sanitized, deterministic service error.
+  # sanitized, deterministic service error. We pass the expected source blob id and a
+  # fresh opaque run token so the job's atomic claim guards against stale/concurrent runs.
   def enqueue_sop_reprocessing(document)
-    Marine::Documents::ProcessJob.perform_later(document)
+    Marine::Documents::ProcessJob.perform_later(document, document.source_file.blob.id, SecureRandom.uuid)
   rescue StandardError
     document.update!(
       sync_status: :failed,
       last_sync_attempted_at: Time.current,
-      last_sync_error_code: 'sop_enqueue_failed'
+      last_sync_error_code: 'sop_enqueue_failed',
+      sync_run_token: nil
     )
     raise Marine::Documents::Errors::EnqueueFailedError
   end

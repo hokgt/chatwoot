@@ -93,6 +93,11 @@ module Marine
           raise Errors::SopOcrFailedError unless ocr.ok
 
           ocr.stdout
+        ensure
+          # The rendered raster is only needed for this page's OCR. Delete it immediately
+          # so a large multi-page scan never accumulates every page's image on disk at
+          # once (the whole workspace is still removed on completion by CommandRunner).
+          File.delete(image) if image && File.file?(image)
         end
 
         def meaningful?(text)

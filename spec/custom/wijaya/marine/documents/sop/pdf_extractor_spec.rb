@@ -32,6 +32,8 @@ RSpec.describe Marine::Documents::Sop::PdfExtractor do
       File.join(@dir, "#{label}-#{@seq}")
     end
 
+    def written_images = (@image_to_page || {}).keys
+
     def run(*argv)
       case argv.first
       when 'pdfinfo'   then pdfinfo
@@ -122,6 +124,17 @@ RSpec.describe Marine::Documents::Sop::PdfExtractor do
     expect(runner.ocr_pages).to eq([2])
     expect(result.content.index('Alpha')).to be < result.content.index('Bravo')
     expect(result.content.index('Bravo')).to be < result.content.index('Charlie')
+  end
+
+  it 'deletes each per-page rendered raster immediately after OCR (no disk accumulation)' do
+    runner = PdfFakeRunner.new(pages: [
+                              { text: '', ocr: 'First scanned page recognized text content here.' },
+                              { text: '', ocr: 'Second scanned page recognized text content here.' }
+                            ])
+    extract(runner)
+
+    expect(runner.written_images).not_to be_empty
+    expect(runner.written_images.select { |path| File.exist?(path) }).to be_empty
   end
 
   it 'raises sop_page_limit_exceeded for more than 50 pages' do

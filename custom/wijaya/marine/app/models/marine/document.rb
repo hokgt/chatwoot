@@ -4,6 +4,10 @@ class Marine::Document < ApplicationRecord
   MAX_SOURCE_FILE_BYTES = 2_097_152 # 2 MiB
   ALLOWED_SOURCE_FILE_TYPES = %w[application/pdf image/jpeg image/png].freeze
 
+  # Opaque per-run claim token for SOP extraction. It lives in the metadata JSON (no
+  # migration) and is INTERNAL ONLY: it MUST never be exposed by any serializer/API.
+  SYNC_RUN_TOKEN_KEY = 'sync_run_token'
+
   belongs_to :assistant, class_name: 'Marine::Assistant'
   belongs_to :account
   has_many :responses, class_name: 'Marine::AssistantResponse', dependent: :destroy, as: :documentable
@@ -11,7 +15,7 @@ class Marine::Document < ApplicationRecord
 
   store_accessor :metadata, :content_fingerprint, :last_sync_error_code, :sync_step,
                  :original_filename, :detected_content_type, :original_byte_size,
-                 :processing_method, :page_count
+                 :processing_method, :page_count, :sync_run_token
 
   enum status: { in_progress: 0, available: 1 }
   enum :sync_status, { syncing: 0, synced: 1, failed: 2 }, prefix: :sync

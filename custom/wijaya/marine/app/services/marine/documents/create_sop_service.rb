@@ -18,6 +18,8 @@
 #
 # It never sets or accepts client-controlled status/sync/processing/blob metadata, and
 # never creates AssistantResponse/chunks/embeddings (that is Commit 1D).
+require 'securerandom'
+
 module Marine
   module Documents
     class CreateSopService
@@ -104,13 +106,16 @@ module Marine
 
       # After-commit enqueue. A broker failure must NOT lose the uploaded file: the
       # document is marked failed with a stable code and the original bytes are retained.
+      # We pass the expected source blob id and a fresh opaque run token so the job's
+      # atomic claim can guard against a stale/concurrent run.
       def enqueue_processing(document)
-        Marine::Documents::ProcessJob.perform_later(document)
+        Marine::Documents::ProcessJob.perform_later(document, document.source_file.blob.id, SecureRandom.uuid)
       rescue StandardError
         document.update!(
           sync_status: :failed,
           last_sync_attempted_at: Time.current,
-          last_sync_error_code: 'sop_enqueue_failed'
+          last_sync_error_code: 'sop_enqueue_failed',
+          sync_run_token: nil
         )
       end
 

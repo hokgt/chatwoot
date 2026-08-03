@@ -27,6 +27,12 @@ RSpec.describe Marine::Documents::ProcessJob do
     service
   end
 
+  describe 'queue isolation' do
+    it 'enqueues onto the dedicated marine_sop queue (never the shared low queue)' do
+      expect(described_class.new.queue_name).to eq('marine_sop')
+    end
+  end
+
   describe 'successful extraction' do
     it 'atomically stores content, method, page_count, fingerprint and the synced/available state' do
       stub_extraction
@@ -148,6 +154,66 @@ RSpec.describe Marine::Documents::ProcessJob do
       document.reload
 
       expect(document.sync_status).not_to eq('failed')
+      expect(document.last_sync_error_code).to be_nil
+    end
+  end
+
+  describe 'run token concurrency (same file, ordered runs)' do
+    it 'does not overwrite content when a newer run re-claimed the document during extraction' do
+      document = sop_document
+      service = instance_double(Marine::Documents::Sop::ExtractionService)
+      allow(Marine::Documents::Sop::ExtractionService).to receive(:new).and_return(service)
+      # Same blob, but a newer run re-stamps the run token mid-extraction: this older
+      # success must yield rather than clobber the newer run.
+      allow(service).to receive(:call) do
+        Marine::Document.find(document.id).update!(sync_run_token: 'newer-run-token')
+        result
+      end
+
+      described_class.perform_now(document)
+      document.reload
+
+      expect(document.content).to be_nil
+      expect(document.sync_run_token).to eq('newer-run-token')
+    end
+
+    it 'does not fail a document that a newer run already synced during extraction' do
+      document = sop_document
+      service = instance_double(Marine::Documents::Sop::ExtractionService)
+      allow(Marine::Documents::Sop::ExtractionService).to receive(:new).and_return(service)
+      allow(service).to receive(:call) do
+        Marine::Document.find(document.id).update!(
+          content: 'newer good content', status: :available, sync_status: :synced,
+          content_fingerprint: 'newer-fp', sync_run_token: 'newer-run-token'
+        )
+        raise Marine::Documents::Errors::SopOcrTimeoutError
+      end
+
+      described_class.perform_now(document)
+      document.reload
+
+      expect(document.sync_status).to eq('synced')
+      expect(document.content).to eq('newer good content')
+      expect(document.last_sync_error_code).to be_nil
+    end
+
+    it 'preserves the last good synced content when a later same-file run fails' do
+      stub_extraction
+      document = sop_document
+      described_class.perform_now(document)
+      good = document.reload.content
+      expect(document.sync_status).to eq('synced')
+
+      failing = instance_double(Marine::Documents::Sop::ExtractionService)
+      allow(Marine::Documents::Sop::ExtractionService).to receive(:new).and_return(failing)
+      allow(failing).to receive(:call).and_raise(Marine::Documents::Errors::SopOcrTimeoutError)
+
+      described_class.perform_now(document)
+      document.reload
+
+      expect(document.content).to eq(good)
+      expect(document.status).to eq('available')
+      expect(document.sync_status).to eq('synced')
       expect(document.last_sync_error_code).to be_nil
     end
   end

@@ -20,6 +20,9 @@ module Marine
           CommandRunner.open do |runner|
             source = runner.workspace_path('source')
             download_to(source)
+            # Make the downloaded input readable by the dropped marine_sop subprocess user
+            # (no-op when no privilege drop is active).
+            runner.grant_read(source)
             dispatch(runner, source)
           end
         end

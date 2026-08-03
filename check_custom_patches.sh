@@ -180,6 +180,17 @@ require_file custom/wijaya/marine/app/services/marine/documents/sop/text_normali
 require_file custom/wijaya/marine/app/jobs/marine/documents/process_job.rb
 require_file custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing
 require_file custom/wijaya/batteries/marine_ai/deploy/install_sop_processing_dependencies.sh
+# Dedicated, resource-capped SOP worker draining the isolated marine_sop queue.
+require_marker docker-compose.production.yaml "marine_sop_worker"
+# Commit 1C — registered specs
+require_file spec/custom/wijaya/marine/documents/command_runner_spec.rb
+require_file spec/custom/wijaya/marine/documents/sop/text_normalizer_spec.rb
+require_file spec/custom/wijaya/marine/documents/sop/pdf_extractor_spec.rb
+require_file spec/custom/wijaya/marine/documents/sop/image_ocr_service_spec.rb
+require_file spec/custom/wijaya/marine/documents/create_sop_service_spec.rb
+require_file spec/custom/wijaya/marine/documents/process_job_spec.rb
+require_file spec/custom/wijaya/marine/documents/sop/extraction_smoke_spec.rb
+require_file spec/custom/wijaya/marine/controllers/documents_sop_controller_spec.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
 require_file custom/wijaya/marine/app/controllers/api/v1/accounts/marine/preferences_controller.rb

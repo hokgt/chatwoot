@@ -93,6 +93,12 @@ module Marine
         def initialize = super('sop_ocr_failed')
       end
 
+      # A directly-uploaded image whose decoded dimensions are missing, zero, malformed,
+      # or exceed the conservative SOP page bounds (a decompression-bomb guard). -> code only
+      class SopImageInvalidError < SopProcessingError
+        def initialize = super('sop_image_invalid')
+      end
+
       class SopOcrTimeoutError < SopProcessingError
         def initialize = super('sop_ocr_timeout')
       end

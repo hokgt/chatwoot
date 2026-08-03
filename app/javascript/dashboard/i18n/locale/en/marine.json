@@ -1,4 +1,18 @@
 {
+  "MARINE": {
+    "DOCUMENTS": {
+      "ERRORS": {
+        "GENERIC": "The request could not be completed.",
+        "INVALID_FILE": "The uploaded file is invalid.",
+        "UNKNOWN_FAMILY": "The product family is unknown.",
+        "PRIMARY_CONFLICT": "A primary catalog already exists for this product family.",
+        "ACCOUNT_MISMATCH": "The assistant does not belong to this account.",
+        "NOT_SYNCABLE": "This document type cannot be synced.",
+        "ENQUEUE_FAILED": "The document could not be queued for processing.",
+        "CATALOG_UNAVAILABLE": "The product catalog could not be reached."
+      }
+    }
+  },
   "MARINE_AI": {
     "SIDEBAR": {
       "MARINE_AI": "Marine AI",

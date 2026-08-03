@@ -138,7 +138,8 @@ RSpec.describe 'Api::V1::Accounts::Marine::Documents SOP', type: :request do
       expect do
         post "/api/v1/accounts/#{account.id}/marine/documents/#{document.id}/sync",
              headers: admin.create_new_auth_token
-      end.to have_enqueued_job(Marine::Documents::ProcessJob).with(document)
+      end.to have_enqueued_job(Marine::Documents::ProcessJob)
+        .with(document, document.source_file.blob.id, anything)
 
       expect(response).to have_http_status(:accepted)
       expect(document.reload.sync_status).to eq('syncing')
@@ -169,6 +170,20 @@ RSpec.describe 'Api::V1::Accounts::Marine::Documents SOP', type: :request do
       document.reload
       expect(document.sync_status).to eq('failed')
       expect(document.last_sync_error_code).to eq('sop_enqueue_failed')
+    end
+  end
+
+  describe 'internal run token is never exposed' do
+    it 'omits the sync_run_token from the serialized document' do
+      document = create(:marine_document, :sop_document, assistant: assistant)
+      document.update!(sync_run_token: 'secret-run-token')
+
+      get "/api/v1/accounts/#{account.id}/marine/documents/#{document.id}",
+          headers: admin.create_new_auth_token
+
+      expect(response).to have_http_status(:success)
+      expect(response.body).not_to include('secret-run-token')
+      expect(response.body).not_to include('sync_run_token')
     end
   end
 

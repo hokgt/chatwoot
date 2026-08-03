@@ -35,6 +35,35 @@ services:
     command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
     restart: always
 
+  # WIJAYA_CUSTOM marine_sop_worker (Commit 1C): dedicated, resource-capped Sidekiq
+  # worker that ONLY drains the isolated marine_sop queue at concurrency 1. Inherits the
+  # normal base image/env/volumes but is the ONLY service carrying the SOP hardening
+  # (no-new-privileges, all caps dropped, pids/mem/tmpfs caps) so rails and normal
+  # sidekiq stay behaviorally unchanged.
+  marine_sop_worker:
+    <<: *base
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+    command: ['bundle', 'exec', 'sidekiq', '-q', 'marine_sop', '-c', '1']
+    restart: always
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    pids_limit: 256
+    mem_limit: 2g
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+
   postgres:
     image: pgvector/pgvector:pg16
     restart: always
