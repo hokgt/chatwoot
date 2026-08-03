@@ -276,6 +276,7 @@ patches:
       - app/javascript/dashboard/i18n/locale/en/marine.json
       - db/migrate/20260708010000_create_wijaya_marine_tables.rb
       - db/migrate/20260708010001_create_wijaya_marine_inboxes.rb
+      - db/migrate/20260710000000_add_source_kind_to_marine_documents.rb
       - app/javascript/dashboard/routes/dashboard/marine/Index.vue
       - app/javascript/dashboard/routes/dashboard/marine/marine.routes.js
       - app/javascript/dashboard/routes/dashboard/marine/pages/AssistantsIndexPage.vue
@@ -352,6 +353,8 @@ patches:
       - spec/custom/wijaya/marine/hooks_spec.rb
       - spec/custom/wijaya/marine/controllers/tasks_controller_spec.rb
       - spec/custom/wijaya/marine/models/custom_tool_spec.rb
+      - spec/custom/wijaya/marine/models/document_spec.rb
+      - spec/factories/marine/document.rb
       - spec/custom/wijaya/marine/controllers/custom_tools_controller_spec.rb
       - spec/custom/wijaya/marine/models/scenario_spec.rb
       - spec/custom/wijaya/marine/controllers/scenarios_controller_spec.rb

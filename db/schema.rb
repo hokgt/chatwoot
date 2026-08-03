@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_07_09_030000) do
+ActiveRecord::Schema[7.1].define(version: 2026_07_10_000000) do
   # These extensions should be enabled to support this database
   enable_extension "pg_stat_statements"
   enable_extension "pg_trgm"
@@ -1051,7 +1051,7 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_09_030000) do
 
   create_table "marine_documents", force: :cascade do |t|
     t.string "name"
-    t.text "external_link", null: false
+    t.text "external_link"
     t.text "content"
     t.bigint "assistant_id", null: false
     t.bigint "account_id", null: false
@@ -1062,12 +1062,20 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_09_030000) do
     t.jsonb "metadata", default: {}
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "source_kind", default: "website", null: false
+    t.string "product_family_code"
+    t.boolean "primary_catalog", default: false, null: false
     t.index "assistant_id, md5(external_link)", name: "idx_marine_documents_on_assistant_id_and_external_link_md5", unique: true
     t.index ["account_id", "assistant_id", "sync_status", "last_synced_at"], name: "idx_marine_documents_on_account_assistant_sync_stats"
     t.index ["account_id", "sync_status"], name: "index_marine_documents_on_account_id_and_sync_status"
     t.index ["account_id"], name: "index_marine_documents_on_account_id"
+    t.index ["assistant_id", "product_family_code"], name: "idx_marine_documents_uniq_primary_catalog_per_family", unique: true, where: "(((source_kind)::text = 'product_catalog'::text) AND (primary_catalog = true))"
+    t.index ["assistant_id", "product_family_code"], name: "index_marine_documents_on_assistant_id_and_family_code"
+    t.index ["assistant_id", "source_kind"], name: "index_marine_documents_on_assistant_id_and_source_kind"
     t.index ["assistant_id"], name: "index_marine_documents_on_assistant_id"
     t.index ["status"], name: "index_marine_documents_on_status"
+    t.check_constraint "source_kind::text = 'website'::text AND external_link IS NOT NULL AND product_family_code IS NULL AND primary_catalog = false OR source_kind::text = 'product_catalog'::text AND external_link IS NULL AND product_family_code IS NOT NULL AND primary_catalog = true OR source_kind::text = 'sop_document'::text AND external_link IS NULL AND product_family_code IS NULL AND primary_catalog = false", name: "marine_documents_source_shape"
+    t.check_constraint "source_kind::text = ANY (ARRAY['website'::character varying, 'product_catalog'::character varying, 'sop_document'::character varying]::text[])", name: "marine_documents_source_kind_allowed"
   end
 
   create_table "marine_inboxes", force: :cascade do |t|
