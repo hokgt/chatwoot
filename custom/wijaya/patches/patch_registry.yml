@@ -391,6 +391,7 @@ patches:
       - spec/custom/wijaya/marine/llm/translate_query_service_spec.rb
       - spec/custom/wijaya/marine/llm/translate_response_service_spec.rb
       - spec/custom/wijaya/marine/llm/embedding_service_spec.rb
+      - spec/custom/wijaya/marine/llm/update_embedding_job_spec.rb
       - spec/custom/wijaya/marine/cell/retriever_spec.rb
       - spec/custom/wijaya/marine/cell/retrieval_result_spec.rb
       - spec/custom/wijaya/marine/cell/citation_builder_spec.rb

@@ -33,6 +33,10 @@ class Marine::AssistantResponse < ApplicationRecord
     scope.nearest_neighbors(:embedding, embedding, distance: 'cosine').limit(5)
   end
 
+  def embedding_text
+    "#{question}: #{answer}"
+  end
+
   private
 
   def ensure_account
@@ -48,8 +52,9 @@ class Marine::AssistantResponse < ApplicationRecord
   end
 
   def update_response_embedding
+    return if destroyed?
     return unless saved_change_to_question? || saved_change_to_answer? || embedding.nil?
 
-    Marine::Llm::UpdateEmbeddingJob.perform_later(self, "#{question}: #{answer}")
+    Marine::Llm::UpdateEmbeddingJob.perform_later(self)
   end
 end
