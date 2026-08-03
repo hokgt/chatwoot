@@ -173,6 +173,33 @@ patches:
       - spec/custom/wijaya/development_version_hooks_spec.rb
 
 
+  - id: test_database_safety
+    name: Containerized Test Database Isolation
+    battery: custom/wijaya/batteries/test_database_safety
+    description: >
+      Fail-safe isolation so any containerized RAILS_ENV=test process can never
+      connect to or operate on the production database, even when Compose supplies
+      POSTGRES_DATABASE=chatwoot_production or a production DATABASE_URL. The guard is
+      pure Ruby (no DB connection) invoked from the smallest possible hook in the
+      config/database.yml test: section, so it runs before ActiveRecord connects. In
+      test it ignores the generic POSTGRES_DATABASE, uses POSTGRES_TEST_DATABASE
+      (default chatwoot_test), validates any DATABASE_URL/TEST_DATABASE_URL scheme and
+      database name, promotes a validated TEST_DATABASE_URL to the effective connection,
+      clears an unused generic DATABASE_URL on name-based selection, and fails closed
+      with a sanitized message and nonzero exit. Outside test it is a no-op and does
+      not alter production/development selection. Ships a documented
+      `docker compose run --rm -T base` wrapper that runs a pure-Ruby preflight in the
+      same one-off container before any Rails/DB command; the guard makes the env_file
+      POSTGRES_DATABASE irrelevant, so containerized specs and later Marine Commit 1B
+      verification stay isolated from production.
+    custom_files:
+      - custom/wijaya/batteries/test_database_safety/guard.rb
+      - custom/wijaya/batteries/test_database_safety/bin/run_test_specs.sh
+    core_hook_touchpoints:
+      - config/database.yml
+    tests:
+      - spec/custom/wijaya/test_database_safety/guard_spec.rb
+
   - id: marine_ai
     name: Marine AI
     battery: custom/wijaya/marine

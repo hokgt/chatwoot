@@ -109,6 +109,12 @@ for file in \
   require_marker "$file" "WIJAYA_CUSTOM_END development_version"
 done
 
+# test_database_safety
+require_file custom/wijaya/batteries/test_database_safety/guard.rb
+require_file custom/wijaya/batteries/test_database_safety/bin/run_test_specs.sh
+require_marker "config/database.yml" "WIJAYA_CUSTOM_START test_database_safety"
+require_marker "config/database.yml" "WIJAYA_CUSTOM_END test_database_safety"
+
 # marine_ai
 require_file custom/wijaya/marine/loader.rb
 require_file custom/wijaya/marine/app/models/marine/assistant.rb
