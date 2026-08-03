@@ -184,6 +184,7 @@ require_file custom/wijaya/batteries/marine_ai/deploy/install_sop_processing_dep
 require_marker docker-compose.production.yaml "marine_sop_worker"
 # Commit 1C — registered specs
 require_file spec/custom/wijaya/marine/documents/command_runner_spec.rb
+require_file spec/custom/wijaya/marine/documents/sop/extraction_service_spec.rb
 require_file spec/custom/wijaya/marine/documents/sop/text_normalizer_spec.rb
 require_file spec/custom/wijaya/marine/documents/sop/pdf_extractor_spec.rb
 require_file spec/custom/wijaya/marine/documents/sop/image_ocr_service_spec.rb

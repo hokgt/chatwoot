@@ -31,6 +31,11 @@ module Marine
 
         def download_to(path)
           File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+            # Stream the EXACT stored bytes: real PDFs/PNGs/JPGs contain sequences that are
+            # invalid UTF-8, so the sink must be binary or writing a chunk raises
+            # Encoding::UndefinedConversionError (File::BINARY is 0 on POSIX, so binmode is
+            # the portable way to disable write transcoding).
+            file.binmode
             @blob.download { |chunk| file.write(chunk) }
           end
         end
