@@ -36,7 +36,11 @@ RSpec.describe Marine::Documents::ResponseBuilderJob do
     )
     expect(responses).to all(have_attributes(status: 'approved', assistant_id: assistant.id,
                                              account_id: account.id, documentable: document))
-    expect(enqueued_jobs.count { |job| job[:job] == Marine::Llm::UpdateEmbeddingJob }).to eq(responses.length)
+    embedding_jobs = enqueued_jobs.select { |job| job[:job] == Marine::Llm::UpdateEmbeddingJob }
+    expect(embedding_jobs.length).to eq(responses.length)
+    serialized_arguments = embedding_jobs.map { |job| job.fetch(:args).to_json }.join
+    expect(serialized_arguments).to include(fp)
+    expect(serialized_arguments).not_to include(responses.first.answer)
 
     citation = Marine::Cell::CitationBuilder.build([responses.first]).first
     expect(citation).to include(source_type: 'document', document_id: document.id,
@@ -109,6 +113,36 @@ RSpec.describe Marine::Documents::ResponseBuilderJob do
     expect(enqueued_jobs).to be_empty
   end
 
+  it 'recovers a partial post-commit embedding enqueue failure without recreating chunks' do
+    document, fp = synced_sop
+    successful_job = instance_double(ActiveJob::Base, successfully_enqueued?: true)
+    attempts = 0
+    allow(Marine::Llm::UpdateEmbeddingJob).to receive(:perform_later) do
+      attempts += 1
+      raise ActiveJob::EnqueueError, 'queue unavailable' if attempts == 2
+
+      successful_job
+    end
+
+    expect { described_class.perform_now(document, fp) }.not_to raise_error
+    original_ids = document.responses.order(:id).ids
+    expect(original_ids.length).to be > 1
+    expect(document.reload.indexing_status).to eq('failed')
+    expect(document.indexing_error_code).to eq('sop_index_failed')
+
+    retry_attempts = 0
+    allow(Marine::Llm::UpdateEmbeddingJob).to receive(:perform_later) do
+      retry_attempts += 1
+      successful_job
+    end
+    described_class.perform_now(document, fp)
+
+    expect(document.responses.order(:id).ids).to eq(original_ids)
+    expect(retry_attempts).to eq(original_ids.length)
+    expect(document.reload.indexing_status).to eq('indexed')
+    expect(document.indexing_error_code).to be_nil
+  end
+
   it 'requires synced available content and safely no-ops after deletion' do
     document, fp = synced_sop
     document.update!(sync_status: :failed)
@@ -121,11 +155,12 @@ RSpec.describe Marine::Documents::ResponseBuilderJob do
   it 'bounds and sanitizes titles without exposing body text' do
     secret = 'CONFIDENTIAL BODY ' * 100
     document, fp = synced_sop(content: secret)
-    document.update!(name: "N\n#{'界' * 250}")
+    document.update!(name: "N\n#{"e\u0301" * 126}")
 
     described_class.perform_now(document, fp)
 
-    expect(document.responses).to all(satisfy { |response| response.question.scan(/\X/).length <= 255 })
+    expect(document.responses).to all(satisfy { |response| response.question.length <= 255 })
+    expect(document.responses).to all(satisfy { |response| response.question.valid_encoding? })
     expect(document.responses.pluck(:question).join).not_to include('CONFIDENTIAL')
     expect(document.responses.pluck(:question).join).not_to include("\n")
   end

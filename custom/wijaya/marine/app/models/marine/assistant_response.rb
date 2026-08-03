@@ -6,6 +6,8 @@ class Marine::AssistantResponse < ApplicationRecord
   belongs_to :documentable, polymorphic: true, optional: true
   has_neighbors :embedding, normalize: true
 
+  attr_accessor :skip_embedding_enqueue
+
   validates :question, :answer, presence: true
 
   before_validation :ensure_account
@@ -52,7 +54,7 @@ class Marine::AssistantResponse < ApplicationRecord
   end
 
   def update_response_embedding
-    return if destroyed?
+    return if destroyed? || skip_embedding_enqueue
     return unless saved_change_to_question? || saved_change_to_answer? || embedding.nil?
 
     Marine::Llm::UpdateEmbeddingJob.perform_later(self)

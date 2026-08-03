@@ -30,6 +30,25 @@ RSpec.describe Marine::Documents::Sop::Chunker do
     expect(result).to all(satisfy(&:valid_encoding?))
   end
 
+  it 'enforces code-point and byte payload bounds while preserving grapheme boundaries' do
+    result = chunks("e\u0301" * 20, max_chars: 10, overlap: 2)
+
+    expect(result).to all(satisfy { |value| value.length <= 10 })
+    expect(result).to all(satisfy { |value| value.bytesize <= 40 })
+    expect(result).to all(satisfy { |value| value.valid_encoding? })
+  end
+
+  it 'rejects a single grapheme that cannot fit the hard payload bound' do
+    oversized = "a#{"\u0301" * 10}"
+
+    expect { chunks(oversized, max_chars: 5, overlap: 0) }
+      .to raise_error(described_class::OversizedGrapheme, 'grapheme exceeds chunk payload limit')
+  end
+
+  it 'caps input only at a complete grapheme boundary' do
+    expect(chunks("e\u0301e\u0301", max_chars: 10, overlap: 0, max_input_chars: 3)).to eq(["e\u0301"])
+  end
+
   it 'adds deterministic bounded overlap while preserving order' do
     text = 'abcdefghij. klmnopqrst. uvwxyz.'
     first = chunks(text, max_chars: 15, overlap: 3)

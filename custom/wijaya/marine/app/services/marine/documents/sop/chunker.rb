@@ -4,10 +4,14 @@ class Marine::Documents::Sop::Chunker
   OVERLAP_CHARS = 150
   MAX_INPUT_CHARS = Marine::Document::MAX_CONTENT_CHARS
   MAX_CHUNKS = 500
+  MAX_BYTES_PER_CHAR = 4
 
   GRAPHEME = /\X/
-  PARAGRAPH_BOUNDARY = /\n{2,}/
+  PARAGRAPH_BOUNDARY = /
+{2,}/
   SENTENCE_BOUNDARY = /(?<=[.!?…。！？])\s+/
+
+  class OversizedGrapheme < StandardError; end
 
   def initialize(text, max_chars: MAX_CHARS, overlap: OVERLAP_CHARS,
                  max_input_chars: MAX_INPUT_CHARS, max_chunks: MAX_CHUNKS)
@@ -15,6 +19,8 @@ class Marine::Documents::Sop::Chunker
     @max_chars = positive(max_chars, MAX_CHARS)
     @max_input_chars = positive(max_input_chars, MAX_INPUT_CHARS)
     @max_chunks = positive(max_chunks, MAX_CHUNKS)
+    @max_bytes = @max_chars * MAX_BYTES_PER_CHAR
+    @max_input_bytes = @max_input_chars * MAX_BYTES_PER_CHAR
     @overlap = overlap.to_i.clamp(0, @max_chars - 1)
     separator = @overlap.positive? ? 1 : 0
     @body_budget = [@max_chars - @overlap - separator, 1].max
@@ -30,7 +36,7 @@ class Marine::Documents::Sop::Chunker
   private
 
   def bounded_input
-    graphemes(@text).first(@max_input_chars).join
+    take_prefix(@text, @max_input_chars, @max_input_bytes)
   end
 
   def segment(text)
@@ -42,34 +48,67 @@ class Marine::Documents::Sop::Chunker
   def segment_paragraph(paragraph)
     value = paragraph.strip
     return [] if value.empty?
-    return [value] if length(value) <= @body_budget
+    return [value] if fits?(value, @body_budget)
 
     value.split(SENTENCE_BOUNDARY).flat_map do |sentence|
-      length(sentence) <= @body_budget ? [sentence] : hard_split(sentence)
+      fits?(sentence, @body_budget) ? [sentence] : hard_split(sentence)
     end
   end
 
   def hard_split(sentence)
-    graphemes(sentence).each_slice(@body_budget).map(&:join)
+    sentence.scan(GRAPHEME).each_with_object([]) do |grapheme, chunks|
+      validate_grapheme!(grapheme, @body_budget)
+      if chunks.empty? || !fits?(chunks.last + grapheme, @body_budget)
+        chunks << grapheme.dup
+      else
+        chunks.last << grapheme
+      end
+    end
   end
 
   def pack(segments)
     segments.each_with_object([]) do |segment, bodies|
-      if bodies.empty? || length(bodies.last) + 1 + length(segment) > @body_budget
+      candidate = bodies.empty? ? segment : "#{bodies.last} #{segment}"
+      if bodies.empty? || !fits?(candidate, @body_budget)
         bodies << segment.dup
       else
-        bodies.last << ' ' << segment
+        bodies[-1] = candidate
       end
     end
   end
 
   def with_overlap(previous, body)
-    prefix = graphemes(previous).last(@overlap).join
-    graphemes("#{prefix} #{body}").first(@max_chars).join
+    prefix = take_suffix(previous, @overlap, @overlap * MAX_BYTES_PER_CHAR)
+    take_prefix("#{prefix} #{body}", @max_chars, @max_bytes)
   end
 
-  def graphemes(value) = value.scan(GRAPHEME)
-  def length(value) = graphemes(value).length
+  def take_prefix(value, char_limit, byte_limit)
+    bounded_graphemes(value.scan(GRAPHEME), char_limit, byte_limit)
+  end
+
+  def take_suffix(value, char_limit, byte_limit)
+    bounded_graphemes(value.scan(GRAPHEME).reverse, char_limit, byte_limit).scan(GRAPHEME).reverse.join
+  end
+
+  def bounded_graphemes(graphemes, char_limit, byte_limit)
+    graphemes.each_with_object(+'') do |grapheme, result|
+      validate_grapheme!(grapheme)
+      break result if result.length + grapheme.length > char_limit
+      break result if result.bytesize + grapheme.bytesize > byte_limit
+
+      result << grapheme
+    end
+  end
+
+  def validate_grapheme!(grapheme, char_limit = @max_chars)
+    return if grapheme.length <= char_limit && grapheme.bytesize <= char_limit * MAX_BYTES_PER_CHAR
+
+    raise OversizedGrapheme, 'grapheme exceeds chunk payload limit'
+  end
+
+  def fits?(value, char_limit)
+    value.length <= char_limit && value.bytesize <= char_limit * MAX_BYTES_PER_CHAR
+  end
 
   def positive(value, fallback)
     number = value.to_i
