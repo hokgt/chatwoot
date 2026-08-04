@@ -19,6 +19,8 @@ RSpec.describe Marine::Documents::Serializer do
   end
 
   describe '.call for an SOP document' do
+    subject(:json) { described_class.call(document) }
+
     let(:document) do
       doc = create(:marine_document, :sop_document, assistant: assistant)
       doc.update!(
@@ -43,8 +45,6 @@ RSpec.describe Marine::Documents::Serializer do
       doc
     end
 
-    subject(:json) { described_class.call(document) }
-
     it 'never serializes the extracted content' do
       expect(json).not_to have_key('content')
       expect(json.to_json).not_to include('CONFIDENTIAL')
@@ -58,9 +58,7 @@ RSpec.describe Marine::Documents::Serializer do
     end
 
     it 'exposes ONLY the safe metadata allowlist and drops every internal key' do
-      expect(json['metadata'].keys).to match_array(
-        %w[indexing_status indexed_chunk_count last_sync_error_code indexing_error_code]
-      )
+      expect(json['metadata'].keys).to match_array(%w[indexing_status indexed_chunk_count])
       forbidden_keys.each do |key|
         expect(json['metadata']).not_to have_key(key), "expected metadata not to expose #{key}"
         expect(json.to_json).not_to include(key)
@@ -82,6 +80,16 @@ RSpec.describe Marine::Documents::Serializer do
       expect(json['source_file']).to be_nil
       expect(json).not_to have_key('content')
       expect(json['source_kind']).to eq('website')
+    end
+
+    it 'suppresses arbitrary legacy sync errors but permits known stable codes' do
+      document.update!(last_sync_error_code: 'connection failed for http://internal.example/secret')
+      json = described_class.call(document)
+      expect(json['metadata']).not_to have_key('last_sync_error_code')
+      expect(json.to_json).not_to include('internal.example')
+
+      document.update!(last_sync_error_code: 'website_sync_failed')
+      expect(described_class.call(document).dig('metadata', 'last_sync_error_code')).to eq('website_sync_failed')
     end
   end
 end

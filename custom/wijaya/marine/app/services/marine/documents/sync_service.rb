@@ -24,9 +24,10 @@ class Marine::Documents::SyncService
       last_sync_error_code: nil
     )
     { ok: true, content_length: content.length, error: nil }
+  rescue ContentError => e
+    handle_failure('website_no_readable_content', e)
   rescue StandardError => e
-    mark_failed(e.message)
-    { ok: false, content_length: 0, error: e.message }
+    handle_failure('website_sync_failed', e)
   end
 
   private
@@ -42,27 +43,48 @@ class Marine::Documents::SyncService
   def extract_text(html)
     return '' if html.blank?
 
-    doc = Nokogiri::HTML(html)
-    UNWANTED_TAGS.each { |tag| doc.css(tag).each(&:remove) }
-    UNWANTED_PATTERNS.each do |pattern|
-      doc.css("[class*='#{pattern}'], [role*='#{pattern}']").each(&:remove)
-    end
-
-    container = doc.at_css('main') || doc.at_css('article') || doc.at_css('section') || doc.at_css('body')
+    document = Nokogiri::HTML(html)
+    remove_unwanted_nodes(document)
+    container = readable_container(document)
     return '' if container.nil?
 
-    blocks = container.css(CONTENT_BLOCKS)
-    text = if blocks.any?
-             blocks.filter_map { |node| node.text.gsub(/\s+/, ' ').strip.presence }.join("\n\n")
-           else
-             container.text.gsub(/[ \t]+/, ' ').gsub(/\n{3,}/, "\n\n").strip
-           end
-    text.truncate(MAX_CONTENT_LENGTH, omission: '')
+    normalize_content(container).truncate(MAX_CONTENT_LENGTH, omission: '')
   end
 
-  def mark_failed(message)
-    @document.update!(sync_status: :failed, last_sync_attempted_at: Time.current, last_sync_error_code: message)
+  def remove_unwanted_nodes(document)
+    UNWANTED_TAGS.each { |tag| document.css(tag).each(&:remove) }
+    UNWANTED_PATTERNS.each do |pattern|
+      document.css("[class*='#{pattern}'], [role*='#{pattern}']").each(&:remove)
+    end
+  end
+
+  def readable_container(document)
+    document.at_css('main') || document.at_css('article') || document.at_css('section') || document.at_css('body')
+  end
+
+  def normalize_content(container)
+    blocks = container.css(CONTENT_BLOCKS)
+    if blocks.any?
+      normalized_blocks = blocks.filter_map { |node| normalize_block(node.text).presence }
+      return normalized_blocks.join("\n\n")
+    end
+
+    container.text.gsub(/[ \t]+/, ' ').gsub(/\n{3,}/, "\n\n").strip
+  end
+
+  def normalize_block(text)
+    text.gsub(/\s+/, ' ').strip
+  end
+
+  def handle_failure(code, error)
+    Rails.logger.warn({ tag: 'marine.website.sync_failed', error_class: error.class.name, error_code: code }.to_json)
+    mark_failed(code)
+    { ok: false, content_length: 0, error: code }
+  end
+
+  def mark_failed(code)
+    @document.update!(sync_status: :failed, last_sync_attempted_at: Time.current, last_sync_error_code: code)
   rescue StandardError => e
-    Rails.logger.error("[Marine::Documents::SyncService] failed to persist failure state: #{e.message}")
+    Rails.logger.error({ tag: 'marine.website.sync_failed_persist', error_class: e.class.name }.to_json)
   end
 end

@@ -261,6 +261,7 @@ require_file app/javascript/dashboard/routes/dashboard/marine/helpers/specs/docu
 require_file app/javascript/dashboard/routes/dashboard/marine/helpers/specs/chunkCountI18n.spec.js
 require_file app/javascript/dashboard/routes/dashboard/marine/components/specs/CreateDocumentDialog.spec.js
 require_file spec/custom/wijaya/marine/documents/serializer_spec.rb
+require_file spec/custom/wijaya/marine/documents/sync_service_spec.rb
 require_file app/javascript/dashboard/routes/dashboard/marine/scenarios/Index.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/playground/Index.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/inboxes/Index.vue

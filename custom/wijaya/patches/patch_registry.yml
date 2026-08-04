@@ -447,6 +447,7 @@ patches:
       - app/javascript/dashboard/api/specs/marine/document.spec.js
       # Commit 1E — confidentiality serializer + extracted-helper/UI regression coverage.
       - spec/custom/wijaya/marine/documents/serializer_spec.rb
+      - spec/custom/wijaya/marine/documents/sync_service_spec.rb
       - app/javascript/dashboard/routes/dashboard/marine/helpers/specs/documentHelpers.spec.js
       - app/javascript/dashboard/routes/dashboard/marine/helpers/specs/chunkCountI18n.spec.js
       - app/javascript/dashboard/routes/dashboard/marine/components/specs/CreateDocumentDialog.spec.js
