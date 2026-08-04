@@ -244,6 +244,10 @@ require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineM
 require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantSwitcher.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineDocumentCard.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/components/CreateDocumentDialog.vue
+# Product Catalog UI — Wijaya-owned family picker + regression specs.
+require_file custom/wijaya/batteries/marine_ai/frontend/MarineProductFamilySelect.vue
+require_file app/javascript/dashboard/routes/dashboard/marine/components/specs/MarineProductFamilySelect.spec.js
+require_file app/javascript/dashboard/routes/dashboard/marine/components/specs/MarineDocumentCard.spec.js
 require_file app/javascript/dashboard/routes/dashboard/marine/components/DocumentPageEmptyState.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/components/MarineResponseCard.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/components/CreateResponseDialog.vue

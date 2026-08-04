@@ -176,7 +176,8 @@
       "SOURCE_TYPE": {
         "LABEL": "Source type",
         "WEBSITE": "Website URL",
-        "SOP": "SOP file upload"
+        "SOP": "SOP file upload",
+        "PRODUCT_CATALOG": "Product catalog"
       },
       "FORM": {
         "NAME": {
@@ -222,6 +223,30 @@
         },
         "CHUNK_COUNT": "{count} chunk indexed | {count} chunks indexed",
         "ERROR_CODE": "Error code: {code}"
+      },
+      "PRODUCT_CATALOG": {
+        "BADGE": "Product catalog",
+        "PRIMARY_BADGE": "Primary",
+        "FAMILY_CODE": "Family: {code}",
+        "FAMILY": {
+          "LABEL": "Product family",
+          "SEARCH_PLACEHOLDER": "Search product families…",
+          "LOADING": "Loading product families…",
+          "EMPTY": "No matching product families.",
+          "ERROR": "Product families are unavailable right now.",
+          "RETRY": "Retry",
+          "SELECTED": "Selected family: {code}",
+          "REQUIRED": "Please select a product family."
+        },
+        "FILE": {
+          "LABEL": "Catalog file"
+        },
+        "CONFLICT": {
+          "TITLE": "Replace primary catalog?",
+          "MESSAGE": "A primary catalog already exists for this product family. Uploading will replace the existing primary catalog. This cannot be undone.",
+          "CONFIRM": "Replace catalog",
+          "CANCEL": "Cancel"
+        }
       },
       "OPTIONS": {
         "SYNC_NOW": "Sync now",

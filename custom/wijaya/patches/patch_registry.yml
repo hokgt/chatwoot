@@ -345,6 +345,8 @@ patches:
       - app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantSwitcher.vue
       - app/javascript/dashboard/routes/dashboard/marine/components/MarineDocumentCard.vue
       - app/javascript/dashboard/routes/dashboard/marine/components/CreateDocumentDialog.vue
+      # Product Catalog UI — bounded product-family picker (Wijaya-owned, battery frontend).
+      - custom/wijaya/batteries/marine_ai/frontend/MarineProductFamilySelect.vue
       - app/javascript/dashboard/routes/dashboard/marine/components/DocumentPageEmptyState.vue
       - app/javascript/dashboard/routes/dashboard/marine/components/MarineResponseCard.vue
       - app/javascript/dashboard/routes/dashboard/marine/components/CreateResponseDialog.vue
@@ -451,6 +453,9 @@ patches:
       - app/javascript/dashboard/routes/dashboard/marine/helpers/specs/documentHelpers.spec.js
       - app/javascript/dashboard/routes/dashboard/marine/helpers/specs/chunkCountI18n.spec.js
       - app/javascript/dashboard/routes/dashboard/marine/components/specs/CreateDocumentDialog.spec.js
+      # Product Catalog UI regression coverage.
+      - app/javascript/dashboard/routes/dashboard/marine/components/specs/MarineProductFamilySelect.spec.js
+      - app/javascript/dashboard/routes/dashboard/marine/components/specs/MarineDocumentCard.spec.js
 
   - id: marine_ai_provisioning
     name: Marine AI PostgreSQL Provisioning UI

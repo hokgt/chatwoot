@@ -32,6 +32,34 @@ class MarineDocument extends ApiClient {
     });
   }
 
+  // Bounded, read-only product-family lookup for the catalog picker. Returns
+  // { payload: [{ code, name }] }; never mutates any document state.
+  productFamilies({ query = '', limit } = {}) {
+    return axios.get(`${this.url}/product_families`, {
+      params: { query, limit },
+    });
+  }
+
+  // Flat multipart create/replace of the single primary Product Catalog for an
+  // assistant + product family. Always primary_catalog=true; `replace` is false on the
+  // first attempt and only retried as true after the user confirms the 409 conflict.
+  createProductCatalog({
+    assistantId,
+    productFamilyCode,
+    name,
+    file,
+    replace = false,
+  } = {}) {
+    const formData = new FormData();
+    formData.append('assistant_id', assistantId);
+    formData.append('product_family_code', productFamilyCode);
+    if (name) formData.append('name', name);
+    formData.append('primary_catalog', 'true');
+    formData.append('replace', replace ? 'true' : 'false');
+    formData.append('file', file);
+    return axios.post(`${this.url}/product_catalog`, formData);
+  }
+
   sync(id) {
     return axios.post(`${this.url}/${id}/sync`);
   }

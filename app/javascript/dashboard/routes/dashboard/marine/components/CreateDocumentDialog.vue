@@ -6,12 +6,18 @@ import { required, url } from '@vuelidate/validators';
 import { useAlert } from 'dashboard/composables';
 import { parseAPIErrorResponse } from 'dashboard/store/utils/api';
 import MarineDocumentAPI from 'dashboard/api/marine/document';
-import { SOP_ACCEPT_HINT, validateSopFile } from '../helpers/documentHelpers';
+import {
+  SOP_ACCEPT_HINT,
+  validateSopFile,
+  isPrimaryCatalogConflict,
+} from '../helpers/documentHelpers';
 
 import Dialog from 'dashboard/components-next/dialog/Dialog.vue';
 import Input from 'dashboard/components-next/input/Input.vue';
 import TextArea from 'dashboard/components-next/textarea/TextArea.vue';
 import Button from 'dashboard/components-next/button/Button.vue';
+// Wijaya-owned catalog picker (registered under the marine_ai battery).
+import MarineProductFamilySelect from '../../../../../../../custom/wijaya/batteries/marine_ai/frontend/MarineProductFamilySelect.vue';
 
 const props = defineProps({
   assistantId: {
@@ -38,7 +44,9 @@ const fileErrorMessages = computed(() => ({
 }));
 
 const dialogRef = ref(null);
+const conflictDialogRef = ref(null);
 const fileInputRef = ref(null);
+const catalogFileInputRef = ref(null);
 const isSaving = ref(false);
 
 const initialState = {
@@ -47,6 +55,8 @@ const initialState = {
   externalLink: '',
   content: '',
   sopFile: null,
+  catalogFile: null,
+  productFamilyCode: '',
 };
 
 const state = reactive({ ...initialState });
@@ -54,12 +64,22 @@ const state = reactive({ ...initialState });
 const sourceTypeOptions = [
   { value: 'website', label: t('MARINE_AI.DOCUMENTS.SOURCE_TYPE.WEBSITE') },
   { value: 'sop', label: t('MARINE_AI.DOCUMENTS.SOURCE_TYPE.SOP') },
+  {
+    value: 'product_catalog',
+    label: t('MARINE_AI.DOCUMENTS.SOURCE_TYPE.PRODUCT_CATALOG'),
+  },
 ];
 
 const isSop = computed(() => state.sourceType === 'sop');
+const isProductCatalog = computed(() => state.sourceType === 'product_catalog');
+const isWebsite = computed(() => state.sourceType === 'website');
 
-// Website keeps its original URL validation; SOP validates only the selected file.
+// Website keeps its original URL validation; SOP validates only the selected file;
+// product catalog requires both a picked family and a file.
 const validationRules = computed(() => {
+  if (isProductCatalog.value) {
+    return { productFamilyCode: { required }, catalogFile: { required } };
+  }
   if (isSop.value) {
     return { sopFile: { required } };
   }
@@ -75,9 +95,19 @@ const formErrors = computed(() => ({
 }));
 
 const hasFileError = computed(() => v$.value.sopFile?.$error ?? false);
+const hasCatalogFileError = computed(
+  () => v$.value.catalogFile?.$error ?? false
+);
+const hasFamilyError = computed(
+  () => v$.value.productFamilyCode?.$error ?? false
+);
 
 const openFileDialog = () => {
   nextTick(() => fileInputRef.value?.click());
+};
+
+const openCatalogFileDialog = () => {
+  nextTick(() => catalogFileInputRef.value?.click());
 };
 
 // Clears the staged file AND the native input value so re-selecting the same filename
@@ -86,9 +116,20 @@ const resetFileInput = () => {
   if (fileInputRef.value) fileInputRef.value.value = '';
 };
 
+const resetCatalogFileInput = () => {
+  if (catalogFileInputRef.value) catalogFileInputRef.value.value = '';
+};
+
 const clearSopFile = () => {
   state.sopFile = null;
   resetFileInput();
+};
+
+// Product catalog keeps its own file + family state, fully independent from SOP.
+const clearCatalog = () => {
+  state.catalogFile = null;
+  state.productFamilyCode = '';
+  resetCatalogFileInput();
 };
 
 const handleFileChange = event => {
@@ -107,12 +148,33 @@ const handleFileChange = event => {
   }
 };
 
-// Leaving SOP must drop any staged file and native input so it cannot be submitted with
-// the website workflow; every switch also resets validation state for the new source.
+// Product catalog reuses the exact same PDF/JPEG/PNG ≤2 MiB validation as SOP, but
+// stages into its own separate state so no file can cross source paths.
+const handleCatalogFileChange = event => {
+  const file = event.target.files[0];
+  state.catalogFile = null;
+  const { valid, errorKey } = validateSopFile(file);
+  if (!valid) {
+    if (errorKey) useAlert(fileErrorMessages.value[errorKey]);
+    resetCatalogFileInput();
+    return;
+  }
+  state.catalogFile = file;
+  if (!state.name) {
+    state.name = file.name.replace(/\.(pdf|jpe?g|png)$/i, '');
+  }
+};
+
+// Leaving a file-backed source must drop its staged file, native input, and (for catalog)
+// the family selection so nothing can be submitted through another source's workflow;
+// every switch also resets validation state for the new source.
 watch(
   () => state.sourceType,
   (newType, oldType) => {
     if (oldType === 'sop' && newType !== 'sop') clearSopFile();
+    if (oldType === 'product_catalog' && newType !== 'product_catalog') {
+      clearCatalog();
+    }
     v$.value.$reset();
   }
 );
@@ -120,6 +182,11 @@ watch(
 const fileSizeLabel = computed(() => {
   if (!state.sopFile) return '';
   return `${(state.sopFile.size / 1024 / 1024).toFixed(2)} MB`;
+});
+
+const catalogFileSizeLabel = computed(() => {
+  if (!state.catalogFile) return '';
+  return `${(state.catalogFile.size / 1024 / 1024).toFixed(2)} MB`;
 });
 
 const buildSopFormData = () => {
@@ -131,13 +198,39 @@ const buildSopFormData = () => {
   return formData;
 };
 
+// Always primary_catalog=true; `replace` is false on the first attempt and only true
+// after the user explicitly confirms the primary-conflict replacement.
+const submitProductCatalog = replace =>
+  MarineDocumentAPI.createProductCatalog({
+    assistantId: props.assistantId,
+    productFamilyCode: state.productFamilyCode,
+    name: state.name,
+    file: state.catalogFile,
+    replace,
+  });
+
+const finishCreate = () => {
+  useAlert(t('MARINE_AI.DOCUMENTS.CREATE.SUCCESS_MESSAGE'));
+  emit('createSuccess');
+  dialogRef.value.close();
+};
+
+const surfaceError = error => {
+  useAlert(
+    parseAPIErrorResponse(error) ||
+      t('MARINE_AI.DOCUMENTS.CREATE.ERROR_MESSAGE')
+  );
+};
+
 const handleSubmit = async () => {
   const isFormValid = await v$.value.$validate();
   if (!isFormValid) return;
 
   isSaving.value = true;
   try {
-    if (isSop.value) {
+    if (isProductCatalog.value) {
+      await submitProductCatalog(false);
+    } else if (isSop.value) {
       await MarineDocumentAPI.create(buildSopFormData());
     } else {
       await MarineDocumentAPI.create({
@@ -147,14 +240,29 @@ const handleSubmit = async () => {
         content: state.content,
       });
     }
-    useAlert(t('MARINE_AI.DOCUMENTS.CREATE.SUCCESS_MESSAGE'));
-    emit('createSuccess');
-    dialogRef.value.close();
+    finishCreate();
   } catch (error) {
-    useAlert(
-      parseAPIErrorResponse(error) ||
-        t('MARINE_AI.DOCUMENTS.CREATE.ERROR_MESSAGE')
-    );
+    // A primary catalog already exists: never silently replace. Open an explicit
+    // confirmation and keep the form (with its staged file/family) open.
+    if (isProductCatalog.value && isPrimaryCatalogConflict(error)) {
+      conflictDialogRef.value?.open();
+      return;
+    }
+    surfaceError(error);
+  } finally {
+    isSaving.value = false;
+  }
+};
+
+// Confirmed replacement: retry the same upload with replace=true.
+const handleConflictConfirm = async () => {
+  conflictDialogRef.value?.close();
+  isSaving.value = true;
+  try {
+    await submitProductCatalog(true);
+    finishCreate();
+  } catch (error) {
+    surfaceError(error);
   } finally {
     isSaving.value = false;
   }
@@ -209,7 +317,7 @@ defineExpose({ dialogRef });
         :placeholder="t('MARINE_AI.DOCUMENTS.FORM.NAME.PLACEHOLDER')"
       />
 
-      <template v-if="!isSop">
+      <template v-if="isWebsite">
         <Input
           v-model="state.externalLink"
           :label="t('MARINE_AI.DOCUMENTS.FORM.URL.LABEL')"
@@ -223,6 +331,62 @@ defineExpose({ dialogRef });
           :placeholder="t('MARINE_AI.DOCUMENTS.FORM.CONTENT.PLACEHOLDER')"
           :rows="5"
         />
+      </template>
+
+      <template v-else-if="isProductCatalog">
+        <MarineProductFamilySelect
+          v-model="state.productFamilyCode"
+          :has-error="hasFamilyError"
+        />
+        <div class="flex flex-col gap-2">
+          <label class="text-sm font-medium text-n-slate-12">
+            {{ t('MARINE_AI.DOCUMENTS.PRODUCT_CATALOG.FILE.LABEL') }}
+          </label>
+          <input
+            ref="catalogFileInputRef"
+            type="file"
+            :accept="SOP_ACCEPT_HINT"
+            class="hidden"
+            @change="handleCatalogFileChange"
+          />
+          <Button
+            type="button"
+            :color="hasCatalogFileError ? 'ruby' : 'slate'"
+            :variant="hasCatalogFileError ? 'outline' : 'solid'"
+            class="!w-full !h-auto !justify-between !py-4"
+            @click="openCatalogFileDialog"
+          >
+            <template #default>
+              <div class="flex gap-2 items-center">
+                <div
+                  class="flex justify-center items-center w-10 h-10 rounded-lg bg-n-slate-3"
+                >
+                  <i class="text-xl i-ph-file-text text-n-slate-11" />
+                </div>
+                <div class="flex flex-col flex-1 gap-1 items-start">
+                  <p class="m-0 text-sm font-medium text-n-slate-12">
+                    {{
+                      state.catalogFile
+                        ? state.catalogFile.name
+                        : t('MARINE_AI.DOCUMENTS.FORM.FILE.CHOOSE_FILE')
+                    }}
+                  </p>
+                  <p class="m-0 text-xs text-n-slate-11">
+                    {{
+                      state.catalogFile
+                        ? catalogFileSizeLabel
+                        : t('MARINE_AI.DOCUMENTS.FORM.FILE.HELP_TEXT')
+                    }}
+                  </p>
+                </div>
+              </div>
+              <i class="i-lucide-upload text-n-slate-11" />
+            </template>
+          </Button>
+          <p v-if="hasCatalogFileError" class="text-xs text-n-ruby-9">
+            {{ t('MARINE_AI.DOCUMENTS.FORM.FILE.REQUIRED') }}
+          </p>
+        </div>
       </template>
 
       <div v-else class="flex flex-col gap-2">
@@ -295,4 +459,18 @@ defineExpose({ dialogRef });
     </form>
     <template #footer />
   </Dialog>
+
+  <Dialog
+    ref="conflictDialogRef"
+    type="alert"
+    :title="t('MARINE_AI.DOCUMENTS.PRODUCT_CATALOG.CONFLICT.TITLE')"
+    :description="t('MARINE_AI.DOCUMENTS.PRODUCT_CATALOG.CONFLICT.MESSAGE')"
+    :confirm-button-label="
+      t('MARINE_AI.DOCUMENTS.PRODUCT_CATALOG.CONFLICT.CONFIRM')
+    "
+    :cancel-button-label="
+      t('MARINE_AI.DOCUMENTS.PRODUCT_CATALOG.CONFLICT.CANCEL')
+    "
+    @confirm="handleConflictConfirm"
+  />
 </template>

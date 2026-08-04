@@ -32,6 +32,18 @@ export const validateSopFile = file => {
   return { valid: true, errorKey: null };
 };
 
+// Product catalogs reuse the exact SOP file semantics (PDF/JPEG/PNG up to 2 MiB); see
+// validateSopFile above. The primary-catalog upload endpoint returns HTTP 409 with this
+// i18n_key when a primary catalog already exists for the selected family. Detecting it
+// precisely (status + key) lets the dialog ask for explicit confirmation before ever
+// retrying with replace=true, instead of silently overwriting.
+export const PRIMARY_CONFLICT_I18N_KEY =
+  'MARINE.DOCUMENTS.ERRORS.PRIMARY_CONFLICT';
+
+export const isPrimaryCatalogConflict = error =>
+  error?.response?.status === 409 &&
+  error?.response?.data?.i18n_key === PRIMARY_CONFLICT_I18N_KEY;
+
 // SOP extraction/OCR then indexing can outlast a single refresh. A document is "active"
 // (worth polling) while it is syncing, or an SOP whose indexing has not yet reached a
 // terminal state.

@@ -1,6 +1,5 @@
 <script setup>
-import { computed } from 'vue';
-import { useToggle } from '@vueuse/core';
+import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 
@@ -30,6 +29,14 @@ const props = defineProps({
   sourceFile: {
     type: Object,
     default: null,
+  },
+  productFamilyCode: {
+    type: String,
+    default: null,
+  },
+  primaryCatalog: {
+    type: Boolean,
+    default: false,
   },
   indexingStatus: {
     type: String,
@@ -65,7 +72,11 @@ const emit = defineEmits(['action']);
 
 const { t } = useI18n();
 
-const [showActionsDropdown, toggleDropdown] = useToggle();
+const showActionsDropdown = ref(false);
+const toggleDropdown = value => {
+  showActionsDropdown.value =
+    typeof value === 'boolean' ? value : !showActionsDropdown.value;
+};
 
 const isSop = computed(() => props.sourceKind === 'sop_document');
 const isProductCatalog = computed(() => props.sourceKind === 'product_catalog');
@@ -307,6 +318,31 @@ const handleAction = ({ action, value }) => {
           :class="extractionBadge.class"
         >
           {{ extractionBadge.label }}
+        </span>
+      </div>
+      <!-- Product catalog: source badge, primary badge, and family code only. No sync,
+           extraction, or indexing status is ever shown for catalogs. -->
+      <div
+        v-if="isProductCatalog"
+        class="flex flex-wrap gap-2 justify-start items-center w-full"
+      >
+        <span
+          class="rounded-full px-2 py-0.5 text-xs font-medium shrink-0 bg-n-slate-3 text-n-slate-11"
+        >
+          {{ t('MARINE_AI.DOCUMENTS.PRODUCT_CATALOG.BADGE') }}
+        </span>
+        <span
+          v-if="primaryCatalog"
+          class="rounded-full px-2 py-0.5 text-xs font-medium shrink-0 bg-n-teal-3 text-n-teal-11"
+        >
+          {{ t('MARINE_AI.DOCUMENTS.PRODUCT_CATALOG.PRIMARY_BADGE') }}
+        </span>
+        <span v-if="productFamilyCode" class="text-xs text-n-slate-11">
+          {{
+            t('MARINE_AI.DOCUMENTS.PRODUCT_CATALOG.FAMILY_CODE', {
+              code: productFamilyCode,
+            })
+          }}
         </span>
       </div>
       <div
