@@ -30,13 +30,35 @@ vi.mock('dashboard/api/marine/document', () => ({
 // the component's ref-driven dialog control (incl. the conflict dialog) works, and a
 // confirm button lets us drive the primary-conflict confirmation flow.
 const DialogStub = {
+  props: ['type', 'title', 'description'],
   emits: ['confirm', 'close'],
-  methods: {
-    open() {},
-    close() {},
+  data() {
+    return { isOpen: this.type !== 'alert' };
   },
-  template:
-    '<div><slot /><slot name="footer" /><button type="button" class="dialog-confirm" @click="$emit(\'confirm\')" /></div>',
+  methods: {
+    open() {
+      this.isOpen = true;
+    },
+    close() {
+      this.isOpen = false;
+    },
+    confirm() {
+      this.$emit('confirm');
+    },
+    cancel() {
+      this.isOpen = false;
+      this.$emit('close');
+    },
+  },
+  template: `
+    <div v-if="isOpen" class="dialog-stub">
+      <span class="dialog-title">{{ title }}</span>
+      <p class="dialog-description">{{ description }}</p>
+      <slot /><slot name="footer" />
+      <button v-if="type === 'alert'" type="button" class="dialog-confirm" @click="confirm" />
+      <button v-if="type === 'alert'" type="button" class="dialog-cancel" @click="cancel" />
+    </div>
+  `,
 };
 const ButtonStub = {
   props: ['label', 'disabled'],
@@ -269,9 +291,17 @@ describe('CreateDocumentDialog product catalog workflow', () => {
     await wrapper.find('form').trigger('submit');
     await flushPromises();
 
-    // First attempt used replace=false; no silent replace retry happened.
+    // First attempt used replace=false; no silent replace retry happened, and the
+    // explicit replacement dialog is now visible with the approved warning copy.
     expect(createCatalogSpy).toHaveBeenCalledTimes(1);
     expect(createCatalogSpy.mock.calls[0][0].replace).toBe(false);
+    expect(wrapper.find('.dialog-confirm').exists()).toBe(true);
+    expect(wrapper.text()).toContain(
+      'MARINE_AI.DOCUMENTS.PRODUCT_CATALOG.CONFLICT.TITLE'
+    );
+    expect(wrapper.text()).toContain(
+      'MARINE_AI.DOCUMENTS.PRODUCT_CATALOG.CONFLICT.MESSAGE'
+    );
   });
 
   it('retries with replace=true only after the conflict is confirmed', async () => {
@@ -281,9 +311,9 @@ describe('CreateDocumentDialog product catalog workflow', () => {
     await wrapper.find('form').trigger('submit');
     await flushPromises();
 
-    // Confirm on the conflict dialog (second DialogStub).
-    const dialogs = wrapper.findAllComponents(DialogStub);
-    dialogs[dialogs.length - 1].vm.$emit('confirm');
+    // Confirmation is only reachable after the conflict dialog actually opens.
+    expect(wrapper.find('.dialog-confirm').exists()).toBe(true);
+    await wrapper.find('.dialog-confirm').trigger('click');
     await flushPromises();
 
     expect(createCatalogSpy).toHaveBeenCalledTimes(2);
@@ -297,10 +327,12 @@ describe('CreateDocumentDialog product catalog workflow', () => {
     await wrapper.find('form').trigger('submit');
     await flushPromises();
 
-    // Cancel = close the conflict dialog without confirming.
-    const dialogs = wrapper.findAllComponents(DialogStub);
-    dialogs[dialogs.length - 1].vm.$emit('close');
+    // Cancel closes the conflict dialog without confirming and leaves the form open.
+    expect(wrapper.find('.dialog-cancel').exists()).toBe(true);
+    await wrapper.find('.dialog-cancel').trigger('click');
     await flushPromises();
+    expect(wrapper.find('.dialog-confirm').exists()).toBe(false);
+    expect(wrapper.find('form').exists()).toBe(true);
 
     expect(createCatalogSpy).toHaveBeenCalledTimes(1);
     expect(createCatalogSpy.mock.calls[0][0].replace).toBe(false);
