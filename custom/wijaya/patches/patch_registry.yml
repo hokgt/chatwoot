@@ -354,6 +354,8 @@ patches:
       - app/javascript/dashboard/routes/dashboard/marine/components/InboxPageEmptyState.vue
       - app/javascript/dashboard/routes/dashboard/marine/responses/Index.vue
       - app/javascript/dashboard/routes/dashboard/marine/documents/Index.vue
+      # Commit 1E — framework-free SOP UI helpers (validation, active-work, poll backoff).
+      - app/javascript/dashboard/routes/dashboard/marine/helpers/documentHelpers.js
       - app/javascript/dashboard/routes/dashboard/marine/scenarios/Index.vue
       - app/javascript/dashboard/routes/dashboard/marine/playground/Index.vue
       - app/javascript/dashboard/routes/dashboard/marine/inboxes/Index.vue
@@ -443,6 +445,11 @@ patches:
       - app/javascript/dashboard/composables/spec/useCaptain.spec.js
       # Commit 1E — SOP document UI: API create workflow coverage.
       - app/javascript/dashboard/api/specs/marine/document.spec.js
+      # Commit 1E — confidentiality serializer + extracted-helper/UI regression coverage.
+      - spec/custom/wijaya/marine/documents/serializer_spec.rb
+      - app/javascript/dashboard/routes/dashboard/marine/helpers/specs/documentHelpers.spec.js
+      - app/javascript/dashboard/routes/dashboard/marine/helpers/specs/chunkCountI18n.spec.js
+      - app/javascript/dashboard/routes/dashboard/marine/components/specs/CreateDocumentDialog.spec.js
 
   - id: marine_ai_provisioning
     name: Marine AI PostgreSQL Provisioning UI

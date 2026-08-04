@@ -79,8 +79,9 @@ RSpec.describe 'Api::V1::Accounts::Marine::Documents', type: :request do
       expect(json_response[:product_family_code]).to eq(family_code)
       expect(json_response[:primary_catalog]).to be(true)
       expect(json_response[:source_file][:content_type]).to eq('application/pdf')
-      # Metadata only in Commit 1B — no download/signed URL is exposed.
-      expect(json_response[:source_file].keys).to match_array(%i[filename content_type byte_size checksum])
+      # File metadata only — no content checksum, download/signed URL, or storage key.
+      expect(json_response[:source_file].keys).to match_array(%i[filename content_type byte_size])
+      expect(json_response[:source_file]).not_to have_key(:checksum)
       expect(json_response[:source_file]).not_to have_key(:download_url)
     end
 

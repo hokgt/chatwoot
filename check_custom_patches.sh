@@ -255,6 +255,12 @@ require_file app/javascript/dashboard/routes/dashboard/marine/responses/Index.vu
 require_file app/javascript/dashboard/routes/dashboard/marine/documents/Index.vue
 # Commit 1E — SOP document UI: API create workflow coverage.
 require_file app/javascript/dashboard/api/specs/marine/document.spec.js
+# Commit 1E — extracted testable helpers + confidentiality/UI regression coverage.
+require_file app/javascript/dashboard/routes/dashboard/marine/helpers/documentHelpers.js
+require_file app/javascript/dashboard/routes/dashboard/marine/helpers/specs/documentHelpers.spec.js
+require_file app/javascript/dashboard/routes/dashboard/marine/helpers/specs/chunkCountI18n.spec.js
+require_file app/javascript/dashboard/routes/dashboard/marine/components/specs/CreateDocumentDialog.spec.js
+require_file spec/custom/wijaya/marine/documents/serializer_spec.rb
 require_file app/javascript/dashboard/routes/dashboard/marine/scenarios/Index.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/playground/Index.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/inboxes/Index.vue

@@ -49,11 +49,13 @@ RSpec.describe 'Api::V1::Accounts::Marine::Documents SOP', type: :request do
       expect(json_response[:source_kind]).to eq('sop_document')
       expect(json_response[:status]).to eq('in_progress')
       expect(json_response[:sync_status]).to eq('syncing')
-      expect(json_response[:content]).to be_nil
+      expect(json_response).not_to have_key(:content)
       expect(json_response[:external_link]).to be_nil
       expect(json_response[:primary_catalog]).to be(false)
       expect(json_response[:source_file][:content_type]).to eq('application/pdf')
-      expect(json_response[:source_file].keys).to match_array(%i[filename content_type byte_size checksum])
+      # File metadata only: filename/content_type/byte_size — never the content checksum.
+      expect(json_response[:source_file].keys).to match_array(%i[filename content_type byte_size])
+      expect(json_response[:source_file]).not_to have_key(:checksum)
     end
 
     it 'returns 422 for an oversize upload without enqueuing anything' do
@@ -94,14 +96,13 @@ RSpec.describe 'Api::V1::Accounts::Marine::Documents SOP', type: :request do
 
       get "/api/v1/accounts/#{account.id}/marine/documents/#{id}", headers: admin.create_new_auth_token
       expect(response).to have_http_status(:ok)
-      expect(json_response).to have_key(:content)
-      expect(json_response[:content]).to be_nil
+      expect(json_response).not_to have_key(:content)
       expect(response.body).not_to include('CONFIDENTIAL')
 
       get "/api/v1/accounts/#{account.id}/marine/documents", params: { assistant_id: assistant.id },
                                                               headers: admin.create_new_auth_token
       expect(response.body).not_to include('CONFIDENTIAL')
-      expect(json_response[:payload].map { |d| d[:content] }).to all(be_nil)
+      expect(json_response[:payload]).to all(satisfy { |d| !d.key?(:content) })
     end
   end
 

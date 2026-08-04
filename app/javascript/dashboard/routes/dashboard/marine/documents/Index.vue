@@ -13,6 +13,11 @@ import { debounce } from '@chatwoot/utils';
 import { useAlert } from 'dashboard/composables';
 import { parseAPIErrorResponse } from 'dashboard/store/utils/api';
 import MarineDocumentAPI from 'dashboard/api/marine/document';
+import {
+  POLL_INTERVAL,
+  hasActiveWork,
+  nextPollDelay,
+} from '../helpers/documentHelpers';
 
 import MarinePageLayout from '../components/MarinePageLayout.vue';
 import MarineDocumentCard from '../components/MarineDocumentCard.vue';
@@ -36,9 +41,13 @@ const deleteDialog = ref(null);
 
 // SOP extraction/OCR then indexing can outlast a single refresh, so we poll while any
 // document is still processing and stop once every document reaches a terminal state.
-const POLL_INTERVAL = 3000;
-const ACTIVE_INDEXING_STATES = ['pending', 'embedding_pending'];
+// A monotonic request token discards stale in-flight responses (e.g. from a previous
+// assistant), and all timers are tracked so nothing fires after unmount.
 let pollTimer = null;
+let syncTimer = null;
+let requestToken = 0;
+let pollDelay = POLL_INTERVAL;
+let isMounted = true;
 
 const assistantId = computed(() => Number(route.params.assistantId));
 
@@ -56,33 +65,6 @@ const filteredDocuments = computed(() => {
 const hasActiveFilters = computed(() => !!effectiveQuery.value);
 const isEmpty = computed(() => filteredDocuments.value.length === 0);
 
-const fetchDocuments = async () => {
-  if (!assistantId.value) {
-    documents.value = [];
-    return;
-  }
-  loading.value = true;
-  try {
-    const { data } = await MarineDocumentAPI.get({
-      assistantId: assistantId.value,
-    });
-    documents.value = data.payload || [];
-  } finally {
-    loading.value = false;
-  }
-};
-
-const isDocumentActive = document => {
-  if (document.sync_status === 'syncing') return true;
-  if (
-    document.source_kind === 'sop_document' &&
-    document.sync_status === 'synced'
-  ) {
-    return ACTIVE_INDEXING_STATES.includes(document.metadata?.indexing_status);
-  }
-  return false;
-};
-
 const stopPolling = () => {
   if (pollTimer) {
     clearTimeout(pollTimer);
@@ -90,9 +72,48 @@ const stopPolling = () => {
   }
 };
 
+const clearTimers = () => {
+  stopPolling();
+  if (syncTimer) {
+    clearTimeout(syncTimer);
+    syncTimer = null;
+  }
+};
+
+const fetchDocuments = async () => {
+  if (!assistantId.value) {
+    documents.value = [];
+    return;
+  }
+  requestToken += 1;
+  const token = requestToken;
+  loading.value = true;
+  try {
+    const { data } = await MarineDocumentAPI.get({
+      assistantId: assistantId.value,
+    });
+    // Drop a stale response from a superseded request (assistant switch) or unmount.
+    if (!isMounted || token !== requestToken) return;
+    documents.value = data.payload || [];
+    pollDelay = POLL_INTERVAL;
+  } catch (error) {
+    // Transient GET failure: never surface an unhandled rejection or strand a just-
+    // created/reprocessed document that is not yet in the local list. Retry every list
+    // reconciliation with capped exponential backoff until success or unmount.
+    if (!isMounted || token !== requestToken) return;
+    pollDelay = nextPollDelay(pollDelay);
+    stopPolling();
+    pollTimer = setTimeout(fetchDocuments, pollDelay);
+  } finally {
+    if (isMounted && token === requestToken) loading.value = false;
+  }
+};
+
+// Healthy list refresh: keep polling while any document is still processing, stop once
+// all reach a terminal state.
 const schedulePolling = () => {
   stopPolling();
-  if (!documents.value.some(isDocumentActive)) return;
+  if (!hasActiveWork(documents.value)) return;
   pollTimer = setTimeout(fetchDocuments, POLL_INTERVAL);
 };
 
@@ -137,8 +158,11 @@ const handleSync = async id => {
   try {
     await MarineDocumentAPI.sync(id);
     useAlert(t('MARINE_AI.DOCUMENTS.SYNC.QUEUED_MESSAGE'));
-    setTimeout(async () => {
+    if (syncTimer) clearTimeout(syncTimer);
+    syncTimer = setTimeout(async () => {
+      syncTimer = null;
       await fetchDocuments();
+      if (!isMounted) return;
       const document = documents.value.find(item => item.id === id);
       if (!document) return;
       if (document.sync_status === 'failed') {
@@ -148,11 +172,7 @@ const handleSync = async id => {
           })
         );
       } else if (document.sync_status === 'synced') {
-        useAlert(
-          t('MARINE_AI.DOCUMENTS.SYNC.SUCCESS_MESSAGE', {
-            contentLength: document.content?.length || 0,
-          })
-        );
+        useAlert(t('MARINE_AI.DOCUMENTS.SYNC.SUCCESS_MESSAGE'));
       }
     }, 3000);
   } catch (error) {
@@ -191,13 +211,21 @@ const handleAction = ({ action, id }) => {
 watch(documents, schedulePolling);
 
 watch(assistantId, () => {
-  stopPolling();
+  clearTimers();
+  // Invalidate any in-flight fetch so a late response from the previous assistant can
+  // never overwrite the new assistant's list.
+  requestToken += 1;
+  pollDelay = POLL_INTERVAL;
   clearFilters();
   fetchDocuments();
 });
 
 onMounted(fetchDocuments);
-onBeforeUnmount(stopPolling);
+onBeforeUnmount(() => {
+  isMounted = false;
+  requestToken += 1;
+  clearTimers();
+});
 </script>
 
 <template>

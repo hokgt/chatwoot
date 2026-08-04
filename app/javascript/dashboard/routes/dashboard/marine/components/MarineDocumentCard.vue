@@ -8,6 +8,7 @@ import CardLayout from 'dashboard/components-next/CardLayout.vue';
 import DropdownMenu from 'dashboard/components-next/dropdown-menu/DropdownMenu.vue';
 import Button from 'dashboard/components-next/button/Button.vue';
 import Icon from 'dashboard/components-next/icon/Icon.vue';
+import { ACTIVE_INDEXING_STATES } from '../helpers/documentHelpers';
 
 const props = defineProps({
   id: {
@@ -68,8 +69,6 @@ const [showActionsDropdown, toggleDropdown] = useToggle();
 
 const isSop = computed(() => props.sourceKind === 'sop_document');
 const isProductCatalog = computed(() => props.sourceKind === 'product_catalog');
-
-const ACTIVE_INDEXING_STATES = ['pending', 'embedding_pending'];
 
 // SOP is "processing" while extraction runs or indexing has not reached a terminal
 // state, so we hide reprocess and keep polling driven from the parent list.
@@ -193,9 +192,11 @@ const chunkCountLabel = computed(() => {
   if (!showIndexingBadge.value) return '';
   if (props.indexingStatus !== 'indexed') return '';
   if (props.indexedChunkCount == null) return '';
-  return t('MARINE_AI.DOCUMENTS.SOP.CHUNK_COUNT', {
-    count: props.indexedChunkCount,
-  });
+  return t(
+    'MARINE_AI.DOCUMENTS.SOP.CHUNK_COUNT',
+    { count: props.indexedChunkCount },
+    props.indexedChunkCount
+  );
 });
 
 const FILE_TYPE_LABELS = {

@@ -1,17 +1,17 @@
 <script setup>
-import { ref, reactive, computed, nextTick } from 'vue';
+import { ref, reactive, computed, nextTick, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useVuelidate } from '@vuelidate/core';
 import { required, url } from '@vuelidate/validators';
 import { useAlert } from 'dashboard/composables';
 import { parseAPIErrorResponse } from 'dashboard/store/utils/api';
 import MarineDocumentAPI from 'dashboard/api/marine/document';
+import { SOP_ACCEPT_HINT, validateSopFile } from '../helpers/documentHelpers';
 
 import Dialog from 'dashboard/components-next/dialog/Dialog.vue';
 import Input from 'dashboard/components-next/input/Input.vue';
 import TextArea from 'dashboard/components-next/textarea/TextArea.vue';
 import Button from 'dashboard/components-next/button/Button.vue';
-import ComboBox from 'dashboard/components-next/combobox/ComboBox.vue';
 
 const props = defineProps({
   assistantId: {
@@ -24,11 +24,18 @@ const emit = defineEmits(['close', 'createSuccess']);
 
 const { t } = useI18n();
 
-// Mirrors the backend contract: PDF/JPEG/PNG up to 2 MiB (Marine::Document limits).
-const SOP_MAX_BYTES = 2 * 1024 * 1024;
-const SOP_ACCEPT_TYPES = ['application/pdf', 'image/jpeg', 'image/png'];
-const SOP_ACCEPT_HINT =
-  '.pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png';
+// Fixed allowlist avoids dynamic i18n-key lookup while preserving helper testability.
+const fileErrorMessages = computed(() => ({
+  'MARINE_AI.DOCUMENTS.FORM.FILE.INVALID_TYPE': t(
+    'MARINE_AI.DOCUMENTS.FORM.FILE.INVALID_TYPE'
+  ),
+  'MARINE_AI.DOCUMENTS.FORM.FILE.EMPTY': t(
+    'MARINE_AI.DOCUMENTS.FORM.FILE.EMPTY'
+  ),
+  'MARINE_AI.DOCUMENTS.FORM.FILE.TOO_LARGE': t(
+    'MARINE_AI.DOCUMENTS.FORM.FILE.TOO_LARGE'
+  ),
+}));
 
 const dialogRef = ref(null);
 const fileInputRef = ref(null);
@@ -73,18 +80,25 @@ const openFileDialog = () => {
   nextTick(() => fileInputRef.value?.click());
 };
 
+// Clears the staged file AND the native input value so re-selecting the same filename
+// still fires a change event and no stale file lingers behind the picker.
+const resetFileInput = () => {
+  if (fileInputRef.value) fileInputRef.value.value = '';
+};
+
+const clearSopFile = () => {
+  state.sopFile = null;
+  resetFileInput();
+};
+
 const handleFileChange = event => {
   const file = event.target.files[0];
+  // Any new/invalid selection clears the previously staged file first.
   state.sopFile = null;
-  if (!file) return;
-  if (!SOP_ACCEPT_TYPES.includes(file.type)) {
-    useAlert(t('MARINE_AI.DOCUMENTS.FORM.FILE.INVALID_TYPE'));
-    event.target.value = '';
-    return;
-  }
-  if (file.size > SOP_MAX_BYTES) {
-    useAlert(t('MARINE_AI.DOCUMENTS.FORM.FILE.TOO_LARGE'));
-    event.target.value = '';
+  const { valid, errorKey } = validateSopFile(file);
+  if (!valid) {
+    if (errorKey) useAlert(fileErrorMessages.value[errorKey]);
+    resetFileInput();
     return;
   }
   state.sopFile = file;
@@ -92,6 +106,16 @@ const handleFileChange = event => {
     state.name = file.name.replace(/\.(pdf|jpe?g|png)$/i, '');
   }
 };
+
+// Leaving SOP must drop any staged file and native input so it cannot be submitted with
+// the website workflow; every switch also resets validation state for the new source.
+watch(
+  () => state.sourceType,
+  (newType, oldType) => {
+    if (oldType === 'sop' && newType !== 'sop') clearSopFile();
+    v$.value.$reset();
+  }
+);
 
 const fileSizeLabel = computed(() => {
   if (!state.sopFile) return '';
@@ -164,12 +188,19 @@ defineExpose({ dialogRef });
         >
           {{ t('MARINE_AI.DOCUMENTS.SOURCE_TYPE.LABEL') }}
         </label>
-        <ComboBox
+        <select
           id="marineDocumentSourceType"
           v-model="state.sourceType"
-          :options="sourceTypeOptions"
-          class="[&>div>button]:bg-n-alpha-black2"
-        />
+          class="w-full px-3 py-2.5 text-sm rounded-xl border outline-none bg-n-alpha-black2 border-n-weak text-n-slate-12 focus:border-n-brand"
+        >
+          <option
+            v-for="option in sourceTypeOptions"
+            :key="option.value"
+            :value="option.value"
+          >
+            {{ option.label }}
+          </option>
+        </select>
       </div>
 
       <Input

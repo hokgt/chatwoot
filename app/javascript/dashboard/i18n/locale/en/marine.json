@@ -198,7 +198,8 @@
           "HELP_TEXT": "PDF, JPEG or PNG up to 2 MB",
           "REQUIRED": "Please select a file to upload.",
           "INVALID_TYPE": "Unsupported file type. Upload a PDF, JPEG, or PNG.",
-          "TOO_LARGE": "File is too large. Maximum size is 2 MB."
+          "TOO_LARGE": "File is too large. Maximum size is 2 MB.",
+          "EMPTY": "The selected file is empty. Choose a non-empty file."
         }
       },
       "SOP": {
@@ -219,7 +220,7 @@
           "INDEXED": "Indexed",
           "FAILED": "Indexing failed"
         },
-        "CHUNK_COUNT": "{count} chunks indexed",
+        "CHUNK_COUNT": "{count} chunk indexed | {count} chunks indexed",
         "ERROR_CODE": "Error code: {code}"
       },
       "OPTIONS": {
@@ -229,7 +230,7 @@
       "SYNC": {
         "QUEUED_MESSAGE": "Document sync queued.",
         "ERROR_MESSAGE": "Failed to sync document.",
-        "SUCCESS_MESSAGE": "Document synced successfully. {contentLength} characters extracted.",
+        "SUCCESS_MESSAGE": "Document synced successfully.",
         "FAILED_MESSAGE": "Sync failed: {error}"
       },
       "SYNC_STATUS": {
