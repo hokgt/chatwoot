@@ -1,5 +1,10 @@
 # frozen_string_literal: true
 
+# Nested (not compact `class Wijaya::Batteries::AdsTracking::ReferralParser`) so
+# this file is standalone-safe: it is `require_relative`d from ads_tracking/hooks.rb
+# (and from meta_ads_team_routing/routing_service.rb) before the AdsTracking
+# namespace exists, so a compact form raises `uninitialized constant
+# Wijaya::Batteries::AdsTracking`.
 module Wijaya
   module Batteries
     module AdsTracking
@@ -30,7 +35,7 @@ module Wijaya
           FIELD_KEYS.index_with { |key| value_for(key) }
         end
 
-        def value_for(key)
+        def value_for(key) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
           case key
           when :channel then @channel
           when :source_id then source_id

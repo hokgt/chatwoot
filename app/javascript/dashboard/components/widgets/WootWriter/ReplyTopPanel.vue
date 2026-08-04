@@ -78,7 +78,9 @@ export default {
       setReplyMode(newMode);
     };
 
+    // WIJAYA_CUSTOM_START marine_ai
     const { captainTasksEnabled, isMarineConversation } = useCaptain();
+    // WIJAYA_CUSTOM_END marine_ai
     const showCopilotMenu = ref(false);
     const copilotToggleRef = ref(null);
 
@@ -120,7 +122,9 @@ export default {
       handleNoteClick,
       REPLY_EDITOR_MODES,
       captainTasksEnabled,
+      // WIJAYA_CUSTOM_START marine_ai
       isMarineConversation,
+      // WIJAYA_CUSTOM_END marine_ai
       handleCopilotAction,
       showCopilotMenu,
       copilotToggleRef,

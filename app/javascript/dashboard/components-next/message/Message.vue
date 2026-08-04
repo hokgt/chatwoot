@@ -44,7 +44,7 @@ import VoiceCallBubble from './bubbles/VoiceCall.vue';
 
 import MessageError from './MessageError.vue';
 // WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
-import AdsReferral from '../../../../../custom/wijaya/batteries/ads_tracking/frontend/AdsReferral.vue';
+import AdsReferral from '@wijaya/ads_tracking/frontend/AdsReferral.vue';
 // WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
 import ContextMenu from 'dashboard/modules/conversations/components/MessageContextMenu.vue';
 import { useBranding } from 'shared/composables/useBranding';
@@ -363,7 +363,9 @@ const isMessageDeleted = computed(() => {
 });
 
 // WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
-const adsReferral = computed(() => props.contentAttributes?.adsReferral || null);
+const adsReferral = computed(
+  () => props.contentAttributes?.adsReferral || null
+);
 // WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
 
 const payloadForContextMenu = computed(() => {

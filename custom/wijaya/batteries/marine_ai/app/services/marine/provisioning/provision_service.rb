@@ -21,7 +21,7 @@
 # details for the one-time popup.
 module Marine
   module Provisioning
-    class ProvisionService
+    class ProvisionService # rubocop:disable Metrics/ClassLength
       # Fixed 64-bit key so all provisioning actions serialize on one advisory lock.
       ADVISORY_LOCK_KEY = 728_314_907_115_204
 
@@ -59,7 +59,7 @@ module Marine
         @login_username = IdentifierValidator.validate!(@login_username, label: 'Login username', extra_reserved: forbidden)
         # The database and the login role must be distinct identifiers so hardening
         # the DB ACL never collides with the login role's grants.
-        raise Errors::InvalidIdentifierError.new('Database name and login username must differ') if @database_name == @login_username
+        raise Errors::InvalidIdentifierError, 'Database name and login username must differ' if @database_name == @login_username
 
         validate_password!
         @owner_role = build_owner_role
@@ -91,7 +91,7 @@ module Marine
         owner = IdentifierValidator.validate!(base, label: 'Owner role', extra_reserved: [Config.app_database, Config.app_username])
         # Defence in depth: the internal owner must never coincide with the database
         # or the login role even after truncation/hashing.
-        raise Errors::InvalidIdentifierError.new('Owner role could not be made distinct') if [@database_name, @login_username].include?(owner)
+        raise Errors::InvalidIdentifierError, 'Owner role could not be made distinct' if [@database_name, @login_username].include?(owner)
 
         owner
       end
@@ -226,7 +226,7 @@ module Marine
       # (so we restore it) and assume the app role's grant pre-existed (so we do NOT
       # revoke it) — both err toward preserving app connectivity.
       def capture_prior_chatwoot_acl(conn, dbname, app_role)
-        row = conn.exec_params(<<~SQL, [dbname, app_role]).first
+        row = conn.exec_params(<<~SQL.squish, [dbname, app_role]).first
           SELECT d.datacl IS NULL AS acl_default,
                  COALESCE(bool_or(a.grantee = 0 AND a.privilege_type = 'CONNECT'), false) AS public_connect,
                  COALESCE(bool_or(a.grantee = r.oid AND a.privilege_type = 'CONNECT'), false) AS app_connect
@@ -255,7 +255,7 @@ module Marine
       def verify_app_connectivity!
         return if Connection.app_connectivity_ok?
 
-        raise Errors::ProvisioningFailedError.new('Application connectivity check failed')
+        raise Errors::ProvisioningFailedError, 'Application connectivity check failed'
       end
 
       def persist_active!
@@ -280,7 +280,9 @@ module Marine
 
         compensate(conn)
         raise ErrorSanitizer.sanitize(error, trace_id: @trace_id)
-      rescue Errors::ManualCleanupRequiredError => e
+        # compensate can raise ManualCleanupRequiredError; re-raise it verbatim so it bypasses the
+        # ErrorSanitizer wrapping above and surfaces the manual-cleanup signal to the caller unchanged.
+      rescue Errors::ManualCleanupRequiredError => e # rubocop:disable Lint/UselessRescue
         raise e
       end
 
@@ -290,8 +292,8 @@ module Marine
         drop_role(conn, @login_username) if @stages.include?(:login_role)
         drop_role(conn, @owner_role) if @stages.include?(:owner_role)
         audit('provision.rollback', 'succeeded')
-      rescue StandardError => cleanup_error
-        persist_manual_cleanup!(cleanup_error)
+      rescue StandardError => e
+        persist_manual_cleanup!(e)
         raise Errors::ManualCleanupRequiredError
       end
 

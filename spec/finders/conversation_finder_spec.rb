@@ -1,6 +1,6 @@
 require 'rails_helper'
 
-describe ConversationFinder do
+describe ConversationFinder do # rubocop:disable RSpec/MultipleDescribes
   subject(:conversation_finder) { described_class.new(user_1, params) }
 
   let!(:account) { create(:account) }
@@ -293,18 +293,18 @@ describe ConversationFinder do
   end
 end
 
-
-RSpec.describe ConversationFinder, 'custom role conversation visibility' do
+RSpec.describe ConversationFinder, 'custom role conversation visibility' do # rubocop:disable RSpec/DescribeMethod
   let(:account) { create(:account) }
   let(:agent) { create(:user, account: account, role: :agent) }
   let(:other_agent) { create(:user, account: account, role: :agent) }
   let(:inbox) { create(:inbox, account: account, enable_auto_assignment: false) }
   let!(:assigned_conversation) { create(:conversation, account: account, inbox: inbox, assignee: agent) }
   let!(:participated_conversation) { create(:conversation, account: account, inbox: inbox, assignee: other_agent) }
-  let!(:unrelated_assigned_conversation) { create(:conversation, account: account, inbox: inbox, assignee: other_agent) }
-  let!(:unrelated_unassigned_conversation) { create(:conversation, account: account, inbox: inbox, assignee: nil) }
 
   before do
+    # Noise conversations that must be excluded from the agent's visibility results.
+    create(:conversation, account: account, inbox: inbox, assignee: other_agent)
+    create(:conversation, account: account, inbox: inbox, assignee: nil)
     create(:inbox_member, user: agent, inbox: inbox)
     create(:conversation_participant, account: account, conversation: participated_conversation, user: agent)
     custom_role = create(:custom_role, account: account, permissions: ['conversation_participating_manage'])
@@ -315,7 +315,7 @@ RSpec.describe ConversationFinder, 'custom role conversation visibility' do
   it 'keeps assignee_type=all scoped to assigned or participated conversations' do
     result = described_class.new(agent, { assignee_type: 'all' }).perform
 
-    expect(result[:conversations].map(&:id)).to match_array([assigned_conversation.id, participated_conversation.id])
+    expect(result[:conversations].map(&:id)).to contain_exactly(assigned_conversation.id, participated_conversation.id)
     expect(result[:count]).to include(mine_count: 1, unassigned_count: 0, all_count: 2, assigned_count: 2)
   end
 

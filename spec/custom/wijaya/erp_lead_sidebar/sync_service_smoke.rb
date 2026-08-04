@@ -8,6 +8,9 @@ require 'net/http'
 require 'json'
 require 'uri'
 
+# Nested (not compact) so this standalone smoke can create the Wijaya parent chain
+# itself when run via bare `ruby` with Wijaya undefined; a compact
+# `module Wijaya::Batteries::ErpLeadSidebar` raises `uninitialized constant Wijaya`.
 module Wijaya
   module Batteries
     module ErpLeadSidebar
@@ -24,7 +27,7 @@ module Wijaya
         def initialize(fields) = (@fields = fields)
 
         def payload
-          { doctype: 'Lead', 'first_name' => 'Ana',
+          { :doctype => 'Lead', 'first_name' => 'Ana',
             'whatsapp_no' => @fields['whatsapp_no'], 'mobile_no' => @fields['whatsapp_no'] }
         end
       end
@@ -43,7 +46,7 @@ module SyncSmoke
     end
   end
 
-  REQUESTS = []
+  REQUESTS = [].freeze
 
   def self.response(klass, code, msg, body)
     resp = klass.new('1.1', code, msg)
@@ -52,12 +55,12 @@ module SyncSmoke
   end
 
   # Install a fake Net::HTTP.start that records requests and replies via `@responder`.
-  def self.install_http!(&responder)
+  def self.install_http!
     REQUESTS.clear
     fake_http = Object.new
     fake_http.define_singleton_method(:request) do |request|
       REQUESTS << request
-      responder.call(request)
+      yield(request)
     end
     Net::HTTP.define_singleton_method(:start) do |*_args, **_kw, &block|
       block.call(fake_http)
@@ -96,7 +99,7 @@ result = SS.new(draft).perform
 methods = SyncSmoke::REQUESTS.map(&:method)
 SyncSmoke.assert('searched via GET', methods.include?('GET'))
 SyncSmoke.assert('updated via PUT', methods.include?('PUT'))
-SyncSmoke.assert('did not POST', !methods.include?('POST'))
+SyncSmoke.assert('did not POST', methods.exclude?('POST'))
 SyncSmoke.assert('stored found id', result[:erp_lead_id] == 'LEAD-EXISTING' && draft.updated[:erp_lead_id] == 'LEAD-EXISTING')
 
 puts 'case 3: no id + no match -> POST'
@@ -112,7 +115,7 @@ result = SS.new(draft).perform
 methods = SyncSmoke::REQUESTS.map(&:method)
 SyncSmoke.assert('searched via GET', methods.include?('GET'))
 SyncSmoke.assert('created via POST', methods.last == 'POST')
-SyncSmoke.assert('no PUT', !methods.include?('PUT'))
+SyncSmoke.assert('no PUT', methods.exclude?('PUT'))
 SyncSmoke.assert('stored new id', result[:erp_lead_id] == 'LEAD-NEW')
 
 puts 'case 4: stored id missing (404) -> raise relink, no duplicate create'
@@ -122,7 +125,7 @@ begin
   SS.new(draft).perform
   raise 'FAIL: expected SyncError'
 rescue Wijaya::Batteries::ErpLeadSidebar::SyncError => e
-  SyncSmoke.assert('raised relink error', e.message.match?(/relink/))
+  SyncSmoke.assert('raised relink error', e.message.include?('relink'))
   SyncSmoke.assert('only PUT attempted', SyncSmoke::REQUESTS.map(&:method) == ['PUT'])
 end
 

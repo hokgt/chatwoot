@@ -224,7 +224,6 @@ describe Whatsapp::IncomingMessageWhatsappCloudService do
       end
     end
 
-
     context 'when WhatsApp referral data is present' do
       let(:text_referral_params) do
         {
@@ -236,7 +235,10 @@ describe Whatsapp::IncomingMessageWhatsappCloudService do
                 contacts: [{ profile: { name: 'Sojan Jose' }, wa_id: '2423423243' }],
                 messages: [{
                   from: '2423423243', id: 'wamid.referral-message-1', timestamp: '1664799904', type: 'text', text: { body: 'interested' },
-                  referral: { source_url: 'https://facebook.com/ad/wa-1', source_id: 'wa-ad-1', source_type: 'ad', headline: 'WA Ad', body: 'WA Body', media_type: 'image', image_url: 'https://example.com/wa.jpg', ctwa_clid: 'wa-click-1' }
+                  referral: {
+                    source_url: 'https://facebook.com/ad/wa-1', source_id: 'wa-ad-1', source_type: 'ad', headline: 'WA Ad',
+                    body: 'WA Body', media_type: 'image', image_url: 'https://example.com/wa.jpg', ctwa_clid: 'wa-click-1'
+                  }
                 }]
               }
             }]
@@ -246,7 +248,10 @@ describe Whatsapp::IncomingMessageWhatsappCloudService do
 
       it 'stores normalized ads_referral on the first inbound message' do
         described_class.new(inbox: whatsapp_channel.inbox, params: text_referral_params).perform
-        expect(whatsapp_channel.inbox.messages.first.content_attributes['ads_referral']).to include('channel' => 'whatsapp', 'source_id' => 'wa-ad-1', 'source_url' => 'https://facebook.com/ad/wa-1', 'source_type' => 'ad', 'headline' => 'WA Ad', 'body' => 'WA Body', 'image_url' => 'https://example.com/wa.jpg', 'ctwa_clid' => 'wa-click-1')
+        referral = whatsapp_channel.inbox.messages.first.content_attributes['ads_referral']
+        expect(referral).to include('channel' => 'whatsapp', 'source_id' => 'wa-ad-1', 'source_url' => 'https://facebook.com/ad/wa-1',
+                                    'source_type' => 'ad', 'headline' => 'WA Ad', 'body' => 'WA Body',
+                                    'image_url' => 'https://example.com/wa.jpg', 'ctwa_clid' => 'wa-click-1')
       end
 
       it 'does not write ads_referral on subsequent inbound messages' do

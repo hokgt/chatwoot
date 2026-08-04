@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_07_10_000000) do
+ActiveRecord::Schema[7.1].define(version: 2026_08_04_000000) do
   # These extensions should be enabled to support this database
   enable_extension "pg_stat_statements"
   enable_extension "pg_trgm"
@@ -474,8 +474,8 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_10_000000) do
     t.boolean "smtp_enable_ssl_tls", default: false
     t.jsonb "provider_config", default: {}
     t.string "provider"
-    t.string "imap_authentication", default: "plain"
     t.boolean "verified_for_sending", default: false, null: false
+    t.string "imap_authentication", default: "plain"
     t.index ["email"], name: "index_channel_email_on_email", unique: true
     t.index ["forward_to_email"], name: "index_channel_email_on_forward_to_email", unique: true
   end
@@ -1075,7 +1075,7 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_10_000000) do
     t.index ["assistant_id"], name: "index_marine_documents_on_assistant_id"
     t.index ["status"], name: "index_marine_documents_on_status"
     t.check_constraint "source_kind::text = 'website'::text AND external_link IS NOT NULL AND product_family_code IS NULL AND primary_catalog = false OR source_kind::text = 'product_catalog'::text AND external_link IS NULL AND product_family_code IS NOT NULL AND primary_catalog = true OR source_kind::text = 'sop_document'::text AND external_link IS NULL AND product_family_code IS NULL AND primary_catalog = false", name: "marine_documents_source_shape"
-    t.check_constraint "source_kind::text = ANY (ARRAY['website'::character varying, 'product_catalog'::character varying, 'sop_document'::character varying]::text[])", name: "marine_documents_source_kind_allowed"
+    t.check_constraint "source_kind::text = ANY (ARRAY['website'::character varying::text, 'product_catalog'::character varying::text, 'sop_document'::character varying::text])", name: "marine_documents_source_kind_allowed"
   end
 
   create_table "marine_inboxes", force: :cascade do |t|
@@ -1469,6 +1469,19 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_10_000000) do
     t.index ["conversation_id"], name: "index_wijaya_erp_lead_drafts_on_conversation_id"
   end
 
+  create_table "wijaya_meta_ads_team_routing_rules", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.bigint "team_id", null: false
+    t.string "source_id", null: false
+    t.string "campaign_name"
+    t.integer "status", default: 1, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id", "source_id"], name: "index_wijaya_meta_ads_routing_on_account_and_source", unique: true
+    t.index ["account_id"], name: "index_wijaya_meta_ads_team_routing_rules_on_account_id"
+    t.index ["team_id"], name: "index_wijaya_meta_ads_team_routing_rules_on_team_id"
+  end
+
   create_table "working_hours", force: :cascade do |t|
     t.bigint "inbox_id"
     t.bigint "account_id"
@@ -1488,9 +1501,26 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_10_000000) do
   add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
   add_foreign_key "inboxes", "portals"
+  add_foreign_key "marine_assistant_responses", "accounts", name: "fk_marine_assistant_responses_account_id"
+  add_foreign_key "marine_assistant_responses", "marine_assistants", column: "assistant_id", name: "fk_marine_assistant_responses_assistant_id"
+  add_foreign_key "marine_assistants", "accounts", name: "fk_marine_assistants_account_id"
+  add_foreign_key "marine_copilot_messages", "accounts", name: "fk_marine_copilot_messages_account_id"
+  add_foreign_key "marine_copilot_messages", "marine_copilot_threads", column: "copilot_thread_id", name: "fk_marine_copilot_messages_copilot_thread_id"
+  add_foreign_key "marine_copilot_threads", "accounts", name: "fk_marine_copilot_threads_account_id"
+  add_foreign_key "marine_copilot_threads", "marine_assistants", column: "assistant_id", name: "fk_marine_copilot_threads_assistant_id"
+  add_foreign_key "marine_copilot_threads", "users", name: "fk_marine_copilot_threads_user_id"
+  add_foreign_key "marine_custom_tools", "accounts", name: "fk_marine_custom_tools_account_id"
+  add_foreign_key "marine_documents", "accounts", name: "fk_marine_documents_account_id"
+  add_foreign_key "marine_documents", "marine_assistants", column: "assistant_id", name: "fk_marine_documents_assistant_id"
+  add_foreign_key "marine_inboxes", "inboxes", name: "fk_marine_inboxes_inbox_id"
+  add_foreign_key "marine_inboxes", "marine_assistants", name: "fk_marine_inboxes_marine_assistant_id"
+  add_foreign_key "marine_scenarios", "accounts", name: "fk_marine_scenarios_account_id"
+  add_foreign_key "marine_scenarios", "marine_assistants", column: "assistant_id", name: "fk_marine_scenarios_assistant_id"
   add_foreign_key "user_sessions", "users"
   add_foreign_key "wijaya_erp_lead_drafts", "accounts"
   add_foreign_key "wijaya_erp_lead_drafts", "conversations"
+  add_foreign_key "wijaya_meta_ads_team_routing_rules", "accounts"
+  add_foreign_key "wijaya_meta_ads_team_routing_rules", "teams"
   create_trigger("accounts_after_insert_row_tr", :generated => true, :compatibility => 1).
       on("accounts").
       after(:insert).

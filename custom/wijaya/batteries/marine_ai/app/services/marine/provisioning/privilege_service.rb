@@ -19,7 +19,7 @@
 # can never be silently "downgraded" back to writer.
 module Marine
   module Provisioning
-    class PrivilegeService
+    class PrivilegeService # rubocop:disable Metrics/ClassLength
       TARGET_SCHEMA = Config::PROJECTION_SCHEMA
 
       def initialize(actor_id: nil)
@@ -74,7 +74,7 @@ module Marine
       # durable level lives in Chatwoot's InstallationConfig — two databases that cannot
       # share one transaction. If the DDL COMMITs but the state write fails we do NOT
       # claim a rollback; we raise StateSyncError for manual reconciliation.
-      def run(action, allowed_from:, new_level:)
+      def run(action, allowed_from:, new_level:) # rubocop:disable Metrics/MethodLength
         raise Errors::NotProvisionedError unless StateStore.provisioned?
 
         audit(action, 'started')
@@ -148,7 +148,7 @@ module Marine
       # that can log in or escalate, defeating the point of the separation. We fail
       # closed if ANY dangerous attribute was altered onto the owner out-of-band.
       def ensure_owner_role!(db)
-        row = db.exec_params(<<~SQL, [owner_role]).first
+        row = db.exec_params(<<~SQL.squish, [owner_role]).first
           SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls
           FROM pg_roles WHERE rolname = $1
         SQL
@@ -194,7 +194,7 @@ module Marine
       # query pg_auth_members for every role the login is a member of and REVOKE each,
       # inside the same transaction. Runs in both downgrade and revoke.
       def revoke_memberships(db)
-        rows = db.exec_params(<<~SQL, [login])
+        rows = db.exec_params(<<~SQL.squish, [login])
           SELECT g.rolname AS granted_role
           FROM pg_auth_members m
           JOIN pg_roles g ON g.oid = m.roleid
@@ -249,7 +249,7 @@ module Marine
       # pg_shdepend owner rows (deptype 'o') scoped to shared objects (dbid 0) and
       # this database, so nothing owned by the login survives the transition.
       def verify_owns_nothing!(db)
-        count = db.exec_params(<<~SQL, [login]).getvalue(0, 0).to_i
+        count = db.exec_params(<<~SQL.squish, [login]).getvalue(0, 0).to_i
           SELECT
             (SELECT count(*) FROM pg_class     c WHERE c.relowner = r.oid) +
             (SELECT count(*) FROM pg_namespace n WHERE n.nspowner = r.oid) +

@@ -36,7 +36,7 @@ class CreateWijayaMarineTables < ActiveRecord::Migration[7.0]
     add_index :marine_assistants, :account_id
   end
 
-  def create_marine_documents
+  def create_marine_documents # rubocop:disable Metrics/MethodLength
     create_table :marine_documents do |t|
       t.string :name
       t.text :external_link, null: false
@@ -56,7 +56,8 @@ class CreateWijayaMarineTables < ActiveRecord::Migration[7.0]
     add_index :marine_documents, :status
     add_index :marine_documents, [:account_id, :sync_status]
     add_index :marine_documents, 'assistant_id, md5(external_link)', unique: true, name: 'idx_marine_documents_on_assistant_id_and_external_link_md5'
-    add_index :marine_documents, [:account_id, :assistant_id, :sync_status, :last_synced_at], name: 'idx_marine_documents_on_account_assistant_sync_stats'
+    add_index :marine_documents, [:account_id, :assistant_id, :sync_status, :last_synced_at],
+              name: 'idx_marine_documents_on_account_assistant_sync_stats'
   end
 
   def create_marine_assistant_responses

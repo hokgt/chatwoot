@@ -36,7 +36,7 @@ RSpec.describe 'Api::V1::Accounts::BulkActionsController', type: :request do
       let!(:supervisor_role) { create(:custom_role, account: account, permissions: ['conversation_manage']) }
 
       before do
-        agent.current_account_user.update!(custom_role: supervisor_role)
+        agent.account_users.find_by!(account: account).update!(custom_role: supervisor_role)
         Conversation.all.find_each { |conversation| create(:inbox_member, inbox: conversation.inbox, user: agent) }
       end
 
@@ -49,7 +49,8 @@ RSpec.describe 'Api::V1::Accounts::BulkActionsController', type: :request do
       end
 
       it 'returns forbidden when a non Manage All custom role bulk assigns conversations' do
-        agent.current_account_user.update!(custom_role: create(:custom_role, account: account, permissions: ['conversation_participating_manage']))
+        participating_role = create(:custom_role, account: account, permissions: ['conversation_participating_manage'])
+        agent.account_users.find_by!(account: account).update!(custom_role: participating_role)
 
         post "/api/v1/accounts/#{account.id}/bulk_actions",
              headers: agent.create_new_auth_token,

@@ -78,8 +78,7 @@ class Api::V1::Accounts::Marine::ProvisioningController < Api::V1::Accounts::Bas
   def error_status(error)
     case error
     when Marine::Provisioning::Errors::CredentialUnavailableError then :service_unavailable
-    when Marine::Provisioning::Errors::LockUnavailableError then :conflict
-    when Marine::Provisioning::Errors::AlreadyProvisionedError then :conflict
+    when Marine::Provisioning::Errors::LockUnavailableError, Marine::Provisioning::Errors::AlreadyProvisionedError then :conflict
     else :unprocessable_entity
     end
   end

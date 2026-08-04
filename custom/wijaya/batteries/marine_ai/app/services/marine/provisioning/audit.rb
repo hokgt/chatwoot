@@ -4,11 +4,11 @@
 module Marine
   module Provisioning
     class Audit
-      def self.record(**kwargs)
-        new(**kwargs).write!
+      def self.record(**)
+        new(**).write!
       end
 
-      def initialize(action:, actor_id: nil, target: nil, result: 'started', trace_id: nil, detail: nil)
+      def initialize(action:, actor_id: nil, target: nil, result: 'started', trace_id: nil, detail: nil) # rubocop:disable Metrics/ParameterLists
         @action = action
         @actor_id = actor_id
         @target = target

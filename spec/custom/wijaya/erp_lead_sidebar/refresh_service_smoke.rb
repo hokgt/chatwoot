@@ -9,6 +9,9 @@ require 'net/http'
 require 'json'
 require 'uri'
 
+# Nested (not compact) so this standalone smoke can create the Wijaya parent chain
+# itself when run via bare `ruby` with Wijaya undefined; a compact
+# `module Wijaya::Batteries::ErpLeadSidebar` raises `uninitialized constant Wijaya`.
 module Wijaya
   module Batteries
     module ErpLeadSidebar
@@ -46,7 +49,7 @@ module RefreshSmoke
     end
   end
 
-  REQUESTS = []
+  REQUESTS = [].freeze
 
   def self.response(klass, code, msg, body)
     resp = klass.new('1.1', code, msg)
@@ -54,12 +57,12 @@ module RefreshSmoke
     resp
   end
 
-  def self.install_http!(&responder)
+  def self.install_http!
     REQUESTS.clear
     fake_http = Object.new
     fake_http.define_singleton_method(:request) do |request|
       REQUESTS << request
-      responder.call(request)
+      yield(request)
     end
     Net::HTTP.define_singleton_method(:start) do |*_args, **_kw, &block|
       block.call(fake_http)
@@ -116,7 +119,7 @@ RefreshSmoke.assert('local field preserved', draft.fields['first_name'] == 'Agen
 RefreshSmoke.assert('draft not updated', draft.updated.nil?)
 RefreshSmoke.assert('remote_fields exposed', result[:remote_fields]['first_name'] == 'Remote Ana')
 
-puts "case 3: failed draft is also treated as unsynced -> conflict"
+puts 'case 3: failed draft is also treated as unsynced -> conflict'
 RefreshSmoke.install_http! do |_r|
   RefreshSmoke.response(Net::HTTPOK, '200', 'OK', 'data' => ERP_LEAD)
 end

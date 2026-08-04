@@ -1,0 +1,74 @@
+{
+  "META_ADS_ROUTING": {
+    "SIDEBAR_LABEL": "Meta Ads Routing",
+    "HEADER": "Meta Ads Routing",
+    "DESCRIPTION": "Route brand-new conversations from Meta ads (WhatsApp, Messenger, Instagram) to a specific team based on the ad's source ID.",
+    "LOADING": "Loading routing rules...",
+    "HEADER_BTN_TXT": "Add routing rule",
+    "SEARCH_PLACEHOLDER": "Search by ad ID or campaign name",
+    "NO_RESULTS": "No routing rules match your search",
+    "COUNT": "{n} routing rules",
+    "LIST": {
+      "404": "There are no routing rules configured yet.",
+      "TABLE_HEADER": {
+        "SOURCE_ID": "Ad ID",
+        "CAMPAIGN_NAME": "Campaign",
+        "TEAM": "Team",
+        "STATUS": "Status",
+        "ACTION": "Actions"
+      }
+    },
+    "STATUS": {
+      "ACTIVE": "Active",
+      "INACTIVE": "Inactive"
+    },
+    "FORM": {
+      "SOURCE_ID": {
+        "LABEL": "Meta Ads Ad ID (source ID)",
+        "PLACEHOLDER": "e.g. 120210000000000000",
+        "ERROR": "Ad ID is required"
+      },
+      "CAMPAIGN_NAME": {
+        "LABEL": "Campaign name",
+        "PLACEHOLDER": "e.g. Ramadan Promo"
+      },
+      "TEAM": {
+        "LABEL": "Route to team",
+        "PLACEHOLDER": "Select a team",
+        "ERROR": "Team is required"
+      },
+      "STATUS": {
+        "LABEL": "Status"
+      },
+      "EDIT": "Update",
+      "CREATE": "Create",
+      "CANCEL": "Cancel"
+    },
+    "ADD": {
+      "TITLE": "Add routing rule",
+      "API": {
+        "SUCCESS_MESSAGE": "Routing rule created successfully",
+        "ERROR_MESSAGE": "Could not create the routing rule"
+      }
+    },
+    "EDIT": {
+      "TITLE": "Edit routing rule",
+      "API": {
+        "SUCCESS_MESSAGE": "Routing rule updated successfully",
+        "ERROR_MESSAGE": "Could not update the routing rule"
+      }
+    },
+    "DELETE": {
+      "API": {
+        "SUCCESS_MESSAGE": "Routing rule deleted successfully",
+        "ERROR_MESSAGE": "Could not delete the routing rule"
+      },
+      "CONFIRM": {
+        "TITLE": "Confirm deletion",
+        "MESSAGE": "Are you sure you want to delete the routing rule for",
+        "YES": "Yes, delete",
+        "NO": "No, keep it"
+      }
+    }
+  }
+}

@@ -2,6 +2,11 @@
 
 require_relative 'referral_parser'
 
+# Nested (not compact `module Wijaya::Batteries::AdsTracking::Hooks`) so this file
+# is standalone-safe: native message builders `require_relative` it at their own
+# load time, before the Wijaya battery initializer is guaranteed to have run. No
+# loader creates the AdsTracking namespace, so this nested declaration is its sole
+# creator; a compact form raises `uninitialized constant Wijaya::Batteries::AdsTracking`.
 module Wijaya
   module Batteries
     module AdsTracking

@@ -14,7 +14,7 @@ class CreateWijayaErpLeadDrafts < ActiveRecord::Migration[7.1]
     end
 
     add_index :wijaya_erp_lead_drafts, %i[account_id conversation_id], unique: true,
-              name: 'index_wijaya_erp_lead_drafts_on_account_conversation'
+                                                                       name: 'index_wijaya_erp_lead_drafts_on_account_conversation'
   end
 end
 # WIJAYA_CUSTOM_END erp_lead_sidebar

@@ -22,8 +22,14 @@ json.business_name resource.business_name
 
 # WIJAYA_CUSTOM_START marine_ai
 # Surface the linked Marine assistant id so the composer can route AI tasks to
-# Marine (custom/wijaya/marine) instead of Captain for Marine-linked inboxes.
-json.marine_assistant_id resource.try(:marine_assistant)&.id
+# Marine (custom/wijaya/batteries/marine_ai) instead of Captain for Marine-linked
+# inboxes. Fail-open: a missing/disabled Marine battery or absent marine_inboxes
+# table yields nil and renders the native inbox JSON unchanged. When the core hooks
+# constant is undefined (battery system not booted) the field is omitted entirely and
+# the native inbox JSON renders unchanged.
+if defined?(Wijaya::Batteries::Core::Hooks)
+  json.marine_assistant_id Wijaya::Batteries::Core::Hooks.dispatch(:marine_ai, :inbox_marine_assistant_id, default: nil, inbox: resource)
+end
 # WIJAYA_CUSTOM_END marine_ai
 
 if resource.portal.present?

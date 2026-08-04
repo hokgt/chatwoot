@@ -5,9 +5,6 @@
 #    Hence there is no need to set user_id in message for outgoing echo messages.
 
 require_relative '../../../../custom/wijaya/batteries/ads_tracking/hooks'
-# WIJAYA_CUSTOM_START meta_ads_team_routing
-require_relative '../../../../custom/wijaya/batteries/meta_ads_team_routing/hooks'
-# WIJAYA_CUSTOM_END meta_ads_team_routing
 
 class Messages::Facebook::MessageBuilder < Messages::Messenger::MessageBuilder
   attr_reader :response
@@ -79,23 +76,22 @@ class Messages::Facebook::MessageBuilder < Messages::Messenger::MessageBuilder
 
   def build_conversation
     # WIJAYA_CUSTOM_START meta_ads_team_routing
+    # Upstream: Conversation.create!(conversation_params.merge(contact_inbox_id: @contact_inbox.id)).
+    # Route the exact native params through the generic fail-open dispatcher when it is
+    # loaded; if the core hooks constant is undefined (battery system not booted) or the
+    # dispatch fails/returns the default, the params passed to create equal the native params.
     new_conversation_params = conversation_params.merge(contact_inbox_id: @contact_inbox.id)
-    apply_meta_ads_team_routing!(new_conversation_params)
+    if defined?(Wijaya::Batteries::Core::Hooks)
+      new_conversation_params = Wijaya::Batteries::Core::Hooks.dispatch(
+        :meta_ads_team_routing, :apply_team_routing!,
+        default: new_conversation_params,
+        account: @inbox.account, inbox: @inbox, channel: :messenger,
+        referral: response.referral, conversation_params: new_conversation_params
+      )
+    end
     Conversation.create!(new_conversation_params)
     # WIJAYA_CUSTOM_END meta_ads_team_routing
   end
-
-  # WIJAYA_CUSTOM_START meta_ads_team_routing
-  def apply_meta_ads_team_routing!(new_conversation_params)
-    Wijaya::Batteries::MetaAdsTeamRouting::Hooks.apply_team_routing!(
-      account: @inbox.account,
-      inbox: @inbox,
-      channel: :messenger,
-      referral: response.referral,
-      conversation_params: new_conversation_params
-    )
-  end
-  # WIJAYA_CUSTOM_END meta_ads_team_routing
 
   def location_params(attachment)
     lat = attachment['payload']['coordinates']['lat']

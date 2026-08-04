@@ -27,10 +27,11 @@ import security from './security/security.routes';
 import conversationWorkflow from './conversationWorkflow/conversationWorkflow.routes';
 import captain from './captain/captain.routes';
 // WIJAYA_CUSTOM_START marine_ai
-import marine from './marine/marine.routes';
+import marine from '@wijaya/marine_ai/frontend/routes/settings-marine/marine.routes';
 // WIJAYA_CUSTOM_END marine_ai
-// WIJAYA_CUSTOM meta_ads_team_routing
-import wijaya from './wijaya/wijaya.routes';
+// WIJAYA_CUSTOM_START meta_ads_team_routing
+import wijaya from '@wijaya/meta_ads_team_routing/frontend/routes/wijaya.routes';
+// WIJAYA_CUSTOM_END meta_ads_team_routing
 
 export default {
   routes: [
@@ -75,7 +76,8 @@ export default {
     // WIJAYA_CUSTOM_START marine_ai
     ...marine.routes,
     // WIJAYA_CUSTOM_END marine_ai
-    // WIJAYA_CUSTOM meta_ads_team_routing
+    // WIJAYA_CUSTOM_START meta_ads_team_routing
     ...wijaya.routes,
+    // WIJAYA_CUSTOM_END meta_ads_team_routing
   ],
 };

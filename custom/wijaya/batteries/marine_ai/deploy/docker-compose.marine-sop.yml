@@ -1,0 +1,63 @@
+# Battery-contained Docker Compose OVERLAY for the optional Marine SOP worker and the
+# optional Marine product-catalog secret. It is kept OUT of the core
+# docker-compose.production.yaml so that base file boots core Rails/Sidekiq with no
+# Marine-specific variable or secret. Apply it as an overlay only when Marine SOP /
+# catalog features are wanted:
+#
+#   docker compose \
+#     -f docker-compose.production.yaml \
+#     -f custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop.yml \
+#     up -d
+#
+# Optional variables (all have parse-safe defaults so `docker compose config` succeeds):
+#   CHATWOOT_IMAGE                     - same image tag as the base services.
+#   MARINE_CATALOG_PG_PASSWORD_FILE_HOST - host path of the read-only catalog PG password.
+#   MARINE_CATALOG_PG_PASSWORD_FILE      - container path the app reads
+#                                          (ENV MARINE_CATALOG_PG_PASSWORD_FILE).
+#
+# The read-only product-catalog password is mounted ONLY into the services that query the
+# catalog (rails + normal sidekiq). The SOP worker does OCR/extraction on uploaded files
+# and needs shared storage only, never the catalog secret.
+
+services:
+  rails:
+    volumes:
+      - ${MARINE_CATALOG_PG_PASSWORD_FILE_HOST:-./secrets/marine_catalog_pg_password}:${MARINE_CATALOG_PG_PASSWORD_FILE:-/run/secrets/marine_catalog_pg_password}:ro
+
+  sidekiq:
+    volumes:
+      - ${MARINE_CATALOG_PG_PASSWORD_FILE_HOST:-./secrets/marine_catalog_pg_password}:${MARINE_CATALOG_PG_PASSWORD_FILE:-/run/secrets/marine_catalog_pg_password}:ro
+
+  # Dedicated, resource-capped Sidekiq worker that ONLY drains the isolated marine_sop
+  # queue at concurrency 1. It is the ONLY service carrying the SOP hardening
+  # (no-new-privileges, all caps dropped, pids/mem/tmpfs caps); rails and normal sidekiq
+  # stay behaviorally unchanged. Uses the same image tag as base via CHATWOOT_IMAGE.
+  marine_sop_worker:
+    image: ${CHATWOOT_IMAGE:-chatwoot-wijaya:devbot-0f8122216-sop}
+    env_file: .env
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+    command: ['bundle', 'exec', 'sidekiq', '-q', 'marine_sop', '-c', '1']
+    restart: always
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    pids_limit: 256
+    mem_limit: 2g
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    volumes:
+      - storage_data:/app/storage
+
+volumes:
+  storage_data:

@@ -10,7 +10,7 @@
 # database — which must always be false.
 module Marine
   module Provisioning
-    class CatalogService
+    class CatalogService # rubocop:disable Metrics/ClassLength
       TARGET_SCHEMA = PrivilegeService::TARGET_SCHEMA
 
       def initialize(actor_id: nil)
@@ -55,7 +55,7 @@ module Marine
       # Roles granted TO the login. After downgrade/revoke this must be empty — a
       # lingering membership could hand the login another role's privileges.
       def role_memberships(db)
-        rows = db.exec_params(<<~SQL, [login])
+        rows = db.exec_params(<<~SQL.squish, [login])
           SELECT g.rolname AS granted_role
           FROM pg_auth_members m
           JOIN pg_roles g ON g.oid = m.roleid
@@ -63,14 +63,14 @@ module Marine
           WHERE member.rolname = $1
           ORDER BY g.rolname
         SQL
-        names = rows.map { |row| row['granted_role'] }
+        names = rows.pluck('granted_role')
         { count: names.length, roles: names }
       end
 
       # Full attribute set so the UI can flag any dangerous grant (createrole,
       # createdb, replication, bypassrls) as well as login/superuser.
       def role_attributes(db)
-        row = db.exec_params(<<~SQL, [login]).first || {}
+        row = db.exec_params(<<~SQL.squish, [login]).first || {}
           SELECT rolcanlogin, rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls
           FROM pg_roles WHERE rolname = $1
         SQL
@@ -85,7 +85,7 @@ module Marine
       end
 
       def database_privileges(db)
-        row = db.exec_params(<<~SQL, [login, database_name]).first
+        row = db.exec_params(<<~SQL.squish, [login, database_name]).first
           SELECT has_database_privilege($1, $2, 'CONNECT') AS connect,
                  has_database_privilege($1, $2, 'CREATE') AS create,
                  has_database_privilege($1, $2, 'TEMPORARY') AS temporary
@@ -121,7 +121,7 @@ module Marine
         [TARGET_SCHEMA, 'public'].map do |schema|
           next { name: schema, present: false, usage: false, create: false } unless schema_present?(db, schema)
 
-          row = db.exec_params(<<~SQL, [login, schema]).first
+          row = db.exec_params(<<~SQL.squish, [login, schema]).first
             SELECT has_schema_privilege($1, $2, 'USAGE') AS usage,
                    has_schema_privilege($1, $2, 'CREATE') AS create
           SQL
@@ -132,8 +132,8 @@ module Marine
       # Per privilege, report coverage across ALL vs ANY marine_ai tables plus the
       # total table count. bool_and/bool_or over zero tables is NULL, coalesced to
       # false so "no tables" reads as no coverage rather than vacuous truth.
-      def table_privileges(db)
-        row = db.exec_params(<<~SQL, [login, TARGET_SCHEMA]).first
+      def table_privileges(db) # rubocop:disable Metrics/MethodLength
+        row = db.exec_params(<<~SQL.squish, [login, TARGET_SCHEMA]).first
           SELECT
             count(*)                                                             AS total,
             COALESCE(bool_and(has_table_privilege($1, c.oid, 'SELECT')), false)   AS select_all,
@@ -164,7 +164,7 @@ module Marine
       # projection schema. For an exact writer this must be zero — the writer holds NO
       # function privileges, and PUBLIC execute is stripped during downgrade.
       def function_privileges(db)
-        row = db.exec_params(<<~SQL, [login, TARGET_SCHEMA]).first
+        row = db.exec_params(<<~SQL.squish, [login, TARGET_SCHEMA]).first
           SELECT count(*) AS total,
                  COALESCE(bool_or(has_function_privilege($1, p.oid, 'EXECUTE')), false) AS execute_any
           FROM pg_proc p
@@ -177,7 +177,7 @@ module Marine
       # Effective sequence privilege coverage for the login. An exact writer holds NO
       # sequence privileges (no USAGE/SELECT/UPDATE), so every "any" flag must be false.
       def sequence_privileges(db)
-        row = db.exec_params(<<~SQL, [login, TARGET_SCHEMA]).first
+        row = db.exec_params(<<~SQL.squish, [login, TARGET_SCHEMA]).first
           SELECT count(*) AS total,
                  COALESCE(bool_or(has_sequence_privilege($1, c.oid, 'USAGE')), false)  AS usage_any,
                  COALESCE(bool_or(has_sequence_privilege($1, c.oid, 'SELECT')), false) AS select_any,
@@ -200,7 +200,7 @@ module Marine
       # rows (deptype 'o') for shared and current-database objects. A bare
       # pg_class+pg_namespace count would miss functions/types and shared dependencies.
       def owned_object_count(db)
-        db.exec_params(<<~SQL, [login]).getvalue(0, 0).to_i
+        db.exec_params(<<~SQL.squish, [login]).getvalue(0, 0).to_i
           SELECT
             (SELECT count(*) FROM pg_class     c WHERE c.relowner = r.oid) +
             (SELECT count(*) FROM pg_namespace n WHERE n.nspowner = r.oid) +

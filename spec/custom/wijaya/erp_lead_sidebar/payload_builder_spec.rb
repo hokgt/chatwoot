@@ -27,7 +27,7 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder do
     payload = described_class.new(valid_fields).payload
 
     expect(payload).to include(
-      doctype: 'Lead',
+      :doctype => 'Lead',
       'lead_owner' => 'user@example.com',
       'first_name' => 'Sr Modesta PM',
       'whatsapp_no' => '+6281238392959',

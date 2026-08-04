@@ -11,6 +11,10 @@ export const aliases = {
   survey: path.resolve('./app/javascript/survey'),
   widget: path.resolve('./app/javascript/widget'),
   assets: path.resolve('./app/javascript/dashboard/assets'),
+  // WIJAYA_CUSTOM core: single generic alias to the canonical battery root so core
+  // mount files and battery frontend modules resolve battery code without deep
+  // relative paths or forwarding shims under app/javascript.
+  '@wijaya': path.resolve('./custom/wijaya/batteries'),
 };
 
 export const vueOptions = {

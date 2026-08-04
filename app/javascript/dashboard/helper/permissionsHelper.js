@@ -17,7 +17,7 @@ export const getUserPermissions = (user, accountId) => {
 };
 
 // WIJAYA_CUSTOM_START custom_roles_rbac
-import { canManageConversationAssignment as canManageConversationAssignmentByPermissions } from '../../../../custom/wijaya/batteries/custom_roles/frontend/permissions';
+import { canManageConversationAssignment as canManageConversationAssignmentByPermissions } from '@wijaya/custom_roles/frontend/permissions';
 
 export const canManageConversationAssignment = (user, accountId) => {
   const permissions = getUserPermissions(user, accountId);

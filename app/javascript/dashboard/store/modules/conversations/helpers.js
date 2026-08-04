@@ -1,4 +1,7 @@
 import { CONVERSATION_PRIORITY_ORDER } from 'shared/constants/messages';
+// WIJAYA_CUSTOM_START custom_roles_rbac
+import { isConversationParticipant } from '@wijaya/custom_roles/frontend/permissions';
+// WIJAYA_CUSTOM_END custom_roles_rbac
 
 export const findPendingMessageIndex = (chat, message) => {
   const { echo_id: tempMessageId } = message;
@@ -91,20 +94,10 @@ export const applyRoleFilter = (
   }
 
   const conversationAssignee = conversation.meta.assignee;
-  // WIJAYA_CUSTOM_START custom_roles_rbac
-  const conversationParticipants =
-    conversation.meta?.participants ||
-    conversation.participants ||
-    conversation.conversation_participants ||
-    [];
-  // WIJAYA_CUSTOM_END custom_roles_rbac
   const isUnassigned = !conversationAssignee;
   const isAssignedToUser = conversationAssignee?.id === currentUserId;
   // WIJAYA_CUSTOM_START custom_roles_rbac
-  const isParticipant = conversationParticipants.some(
-    participant =>
-      participant?.id === currentUserId || participant?.user_id === currentUserId
-  );
+  const isParticipant = isConversationParticipant(conversation, currentUserId);
   // WIJAYA_CUSTOM_END custom_roles_rbac
 
   // Check unassigned management permission

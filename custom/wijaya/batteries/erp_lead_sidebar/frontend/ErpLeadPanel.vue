@@ -11,7 +11,9 @@ import {
   ref,
   watch,
 } from 'vue';
-import ErpLeadDraftsAPI from 'dashboard/api/wijayaErpLeadDrafts';
+import ErpLeadDraftsAPI from '@wijaya/erp_lead_sidebar/frontend/api/wijayaErpLeadDrafts';
+import { useUISettings } from 'dashboard/composables/useUISettings';
+import AccordionItem from 'dashboard/components/Accordion/AccordionItem.vue';
 import {
   STATUS_OPTIONS,
   MARKET_CUSTOMER_OPTIONS,
@@ -32,6 +34,16 @@ const props = defineProps({
   currentChat: { type: Object, default: () => ({}) },
   contact: { type: Object, default: () => ({}) },
 });
+
+// The accordion wrapper + collapse state live here (battery-owned) so the native
+// ContactPanel only mounts <ErpLeadPanel/>.
+const panelTitle = 'ERP Lead';
+const { isContactSidebarItemOpen, toggleSidebarUIState } = useUISettings();
+
+// When ERP is unconfigured the backend never persists a draft on open; mirror
+// that on the client by disabling all autosave so opening the panel creates zero
+// draft rows. Fail closed: stays false until the server confirms configuration.
+const configured = ref(false);
 
 const fields = reactive({
   lead_owner: '',
@@ -337,6 +349,7 @@ const loadDraft = async () => {
     erpLeadId.value = data.erp_lead_id || '';
     refreshMessage.value = data.message || '';
     conflict.value = Boolean(data.conflict);
+    configured.value = data.configured !== false;
     if (data.last_error) error.value = data.last_error;
     // Only autosave the generated autofill for a brand-new draft. Opening an
     // existing (incl. ERP-refreshed) draft must NOT mark it dirty.
@@ -371,6 +384,9 @@ const saveDraft = async () => {
 };
 
 const scheduleSave = (delay = 500) => {
+  // Never autosave while ERP is unconfigured: this keeps opening/editing the
+  // panel from creating draft rows until the ERP connection is set up.
+  if (!configured.value) return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveDraft, delay);
 };
@@ -389,10 +405,14 @@ const validationErrors = computed(() => {
 });
 
 const canSync = computed(
-  () => validationErrors.value.length === 0 && !syncing.value
+  () =>
+    configured.value && validationErrors.value.length === 0 && !syncing.value
 );
 
 const createLead = async () => {
+  // Never sync while ERP is unconfigured: guard before saveDraft so no draft
+  // row is persisted and no ERP request is issued from an unconfigured install.
+  if (!configured.value) return;
   await saveDraft();
   if (!canSync.value) return;
   syncing.value = true;
@@ -431,191 +451,220 @@ watch(() => props.conversationId, loadDraft, { immediate: true });
 <template>
   <!-- eslint-disable vue/no-bare-strings-in-template, @intlify/vue-i18n/no-raw-text -->
   <!-- WIJAYA_CUSTOM_START erp_lead_sidebar -->
-  <div class="flex flex-col gap-3 p-3 text-sm">
-    <div v-if="loading" class="text-n-slate-11">Loading ERP Lead draft…</div>
+  <div class="px-2 pb-3">
+    <AccordionItem
+      :title="panelTitle"
+      :is-open="isContactSidebarItemOpen('is_erp_lead_open')"
+      compact
+      @toggle="value => toggleSidebarUIState('is_erp_lead_open', value)"
+    >
+      <div class="flex flex-col gap-3 p-3 text-sm">
+        <div v-if="loading" class="text-n-slate-11">
+          Loading ERP Lead draft…
+        </div>
 
-    <template v-else>
-      <div v-if="erpLeadId" class="rounded-md bg-n-teal-3 text-n-teal-11 p-2">
-        ERP Lead created: <strong>{{ erpLeadId }}</strong>
-      </div>
-      <div v-if="conflict" class="rounded-md bg-n-amber-3 text-n-amber-11 p-2">
-        {{ refreshMessage }}
-      </div>
-      <div
-        v-else-if="refreshMessage"
-        class="rounded-md bg-n-teal-3 text-n-teal-11 p-2"
-      >
-        {{ refreshMessage }}
-      </div>
-      <div v-if="error" class="rounded-md bg-n-ruby-3 text-n-ruby-11 p-2">
-        {{ error }}
-      </div>
-
-      <label class="flex flex-col gap-1">
-        <span>Lead Owner</span>
-        <input
-          v-model="fields.lead_owner"
-          class="input"
-          type="text"
-          @input="scheduleSave()"
-        />
-      </label>
-
-      <label class="flex flex-col gap-1">
-        <span>First Name</span>
-        <input
-          v-model="fields.first_name"
-          class="input"
-          type="text"
-          @input="scheduleSave()"
-        />
-      </label>
-
-      <label class="flex flex-col gap-1">
-        <span>Organization Name</span>
-        <input
-          v-model="fields.company_name"
-          class="input"
-          type="text"
-          @input="scheduleSave()"
-        />
-      </label>
-
-      <label class="flex flex-col gap-1">
-        <span>WhatsApp</span>
-        <input
-          v-model="fields.whatsapp_no"
-          class="input"
-          type="text"
-          @input="
-            fields.mobile_no = fields.whatsapp_no;
-            scheduleSave();
-          "
-        />
-      </label>
-
-      <label class="flex flex-col gap-1">
-        <span>Mobile No</span>
-        <input :value="fields.whatsapp_no" class="input" type="text" readonly />
-        <span class="text-xs text-n-slate-10">
-          Always sent with the same value as WhatsApp.
-        </span>
-      </label>
-
-      <label class="flex flex-col gap-1">
-        <span>Status</span>
-        <select v-model="fields.status" class="input" @change="scheduleSave(0)">
-          <option
-            v-for="option in STATUS_OPTIONS"
-            :key="option"
-            :value="option"
+        <template v-else>
+          <div
+            v-if="erpLeadId"
+            class="rounded-md bg-n-teal-3 text-n-teal-11 p-2"
           >
-            {{ option }}
-          </option>
-        </select>
-      </label>
+            ERP Lead created: <strong>{{ erpLeadId }}</strong>
+          </div>
+          <div
+            v-if="conflict"
+            class="rounded-md bg-n-amber-3 text-n-amber-11 p-2"
+          >
+            {{ refreshMessage }}
+          </div>
+          <div
+            v-else-if="refreshMessage"
+            class="rounded-md bg-n-teal-3 text-n-teal-11 p-2"
+          >
+            {{ refreshMessage }}
+          </div>
+          <div v-if="error" class="rounded-md bg-n-ruby-3 text-n-ruby-11 p-2">
+            {{ error }}
+          </div>
 
-      <label class="flex flex-col gap-1">
-        <span>Source</span>
-        <SearchableSelect
-          v-model="fields.utm_source"
-          :options="withCurrent(fields.utm_source, sourceOptions)"
-          @change="scheduleSave(0)"
-        />
-      </label>
+          <label class="flex flex-col gap-1">
+            <span>Lead Owner</span>
+            <input
+              v-model="fields.lead_owner"
+              class="input"
+              type="text"
+              @input="scheduleSave()"
+            />
+          </label>
 
-      <label class="flex flex-col gap-1">
-        <span>Campaign</span>
-        <SearchableSelect
-          v-model="fields.utm_campaign"
-          :options="withCurrent(fields.utm_campaign, campaignOptions)"
-          @change="scheduleSave(0)"
-        />
-      </label>
+          <label class="flex flex-col gap-1">
+            <span>First Name</span>
+            <input
+              v-model="fields.first_name"
+              class="input"
+              type="text"
+              @input="scheduleSave()"
+            />
+          </label>
 
-      <label class="flex flex-col gap-1">
-        <span>Industry <span class="text-n-ruby-10">*</span></span>
-        <SearchableSelect
-          v-model="fields.industry"
-          :options="withCurrent(fields.industry, industryOptions)"
-          @change="scheduleSave(0)"
-        />
-      </label>
+          <label class="flex flex-col gap-1">
+            <span>Organization Name</span>
+            <input
+              v-model="fields.company_name"
+              class="input"
+              type="text"
+              @input="scheduleSave()"
+            />
+          </label>
 
-      <label class="flex flex-col gap-1">
-        <span>Territory</span>
-        <SearchableSelect
-          v-model="fields.territory"
-          :options="withCurrent(fields.territory, territoryOptions)"
-          @change="scheduleSave(0)"
-        />
-      </label>
+          <label class="flex flex-col gap-1">
+            <span>WhatsApp</span>
+            <input
+              v-model="fields.whatsapp_no"
+              class="input"
+              type="text"
+              @input="
+                fields.mobile_no = fields.whatsapp_no;
+                scheduleSave();
+              "
+            />
+          </label>
 
-      <div class="flex flex-col gap-2">
-        <strong>Market Customer</strong>
-        <label
-          v-for="[label, key] in MARKET_CUSTOMER_OPTIONS"
-          :key="key"
-          class="flex items-center gap-2"
-        >
-          <input
-            v-model="fields[key]"
-            type="checkbox"
-            @change="scheduleSave(0)"
-          />
-          <span>{{ label }}</span>
-        </label>
+          <label class="flex flex-col gap-1">
+            <span>Mobile No</span>
+            <input
+              :value="fields.whatsapp_no"
+              class="input"
+              type="text"
+              readonly
+            />
+            <span class="text-xs text-n-slate-10">
+              Always sent with the same value as WhatsApp.
+            </span>
+          </label>
+
+          <label class="flex flex-col gap-1">
+            <span>Status</span>
+            <select
+              v-model="fields.status"
+              class="input"
+              @change="scheduleSave(0)"
+            >
+              <option
+                v-for="option in STATUS_OPTIONS"
+                :key="option"
+                :value="option"
+              >
+                {{ option }}
+              </option>
+            </select>
+          </label>
+
+          <label class="flex flex-col gap-1">
+            <span>Source</span>
+            <SearchableSelect
+              v-model="fields.utm_source"
+              :options="withCurrent(fields.utm_source, sourceOptions)"
+              @change="scheduleSave(0)"
+            />
+          </label>
+
+          <label class="flex flex-col gap-1">
+            <span>Campaign</span>
+            <SearchableSelect
+              v-model="fields.utm_campaign"
+              :options="withCurrent(fields.utm_campaign, campaignOptions)"
+              @change="scheduleSave(0)"
+            />
+          </label>
+
+          <label class="flex flex-col gap-1">
+            <span>Industry <span class="text-n-ruby-10">*</span></span>
+            <SearchableSelect
+              v-model="fields.industry"
+              :options="withCurrent(fields.industry, industryOptions)"
+              @change="scheduleSave(0)"
+            />
+          </label>
+
+          <label class="flex flex-col gap-1">
+            <span>Territory</span>
+            <SearchableSelect
+              v-model="fields.territory"
+              :options="withCurrent(fields.territory, territoryOptions)"
+              @change="scheduleSave(0)"
+            />
+          </label>
+
+          <div class="flex flex-col gap-2">
+            <strong>Market Customer</strong>
+            <label
+              v-for="[label, key] in MARKET_CUSTOMER_OPTIONS"
+              :key="key"
+              class="flex items-center gap-2"
+            >
+              <input
+                v-model="fields[key]"
+                type="checkbox"
+                @change="scheduleSave(0)"
+              />
+              <span>{{ label }}</span>
+            </label>
+          </div>
+
+          <div class="flex flex-col gap-2">
+            <strong>Jenis Pakaian</strong>
+            <label
+              v-for="[label, key] in JENIS_PAKAIAN_OPTIONS"
+              :key="key"
+              class="flex items-center gap-2"
+            >
+              <input
+                v-model="fields[key]"
+                type="checkbox"
+                @change="scheduleSave(0)"
+              />
+              <span>{{ label }}</span>
+            </label>
+          </div>
+
+          <ul
+            v-if="validationErrors.length"
+            class="list-disc pl-4 text-n-ruby-10"
+          >
+            <li v-for="item in validationErrors" :key="item">{{ item }}</li>
+          </ul>
+
+          <button
+            class="button button-primary"
+            :disabled="!canSync"
+            @click="createLead"
+          >
+            {{
+              syncing
+                ? erpLeadId
+                  ? 'Updating…'
+                  : 'Creating…'
+                : syncStatus === 'failed'
+                  ? erpLeadId
+                    ? 'Retry Update Lead'
+                    : 'Retry Create Lead'
+                  : erpLeadId
+                    ? 'Update Lead'
+                    : 'Create Lead'
+            }}
+          </button>
+          <div class="text-xs text-n-slate-10">
+            {{
+              saving
+                ? 'Saving draft…'
+                : savedAt
+                  ? `Draft saved ${savedAt}`
+                  : 'Draft is saved locally before sync.'
+            }}
+          </div>
+        </template>
       </div>
-
-      <div class="flex flex-col gap-2">
-        <strong>Jenis Pakaian</strong>
-        <label
-          v-for="[label, key] in JENIS_PAKAIAN_OPTIONS"
-          :key="key"
-          class="flex items-center gap-2"
-        >
-          <input
-            v-model="fields[key]"
-            type="checkbox"
-            @change="scheduleSave(0)"
-          />
-          <span>{{ label }}</span>
-        </label>
-      </div>
-
-      <ul v-if="validationErrors.length" class="list-disc pl-4 text-n-ruby-10">
-        <li v-for="item in validationErrors" :key="item">{{ item }}</li>
-      </ul>
-
-      <button
-        class="button button-primary"
-        :disabled="!canSync"
-        @click="createLead"
-      >
-        {{
-          syncing
-            ? erpLeadId
-              ? 'Updating…'
-              : 'Creating…'
-            : syncStatus === 'failed'
-              ? erpLeadId
-                ? 'Retry Update Lead'
-                : 'Retry Create Lead'
-              : erpLeadId
-                ? 'Update Lead'
-                : 'Create Lead'
-        }}
-      </button>
-      <div class="text-xs text-n-slate-10">
-        {{
-          saving
-            ? 'Saving draft…'
-            : savedAt
-              ? `Draft saved ${savedAt}`
-              : 'Draft is saved locally before sync.'
-        }}
-      </div>
-    </template>
+    </AccordionItem>
   </div>
   <!-- WIJAYA_CUSTOM_END erp_lead_sidebar -->
 </template>

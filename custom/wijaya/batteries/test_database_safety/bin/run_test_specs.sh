@@ -63,18 +63,21 @@ fi
 
 echo "[wijaya:test_database_safety] service=${SERVICE} root=${ROOT} test_db=${PG_TEST_DB}"
 
-# Preflight + command run in the SAME one-off container. First the generic
-# DATABASE_URL is cleared with `unset` (NOT set to ""): Rails 7.1 treats an empty
-# DATABASE_URL as present and refuses to boot, so it must be truly unset -- this also
-# neutralizes any DATABASE_URL the compose env_file might inject. Then the pure guard
-# prints/validates the effective database name via resolve!; on any unsafe value the
-# guard prints a sanitized refusal and exits nonzero, so `set -e` aborts here BEFORE
-# the real command (and thus before ActiveRecord connects). The base image ships only
-# /bin/sh. POSTGRES_DATABASE is intentionally NOT set; the guard ignores it.
+# DATABASE_URL and FRONTEND_URL are cleared with `unset` (NOT set to ""). Rails
+# 7.1 treats an empty DATABASE_URL as present and refuses to boot, so it must be
+# truly unset. FRONTEND_URL is also unset so test behavior matches CI defaults
+# instead of inheriting a dev/production host from the Compose env_file. The
+# repository `.env` is masked below, preventing dotenv-rails from restoring either
+# value after this preflight. This also prevents test redirects and generated URLs
+# from targeting the live dev host. The pure guard then prints/validates the effective
+# database name via resolve!; on any unsafe value the guard prints a sanitized refusal
+# and exits nonzero, so `set -e` aborts here BEFORE the real command (and thus before
+# ActiveRecord connects). POSTGRES_DATABASE is intentionally NOT set; the guard ignores
+# whatever the env_file provides.
 CONTAINER_SCRIPT='
 set -eu
 git config --global --add safe.directory /app
-unset DATABASE_URL
+unset DATABASE_URL FRONTEND_URL
 echo "[wijaya:test_database_safety] effective RAILS_ENV=${RAILS_ENV}"
 EFFECTIVE_DB="$(ruby -r./custom/wijaya/batteries/test_database_safety/guard \
   -e "print Wijaya::Batteries::TestDatabaseSafety::Guard.resolve!")"
@@ -84,6 +87,7 @@ exec "$@"
 
 exec docker compose run --rm -T --no-deps \
   -v "${ROOT}:/app" \
+  -v /dev/null:/app/.env:ro \
   -w /app \
   -e RAILS_ENV=test \
   -e NODE_ENV=test \

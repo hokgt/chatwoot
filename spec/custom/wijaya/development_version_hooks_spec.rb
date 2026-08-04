@@ -11,6 +11,17 @@ RSpec.describe Wijaya::Batteries::DevelopmentVersion::Hooks do
     end
   end
 
+  describe '.enrich_app_config' do
+    it 'merges the internal dev version into the app config without dropping native keys' do
+      config = { APP_VERSION: '4.15.1', IS_ENTERPRISE: false }
+
+      result = described_class.enrich_app_config(config: config)
+
+      expect(result).to include(APP_VERSION: '4.15.1', IS_ENTERPRISE: false)
+      expect(result[:WIJAYA_DEV_VERSION]).to eq(described_class.current_version)
+    end
+  end
+
   describe '.valid?' do
     it 'accepts MAJOR.MINOR.PATCH' do
       expect(described_class.valid?('0.1.0')).to be(true)

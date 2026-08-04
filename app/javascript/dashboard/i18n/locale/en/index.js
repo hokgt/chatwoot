@@ -43,10 +43,11 @@ import onboarding from './onboarding.json';
 import sessionLimit from './sessionLimit.json';
 import yearInReview from './yearInReview.json';
 // WIJAYA_CUSTOM_START marine_ai
-import marine from './marine.json';
+import marine from '@wijaya/marine_ai/frontend/i18n/marine.json';
 // WIJAYA_CUSTOM_END marine_ai
-// WIJAYA_CUSTOM meta_ads_team_routing
-import wijayaMetaAdsRouting from './wijayaMetaAdsRouting.json';
+// WIJAYA_CUSTOM_START meta_ads_team_routing
+import wijayaMetaAdsRouting from '@wijaya/meta_ads_team_routing/frontend/i18n/wijayaMetaAdsRouting.json';
+// WIJAYA_CUSTOM_END meta_ads_team_routing
 
 export default {
   ...advancedFilters,
@@ -96,6 +97,7 @@ export default {
   // WIJAYA_CUSTOM_START marine_ai
   ...marine,
   // WIJAYA_CUSTOM_END marine_ai
-  // WIJAYA_CUSTOM meta_ads_team_routing
+  // WIJAYA_CUSTOM_START meta_ads_team_routing
   ...wijayaMetaAdsRouting,
+  // WIJAYA_CUSTOM_END meta_ads_team_routing
 };

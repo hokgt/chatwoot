@@ -1,5 +1,8 @@
 import { throwErrorMessage } from 'dashboard/store/utils/api';
 import * as MutationHelpers from 'shared/helpers/vuex/mutationHelpers';
+// WIJAYA_CUSTOM_START custom_roles_rbac
+import { buildCustomRolePayload } from '@wijaya/custom_roles/frontend/permissions';
+// WIJAYA_CUSTOM_END custom_roles_rbac
 import * as types from '../mutation-types';
 import CustomRoleAPI from '../../api/customRole';
 
@@ -38,7 +41,9 @@ export const actions = {
     commit(types.default.SET_CUSTOM_ROLE_UI_FLAG, { creatingItem: true });
     try {
       // WIJAYA_CUSTOM_START custom_roles_rbac
-      const response = await CustomRoleAPI.create({ custom_role: customRoleObj });
+      const response = await CustomRoleAPI.create(
+        buildCustomRolePayload(customRoleObj)
+      );
       // WIJAYA_CUSTOM_END custom_roles_rbac
       commit(types.default.ADD_CUSTOM_ROLE, response.data);
       commit(types.default.SET_CUSTOM_ROLE_UI_FLAG, { creatingItem: false });
@@ -56,7 +61,10 @@ export const actions = {
     commit(types.default.SET_CUSTOM_ROLE_UI_FLAG, { updatingItem: true });
     try {
       // WIJAYA_CUSTOM_START custom_roles_rbac
-      const response = await CustomRoleAPI.update(id, { custom_role: updateObj });
+      const response = await CustomRoleAPI.update(
+        id,
+        buildCustomRolePayload(updateObj)
+      );
       // WIJAYA_CUSTOM_END custom_roles_rbac
       commit(types.default.EDIT_CUSTOM_ROLE, response.data);
       commit(types.default.SET_CUSTOM_ROLE_UI_FLAG, { updatingItem: false });

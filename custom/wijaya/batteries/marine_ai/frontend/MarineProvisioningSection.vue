@@ -7,7 +7,7 @@ import MarineProvisioningAPI from './provisioning';
 
 import Button from 'dashboard/components-next/button/Button.vue';
 import Dialog from 'dashboard/components-next/dialog/Dialog.vue';
-import MarineSettingsHeader from 'dashboard/routes/dashboard/marine/components/MarineSettingsHeader.vue';
+import MarineSettingsHeader from '@wijaya/marine_ai/frontend/routes/marine/components/MarineSettingsHeader.vue';
 import MarineProvisioningCredentialsDialog from './MarineProvisioningCredentialsDialog.vue';
 // Battery-contained translations: this feature does not touch the core marine.json.
 // Messages are registered as LOCAL vue-i18n messages for this component only.
