@@ -14,7 +14,14 @@ class MarineDocument extends ApiClient {
     });
   }
 
-  create({ assistantId, name, externalLink, content } = {}) {
+  // Website documents post a JSON `document` payload. SOP uploads pass a prebuilt
+  // FormData (nested `document[...]` keys incl. the file) which is forwarded as-is so
+  // axios can set the correct multipart boundary — never override the content type here.
+  create(payload = {}) {
+    if (payload instanceof FormData) {
+      return axios.post(this.url, payload);
+    }
+    const { assistantId, name, externalLink, content } = payload;
     return axios.post(this.url, {
       document: {
         assistant_id: assistantId,

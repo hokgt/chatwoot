@@ -253,6 +253,8 @@ require_file app/javascript/dashboard/routes/dashboard/marine/components/Connect
 require_file app/javascript/dashboard/routes/dashboard/marine/components/InboxPageEmptyState.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/responses/Index.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/documents/Index.vue
+# Commit 1E — SOP document UI: API create workflow coverage.
+require_file app/javascript/dashboard/api/specs/marine/document.spec.js
 require_file app/javascript/dashboard/routes/dashboard/marine/scenarios/Index.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/playground/Index.vue
 require_file app/javascript/dashboard/routes/dashboard/marine/inboxes/Index.vue

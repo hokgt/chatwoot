@@ -1,5 +1,12 @@
 <script setup>
-import { computed, onMounted, ref, watch, nextTick } from 'vue';
+import {
+  computed,
+  onMounted,
+  onBeforeUnmount,
+  ref,
+  watch,
+  nextTick,
+} from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute } from 'vue-router';
 import { debounce } from '@chatwoot/utils';
@@ -27,6 +34,12 @@ const selectedDocument = ref(null);
 const createDialog = ref(null);
 const deleteDialog = ref(null);
 
+// SOP extraction/OCR then indexing can outlast a single refresh, so we poll while any
+// document is still processing and stop once every document reaches a terminal state.
+const POLL_INTERVAL = 3000;
+const ACTIVE_INDEXING_STATES = ['pending', 'embedding_pending'];
+let pollTimer = null;
+
 const assistantId = computed(() => Number(route.params.assistantId));
 
 const filteredDocuments = computed(() => {
@@ -35,7 +48,8 @@ const filteredDocuments = computed(() => {
   return documents.value.filter(
     document =>
       document.name?.toLowerCase().includes(query) ||
-      document.external_link?.toLowerCase().includes(query)
+      document.external_link?.toLowerCase().includes(query) ||
+      document.source_file?.filename?.toLowerCase().includes(query)
   );
 });
 
@@ -56,6 +70,30 @@ const fetchDocuments = async () => {
   } finally {
     loading.value = false;
   }
+};
+
+const isDocumentActive = document => {
+  if (document.sync_status === 'syncing') return true;
+  if (
+    document.source_kind === 'sop_document' &&
+    document.sync_status === 'synced'
+  ) {
+    return ACTIVE_INDEXING_STATES.includes(document.metadata?.indexing_status);
+  }
+  return false;
+};
+
+const stopPolling = () => {
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+};
+
+const schedulePolling = () => {
+  stopPolling();
+  if (!documents.value.some(isDocumentActive)) return;
+  pollTimer = setTimeout(fetchDocuments, POLL_INTERVAL);
 };
 
 const debouncedSearch = debounce(() => {
@@ -125,19 +163,41 @@ const handleSync = async id => {
   }
 };
 
+// SOP reprocess reuses the sync endpoint, then relies on polling to surface the live
+// extraction/indexing progress on the card.
+const handleReprocess = async id => {
+  try {
+    await MarineDocumentAPI.sync(id);
+    useAlert(t('MARINE_AI.DOCUMENTS.SOP.REPROCESS.QUEUED_MESSAGE'));
+    await fetchDocuments();
+  } catch (error) {
+    useAlert(
+      parseAPIErrorResponse(error) ||
+        t('MARINE_AI.DOCUMENTS.SOP.REPROCESS.ERROR_MESSAGE')
+    );
+  }
+};
+
 const handleAction = ({ action, id }) => {
   const document = documents.value.find(item => item.id === id);
   if (!document) return;
   if (action === 'sync') handleSync(id);
+  else if (action === 'reprocess') handleReprocess(id);
   else if (action === 'delete') handleDelete(document);
 };
 
+// Reschedule polling from the freshly loaded list: keep polling while any document is
+// still processing, stop automatically once all reach a terminal state.
+watch(documents, schedulePolling);
+
 watch(assistantId, () => {
+  stopPolling();
   clearFilters();
   fetchDocuments();
 });
 
 onMounted(fetchDocuments);
+onBeforeUnmount(stopPolling);
 </script>
 
 <template>
@@ -175,8 +235,20 @@ onMounted(fetchDocuments);
           v-for="document in filteredDocuments"
           :id="document.id"
           :key="document.id"
-          :name="document.name || document.external_link"
-          :external-link="document.external_link"
+          :name="
+            document.name ||
+            document.source_file?.filename ||
+            document.external_link
+          "
+          :external-link="document.external_link || ''"
+          :source-kind="document.source_kind"
+          :source-file="document.source_file"
+          :indexing-status="document.metadata?.indexing_status"
+          :indexed-chunk-count="document.metadata?.indexed_chunk_count"
+          :failure-code="
+            document.metadata?.last_sync_error_code ||
+            document.metadata?.indexing_error_code
+          "
           :assistant="document.assistant"
           :created-at="document.created_at"
           :sync-status="document.sync_status"

@@ -173,6 +173,11 @@
         "SUCCESS_MESSAGE": "Document added successfully.",
         "ERROR_MESSAGE": "Failed to create document. Please try again."
       },
+      "SOURCE_TYPE": {
+        "LABEL": "Source type",
+        "WEBSITE": "Website URL",
+        "SOP": "SOP file upload"
+      },
       "FORM": {
         "NAME": {
           "LABEL": "Document name",
@@ -186,7 +191,36 @@
         "CONTENT": {
           "LABEL": "Content (optional)",
           "PLACEHOLDER": "Paste knowledge content for Marine AI"
+        },
+        "FILE": {
+          "LABEL": "SOP file",
+          "CHOOSE_FILE": "Choose a file",
+          "HELP_TEXT": "PDF, JPEG or PNG up to 2 MB",
+          "REQUIRED": "Please select a file to upload.",
+          "INVALID_TYPE": "Unsupported file type. Upload a PDF, JPEG, or PNG.",
+          "TOO_LARGE": "File is too large. Maximum size is 2 MB."
         }
+      },
+      "SOP": {
+        "REPROCESS": {
+          "LABEL": "Reprocess",
+          "QUEUED_MESSAGE": "SOP reprocessing queued.",
+          "ERROR_MESSAGE": "Failed to reprocess SOP document."
+        },
+        "EXTRACTION_STATUS": {
+          "PENDING": "Extraction pending",
+          "EXTRACTING": "Extracting…",
+          "EXTRACTED": "Extracted",
+          "FAILED": "Extraction failed"
+        },
+        "INDEXING_STATUS": {
+          "NOT_INDEXED": "Not indexed",
+          "INDEXING": "Indexing…",
+          "INDEXED": "Indexed",
+          "FAILED": "Indexing failed"
+        },
+        "CHUNK_COUNT": "{count} chunks indexed",
+        "ERROR_CODE": "Error code: {code}"
       },
       "OPTIONS": {
         "SYNC_NOW": "Sync now",

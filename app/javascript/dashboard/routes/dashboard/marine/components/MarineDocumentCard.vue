@@ -20,7 +20,27 @@ const props = defineProps({
   },
   externalLink: {
     type: String,
-    required: true,
+    default: '',
+  },
+  sourceKind: {
+    type: String,
+    default: 'website',
+  },
+  sourceFile: {
+    type: Object,
+    default: null,
+  },
+  indexingStatus: {
+    type: String,
+    default: null,
+  },
+  indexedChunkCount: {
+    type: Number,
+    default: null,
+  },
+  failureCode: {
+    type: String,
+    default: null,
   },
   assistant: {
     type: Object,
@@ -46,11 +66,32 @@ const { t } = useI18n();
 
 const [showActionsDropdown, toggleDropdown] = useToggle();
 
-const canSync = computed(() => props.syncStatus !== 'syncing');
+const isSop = computed(() => props.sourceKind === 'sop_document');
+const isProductCatalog = computed(() => props.sourceKind === 'product_catalog');
+
+const ACTIVE_INDEXING_STATES = ['pending', 'embedding_pending'];
+
+// SOP is "processing" while extraction runs or indexing has not reached a terminal
+// state, so we hide reprocess and keep polling driven from the parent list.
+const isProcessing = computed(() => {
+  if (props.syncStatus === 'syncing') return true;
+  return isSop.value && ACTIVE_INDEXING_STATES.includes(props.indexingStatus);
+});
 
 const menuItems = computed(() => {
   const options = [];
-  if (canSync.value) {
+  if (isProductCatalog.value) {
+    // Product catalogs are never sync/reprocess-able.
+  } else if (isSop.value) {
+    if (!isProcessing.value) {
+      options.push({
+        label: t('MARINE_AI.DOCUMENTS.SOP.REPROCESS.LABEL'),
+        value: 'reprocess',
+        action: 'reprocess',
+        icon: 'i-lucide-refresh-cw',
+      });
+    }
+  } else if (props.syncStatus !== 'syncing') {
     options.push({
       label: t('MARINE_AI.DOCUMENTS.OPTIONS.SYNC_NOW'),
       value: 'sync',
@@ -90,6 +131,95 @@ const syncStatusBadge = computed(() => {
     label: t('MARINE_AI.DOCUMENTS.SYNC_STATUS.NEVER_SYNCED'),
     class: 'bg-n-alpha-2 text-n-slate-11',
   };
+});
+
+// Extraction (OCR/text) status, shown only for SOP sources.
+const extractionBadge = computed(() => {
+  if (props.syncStatus === 'synced') {
+    return {
+      label: t('MARINE_AI.DOCUMENTS.SOP.EXTRACTION_STATUS.EXTRACTED'),
+      class: 'bg-n-teal-3 text-n-teal-11',
+    };
+  }
+  if (props.syncStatus === 'syncing') {
+    return {
+      label: t('MARINE_AI.DOCUMENTS.SOP.EXTRACTION_STATUS.EXTRACTING'),
+      class: 'bg-n-amber-3 text-n-amber-11',
+    };
+  }
+  if (props.syncStatus === 'failed') {
+    return {
+      label: t('MARINE_AI.DOCUMENTS.SOP.EXTRACTION_STATUS.FAILED'),
+      class: 'bg-n-ruby-3 text-n-ruby-11',
+    };
+  }
+  return {
+    label: t('MARINE_AI.DOCUMENTS.SOP.EXTRACTION_STATUS.PENDING'),
+    class: 'bg-n-alpha-2 text-n-slate-11',
+  };
+});
+
+// Indexing status, relevant only once extraction has produced content.
+const indexingBadge = computed(() => {
+  if (props.indexingStatus === 'indexed') {
+    return {
+      label: t('MARINE_AI.DOCUMENTS.SOP.INDEXING_STATUS.INDEXED'),
+      class: 'bg-n-teal-3 text-n-teal-11',
+    };
+  }
+  if (ACTIVE_INDEXING_STATES.includes(props.indexingStatus)) {
+    return {
+      label: t('MARINE_AI.DOCUMENTS.SOP.INDEXING_STATUS.INDEXING'),
+      class: 'bg-n-amber-3 text-n-amber-11',
+    };
+  }
+  if (props.indexingStatus === 'failed') {
+    return {
+      label: t('MARINE_AI.DOCUMENTS.SOP.INDEXING_STATUS.FAILED'),
+      class: 'bg-n-ruby-3 text-n-ruby-11',
+    };
+  }
+  return {
+    label: t('MARINE_AI.DOCUMENTS.SOP.INDEXING_STATUS.NOT_INDEXED'),
+    class: 'bg-n-alpha-2 text-n-slate-11',
+  };
+});
+
+const showIndexingBadge = computed(
+  () => isSop.value && props.syncStatus === 'synced'
+);
+
+const chunkCountLabel = computed(() => {
+  if (!showIndexingBadge.value) return '';
+  if (props.indexingStatus !== 'indexed') return '';
+  if (props.indexedChunkCount == null) return '';
+  return t('MARINE_AI.DOCUMENTS.SOP.CHUNK_COUNT', {
+    count: props.indexedChunkCount,
+  });
+});
+
+const FILE_TYPE_LABELS = {
+  'application/pdf': 'PDF',
+  'image/jpeg': 'JPEG',
+  'image/png': 'PNG',
+};
+
+const fileTypeLabel = computed(() => {
+  const type = props.sourceFile?.content_type;
+  if (!type) return '';
+  return FILE_TYPE_LABELS[type] || type;
+});
+
+const fileSizeLabel = computed(() => {
+  const size = props.sourceFile?.byte_size;
+  if (size == null) return '';
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(2)} MB`;
+  return `${Math.max(1, Math.round(size / 1024))} KB`;
+});
+
+const fileMetaLabel = computed(() => {
+  const parts = [fileTypeLabel.value, fileSizeLabel.value].filter(Boolean);
+  return parts.join(' · ');
 });
 
 const timestamp = computed(() => {
@@ -132,7 +262,12 @@ const handleAction = ({ action, value }) => {
         </div>
       </div>
     </div>
-    <div class="flex gap-4 justify-between items-center w-full">
+
+    <!-- Website: external source link + sync badge -->
+    <div
+      v-if="sourceKind === 'website'"
+      class="flex gap-4 justify-between items-center w-full"
+    >
       <a
         :href="externalLink"
         :title="externalLink"
@@ -152,6 +287,46 @@ const handleAction = ({ action, value }) => {
         {{ syncStatusBadge.label }}
       </span>
     </div>
+
+    <!-- File-backed (SOP / product catalog): safe file metadata, no URL/checksum -->
+    <div v-else class="flex flex-col gap-2 w-full">
+      <div class="flex gap-4 justify-between items-center w-full">
+        <span
+          class="flex flex-1 gap-1 justify-start items-center text-sm truncate text-n-slate-11"
+        >
+          <Icon icon="i-ph-file-text" class="shrink-0" />
+          <span class="truncate">{{ sourceFile?.filename || name }}</span>
+          <span v-if="fileMetaLabel" class="shrink-0 text-n-slate-10">
+            {{ fileMetaLabel }}
+          </span>
+        </span>
+        <span
+          v-if="isSop"
+          class="rounded-full px-2 py-0.5 text-xs font-medium shrink-0"
+          :class="extractionBadge.class"
+        >
+          {{ extractionBadge.label }}
+        </span>
+      </div>
+      <div
+        v-if="showIndexingBadge"
+        class="flex gap-2 justify-start items-center w-full"
+      >
+        <span
+          class="rounded-full px-2 py-0.5 text-xs font-medium shrink-0"
+          :class="indexingBadge.class"
+        >
+          {{ indexingBadge.label }}
+        </span>
+        <span v-if="chunkCountLabel" class="text-xs text-n-slate-11">
+          {{ chunkCountLabel }}
+        </span>
+      </div>
+      <span v-if="isSop && failureCode" class="text-xs text-n-ruby-11">
+        {{ t('MARINE_AI.DOCUMENTS.SOP.ERROR_CODE', { code: failureCode }) }}
+      </span>
+    </div>
+
     <div class="flex gap-3 justify-between items-center w-full">
       <span
         v-if="assistant?.name"
