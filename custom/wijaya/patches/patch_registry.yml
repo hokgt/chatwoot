@@ -65,7 +65,7 @@ patches:
       - lib/integrations/facebook/message_parser.rb
       - app/javascript/dashboard/components-next/message/Message.vue
     tests:
-      - spec/services/meta_ads_referral_parser_spec.rb
+      - spec/custom/wijaya/batteries/ads_tracking/referral_parser_spec.rb
       - spec/services/whatsapp/incoming_message_whatsapp_cloud_service_spec.rb
       - spec/builders/messages/facebook/message_builder_spec.rb
       - spec/builders/messages/instagram/message_builder_spec.rb
@@ -288,6 +288,13 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/models/marine/document.rb
       - custom/wijaya/batteries/marine_ai/app/models/marine/assistant_response.rb
       - custom/wijaya/batteries/marine_ai/app/models/marine_inbox.rb
+      # Marine namespace module + model concerns attached to native Account/Inbox/User
+      # via the loader's to_prepare block (account/inbox/user_extensions). conversation_extensions
+      # is listed separately below; these self-register with no native markers.
+      - custom/wijaya/batteries/marine_ai/app/models/marine.rb
+      - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/account_extensions.rb
+      - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/inbox_extensions.rb
+      - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/user_extensions.rb
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/conversation/response_builder_job.rb
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/documents/response_builder_job.rb
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/llm/update_embedding_job.rb
@@ -318,6 +325,7 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/documents/errors.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/documents/upload_validator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/documents/serializer.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/documents/sync_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/documents/product_catalog_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/errors.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/config.rb
@@ -445,6 +453,18 @@ patches:
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/settings/Index.vue
       - custom/wijaya/batteries/marine_ai/frontend/routes/settings-marine/Index.vue
       - custom/wijaya/batteries/marine_ai/frontend/routes/settings-marine/marine.routes.js
+      # Captain-seam adapters imported by the native useCaptain.js / CopilotMenuBar.vue
+      # marker blocks (own all Marine routing/menu-filter logic), plus the battery-owned
+      # settings sidebar section builder imported by the native Sidebar.vue seam.
+      - custom/wijaya/batteries/marine_ai/frontend/useMarineCaptain.js
+      - custom/wijaya/batteries/marine_ai/frontend/copilotMenu.js
+      - custom/wijaya/batteries/marine_ai/frontend/sidebar/marineSidebarSection.js
+      # Scenario / guardrails / guidelines management UI (wired via marine.routes.js).
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarineAddNewScenariosDialog.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarineScenariosCard.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/ScenarioPageEmptyState.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/guardrails/Index.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/guidelines/Index.vue
     core_hook_touchpoints:
       # Config ownership moved to the battery: core installation_config.yml,
       # config/locales/en.yml and super_admin app_configs_controller.rb no longer
@@ -542,6 +562,10 @@ patches:
       # Product Catalog UI regression coverage.
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/specs/MarineProductFamilySelect.spec.js
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/specs/MarineDocumentCard.spec.js
+      # Captain-seam adapter + Copilot menu filter regression coverage (non-Marine
+      # fallthrough preserved; Marine routing owned by the battery adapter).
+      - custom/wijaya/batteries/marine_ai/frontend/specs/useMarineCaptain.spec.js
+      - custom/wijaya/batteries/marine_ai/frontend/specs/CopilotMenuBar.spec.js
 
   - id: marine_ai_provisioning
     name: Marine AI PostgreSQL Provisioning UI

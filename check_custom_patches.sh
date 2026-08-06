@@ -478,6 +478,35 @@ while IFS= read -r f; do
   missing=1
 done < <( { git ls-files -- 'custom/wijaya'; git ls-files --others --exclude-standard -- 'custom/wijaya'; } | sort -u )
 
+# 3) Registry completeness: every battery file this checker require_file's must be
+#    inventoried in the patch registry, so the enforced battery surface and the
+#    registry can never silently drift apart. Deterministic self-scan of the
+#    require_file lines above; idempotent and free of any external state.
+registry_file="custom/wijaya/patches/patch_registry.yml"
+if [[ -f "$registry_file" ]]; then
+  while IFS= read -r batt; do
+    [[ -z "$batt" ]] && continue
+    # Require an EXACT YAML sequence item (`- <path>`): allow leading indentation
+    # and whitespace after the dash, but the complete item value must equal the
+    # path. A substring/comment occurrence or a longer scalar with this path as a
+    # prefix must NOT satisfy the invariant.
+    if ! awk -v want="$batt" '
+      { line = $0
+        sub(/^[[:space:]]+/, "", line)      # drop indentation
+        if (substr(line, 1, 1) != "-") next  # only sequence items (skips comments)
+        val = substr(line, 2)                 # strip the dash
+        sub(/^[[:space:]]+/, "", val)        # strip whitespace after dash
+        sub(/[[:space:]]+$/, "", val)        # strip trailing whitespace
+        if (val == want) { found = 1; exit }
+      }
+      END { exit(found ? 0 : 1) }
+    ' "$registry_file"; then
+      echo "MISSING registry entry for battery file required by checker: $batt (record it in $registry_file)" >&2
+      missing=1
+    fi
+  done < <(grep -oE 'require_file[[:space:]]+custom/wijaya/batteries/[^[:space:]]+' check_custom_patches.sh | awk '{print $2}' | sort -u)
+fi
+
 if [[ "$missing" -ne 0 ]]; then
   exit 1
 fi
