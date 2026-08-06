@@ -2,7 +2,7 @@ version: '3'
 
 services:
   base: &base
-    image: chatwoot-wijaya:devbot-0f8122216-sop
+    image: chatwoot-wijaya:hotfix-650da32a9-sop
     env_file: .env ## Change this file for customized env variables
     volumes:
       - storage_data:/app/storage
