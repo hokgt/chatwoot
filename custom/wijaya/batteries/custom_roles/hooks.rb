@@ -36,8 +36,14 @@ module Wijaya
           account_user.custom_role.present? ? (account_user.custom_role.permissions + ['custom_role']) : default_permissions
         end
 
+        # Only custom-role agents are subject to Wijaya assignment gating.
+        # Administrators and ordinary agents retain native assignment and
+        # self-assignment behavior.
         def can_manage_all_conversations?(account_user)
-          account_user&.administrator? || account_user&.permissions&.include?(CONVERSATION_MANAGE)
+          return true if account_user&.administrator?
+          return true unless custom_role_agent?(account_user)
+
+          account_user.permissions.include?(CONVERSATION_MANAGE)
         end
 
         def custom_role_agent?(account_user)
