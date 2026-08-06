@@ -92,6 +92,56 @@ Rails.application.routes.draw do
               post :follow_up
             end
           end
+          # WIJAYA_CUSTOM_START marine_ai
+          # Marine AI — independent custom assistant feature (no captain feature flag).
+          namespace :marine do
+            resource :preferences, only: [:show, :update]
+            # WIJAYA_CUSTOM_START marine_ai_provisioning
+            # Installation-level PostgreSQL provisioning UI. Restricted to an
+            # administrator of the current account only
+            # (enforced in Marine::ProvisioningController via Marine::ProvisioningPolicy). GET
+            # actions are read-only; all mutations are explicit POSTs.
+            resource :provisioning, only: [:show, :create], controller: 'provisioning' do
+              post :downgrade, on: :collection
+              post :revoke_all, on: :collection
+              get :privileges, on: :collection
+            end
+            # WIJAYA_CUSTOM_END marine_ai_provisioning
+            resource :llm_settings, only: [:show, :update] do
+              post :test, on: :collection
+            end
+            resources :tasks, only: [] do
+              collection do
+                post :reply_suggestion
+                post :rewrite
+                post :summarize
+                post :translate
+                post :follow_up
+              end
+            end
+            resources :assistants do
+              member do
+                post :playground
+              end
+              resources :inboxes, only: [:index, :create, :destroy], param: :inbox_id
+              resources :scenarios
+              resources :copilot_threads, only: [:index, :show, :create, :destroy] do
+                resources :copilot_messages, only: [:index, :create]
+              end
+            end
+            resources :assistant_responses
+            resources :documents, only: [:index, :show, :create, :destroy] do
+              post :sync, on: :member
+              collection do
+                get :product_families
+                post :product_catalog
+              end
+            end
+            resources :custom_tools, only: [:index, :show, :create, :update, :destroy] do
+              post :test, on: :collection
+            end
+          end
+          # WIJAYA_CUSTOM_END marine_ai
           resource :saml_settings, only: [:show, :create, :update, :destroy]
           resources :agent_bots, only: [:index, :create, :show, :update, :destroy] do
             delete :avatar, on: :member
@@ -304,6 +354,25 @@ Rails.application.routes.draw do
               end
             end
           end
+
+          # WIJAYA_CUSTOM_START meta_ads_team_routing
+          namespace :wijaya do
+            resources :meta_ads_team_routing_rules, only: [:index, :show, :create, :update, :destroy]
+          end
+          # WIJAYA_CUSTOM_END meta_ads_team_routing
+
+          # WIJAYA_CUSTOM_START erp_lead_sidebar
+          namespace :wijaya do
+            resources :erp_lead_drafts, only: [:show, :update] do
+              member do
+                post :sync
+              end
+              collection do
+                get :options
+              end
+            end
+          end
+          # WIJAYA_CUSTOM_END erp_lead_sidebar
 
           # Assignment V2 Routes
           resources :assignment_policies do

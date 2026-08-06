@@ -1,0 +1,26 @@
+# Marine AI — SOP processing runtime derivative image (Commit 1C).
+# ================================================================
+#
+# This image DERIVES FROM the immutable, already-built Chatwoot application image and
+# adds ONLY the Poppler + Tesseract OCR runtime needed for SOP text extraction. It does
+# NOT rebuild the app, touch the official docker/Dockerfile, or change application code.
+#
+# The base already contains the application tree at /app, so the idempotent installer
+# that ships in this battery is executed in place — no build context files are required.
+#
+# Build (pin BASE_IMAGE to the exact immutable app image you want to derive from):
+#   docker build \
+#     --build-arg BASE_IMAGE=<registry>/chatwoot:<immutable-tag> \
+#     -f custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing \
+#     -t <registry>/chatwoot-sop:<immutable-tag> \
+#     .
+#
+# Rails and Sidekiq later run FROM this derived image so `pdfinfo`, `pdftotext`,
+# `pdftoppm`, and `tesseract` (eng+ind) are available to Marine::Documents::ProcessJob.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# apk requires root; the Chatwoot base image runs as root and defines no USER.
+USER root
+
+RUN sh /app/custom/wijaya/batteries/marine_ai/deploy/install_sop_processing_dependencies.sh

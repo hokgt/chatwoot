@@ -20,6 +20,12 @@ json.lock_to_single_conversation resource.lock_to_single_conversation
 json.sender_name_type resource.sender_name_type
 json.business_name resource.business_name
 
+# WIJAYA_CUSTOM_START marine_ai
+# Surface the linked Marine assistant id so the composer can route AI tasks to
+# Marine (custom/wijaya/marine) instead of Captain for Marine-linked inboxes.
+json.marine_assistant_id resource.try(:marine_assistant)&.id
+# WIJAYA_CUSTOM_END marine_ai
+
 if resource.portal.present?
   json.help_center do
     json.name resource.portal.name

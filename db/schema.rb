@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_06_11_184600) do
+ActiveRecord::Schema[7.1].define(version: 2026_07_10_000000) do
   # These extensions should be enabled to support this database
   enable_extension "pg_stat_statements"
   enable_extension "pg_trgm"
@@ -976,6 +976,133 @@ ActiveRecord::Schema[7.1].define(version: 2026_06_11_184600) do
     t.index ["account_id"], name: "index_macros_on_account_id"
   end
 
+  create_table "marine_assistant_responses", force: :cascade do |t|
+    t.string "question", null: false
+    t.text "answer", null: false
+    t.vector "embedding", limit: 1536
+    t.bigint "assistant_id", null: false
+    t.bigint "account_id", null: false
+    t.bigint "documentable_id"
+    t.string "documentable_type"
+    t.integer "status", default: 1, null: false
+    t.boolean "edited", default: false, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_marine_assistant_responses_on_account_id"
+    t.index ["assistant_id"], name: "index_marine_assistant_responses_on_assistant_id"
+    t.index ["documentable_id", "documentable_type"], name: "idx_marine_asst_resp_on_documentable"
+    t.index ["embedding"], name: "vector_idx_marine_knowledge_entries_embedding", using: :ivfflat
+    t.index ["status"], name: "index_marine_assistant_responses_on_status"
+  end
+
+  create_table "marine_assistants", force: :cascade do |t|
+    t.string "name", null: false
+    t.bigint "account_id", null: false
+    t.string "description"
+    t.jsonb "config", default: {}, null: false
+    t.jsonb "guardrails"
+    t.jsonb "response_guidelines"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_marine_assistants_on_account_id"
+  end
+
+  create_table "marine_copilot_messages", force: :cascade do |t|
+    t.jsonb "message", default: {}, null: false
+    t.integer "message_type", default: 0, null: false
+    t.bigint "account_id", null: false
+    t.bigint "copilot_thread_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_marine_copilot_messages_on_account_id"
+    t.index ["copilot_thread_id"], name: "index_marine_copilot_messages_on_copilot_thread_id"
+  end
+
+  create_table "marine_copilot_threads", force: :cascade do |t|
+    t.string "title", null: false
+    t.bigint "account_id", null: false
+    t.bigint "assistant_id", null: false
+    t.bigint "user_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_marine_copilot_threads_on_account_id"
+    t.index ["assistant_id"], name: "index_marine_copilot_threads_on_assistant_id"
+    t.index ["user_id"], name: "index_marine_copilot_threads_on_user_id"
+  end
+
+  create_table "marine_custom_tools", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.string "slug", null: false
+    t.string "title", null: false
+    t.text "description"
+    t.string "http_method", default: "GET", null: false
+    t.text "endpoint_url", null: false
+    t.text "request_template"
+    t.text "response_template"
+    t.string "auth_type", default: "none"
+    t.jsonb "auth_config", default: {}
+    t.jsonb "param_schema", default: []
+    t.boolean "enabled", default: true, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id", "slug"], name: "index_marine_custom_tools_on_account_id_and_slug", unique: true
+    t.index ["account_id"], name: "index_marine_custom_tools_on_account_id"
+  end
+
+  create_table "marine_documents", force: :cascade do |t|
+    t.string "name"
+    t.text "external_link"
+    t.text "content"
+    t.bigint "assistant_id", null: false
+    t.bigint "account_id", null: false
+    t.integer "status", default: 0, null: false
+    t.integer "sync_status"
+    t.datetime "last_synced_at"
+    t.datetime "last_sync_attempted_at"
+    t.jsonb "metadata", default: {}
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.string "source_kind", default: "website", null: false
+    t.string "product_family_code"
+    t.boolean "primary_catalog", default: false, null: false
+    t.index "assistant_id, md5(external_link)", name: "idx_marine_documents_on_assistant_id_and_external_link_md5", unique: true
+    t.index ["account_id", "assistant_id", "sync_status", "last_synced_at"], name: "idx_marine_documents_on_account_assistant_sync_stats"
+    t.index ["account_id", "sync_status"], name: "index_marine_documents_on_account_id_and_sync_status"
+    t.index ["account_id"], name: "index_marine_documents_on_account_id"
+    t.index ["assistant_id", "product_family_code"], name: "idx_marine_documents_uniq_primary_catalog_per_family", unique: true, where: "(((source_kind)::text = 'product_catalog'::text) AND (primary_catalog = true))"
+    t.index ["assistant_id", "product_family_code"], name: "index_marine_documents_on_assistant_id_and_family_code"
+    t.index ["assistant_id", "source_kind"], name: "index_marine_documents_on_assistant_id_and_source_kind"
+    t.index ["assistant_id"], name: "index_marine_documents_on_assistant_id"
+    t.index ["status"], name: "index_marine_documents_on_status"
+    t.check_constraint "source_kind::text = 'website'::text AND external_link IS NOT NULL AND product_family_code IS NULL AND primary_catalog = false OR source_kind::text = 'product_catalog'::text AND external_link IS NULL AND product_family_code IS NOT NULL AND primary_catalog = true OR source_kind::text = 'sop_document'::text AND external_link IS NULL AND product_family_code IS NULL AND primary_catalog = false", name: "marine_documents_source_shape"
+    t.check_constraint "source_kind::text = ANY (ARRAY['website'::character varying, 'product_catalog'::character varying, 'sop_document'::character varying]::text[])", name: "marine_documents_source_kind_allowed"
+  end
+
+  create_table "marine_inboxes", force: :cascade do |t|
+    t.bigint "marine_assistant_id", null: false
+    t.bigint "inbox_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["inbox_id"], name: "index_marine_inboxes_on_inbox_id", unique: true
+    t.index ["marine_assistant_id", "inbox_id"], name: "idx_marine_inboxes_on_assistant_and_inbox", unique: true
+  end
+
+  create_table "marine_scenarios", force: :cascade do |t|
+    t.string "title"
+    t.text "description"
+    t.text "instruction"
+    t.jsonb "tools", default: []
+    t.boolean "enabled", default: true, null: false
+    t.bigint "assistant_id", null: false
+    t.bigint "account_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_marine_scenarios_on_account_id"
+    t.index ["assistant_id", "enabled"], name: "index_marine_scenarios_on_assistant_id_and_enabled"
+    t.index ["assistant_id"], name: "index_marine_scenarios_on_assistant_id"
+    t.index ["enabled"], name: "index_marine_scenarios_on_enabled"
+  end
+
   create_table "mentions", force: :cascade do |t|
     t.bigint "user_id", null: false
     t.bigint "conversation_id", null: false
@@ -1327,6 +1454,21 @@ ActiveRecord::Schema[7.1].define(version: 2026_06_11_184600) do
     t.index ["account_id", "url"], name: "index_webhooks_on_account_id_and_url", unique: true
   end
 
+  create_table "wijaya_erp_lead_drafts", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.bigint "conversation_id", null: false
+    t.jsonb "fields", default: {}, null: false
+    t.jsonb "last_payload", default: {}, null: false
+    t.string "sync_status", default: "draft", null: false
+    t.string "erp_lead_id"
+    t.text "last_error"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id", "conversation_id"], name: "index_wijaya_erp_lead_drafts_on_account_conversation", unique: true
+    t.index ["account_id"], name: "index_wijaya_erp_lead_drafts_on_account_id"
+    t.index ["conversation_id"], name: "index_wijaya_erp_lead_drafts_on_conversation_id"
+  end
+
   create_table "working_hours", force: :cascade do |t|
     t.bigint "inbox_id"
     t.bigint "account_id"
@@ -1347,6 +1489,8 @@ ActiveRecord::Schema[7.1].define(version: 2026_06_11_184600) do
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
   add_foreign_key "inboxes", "portals"
   add_foreign_key "user_sessions", "users"
+  add_foreign_key "wijaya_erp_lead_drafts", "accounts"
+  add_foreign_key "wijaya_erp_lead_drafts", "conversations"
   create_trigger("accounts_after_insert_row_tr", :generated => true, :compatibility => 1).
       on("accounts").
       after(:insert).

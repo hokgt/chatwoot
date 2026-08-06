@@ -1,0 +1,107 @@
+{
+  "MARINE_AI": {
+    "PROVISIONING": {
+      "TITLE": "Database & Account Setup",
+      "DESCRIPTION": "Provision a dedicated Marine PostgreSQL database and a single login account. This runs only when you click Create and applies to the whole installation, so it is restricted to administrators of the current account only.",
+      "NOT_CONFIGURED": "Provisioning is not available: the server-side provisioning credential is not configured. Contact your administrator.",
+      "STATUS": {
+        "TITLE": "Status",
+        "NOT_PROVISIONED": "Not provisioned",
+        "ACTIVE": "Provisioned",
+        "NEEDS_MANUAL_CLEANUP": "Attention: manual cleanup required",
+        "DATABASE_NAME": "Database name",
+        "LOGIN_USERNAME": "Login username",
+        "HOST": "Host",
+        "PORT": "Port",
+        "PRIVILEGE_LEVEL": "Privilege level",
+        "PROVISIONED_AT": "Provisioned at"
+      },
+      "PRIVILEGE_LEVELS": {
+        "admin": "Admin",
+        "writer": "Writer (read/write only)",
+        "revoked": "Revoked (no login)"
+      },
+      "FORM": {
+        "DATABASE_NAME_LABEL": "Database name",
+        "DATABASE_NAME_PLACEHOLDER": "marine_erp",
+        "LOGIN_USERNAME_LABEL": "Login username",
+        "LOGIN_USERNAME_PLACEHOLDER": "marine_erp_app",
+        "LOGIN_PASSWORD_LABEL": "Login password",
+        "LOGIN_PASSWORD_PLACEHOLDER": "At least 12 characters",
+        "CREATE_BUTTON": "Create database & account",
+        "CREATING": "Creating…",
+        "HELP": "Lowercase letters, digits and underscores only; must start with a letter or underscore; 63 characters max."
+      },
+      "CREDENTIALS_DIALOG": {
+        "TITLE": "Save these credentials now",
+        "WARNING": "This is the only time the password will be shown. Store it securely — it can never be retrieved again.",
+        "HOST": "Host",
+        "PORT": "Port",
+        "DATABASE": "Database",
+        "USERNAME": "Login username",
+        "PASSWORD": "Login password",
+        "SSL_MODE": "SSL mode",
+        "ACKNOWLEDGE_CHECKBOX": "I have securely saved these credentials, including the password.",
+        "ACKNOWLEDGE": "Close"
+      },
+      "PRIVILEGES": {
+        "TITLE": "Privilege Management",
+        "DESCRIPTION": "Adjust or inspect the Marine login account's privileges. Each action runs only when you click its button.",
+        "DOWNGRADE_BUTTON": "Downgrade to Writer",
+        "REVOKE_BUTTON": "Revoke all",
+        "SHOW_BUTTON": "Show current privileges",
+        "MATRIX": {
+          "CATEGORY": "Category",
+          "PRIVILEGE": "Privilege",
+          "GRANTED": "Granted",
+          "YES": "Yes",
+          "NO": "No",
+          "ALL": "All",
+          "ANY": "Any",
+          "ROLE": "Role",
+          "CAN_LOGIN": "Can log in",
+          "SUPERUSER": "Superuser",
+          "CREATE_ROLE": "Create role",
+          "CREATE_DB": "Create database",
+          "REPLICATION": "Replication",
+          "BYPASS_RLS": "Bypass RLS",
+          "MEMBERSHIPS": "Role memberships (must be 0)",
+          "DATABASE": "Database",
+          "CONNECT": "CONNECT",
+          "CREATE": "CREATE",
+          "TEMPORARY": "TEMPORARY",
+          "CHATWOOT_CONNECT": "Can CONNECT to Chatwoot DB (must be No)",
+          "SCHEMA": "Schema {name}",
+          "USAGE": "USAGE",
+          "TABLES": "Tables ({schema})",
+          "TABLE_COUNT": "Tables in schema",
+          "SELECT": "SELECT",
+          "INSERT": "INSERT",
+          "UPDATE": "UPDATE",
+          "DELETE": "DELETE",
+          "TRUNCATE": "TRUNCATE",
+          "FUNCTIONS_EXECUTE": "Functions EXECUTE (any, must be No)",
+          "SEQUENCES_PRIVS": "Sequence privileges (any, must be No)",
+          "OWNED_OBJECTS": "Objects owned by login",
+          "SSL_IN_USE": "SSL in use",
+          "SSL_CONFIGURED": "SSL mode (configured)",
+          "UNKNOWN": "Unknown"
+        }
+      },
+      "CONFIRM": {
+        "DOWNGRADE_TITLE": "Downgrade to Writer?",
+        "DOWNGRADE_BODY": "The login will keep read/write access to Marine tables but lose the ability to create or own objects.",
+        "REVOKE_TITLE": "Revoke all privileges?",
+        "REVOKE_BODY": "The login will lose all privileges and be set to NOLOGIN. No database, schema, tables or data are deleted.",
+        "CONFIRM": "Confirm",
+        "CANCEL": "Cancel"
+      },
+      "ALERTS": {
+        "CREATE_SUCCESS": "Marine database and account created.",
+        "DOWNGRADE_SUCCESS": "Login downgraded to Writer.",
+        "REVOKE_SUCCESS": "All privileges revoked.",
+        "GENERIC_ERROR": "The provisioning request could not be completed."
+      }
+    }
+  }
+}

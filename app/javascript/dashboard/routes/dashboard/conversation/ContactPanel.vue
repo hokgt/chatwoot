@@ -24,6 +24,9 @@ import ShopifyOrdersList from 'dashboard/components/widgets/conversation/Shopify
 import SidebarActionsHeader from 'dashboard/components-next/SidebarActionsHeader.vue';
 import LinearIssuesList from 'dashboard/components/widgets/conversation/linear/IssuesList.vue';
 import LinearSetupCTA from 'dashboard/components/widgets/conversation/linear/LinearSetupCTA.vue';
+// WIJAYA_CUSTOM_START erp_lead_sidebar
+import ErpLeadPanel from '../../../../../../custom/wijaya/batteries/erp_lead_sidebar/frontend/ErpLeadPanel.vue';
+// WIJAYA_CUSTOM_END erp_lead_sidebar
 
 const props = defineProps({
   conversationId: {
@@ -43,6 +46,7 @@ const {
   toggleSidebarUIState,
 } = useUISettings();
 
+const erpLeadPanelTitle = 'ERP Lead';
 const dragging = ref(false);
 const conversationSidebarItems = ref([]);
 
@@ -138,6 +142,22 @@ onMounted(() => {
       @close="closeContactPanel"
     />
     <ContactInfo :contact="contact" :channel-type="channelType" />
+    <!-- WIJAYA_CUSTOM_START erp_lead_sidebar -->
+    <div class="px-2 pb-3">
+      <AccordionItem
+        :title="erpLeadPanelTitle"
+        :is-open="isContactSidebarItemOpen('is_erp_lead_open')"
+        compact
+        @toggle="value => toggleSidebarUIState('is_erp_lead_open', value)"
+      >
+        <ErpLeadPanel
+          :conversation-id="conversationId"
+          :current-chat="currentChat"
+          :contact="contact"
+        />
+      </AccordionItem>
+    </div>
+    <!-- WIJAYA_CUSTOM_END erp_lead_sidebar -->
     <div class="px-2 pb-8 list-group">
       <Draggable
         :list="conversationSidebarItems"

@@ -42,6 +42,11 @@ import mfa from './mfa.json';
 import onboarding from './onboarding.json';
 import sessionLimit from './sessionLimit.json';
 import yearInReview from './yearInReview.json';
+// WIJAYA_CUSTOM_START marine_ai
+import marine from './marine.json';
+// WIJAYA_CUSTOM_END marine_ai
+// WIJAYA_CUSTOM meta_ads_team_routing
+import wijayaMetaAdsRouting from './wijayaMetaAdsRouting.json';
 
 export default {
   ...advancedFilters,
@@ -88,4 +93,9 @@ export default {
   ...onboarding,
   ...sessionLimit,
   ...yearInReview,
+  // WIJAYA_CUSTOM_START marine_ai
+  ...marine,
+  // WIJAYA_CUSTOM_END marine_ai
+  // WIJAYA_CUSTOM meta_ads_team_routing
+  ...wijayaMetaAdsRouting,
 };

@@ -28,6 +28,10 @@ const gitSha = computed(() => {
   return globalConfig.value.gitSha.substring(0, 7);
 });
 
+// WIJAYA_CUSTOM_START development_version
+const wijayaDevVersion = computed(() => globalConfig.value.wijayaDevVersion);
+// WIJAYA_CUSTOM_END development_version
+
 const copyGitSha = () => {
   copyTextToClipboard(globalConfig.value.gitSha);
 };
@@ -44,6 +48,11 @@ const copyGitSha = () => {
     </div>
     <div class="divide-x divide-n-slate-9">
       <span class="px-2">{{ `v${globalConfig.appVersion}` }}</span>
+      <!-- WIJAYA_CUSTOM_START development_version -->
+      <span v-if="wijayaDevVersion" class="px-2">
+        {{ `Wijaya Dev v${wijayaDevVersion}` }}
+      </span>
+      <!-- WIJAYA_CUSTOM_END development_version -->
       <span
         v-tooltip="t('COMPONENTS.CODE.BUTTON_TEXT')"
         class="px-2 build-id cursor-pointer"

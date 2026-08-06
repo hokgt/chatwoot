@@ -505,6 +505,96 @@ const menuItems = computed(() => {
         },
       ],
     },
+
+    // WIJAYA_CUSTOM_START marine_ai
+    {
+      name: 'Marine',
+      icon: 'i-lucide-ship-wheel',
+      label: t('MARINE_AI.SIDEBAR.MARINE_AI'),
+      activeOn: ['marine_assistants_create_index'],
+      children: [
+        {
+          name: 'FAQs',
+          label: t('MARINE_AI.SIDEBAR.RESPONSES'),
+          activeOn: [
+            'marine_assistants_responses_index',
+            'marine_assistants_responses_pending',
+          ],
+          to: accountScopedRoute('marine_assistants_index', {
+            navigationPath: 'marine_assistants_responses_index',
+          }),
+        },
+        {
+          name: 'Documents',
+          label: t('MARINE_AI.SIDEBAR.DOCUMENTS'),
+          activeOn: ['marine_assistants_documents_index'],
+          to: accountScopedRoute('marine_assistants_index', {
+            navigationPath: 'marine_assistants_documents_index',
+          }),
+        },
+        {
+          name: 'Scenarios',
+          label: t('MARINE_AI.SIDEBAR.SCENARIOS'),
+          activeOn: ['marine_assistants_scenarios_index'],
+          to: accountScopedRoute('marine_assistants_index', {
+            navigationPath: 'marine_assistants_scenarios_index',
+          }),
+        },
+        {
+          name: 'Copilot',
+          label: t('MARINE_AI.SIDEBAR.COPILOT'),
+          activeOn: ['marine_assistants_copilot_index'],
+          to: accountScopedRoute('marine_assistants_index', {
+            navigationPath: 'marine_assistants_copilot_index',
+          }),
+        },
+        {
+          name: 'Playground',
+          label: t('MARINE_AI.SIDEBAR.PLAYGROUND'),
+          activeOn: ['marine_assistants_playground_index'],
+          to: accountScopedRoute('marine_assistants_index', {
+            navigationPath: 'marine_assistants_playground_index',
+          }),
+        },
+        {
+          name: 'Inboxes',
+          label: t('MARINE_AI.SIDEBAR.INBOXES'),
+          activeOn: ['marine_assistants_inboxes_index'],
+          to: accountScopedRoute('marine_assistants_index', {
+            navigationPath: 'marine_assistants_inboxes_index',
+          }),
+        },
+        {
+          name: 'Tools',
+          label: t('MARINE_AI.SIDEBAR.TOOLS'),
+          activeOn: ['marine_tools_index'],
+          to: accountScopedRoute('marine_assistants_index', {
+            navigationPath: 'marine_tools_index',
+          }),
+        },
+        {
+          name: 'LLM Settings',
+          label: t('MARINE_AI.SIDEBAR.LLM_SETTINGS'),
+          activeOn: ['marine_assistants_llm_settings_index'],
+          to: accountScopedRoute('marine_assistants_index', {
+            navigationPath: 'marine_assistants_llm_settings_index',
+          }),
+        },
+        {
+          name: 'Settings',
+          label: t('MARINE_AI.SIDEBAR.SETTINGS'),
+          activeOn: [
+            'marine_assistants_settings_index',
+            'marine_assistants_guidelines_index',
+            'marine_assistants_guardrails_index',
+          ],
+          to: accountScopedRoute('marine_assistants_index', {
+            navigationPath: 'marine_assistants_settings_index',
+          }),
+        },
+      ],
+    },
+    // WIJAYA_CUSTOM_END marine_ai
     {
       name: 'Contacts',
       label: t('SIDEBAR.CONTACTS'),
@@ -817,6 +907,15 @@ const menuItems = computed(() => {
           icon: 'i-lucide-shield-plus',
           to: accountScopedRoute('custom_roles_list'),
         },
+        // WIJAYA_CUSTOM_START meta_ads_team_routing
+        {
+          name: 'Settings Meta Ads Routing',
+          label: t('SIDEBAR.META_ADS_ROUTING'),
+          icon: 'i-lucide-route',
+          activeOn: ['wijaya_meta_ads_routing_index'],
+          to: accountScopedRoute('wijaya_meta_ads_routing_index'),
+        },
+        // WIJAYA_CUSTOM_END meta_ads_team_routing
         {
           name: 'Settings Sla',
           label: t('SIDEBAR.SLA'),

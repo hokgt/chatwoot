@@ -20,7 +20,14 @@ development:
 
 test:
   <<: *default
-  database: "<%= ENV.fetch('POSTGRES_DATABASE', 'chatwoot_test') %>"
+  # WIJAYA_CUSTOM_START test_database_safety
+  # Fail-safe test-database isolation. The guard is pure Ruby and runs here, before
+  # ActiveRecord connects. It ignores the generic POSTGRES_DATABASE for test
+  # selection, uses POSTGRES_TEST_DATABASE (default chatwoot_test), rejects unsafe
+  # names/URLs, neutralizes a generic DATABASE_URL, and fails closed (nonzero exit).
+  # Logic lives in custom/wijaya/batteries/test_database_safety/guard.rb.
+  database: "<%= require File.expand_path('custom/wijaya/batteries/test_database_safety/guard', (defined?(Rails) && Rails.respond_to?(:root) && Rails.root) ? Rails.root.to_s : Dir.pwd); Wijaya::Batteries::TestDatabaseSafety::Guard.resolve! %>"
+  # WIJAYA_CUSTOM_END test_database_safety
   username: "<%= ENV.fetch('POSTGRES_USERNAME', 'postgres') %>"
   password: "<%= ENV.fetch('POSTGRES_PASSWORD', '') %>"
 

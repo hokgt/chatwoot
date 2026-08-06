@@ -1,4 +1,7 @@
 require_relative '../../../../custom/wijaya/batteries/ads_tracking/hooks'
+# WIJAYA_CUSTOM_START meta_ads_team_routing
+require_relative '../../../../custom/wijaya/batteries/meta_ads_team_routing/hooks'
+# WIJAYA_CUSTOM_END meta_ads_team_routing
 
 class Messages::Instagram::BaseMessageBuilder < Messages::Messenger::MessageBuilder
   attr_reader :messaging
@@ -137,11 +140,27 @@ class Messages::Instagram::BaseMessageBuilder < Messages::Messenger::MessageBuil
 
   def build_conversation
     @contact_inbox ||= contact.contact_inboxes.find_by!(source_id: message_source_id)
-    Conversation.create!(conversation_params.merge(
-                           contact_inbox_id: @contact_inbox.id,
-                           additional_attributes: additional_conversation_attributes
-                         ))
+    # WIJAYA_CUSTOM_START meta_ads_team_routing
+    new_conversation_params = conversation_params.merge(
+      contact_inbox_id: @contact_inbox.id,
+      additional_attributes: additional_conversation_attributes
+    )
+    apply_meta_ads_team_routing!(new_conversation_params)
+    Conversation.create!(new_conversation_params)
+    # WIJAYA_CUSTOM_END meta_ads_team_routing
   end
+
+  # WIJAYA_CUSTOM_START meta_ads_team_routing
+  def apply_meta_ads_team_routing!(new_conversation_params)
+    Wijaya::Batteries::MetaAdsTeamRouting::Hooks.apply_team_routing!(
+      account: @inbox.account,
+      inbox: @inbox,
+      channel: :instagram,
+      referral: @messaging[:referral],
+      conversation_params: new_conversation_params
+    )
+  end
+  # WIJAYA_CUSTOM_END meta_ads_team_routing
 
   def additional_conversation_attributes
     {}

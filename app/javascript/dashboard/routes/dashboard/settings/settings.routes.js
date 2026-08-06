@@ -26,6 +26,11 @@ import profile from './profile/profile.routes';
 import security from './security/security.routes';
 import conversationWorkflow from './conversationWorkflow/conversationWorkflow.routes';
 import captain from './captain/captain.routes';
+// WIJAYA_CUSTOM_START marine_ai
+import marine from './marine/marine.routes';
+// WIJAYA_CUSTOM_END marine_ai
+// WIJAYA_CUSTOM meta_ads_team_routing
+import wijaya from './wijaya/wijaya.routes';
 
 export default {
   routes: [
@@ -67,5 +72,10 @@ export default {
     ...security.routes,
     ...conversationWorkflow.routes,
     ...captain.routes,
+    // WIJAYA_CUSTOM_START marine_ai
+    ...marine.routes,
+    // WIJAYA_CUSTOM_END marine_ai
+    // WIJAYA_CUSTOM meta_ads_team_routing
+    ...wijaya.routes,
   ],
 };

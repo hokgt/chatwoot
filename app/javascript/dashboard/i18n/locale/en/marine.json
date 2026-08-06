@@ -1,0 +1,734 @@
+{
+  "MARINE": {
+    "DOCUMENTS": {
+      "ERRORS": {
+        "GENERIC": "The request could not be completed.",
+        "INVALID_FILE": "The uploaded file is invalid.",
+        "UNKNOWN_FAMILY": "The product family is unknown.",
+        "PRIMARY_CONFLICT": "A primary catalog already exists for this product family.",
+        "ACCOUNT_MISMATCH": "The assistant does not belong to this account.",
+        "NOT_SYNCABLE": "This document type cannot be synced.",
+        "ENQUEUE_FAILED": "The document could not be queued for processing.",
+        "CATALOG_UNAVAILABLE": "The product catalog could not be reached."
+      }
+    }
+  },
+  "MARINE_AI": {
+    "SIDEBAR": {
+      "MARINE_AI": "Marine AI",
+      "RESPONSES": "FAQs",
+      "DOCUMENTS": "Knowledge Base",
+      "SCENARIOS": "Scenarios",
+      "COPILOT": "Ask Marine",
+      "PLAYGROUND": "Playground",
+      "INBOXES": "Inboxes",
+      "TOOLS": "Tools",
+      "LLM_SETTINGS": "AI Provider",
+      "SETTINGS": "Settings"
+    },
+    "LLM_SETTINGS": {
+      "TITLE": "AI Provider Settings",
+      "DESCRIPTION": "Configure the AI model and API credentials that Marine AI uses to generate responses.",
+      "PROVIDER": {
+        "LABEL": "Provider",
+        "PLACEHOLDER": "Select a provider",
+        "OPENAI": "OpenAI",
+        "OPENROUTER": "OpenRouter",
+        "GEMINI": "Google Gemini",
+        "ANTHROPIC": "Anthropic Claude",
+        "CUSTOM": "Custom (OpenAI-compatible)"
+      },
+      "MODEL": {
+        "LABEL": "Model",
+        "PLACEHOLDER": "Enter the model name"
+      },
+      "ENDPOINT": {
+        "LABEL": "API Endpoint URL",
+        "PLACEHOLDER": "https://api.openai.com",
+        "HINT": "The base URL for the provider's API. The /v1 path is appended automatically for OpenAI-compatible endpoints."
+      },
+      "API_KEY": {
+        "LABEL": "API Key",
+        "PLACEHOLDER": "Enter the API key",
+        "MASKED": "API key is saved and masked",
+        "CHANGE": "Change",
+        "CANCEL": "Cancel",
+        "HINT": "The API key used to authenticate with the AI provider. Stored securely and never displayed in plaintext after saving."
+      },
+      "EMBEDDING_MODEL": {
+        "LABEL": "Embedding Model (optional)",
+        "PLACEHOLDER": "text-embedding-3-small",
+        "HINT": "Used for generating embeddings for vector similarity search. Leave empty to use the provider default.",
+        "NOT_SUPPORTED": "Embeddings are not supported by this provider. Text search will be used instead."
+      },
+      "TEST": {
+        "BUTTON": "Test Connection",
+        "TESTING": "Testing…",
+        "SUCCESS": "Connection successful. The provider returned a valid response.",
+        "ERROR": "Connection failed: {error}",
+        "HINT": "Validate the credentials and model before saving."
+      },
+      "SAVE": {
+        "BUTTON": "Save Settings",
+        "SAVING": "Saving…",
+        "SUCCESS": "AI provider settings saved successfully.",
+        "ERROR": "Failed to save AI provider settings."
+      },
+      "CONFIGURED": "Configured",
+      "NOT_CONFIGURED": "Not configured"
+    },
+    "DASHBOARD": {
+      "TITLE": "Marine AI",
+      "DESCRIPTION": "Wijaya independent AI assistant: Cell knowledge base, Charge response generation, and Terminal handoff.",
+      "ASSISTANTS": "Assistants",
+      "LOADING": "Loading Marine assistants…",
+      "EMPTY": "No Marine assistants yet. Use the API to create one, then connect it to an inbox."
+    },
+    "EMPTY_ASSISTANT": {
+      "TITLE": "No Marine assistant yet",
+      "DESCRIPTION": "Create a Marine assistant first, then this section will load its data.",
+      "CREATE": "Create Marine assistant"
+    },
+    "FAQS": {
+      "TITLE": "FAQs",
+      "HEADER": "FAQs",
+      "DESCRIPTION": "Question and answer pairs Marine AI uses to respond to customers.",
+      "LOADING": "Loading FAQs…",
+      "EMPTY": "No FAQs yet for this Marine assistant.",
+      "QUESTION": "Question",
+      "ANSWER": "Answer",
+      "ADD": "Add FAQ",
+      "ADD_NEW": "Add FAQ",
+      "SAVE": "Save FAQ",
+      "APPROVE": "Approve",
+      "SEARCH_PLACEHOLDER": "Search FAQs...",
+      "STATUS_ALL": "All",
+      "STATUS_PENDING": "Pending",
+      "STATUS_APPROVED": "Approved",
+      "FORM_DESCRIPTION": "Add a question and answer pair that Marine AI can use to respond to customer queries.",
+      "OPTIONS": {
+        "APPROVE": "Approve",
+        "EDIT_RESPONSE": "Edit FAQ",
+        "DELETE_RESPONSE": "Delete FAQ"
+      },
+      "CREATE": {
+        "TITLE": "Create FAQ",
+        "SUCCESS_MESSAGE": "FAQ created successfully",
+        "ERROR_MESSAGE": "Failed to create FAQ"
+      },
+      "EDIT": {
+        "TITLE": "Edit FAQ",
+        "SUCCESS_MESSAGE": "FAQ updated successfully",
+        "ERROR_MESSAGE": "Failed to update FAQ"
+      },
+      "FORM": {
+        "QUESTION": {
+          "LABEL": "Question",
+          "PLACEHOLDER": "Enter the question",
+          "ERROR": "Question is required"
+        },
+        "ANSWER": {
+          "LABEL": "Answer",
+          "PLACEHOLDER": "Enter the answer",
+          "ERROR": "Answer is required"
+        }
+      },
+      "EMPTY_STATE": {
+        "TITLE": "No FAQs yet",
+        "SUBTITLE": "Create your first FAQ to help Marine AI respond to customer queries.",
+        "NO_PENDING_TITLE": "No pending FAQs",
+        "CLEAR_FILTERS": "Clear filters"
+      },
+      "DELETE": {
+        "TITLE": "Delete FAQ",
+        "MESSAGE": "Are you sure you want to delete this FAQ?",
+        "CONFIRM": "Delete",
+        "CANCEL": "Cancel",
+        "SUCCESS": "FAQ deleted successfully"
+      },
+      "DOCUMENTABLE": {
+        "CONVERSATION": "Conversation #{id}"
+      },
+      "SELECTED": "{count} selected",
+      "SELECT_ALL": "Select all ({count})",
+      "UNSELECT_ALL": "Unselect all ({count})"
+    },
+    "DOCUMENTS": {
+      "TITLE": "Knowledge Base",
+      "HEADER": "Knowledge Base",
+      "DESCRIPTION": "Documents Marine AI learns from to generate grounded responses.",
+      "LOADING": "Loading documents…",
+      "EMPTY": "No documents yet for this Marine assistant.",
+      "ADD_NEW": "Add document",
+      "SEARCH_PLACEHOLDER": "Search documents...",
+      "FORM_DESCRIPTION": "Add a knowledge document for Marine AI to learn from.",
+      "STATUS_AVAILABLE": "Available",
+      "STATUS_IN_PROGRESS": "In progress",
+      "SYNC_SYNCED": "Synced",
+      "SYNC_SYNCING": "Syncing",
+      "SYNC_FAILED": "Sync failed",
+      "SYNC_NONE": "Not synced",
+      "CREATE": {
+        "TITLE": "Add knowledge document",
+        "SUCCESS_MESSAGE": "Document added successfully.",
+        "ERROR_MESSAGE": "Failed to create document. Please try again."
+      },
+      "SOURCE_TYPE": {
+        "LABEL": "Source type",
+        "WEBSITE": "Website URL",
+        "SOP": "SOP file upload",
+        "PRODUCT_CATALOG": "Product catalog"
+      },
+      "FORM": {
+        "NAME": {
+          "LABEL": "Document name",
+          "PLACEHOLDER": "Enter document name"
+        },
+        "URL": {
+          "LABEL": "Source URL",
+          "PLACEHOLDER": "https://example.com/knowledge-base",
+          "ERROR": "Please enter a valid URL"
+        },
+        "CONTENT": {
+          "LABEL": "Content (optional)",
+          "PLACEHOLDER": "Paste knowledge content for Marine AI"
+        },
+        "FILE": {
+          "LABEL": "SOP file",
+          "CHOOSE_FILE": "Choose a file",
+          "HELP_TEXT": "PDF, JPEG or PNG up to 2 MB",
+          "REQUIRED": "Please select a file to upload.",
+          "INVALID_TYPE": "Unsupported file type. Upload a PDF, JPEG, or PNG.",
+          "TOO_LARGE": "File is too large. Maximum size is 2 MB.",
+          "EMPTY": "The selected file is empty. Choose a non-empty file."
+        }
+      },
+      "SOP": {
+        "REPROCESS": {
+          "LABEL": "Reprocess",
+          "QUEUED_MESSAGE": "SOP reprocessing queued.",
+          "ERROR_MESSAGE": "Failed to reprocess SOP document."
+        },
+        "EXTRACTION_STATUS": {
+          "PENDING": "Extraction pending",
+          "EXTRACTING": "Extracting…",
+          "EXTRACTED": "Extracted",
+          "FAILED": "Extraction failed"
+        },
+        "INDEXING_STATUS": {
+          "NOT_INDEXED": "Not indexed",
+          "INDEXING": "Indexing…",
+          "INDEXED": "Indexed",
+          "FAILED": "Indexing failed"
+        },
+        "CHUNK_COUNT": "{count} chunk indexed | {count} chunks indexed",
+        "ERROR_CODE": "Error code: {code}"
+      },
+      "PRODUCT_CATALOG": {
+        "BADGE": "Product catalog",
+        "PRIMARY_BADGE": "Primary",
+        "FAMILY_CODE": "Family: {code}",
+        "FAMILY": {
+          "LABEL": "Product family",
+          "SEARCH_PLACEHOLDER": "Search product families…",
+          "LOADING": "Loading product families…",
+          "EMPTY": "No matching product families.",
+          "ERROR": "Product families are unavailable right now.",
+          "RETRY": "Retry",
+          "SELECTED": "Selected family: {code}",
+          "REQUIRED": "Please select a product family."
+        },
+        "FILE": {
+          "LABEL": "Catalog file"
+        },
+        "CONFLICT": {
+          "TITLE": "Replace primary catalog?",
+          "MESSAGE": "A primary catalog already exists for this product family. Uploading will replace the existing primary catalog. This cannot be undone.",
+          "CONFIRM": "Replace catalog",
+          "CANCEL": "Cancel"
+        }
+      },
+      "OPTIONS": {
+        "SYNC_NOW": "Sync now",
+        "DELETE_DOCUMENT": "Delete document"
+      },
+      "SYNC": {
+        "QUEUED_MESSAGE": "Document sync queued.",
+        "ERROR_MESSAGE": "Failed to sync document.",
+        "SUCCESS_MESSAGE": "Document synced successfully.",
+        "FAILED_MESSAGE": "Sync failed: {error}"
+      },
+      "SYNC_STATUS": {
+        "SYNCED": "Synced",
+        "SYNCING": "Syncing...",
+        "FAILED": "Sync failed",
+        "NEVER_SYNCED": "Not synced"
+      },
+      "EMPTY_STATE": {
+        "TITLE": "No documents yet",
+        "SUBTITLE": "Add your first knowledge document to help Marine AI generate grounded responses.",
+        "FILTERED_TITLE": "No documents found",
+        "FILTERED_SUBTITLE": "Try adjusting your search or clear filters.",
+        "CLEAR_FILTERS": "Clear filters"
+      },
+      "DELETE": {
+        "TITLE": "Delete document",
+        "MESSAGE": "Are you sure you want to delete this document? This action cannot be undone.",
+        "CONFIRM": "Delete",
+        "CANCEL": "Cancel",
+        "SUCCESS": "Document deleted successfully."
+      }
+    },
+    "SCENARIOS": {
+      "TITLE": "Scenarios",
+      "HEADER": "Scenarios",
+      "DESCRIPTION": "Guided Marine AI scenarios that route conversations to focused instructions and tools.",
+      "BULK_ACTION": {
+        "SELECTED": "{count} item selected | {count} items selected",
+        "SELECT_ALL": "Select all ({count})",
+        "UNSELECT_ALL": "Unselect all ({count})",
+        "BULK_DELETE_BUTTON": "Delete"
+      },
+      "ADD": {
+        "SUGGESTED": {
+          "TITLE": "Example scenarios",
+          "ADD": "Add all",
+          "ADD_SINGLE": "Add this",
+          "TOOLS_USED": "Tools used :"
+        },
+        "NEW": {
+          "CREATE": "Add a scenario",
+          "TITLE": "Create a scenario",
+          "FORM": {
+            "TITLE": {
+              "LABEL": "Title",
+              "PLACEHOLDER": "Enter a name for the scenario",
+              "ERROR": "Scenario name is required"
+            },
+            "DESCRIPTION": {
+              "LABEL": "Description",
+              "PLACEHOLDER": "Describe how and where this scenario will be used",
+              "ERROR": "Scenario description is required"
+            },
+            "INSTRUCTION": {
+              "LABEL": "How to handle",
+              "PLACEHOLDER": "Describe how and where this scenario will be handled",
+              "ERROR": "Scenario content is required"
+            },
+            "CREATE": "Create",
+            "CANCEL": "Cancel"
+          }
+        }
+      },
+      "UPDATE": {
+        "CANCEL": "Cancel",
+        "UPDATE": "Update changes"
+      },
+      "LIST": {
+        "SEARCH_PLACEHOLDER": "Search..."
+      },
+      "EMPTY_STATE": {
+        "TITLE": "No scenarios yet",
+        "DESCRIPTION": "Give your assistant some context—like what to do when a user is stuck, or how to act during a refund request.",
+        "ACTION": "Add a scenario"
+      },
+      "EMPTY_MESSAGE": "No scenarios found. Create or add examples to begin.",
+      "SEARCH_EMPTY_MESSAGE": "No scenarios found for this search.",
+      "API": {
+        "ADD": {
+          "SUCCESS": "Scenarios added successfully",
+          "ERROR": "There was an error adding scenarios, please try again."
+        },
+        "UPDATE": {
+          "SUCCESS": "Scenarios updated successfully",
+          "ERROR": "There was an error updating scenarios, please try again."
+        },
+        "DELETE": {
+          "SUCCESS": "Scenarios deleted successfully",
+          "ERROR": "There was an error deleting scenarios, please try again."
+        }
+      }
+    },
+    "PLAYGROUND": {
+      "TITLE": "Playground",
+      "DESCRIPTION": "Use this playground to send messages to your Marine assistant and check if it responds accurately, quickly, and in the tone you expect.",
+      "PLACEHOLDER": "Type a message to test the assistant…",
+      "SEND": "Send",
+      "SENDING": "Generating response…",
+      "RESPONSE": "Assistant response",
+      "EMPTY": "Send a message to see the Marine assistant's response.",
+      "HANDOFF": "Marine would hand off to a human agent",
+      "HANDOFF_HINT": "No confident knowledge base match was found for this message.",
+      "HANDOFF_REASON": "Reason: {reason}",
+      "USER": "You",
+      "ASSISTANT": "Marine AI",
+      "MESSAGE_PLACEHOLDER": "Type your message...",
+      "HEADER": "Playground",
+      "RESET": "Reset conversation"
+    },
+    "INBOXES": {
+      "TITLE": "Inboxes",
+      "DESCRIPTION": "Inboxes connected to this Marine assistant.",
+      "LOADING": "Loading inboxes…",
+      "HEADER": "Connected Inboxes",
+      "ADD_NEW": "Connect a new inbox",
+      "OPTIONS": {
+        "DISCONNECT": "Disconnect"
+      },
+      "DELETE": {
+        "TITLE": "Are you sure to disconnect the inbox?",
+        "DESCRIPTION": "",
+        "CONFIRM": "Yes, delete",
+        "CANCEL": "Cancel",
+        "SUCCESS": "The inbox was successfully disconnected.",
+        "ERROR": "There was an error disconnecting the inbox, please try again."
+      },
+      "FORM_DESCRIPTION": "Choose an inbox to connect with the assistant.",
+      "CREATE": {
+        "TITLE": "Connect an Inbox",
+        "SUCCESS": "The inbox was successfully connected.",
+        "ERROR": "An error occurred while connecting the inbox. Please try again."
+      },
+      "FORM": {
+        "INBOX": {
+          "LABEL": "Inbox",
+          "PLACEHOLDER": "Choose the inbox to deploy the assistant.",
+          "ERROR": "An inbox selection is required."
+        }
+      },
+      "EMPTY_STATE": {
+        "TITLE": "No Connected Inboxes",
+        "SUBTITLE": "Connecting an inbox allows the assistant to handle initial questions from your customers before transferring them to you."
+      }
+    },
+    "TOOLS": {
+      "TITLE": "Tools",
+      "DESCRIPTION": "Custom tools available to Marine AI. Manage tools through the Marine API.",
+      "EMPTY": "No Marine tools configured yet."
+    },
+    "CUSTOM_TOOLS": {
+      "HEADER": "Tools",
+      "DESCRIPTION": "Connect Marine AI to external APIs with custom HTTP tools. Fetch data and perform actions on your behalf.",
+      "ADD_NEW": "Create a new tool",
+      "LOADING": "Loading Marine tools…",
+      "EMPTY": "No Marine tools yet. Create one to let Marine AI call your external APIs.",
+      "FORM_DESCRIPTION": "Configure your custom tool to connect with external APIs",
+      "OPTIONS": {
+        "EDIT_TOOL": "Edit tool",
+        "DELETE_TOOL": "Delete tool"
+      },
+      "CREATE": {
+        "TITLE": "Create Custom Tool",
+        "SUCCESS_MESSAGE": "Custom tool created successfully",
+        "ERROR_MESSAGE": "Failed to create custom tool"
+      },
+      "EDIT": {
+        "TITLE": "Edit Custom Tool",
+        "SUCCESS_MESSAGE": "Custom tool updated successfully",
+        "ERROR_MESSAGE": "Failed to update custom tool"
+      },
+      "DELETE": {
+        "TITLE": "Delete Custom Tool",
+        "DESCRIPTION": "Are you sure you want to delete this custom tool? This action cannot be undone.",
+        "CONFIRM": "Yes, delete",
+        "SUCCESS_MESSAGE": "Custom tool deleted successfully",
+        "ERROR_MESSAGE": "Failed to delete custom tool"
+      },
+      "TEST": {
+        "BUTTON": "Test connection",
+        "SUCCESS": "Endpoint returned HTTP {status}",
+        "ERROR": "Connection failed",
+        "DISABLED_HINT": "Testing is only available for endpoints without templates or request bodies."
+      },
+      "FORM": {
+        "CANCEL": "Cancel",
+        "CREATE": "Create",
+        "EDIT": "Save changes",
+        "TITLE": {
+          "LABEL": "Tool Name",
+          "PLACEHOLDER": "Order Lookup",
+          "ERROR": "Tool name is required",
+          "MAX_LENGTH_ERROR": "Tool name must be {max} characters or fewer"
+        },
+        "DESCRIPTION": {
+          "LABEL": "Description",
+          "PLACEHOLDER": "Looks up order details by order ID"
+        },
+        "HTTP_METHOD": {
+          "LABEL": "Method"
+        },
+        "ENDPOINT_URL": {
+          "LABEL": "Endpoint URL",
+          "PLACEHOLDER": "https://api.example.com/orders/{'{{'} order_id {'}}'}",
+          "ERROR": "Valid URL is required"
+        },
+        "AUTH_TYPE": {
+          "LABEL": "Authentication Type"
+        },
+        "AUTH_TYPES": {
+          "NONE": "None",
+          "BEARER": "Bearer Token",
+          "BASIC": "Basic Auth",
+          "API_KEY": "API Key"
+        },
+        "AUTH_CONFIG": {
+          "BEARER_TOKEN": "Bearer Token",
+          "BEARER_TOKEN_PLACEHOLDER": "Enter your bearer token",
+          "USERNAME": "Username",
+          "USERNAME_PLACEHOLDER": "Enter username",
+          "PASSWORD": "Password",
+          "PASSWORD_PLACEHOLDER": "Enter password",
+          "API_KEY": "Header Name",
+          "API_KEY_PLACEHOLDER": "X-API-Key",
+          "API_VALUE": "Header Value",
+          "API_VALUE_PLACEHOLDER": "Enter API key value"
+        },
+        "PARAMETERS": {
+          "LABEL": "Parameters",
+          "HELP_TEXT": "Define the parameters that will be extracted from user queries"
+        },
+        "ADD_PARAMETER": "Add Parameter",
+        "PARAM_NAME": {
+          "PLACEHOLDER": "Parameter name (e.g., order_id)"
+        },
+        "PARAM_TYPE": {
+          "PLACEHOLDER": "Type"
+        },
+        "PARAM_TYPES": {
+          "STRING": "String",
+          "NUMBER": "Number",
+          "BOOLEAN": "Boolean",
+          "ARRAY": "Array",
+          "OBJECT": "Object"
+        },
+        "PARAM_DESCRIPTION": {
+          "PLACEHOLDER": "Description of the parameter"
+        },
+        "PARAM_REQUIRED": {
+          "LABEL": "Required"
+        },
+        "REQUEST_TEMPLATE": {
+          "LABEL": "Request Body Template (Optional)",
+          "PLACEHOLDER": "{'{'}\n  \"order_id\": \"{'{{'} order_id {'}}'}\"\n{'}'}"
+        },
+        "RESPONSE_TEMPLATE": {
+          "LABEL": "Response Template (Optional)",
+          "PLACEHOLDER": "Order {'{{'} order_id {'}}'} status: {'{{'} status {'}}'}"
+        },
+        "ERRORS": {
+          "PARAM_NAME_REQUIRED": "Parameter name is required"
+        }
+      }
+    },
+    "ASSISTANTS": {
+      "FORM": {
+        "UPDATE": "Update",
+        "NAME": {
+          "LABEL": "Assistant name",
+          "PLACEHOLDER": "Enter assistant name"
+        },
+        "PRODUCT_NAME": {
+          "LABEL": "Product name",
+          "PLACEHOLDER": "Enter product name"
+        },
+        "DESCRIPTION": {
+          "LABEL": "Description",
+          "PLACEHOLDER": "Enter description"
+        },
+        "HANDOFF_MESSAGE": {
+          "LABEL": "Handoff message",
+          "PLACEHOLDER": "Message shown when handing off to an agent"
+        },
+        "RESOLUTION_MESSAGE": {
+          "LABEL": "Resolution message",
+          "PLACEHOLDER": "Message shown when conversation is resolved"
+        },
+        "INSTRUCTIONS": {
+          "LABEL": "Instructions",
+          "PLACEHOLDER": "Enter system instructions for the assistant"
+        },
+        "TEMPERATURE": {
+          "LABEL": "Temperature"
+        },
+        "FEATURES": {
+          "TITLE": "Features",
+          "ALLOW_CONVERSATION_FAQS": "Allow conversation FAQs",
+          "ALLOW_MEMORIES": "Allow memories",
+          "ALLOW_CONTACT_ATTRIBUTES": "Allow contact attributes"
+        }
+      },
+      "EDIT": {
+        "SUCCESS_MESSAGE": "Marine assistant updated successfully",
+        "ERROR_MESSAGE": "Failed to update Marine assistant"
+      },
+      "DELETE": {
+        "TITLE": "Delete assistant",
+        "DESCRIPTION": "Are you sure you want to delete this assistant?",
+        "CONFIRM": "Yes, delete",
+        "SUCCESS_MESSAGE": "Marine assistant deleted successfully",
+        "ERROR_MESSAGE": "Failed to delete Marine assistant"
+      },
+      "GUARDRAILS": {
+        "TITLE": "Guardrails",
+        "DESCRIPTION": "Keeps things on track—only the kinds of questions you want your assistant to answer, nothing off-limits or off-topic.",
+        "BULK_ACTION": {
+          "SELECTED": "{count} item selected | {count} items selected",
+          "SELECT_ALL": "Select all ({count})",
+          "UNSELECT_ALL": "Unselect all ({count})",
+          "BULK_DELETE_BUTTON": "Delete"
+        },
+        "ADD": {
+          "SUGGESTED": {
+            "TITLE": "Example guardrails",
+            "ADD": "Add all",
+            "ADD_SINGLE": "Add this",
+            "SAVE": "Add and save (↵)",
+            "PLACEHOLDER": "Type in another guardrail..."
+          },
+          "NEW": {
+            "TITLE": "Add a guardrail",
+            "CREATE": "Create",
+            "CANCEL": "Cancel",
+            "PLACEHOLDER": "Type in another guardrail...",
+            "TEST_ALL": "Test all"
+          }
+        },
+        "LIST": {
+          "SEARCH_PLACEHOLDER": "Search..."
+        },
+        "EMPTY_MESSAGE": "No guardrails found. Create or add examples to begin.",
+        "SEARCH_EMPTY_MESSAGE": "No guardrails found for this search.",
+        "API": {
+          "ADD": {
+            "SUCCESS": "Guardrails added successfully",
+            "ERROR": "There was an error adding guardrails, please try again."
+          },
+          "UPDATE": {
+            "SUCCESS": "Guardrails updated successfully",
+            "ERROR": "There was an error updating guardrails, please try again."
+          },
+          "DELETE": {
+            "SUCCESS": "Guardrails deleted successfully",
+            "ERROR": "There was an error deleting guardrails, please try again."
+          }
+        }
+      },
+      "RESPONSE_GUIDELINES": {
+        "TITLE": "Response Guidelines",
+        "DESCRIPTION": "The vibe and structure of your assistant’s replies—clear and friendly? Short and snappy? Detailed and formal?",
+        "BULK_ACTION": {
+          "SELECTED": "{count} item selected | {count} items selected",
+          "SELECT_ALL": "Select all ({count})",
+          "UNSELECT_ALL": "Unselect all ({count})",
+          "BULK_DELETE_BUTTON": "Delete"
+        },
+        "ADD": {
+          "SUGGESTED": {
+            "TITLE": "Example response guidelines",
+            "ADD": "Add all",
+            "ADD_SINGLE": "Add this",
+            "SAVE": "Add and save (↵)",
+            "PLACEHOLDER": "Type in another response guideline..."
+          },
+          "NEW": {
+            "TITLE": "Add a response guideline",
+            "CREATE": "Create",
+            "CANCEL": "Cancel",
+            "PLACEHOLDER": "Type in another response guideline...",
+            "TEST_ALL": "Test all"
+          }
+        },
+        "LIST": {
+          "SEARCH_PLACEHOLDER": "Search..."
+        },
+        "EMPTY_MESSAGE": "No response guidelines found. Create or add examples to begin.",
+        "SEARCH_EMPTY_MESSAGE": "No response guidelines found for this search.",
+        "API": {
+          "ADD": {
+            "SUCCESS": "Response Guidelines added successfully",
+            "ERROR": "There was an error adding response guidelines, please try again."
+          },
+          "UPDATE": {
+            "SUCCESS": "Response Guidelines updated successfully",
+            "ERROR": "There was an error updating response guidelines, please try again."
+          },
+          "DELETE": {
+            "SUCCESS": "Response Guidelines deleted successfully",
+            "ERROR": "There was an error deleting response guidelines, please try again."
+          }
+        }
+      }
+    },
+    "SETTINGS": {
+      "TITLE": "Settings",
+      "DESCRIPTION": "Marine assistant configuration and account level Marine preferences.",
+      "LOADING": "Loading Marine configuration…",
+      "STATUS_TITLE": "Marine AI status",
+      "STATUS_HINT": "Marine AI runs locally for this account with no Chatwoot hub or premium gate.",
+      "STATUS": "Marine AI",
+      "HUB": "Hub",
+      "HUB_LOCAL": "Local (no hub)",
+      "ACCOUNT": "Account ID",
+      "DEFAULT_MODEL": "Default model",
+      "FEATURE_ASSISTANT": "Assistant",
+      "FEATURE_KNOWLEDGE_BASE": "Knowledge base",
+      "FEATURE_HANDOFF": "Handoff",
+      "ENABLED": "Enabled",
+      "DISABLED": "Disabled",
+      "ASSISTANT": "Assistant",
+      "INSTRUCTIONS": "Instructions",
+      "TEMPERATURE": "Temperature",
+      "MODELS": "Models",
+      "FEATURES": "Features",
+      "NONE": "Not configured",
+      "BASIC_SETTINGS": {
+        "TITLE": "Basic settings",
+        "DESCRIPTION": "Configure the assistant's name, product, and features."
+      },
+      "SYSTEM_SETTINGS": {
+        "TITLE": "System settings",
+        "DESCRIPTION": "Configure handoff, resolution, instructions, and temperature."
+      },
+      "CONTROL_ITEMS": {
+        "TITLE": "Advanced controls",
+        "DESCRIPTION": "Configure guardrails and response guidelines.",
+        "OPTIONS": {
+          "GUARDRAILS": {
+            "TITLE": "Guardrails",
+            "DESCRIPTION": "Set boundaries for what the assistant can and cannot do."
+          },
+          "RESPONSE_GUIDELINES": {
+            "TITLE": "Response guidelines",
+            "DESCRIPTION": "Define how the assistant should format responses."
+          }
+        }
+      },
+      "DELETE": {
+        "TITLE": "Delete assistant",
+        "DESCRIPTION": "Once deleted, the assistant and all its data cannot be recovered.",
+        "BUTTON_TEXT": "Delete {assistantName}"
+      }
+    },
+    "COPILOT": {
+      "TITLE": "Ask Marine",
+      "DESCRIPTION": "Ask natural-language questions about your conversations and contacts. Marine answers with cited records you have access to.",
+      "NEW_THREAD": "New question",
+      "NO_THREADS": "No saved threads yet.",
+      "EMPTY": "Ask a question to get started.",
+      "PLACEHOLDER": "e.g. Which open conversations mention refunds?",
+      "SEND": "Ask",
+      "SENDING": "Asking…"
+    },
+    "ASSISTANT_SWITCHER": {
+      "ASSISTANTS": "Marine Assistants",
+      "SWITCH_ASSISTANT": "Switch assistant",
+      "NEW_ASSISTANT": "New assistant",
+      "EMPTY_LIST": "No Marine assistants found."
+    },
+    "SAVING": "Saving…"
+  },
+  "MARINE_SETTINGS": {
+    "TITLE": "Marine AI Settings",
+    "DESCRIPTION": "Marine AI is enabled locally for all accounts and does not use Chatwoot premium gates or hub checks."
+  }
+}
