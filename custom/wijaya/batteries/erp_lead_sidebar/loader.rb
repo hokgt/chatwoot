@@ -50,7 +50,7 @@ module Wijaya
             require root.join('refresh_service').to_s
             require root.join('options_service').to_s
             require root.join('conversation_extensions').to_s
-            Conversation.include Wijaya::ErpLeadSidebar::ConversationExtensions unless Conversation < Wijaya::ErpLeadSidebar::ConversationExtensions
+            Conversation.include Wijaya::Batteries::ErpLeadSidebar::ConversationExtensions unless Conversation < Wijaya::Batteries::ErpLeadSidebar::ConversationExtensions
           rescue StandardError, ScriptError => e
             Rails.logger.error("[Wijaya] erp_lead_sidebar extension attach failed: #{e.class}")
           end

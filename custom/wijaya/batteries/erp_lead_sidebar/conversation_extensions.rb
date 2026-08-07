@@ -5,7 +5,7 @@
 # There is at most one draft per (account, conversation) — enforced by a unique
 # index — so this is a has_one; dependent: :destroy cleans it up with the
 # conversation. Required directly (not Zeitwerk) like the rest of this battery.
-module Wijaya::ErpLeadSidebar::ConversationExtensions
+module Wijaya::Batteries::ErpLeadSidebar::ConversationExtensions
   extend ActiveSupport::Concern
 
   included do
