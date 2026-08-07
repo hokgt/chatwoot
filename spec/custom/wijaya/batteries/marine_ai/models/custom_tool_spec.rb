@@ -186,236 +186,72 @@ RSpec.describe Marine::CustomTool, type: :model do
     end
   end
 
-  describe 'Toolable concern' do
+  # Custom-tool execution has been removed to eliminate all direct outbound
+  # connectivity between Marine AI and ERP. The Toolable concern is retained for
+  # Zeitwerk autoloading but every request/auth/metadata/response builder is now
+  # a no-op so nothing can construct or execute an outbound tool request.
+  describe 'Toolable concern (disabled, no-op builders)' do
     let(:account) { create(:account) }
 
-    describe '#build_request_url' do
-      it 'returns static URL when no template variables present' do
-        tool = create(:marine_custom_tool, account: account, endpoint_url: 'https://api.example.com/orders')
+    it '#tool returns nil' do
+      tool = create(:marine_custom_tool, :with_params, account: account)
 
-        expect(tool.build_request_url({})).to eq('https://api.example.com/orders')
-      end
-
-      it 'renders URL template with params' do
-        tool = create(:marine_custom_tool, account: account, endpoint_url: 'https://api.example.com/orders/{{ order_id }}')
-
-        expect(tool.build_request_url({ order_id: '12345' })).to eq('https://api.example.com/orders/12345')
-      end
+      expect(tool.tool(nil)).to be_nil
     end
 
-    describe '#build_request_body' do
-      it 'returns nil when request_template is blank' do
-        tool = create(:marine_custom_tool, account: account, request_template: nil)
+    it '#build_request_url returns nil' do
+      tool = create(:marine_custom_tool, account: account, endpoint_url: 'https://api.example.com/orders/{{ order_id }}')
 
-        expect(tool.build_request_body({})).to be_nil
-      end
-
-      it 'renders request body template with params' do
-        tool = create(:marine_custom_tool, account: account,
-                                           request_template: '{ "order_id": "{{ order_id }}", "source": "chatwoot" }')
-
-        result = tool.build_request_body({ order_id: '12345' })
-        expect(result).to eq('{ "order_id": "12345", "source": "chatwoot" }')
-      end
+      expect(tool.build_request_url({ order_id: '12345' })).to be_nil
     end
 
-    describe '#build_auth_headers' do
-      it 'returns empty hash for none auth type' do
-        tool = create(:marine_custom_tool, account: account, auth_type: 'none')
+    it '#build_request_body returns nil' do
+      tool = create(:marine_custom_tool, :with_templates, account: account)
 
-        expect(tool.build_auth_headers).to eq({})
-      end
-
-      it 'returns bearer token header' do
-        tool = create(:marine_custom_tool, :with_bearer_auth, account: account)
-
-        expect(tool.build_auth_headers).to eq({ 'Authorization' => 'Bearer test_bearer_token_123' })
-      end
-
-      it 'returns API key header when location is header' do
-        tool = create(:marine_custom_tool, :with_api_key, account: account)
-
-        expect(tool.build_auth_headers).to eq({ 'X-API-Key' => 'test_api_key' })
-      end
-
-      it 'returns empty hash for API key when location is not header' do
-        tool = create(:marine_custom_tool, account: account, auth_type: 'api_key',
-                                           auth_config: { key: 'test_key', location: 'query', name: 'api_key' })
-
-        expect(tool.build_auth_headers).to eq({})
-      end
-
-      it 'returns empty hash for basic auth' do
-        tool = create(:marine_custom_tool, :with_basic_auth, account: account)
-
-        expect(tool.build_auth_headers).to eq({})
-      end
+      expect(tool.build_request_body({ order_id: '12345' })).to be_nil
     end
 
-    describe '#build_basic_auth_credentials' do
-      it 'returns nil for non-basic auth types' do
-        tool = create(:marine_custom_tool, account: account, auth_type: 'none')
+    it '#build_auth_headers returns an empty hash' do
+      tool = create(:marine_custom_tool, :with_bearer_auth, account: account)
 
-        expect(tool.build_basic_auth_credentials).to be_nil
-      end
-
-      it 'returns username and password array for basic auth' do
-        tool = create(:marine_custom_tool, :with_basic_auth, account: account)
-
-        expect(tool.build_basic_auth_credentials).to eq(%w[test_user test_pass])
-      end
+      expect(tool.build_auth_headers).to eq({})
     end
 
-    describe '#format_response' do
-      it 'returns raw response when no response_template' do
-        tool = create(:marine_custom_tool, account: account, response_template: nil)
+    it '#build_basic_auth_credentials returns nil' do
+      tool = create(:marine_custom_tool, :with_basic_auth, account: account)
 
-        expect(tool.format_response('raw response')).to eq('raw response')
-      end
-
-      it 'renders response template with JSON response' do
-        tool = create(:marine_custom_tool, account: account,
-                                           response_template: 'Order status: {{ response.status }}')
-        raw_response = '{"status": "shipped", "tracking": "123ABC"}'
-
-        result = tool.format_response(raw_response)
-        expect(result).to eq('Order status: shipped')
-      end
-
-      it 'handles non-JSON response' do
-        tool = create(:marine_custom_tool, account: account,
-                                           response_template: 'Response: {{ response }}')
-        raw_response = 'plain text response'
-
-        result = tool.format_response(raw_response)
-        expect(result).to eq('Response: plain text response')
-      end
+      expect(tool.build_basic_auth_credentials).to be_nil
     end
 
-    describe '#build_metadata_headers' do
-      let(:tool) { create(:marine_custom_tool, account: account, slug: 'custom_test_tool') }
-      let(:conversation) { create(:conversation, account: account) }
-      let(:contact) { conversation.contact }
+    it '#format_response returns nil' do
+      tool = create(:marine_custom_tool, :with_templates, account: account)
 
-      let(:state) do
-        {
-          account_id: account.id,
-          assistant_id: 123,
-          conversation: {
-            id: conversation.id,
-            display_id: conversation.display_id
-          },
-          contact_inbox: {
-            id: conversation.contact_inbox.id,
-            hmac_verified: conversation.contact_inbox.hmac_verified
-          },
-          contact: {
-            id: contact.id,
-            email: contact.email,
-            phone_number: contact.phone_number
-          }
-        }
-      end
-
-      it 'includes account and assistant metadata' do
-        headers = tool.build_metadata_headers(state)
-
-        expect(headers['X-Chatwoot-Account-Id']).to eq(account.id.to_s)
-        expect(headers['X-Chatwoot-Assistant-Id']).to eq('123')
-      end
-
-      it 'includes tool slug' do
-        headers = tool.build_metadata_headers(state)
-
-        expect(headers['X-Chatwoot-Tool-Slug']).to eq('custom_test_tool')
-      end
-
-      it 'includes conversation metadata when present' do
-        headers = tool.build_metadata_headers(state)
-
-        expect(headers['X-Chatwoot-Conversation-Id']).to eq(conversation.id.to_s)
-        expect(headers['X-Chatwoot-Conversation-Display-Id']).to eq(conversation.display_id.to_s)
-      end
-
-      it 'handles missing conversation gracefully' do
-        state[:conversation] = nil
-
-        headers = tool.build_metadata_headers(state)
-
-        expect(headers['X-Chatwoot-Conversation-Id']).to be_nil
-        expect(headers['X-Chatwoot-Account-Id']).to eq(account.id.to_s)
-      end
-
-      it 'omits contact email header when email is blank' do
-        state[:contact][:email] = ''
-
-        headers = tool.build_metadata_headers(state)
-
-        expect(headers).not_to have_key('X-Chatwoot-Contact-Email')
-      end
-
-      it 'defaults contact inbox verified header to false when value is nil' do
-        state[:contact_inbox][:hmac_verified] = nil
-
-        headers = tool.build_metadata_headers(state)
-
-        expect(headers['X-Chatwoot-Contact-Inbox-Verified']).to eq('false')
-      end
+      expect(tool.format_response('{"status": "shipped"}')).to be_nil
     end
 
-    describe '#to_tool_metadata' do
-      it 'returns tool metadata hash with custom flag' do
-        tool = create(:marine_custom_tool, account: account,
-                                           slug: 'custom_test-tool',
-                                           title: 'Test Tool',
-                                           description: 'A test tool')
+    it '#build_metadata_headers returns an empty hash' do
+      tool = create(:marine_custom_tool, account: account, slug: 'custom_test_tool')
 
-        metadata = tool.to_tool_metadata
-        expect(metadata).to eq({
-                                 id: 'custom_test-tool',
-                                 title: 'Test Tool',
-                                 description: 'A test tool',
-                                 custom: true
-                               })
-      end
+      expect(tool.build_metadata_headers({ account_id: account.id })).to eq({})
     end
+  end
 
-    describe '#tool' do
-      it 'returns HttpTool instance' do
-        tool = create(:marine_custom_tool, account: account)
+  describe '#to_tool_metadata' do
+    let(:account) { create(:account) }
 
-        tool_instance = tool.tool(nil)
-        expect(tool_instance).to be_a(Marine::Tools::HttpTool)
-      end
+    it 'returns tool metadata hash with custom flag' do
+      tool = create(:marine_custom_tool, account: account,
+                                         slug: 'custom_test-tool',
+                                         title: 'Test Tool',
+                                         description: 'A test tool')
 
-      it 'sets description on the tool class' do
-        tool = create(:marine_custom_tool, account: account, description: 'Fetches order data')
-
-        tool_instance = tool.tool(nil)
-        expect(tool_instance.description).to eq('Fetches order data')
-      end
-
-      it 'sets parameters on the tool class' do
-        tool = create(:marine_custom_tool, :with_params, account: account)
-
-        tool_instance = tool.tool(nil)
-        params = tool_instance.parameters
-
-        expect(params.keys).to contain_exactly(:order_id, :include_details)
-        expect(params[:order_id].name).to eq(:order_id)
-        expect(params[:order_id].type).to eq('string')
-        expect(params[:order_id].description).to eq('The order ID')
-        expect(params[:order_id].required).to be true
-
-        expect(params[:include_details].required).to be false
-      end
-
-      it 'works with empty param_schema' do
-        tool = create(:marine_custom_tool, account: account, param_schema: [])
-
-        tool_instance = tool.tool(nil)
-        expect(tool_instance.parameters).to be_empty
-      end
+      metadata = tool.to_tool_metadata
+      expect(metadata).to eq({
+                               id: 'custom_test-tool',
+                               title: 'Test Tool',
+                               description: 'A test tool',
+                               custom: true
+                             })
     end
   end
 end

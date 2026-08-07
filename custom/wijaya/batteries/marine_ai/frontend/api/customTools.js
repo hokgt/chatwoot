@@ -1,42 +1,5 @@
-/* global axios */
-import ApiClient from 'dashboard/api/ApiClient';
-
-class MarineCustomTools extends ApiClient {
-  constructor() {
-    super('marine/custom_tools', { accountScoped: true });
-  }
-
-  get({ page = 1, searchKey } = {}) {
-    return axios.get(this.url, {
-      params: { page, searchKey },
-    });
-  }
-
-  show(id) {
-    return axios.get(`${this.url}/${id}`);
-  }
-
-  create(data = {}) {
-    return axios.post(this.url, {
-      custom_tool: data,
-    });
-  }
-
-  update(id, data = {}) {
-    return axios.put(`${this.url}/${id}`, {
-      custom_tool: data,
-    });
-  }
-
-  delete(id) {
-    return axios.delete(`${this.url}/${id}`);
-  }
-
-  test(data = {}) {
-    return axios.post(`${this.url}/test`, {
-      custom_tool: data,
-    });
-  }
-}
-
-export default new MarineCustomTools();
+// The Marine custom tools API client has been disabled to eliminate all direct
+// outbound connectivity between Marine AI and ERP. Marine AI's only allowed
+// outbound path is reading from the local marine_catalog PostgreSQL database via
+// the read-only catalog connection. The backend custom_tools endpoints now
+// return 404, so no client is exported here.

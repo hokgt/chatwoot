@@ -25,9 +25,6 @@
 # all account-scoped custom tools (Marine::CustomTool), so tool references
 # resolve exclusively against the assistant's enabled custom tools.
 class Marine::Scenario < ApplicationRecord
-  # Matches markdown tool references like [Tool name](tool://tool_slug).
-  TOOL_REFERENCE_REGEX = %r{\[[^\]]+\]\(tool://([^/)]+)\)}
-
   self.table_name = 'marine_scenarios'
 
   belongs_to :assistant, class_name: 'Marine::Assistant'
@@ -48,22 +45,12 @@ class Marine::Scenario < ApplicationRecord
   before_validation :ensure_account
   before_save :resolve_tool_references
 
-  # Tool metadata for the tools currently referenced by the scenario, resolved
-  # against the assistant's available (enabled) Marine custom tools.
-  def resolved_tools
-    return [] if tools.blank?
+  # Custom HTTP tools have been removed to eliminate all direct outbound
+  # connectivity between Marine AI and ERP; scenarios no longer resolve, expose,
+  # validate, or persist any tool references.
+  def resolved_tools = []
 
-    available_tools = assistant.available_agent_tools
-    tools.filter_map do |tool_id|
-      available_tools.find { |tool| tool[:id] == tool_id }
-    end
-  end
-
-  # Instantiated tool objects for scenario execution. Deferred usage — exposed
-  # now so Marine LLM scenario execution can consume them later.
-  def agent_tools
-    resolved_tools.filter_map { |tool| resolve_tool_instance(tool) }
-  end
+  def agent_tools = []
 
   private
 
@@ -71,36 +58,13 @@ class Marine::Scenario < ApplicationRecord
     self.account_id = assistant.account_id if assistant
   end
 
-  def extract_tool_ids_from_text(text)
-    return [] if text.blank?
+  # No-op: tool references are no longer validated because tools are removed.
+  def validate_instruction_tools = true
 
-    text.scan(TOOL_REFERENCE_REGEX).flatten.uniq
-  end
-
-  def resolve_tool_instance(tool_metadata)
-    custom_tool = Marine::CustomTool.find_by(slug: tool_metadata[:id], account_id: account_id, enabled: true)
-    custom_tool&.tool(assistant)
-  end
-
-  # Rejects tool references in the instruction that do not map to an enabled
-  # custom tool for the assistant's account.
-  def validate_instruction_tools
-    return if instruction.blank?
-
-    tool_ids = extract_tool_ids_from_text(instruction)
-    return if tool_ids.empty?
-
-    invalid_tools = tool_ids - assistant.available_tool_ids
-    return if invalid_tools.empty?
-
-    errors.add(:instruction, "contains invalid tools: #{invalid_tools.join(', ')}")
-  end
-
-  # Materializes the tool references from the instruction text into the tools
-  # JSONB field. Sets tools to nil when no references are present.
+  # No-op: tool references are no longer materialized; the tools field stays nil.
   def resolve_tool_references
-    return if instruction.blank?
-
-    self.tools = extract_tool_ids_from_text(instruction).presence
+    self.tools = nil
   end
+
+  def resolve_tool_instance(*) = nil
 end

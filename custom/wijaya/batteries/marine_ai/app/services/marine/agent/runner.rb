@@ -5,16 +5,17 @@
 #   * retrieval/knowledge answer generation, citations and confidence,
 #   * multilingual detection/translation metadata,
 #   * enabled scenario selection (deterministic keyword matching),
-#   * enabled custom tools referenced by the selected scenario (resolution only),
 #   * Marine fallback/handoff behavior,
 #   * structured production logging/observability.
 #
+# Custom HTTP tools have been removed to eliminate all direct outbound
+# connectivity between Marine AI and ERP. The runner no longer resolves any
+# tools; the marine_scenario_tools payload key is retained as an empty array for
+# downstream payload compatibility.
+#
 # Safety contract (holds even when the Marine LLM is blank/unconfigured on dev):
 #   * never raises — any unexpected error degrades to a handoff payload;
-#   * performs no external calls itself. Custom tools are only resolved to
-#     metadata (slug/title/description) and exposed for downstream execution
-#     through the existing tool safety code (Marine::Tools::HttpTool + SafeFetch);
-#     the runner never invokes them and never surfaces auth config;
+#   * performs no external calls itself and exposes no tools;
 #   * always returns a payload shape compatible with the existing response path
 #     (Marine::Charge::ResponseGenerator), enriched with orchestration metadata.
 #
@@ -75,16 +76,9 @@ class Marine::Agent::Runner
     scenario
   end
 
-  # Resolves the enabled custom tools referenced by the scenario down to their
-  # slugs only. Uses Marine::CustomTool (via scenario.resolved_tools) exclusively
-  # and never reads or logs auth_config.
-  def resolved_tool_slugs(scenario)
-    return [] if scenario.nil?
-
-    slugs = scenario.resolved_tools.filter_map { |tool| tool[:id] }
-    log_event('tools.resolved', scenario_id: scenario.id, tool_count: slugs.length, tools: slugs.join(',')) if slugs.any?
-    slugs
-  end
+  # Custom HTTP tools have been removed to eliminate all direct outbound
+  # connectivity between Marine AI and ERP, so no tool slugs are ever resolved.
+  def resolved_tool_slugs(_scenario) = []
 
   def enrich(payload, scenario, tool_slugs)
     payload.merge(

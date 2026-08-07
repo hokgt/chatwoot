@@ -51,13 +51,15 @@ RSpec.describe Marine::Scenario, type: :model do
     end
   end
 
-  describe 'tool validation and population' do
+  # Custom HTTP tools have been removed to eliminate all direct outbound
+  # connectivity between Marine AI and ERP; scenarios no longer resolve, expose,
+  # validate, or persist any tool references.
+  describe 'tool references (disabled)' do
     let(:account) { create(:account) }
     let(:assistant) { create(:marine_assistant, account: account) }
 
-    describe 'validate_instruction_tools' do
-      it 'is valid with valid custom tool references' do
-        create(:marine_custom_tool, account: account, slug: 'custom_fetch-order')
+    describe 'validate_instruction_tools (no-op)' do
+      it 'is valid even with tool references in the instruction' do
         scenario = build(:marine_scenario,
                          assistant: assistant,
                          account: account,
@@ -66,24 +68,13 @@ RSpec.describe Marine::Scenario, type: :model do
         expect(scenario).to be_valid
       end
 
-      it 'is invalid with unknown tool references' do
+      it 'is valid even with unknown tool references' do
         scenario = build(:marine_scenario,
                          assistant: assistant,
                          account: account,
                          instruction: 'Use [@Invalid Tool](tool://invalid_tool) to process')
 
-        expect(scenario).not_to be_valid
-        expect(scenario.errors[:instruction]).to include('contains invalid tools: invalid_tool')
-      end
-
-      it 'is invalid with multiple invalid tools' do
-        scenario = build(:marine_scenario,
-                         assistant: assistant,
-                         account: account,
-                         instruction: 'Use [@Invalid](tool://invalid_tool) and [@Another](tool://another_invalid)')
-
-        expect(scenario).not_to be_valid
-        expect(scenario.errors[:instruction]).to include('contains invalid tools: invalid_tool, another_invalid')
+        expect(scenario).to be_valid
       end
 
       it 'is valid with no tool references' do
@@ -94,42 +85,16 @@ RSpec.describe Marine::Scenario, type: :model do
 
         expect(scenario).to be_valid
       end
-
-      it 'is invalid with a custom tool from a different account' do
-        other_account = create(:account)
-        create(:marine_custom_tool, account: other_account, slug: 'custom_fetch-order')
-        scenario = build(:marine_scenario,
-                         assistant: assistant,
-                         account: account,
-                         instruction: 'Use [@Fetch Order](tool://custom_fetch-order) to get order details')
-
-        expect(scenario).not_to be_valid
-        expect(scenario.errors[:instruction]).to include('contains invalid tools: custom_fetch-order')
-      end
-
-      it 'is invalid with a disabled custom tool' do
-        create(:marine_custom_tool, account: account, slug: 'custom_fetch-order', enabled: false)
-        scenario = build(:marine_scenario,
-                         assistant: assistant,
-                         account: account,
-                         instruction: 'Use [@Fetch Order](tool://custom_fetch-order) to get order details')
-
-        expect(scenario).not_to be_valid
-        expect(scenario.errors[:instruction]).to include('contains invalid tools: custom_fetch-order')
-      end
     end
 
-    describe 'resolve_tool_references' do
-      before { create(:marine_custom_tool, account: account, slug: 'custom_fetch-order') }
-
-      it 'populates tools array with referenced tool IDs' do
-        create(:marine_custom_tool, account: account, slug: 'custom_add-note')
+    describe 'resolve_tool_references (no-op)' do
+      it 'sets tools to nil even when tool references are present' do
         scenario = create(:marine_scenario,
                           assistant: assistant,
                           account: account,
                           instruction: 'First [@Fetch Order](tool://custom_fetch-order) then [@Add Note](tool://custom_add-note)')
 
-        expect(scenario.tools).to eq(%w[custom_fetch-order custom_add-note])
+        expect(scenario.tools).to be_nil
       end
 
       it 'sets tools to nil when no tools are referenced' do
@@ -140,86 +105,27 @@ RSpec.describe Marine::Scenario, type: :model do
 
         expect(scenario.tools).to be_nil
       end
-
-      it 'handles duplicate tool references' do
-        scenario = create(:marine_scenario,
-                          assistant: assistant,
-                          account: account,
-                          instruction: 'Use [@Fetch Order](tool://custom_fetch-order) and [@Fetch Order](tool://custom_fetch-order) again')
-
-        expect(scenario.tools).to eq(['custom_fetch-order'])
-      end
-
-      it 'updates tools when instruction changes' do
-        create(:marine_custom_tool, account: account, slug: 'custom_add-note')
-        scenario = create(:marine_scenario,
-                          assistant: assistant,
-                          account: account,
-                          instruction: 'Use [@Fetch Order](tool://custom_fetch-order)')
-
-        expect(scenario.tools).to eq(['custom_fetch-order'])
-
-        scenario.update!(instruction: 'Use [@Add Note](tool://custom_add-note) instead')
-        expect(scenario.tools).to eq(['custom_add-note'])
-      end
     end
-  end
-
-  describe 'custom tool integration' do
-    let(:account) { create(:account) }
-    let(:assistant) { create(:marine_assistant, account: account) }
 
     describe '#resolved_tools' do
-      it 'includes custom tool metadata' do
-        create(:marine_custom_tool, account: account, slug: 'custom_fetch-order',
-                                    title: 'Fetch Order', description: 'Gets order details')
+      it 'returns an empty array' do
         scenario = create(:marine_scenario,
                           assistant: assistant,
                           account: account,
                           instruction: 'Use [@Fetch Order](tool://custom_fetch-order)')
 
-        resolved = scenario.resolved_tools
-        expect(resolved.length).to eq(1)
-        expect(resolved.first[:id]).to eq('custom_fetch-order')
-        expect(resolved.first[:title]).to eq('Fetch Order')
-      end
-
-      it 'excludes disabled custom tools' do
-        custom_tool = create(:marine_custom_tool, account: account, slug: 'custom_fetch-order', enabled: true)
-        scenario = create(:marine_scenario,
-                          assistant: assistant,
-                          account: account,
-                          instruction: 'Use [@Fetch Order](tool://custom_fetch-order)')
-
-        custom_tool.update!(enabled: false)
-
-        expect(scenario.resolved_tools).to be_empty
+        expect(scenario.resolved_tools).to eq([])
       end
     end
 
     describe '#agent_tools' do
-      it 'returns HttpTool instances for referenced custom tools' do
-        create(:marine_custom_tool, account: account, slug: 'custom_fetch-order')
+      it 'returns an empty array' do
         scenario = create(:marine_scenario,
                           assistant: assistant,
                           account: account,
                           instruction: 'Use [@Fetch Order](tool://custom_fetch-order)')
 
-        tools = scenario.agent_tools
-        expect(tools.length).to eq(1)
-        expect(tools.first).to be_a(Marine::Tools::HttpTool)
-      end
-
-      it 'excludes disabled custom tools from execution' do
-        custom_tool = create(:marine_custom_tool, account: account, slug: 'custom_fetch-order', enabled: true)
-        scenario = create(:marine_scenario,
-                          assistant: assistant,
-                          account: account,
-                          instruction: 'Use [@Fetch Order](tool://custom_fetch-order)')
-
-        custom_tool.update!(enabled: false)
-
-        expect(scenario.agent_tools).to be_empty
+        expect(scenario.agent_tools).to eq([])
       end
     end
   end

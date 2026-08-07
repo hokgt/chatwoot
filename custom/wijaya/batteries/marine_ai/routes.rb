@@ -46,9 +46,6 @@ module Wijaya::Marine::Routes
             post :product_catalog
           end
         end
-        resources :custom_tools, only: %i[index show create update destroy] do
-          post :test, on: :collection
-        end
       end
     end
   end

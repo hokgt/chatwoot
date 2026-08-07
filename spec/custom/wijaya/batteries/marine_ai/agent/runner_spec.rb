@@ -79,7 +79,10 @@ RSpec.describe Marine::Agent::Runner do
     end
   end
 
-  describe 'tool reference resolution path' do
+  # Custom HTTP tools have been removed to eliminate all direct outbound
+  # connectivity between Marine AI and ERP; the runner never resolves tool slugs
+  # and marine_scenario_tools stays an empty array.
+  describe 'tool reference resolution path (disabled)' do
     let(:account) { create(:account) }
     let(:db_assistant) { create(:marine_assistant, account: account) }
     let(:runner) { described_class.new(assistant: db_assistant) }
@@ -89,7 +92,7 @@ RSpec.describe Marine::Agent::Runner do
       allow(generator).to receive(:generate).and_return(reply_payload)
     end
 
-    it 'resolves referenced enabled Marine::CustomTool slugs without exposing auth secrets' do
+    it 'never resolves tool slugs and exposes no auth secrets' do
       create(:marine_custom_tool, account: account, slug: 'custom_fetch-order', title: 'Fetch Order',
                                   description: 'Gets order details', auth_type: 'bearer',
                                   auth_config: { 'token' => 'super-secret-token' })
@@ -99,7 +102,7 @@ RSpec.describe Marine::Agent::Runner do
 
       payload = runner.run(additional_message: 'track my order shipment delivery')
 
-      expect(payload['marine_scenario_tools']).to eq(['custom_fetch-order'])
+      expect(payload['marine_scenario_tools']).to eq([])
       expect(payload.to_s).not_to include('super-secret-token')
       expect(payload.to_s).not_to include('auth_config')
     end

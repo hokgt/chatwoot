@@ -60,12 +60,6 @@ export function buildMarineSidebarSection({ t, accountScopedRoute }) {
         to: marineRoute('marine_assistants_inboxes_index'),
       },
       {
-        name: 'Tools',
-        label: t('MARINE_AI.SIDEBAR.TOOLS'),
-        activeOn: ['marine_tools_index'],
-        to: marineRoute('marine_tools_index'),
-      },
-      {
         name: 'LLM Settings',
         label: t('MARINE_AI.SIDEBAR.LLM_SETTINGS'),
         activeOn: ['marine_assistants_llm_settings_index'],

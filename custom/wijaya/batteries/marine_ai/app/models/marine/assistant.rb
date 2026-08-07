@@ -26,15 +26,11 @@ class Marine::Assistant < ApplicationRecord
 
   def available_name = name
 
-  # Marine tools are all account-scoped custom HTTP tools; there are no built-in
-  # agent tools. Scenarios resolve tool references against this metadata.
-  def available_agent_tools
-    account.marine_custom_tools.enabled.map(&:to_tool_metadata)
-  end
+  # Custom HTTP tools have been removed to eliminate all direct outbound
+  # connectivity between Marine AI and ERP; no agent tools are exposed anymore.
+  def available_agent_tools = []
 
-  def available_tool_ids
-    available_agent_tools.pluck(:id)
-  end
+  def available_tool_ids = []
 
   def push_event_data
     { id: id, name: name, avatar_url: avatar_url.presence || default_avatar_url, description: description, created_at: created_at,

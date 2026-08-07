@@ -1,10 +1,8 @@
 import { ref, computed } from 'vue';
-import MarineCustomToolsAPI from '@wijaya/marine_ai/frontend/api/customTools';
 
-// State + actions for Marine custom tools. Mirrors the Captain custom tools
-// store surface (list/create/update/delete/test) but uses the Marine composable
-// pattern instead of Vuex, keeping Marine self-contained and free of any
-// premium/feature-flag gate.
+// Marine custom tools have been removed to eliminate all direct outbound
+// connectivity between Marine AI and ERP. This composable is kept as a no-op
+// stub so any remaining importers resolve without error.
 export function useMarineCustomTools() {
   const tools = ref([]);
   const meta = ref({ totalCount: 0, page: 1 });
@@ -15,52 +13,12 @@ export function useMarineCustomTools() {
     deletingItem: false,
   });
 
-  const isFetching = computed(() => uiFlags.value.fetchingList);
+  const isFetching = computed(() => false);
 
-  const fetchTools = async (page = 1) => {
-    uiFlags.value.fetchingList = true;
-    try {
-      const { data } = await MarineCustomToolsAPI.get({ page });
-      tools.value = data.payload || [];
-      meta.value = {
-        totalCount: data.meta?.total_count ?? tools.value.length,
-        page: data.meta?.page ?? page,
-      };
-    } finally {
-      uiFlags.value.fetchingList = false;
-    }
-    return tools.value;
-  };
-
-  const createTool = async payload => {
-    uiFlags.value.creatingItem = true;
-    try {
-      const { data } = await MarineCustomToolsAPI.create(payload);
-      return data;
-    } finally {
-      uiFlags.value.creatingItem = false;
-    }
-  };
-
-  const updateTool = async (id, payload) => {
-    uiFlags.value.updatingItem = true;
-    try {
-      const { data } = await MarineCustomToolsAPI.update(id, payload);
-      return data;
-    } finally {
-      uiFlags.value.updatingItem = false;
-    }
-  };
-
-  const deleteTool = async id => {
-    uiFlags.value.deletingItem = true;
-    try {
-      await MarineCustomToolsAPI.delete(id);
-    } finally {
-      uiFlags.value.deletingItem = false;
-    }
-    return id;
-  };
+  const fetchTools = async () => tools.value;
+  const createTool = async () => null;
+  const updateTool = async () => null;
+  const deleteTool = async id => id;
 
   return {
     tools,
