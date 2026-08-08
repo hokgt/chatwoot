@@ -398,11 +398,6 @@ patches:
       - custom/wijaya/batteries/marine_ai/frontend/api/scenarios.js
       - custom/wijaya/batteries/marine_ai/frontend/api/customTools.js
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/composables/useMarineCustomTools.js
-      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/tools/components/ParamRow.vue
-      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/tools/components/AuthConfig.vue
-      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/tools/components/CustomToolForm.vue
-      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/tools/components/CustomToolCard.vue
-      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/tools/components/CreateCustomToolDialog.vue
       - custom/wijaya/batteries/marine_ai/frontend/api/tasks.js
       - custom/wijaya/batteries/marine_ai/frontend/api/assistant.js
       - custom/wijaya/batteries/marine_ai/frontend/api/response.js
@@ -449,7 +444,6 @@ patches:
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/scenarios/Index.vue
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/playground/Index.vue
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/inboxes/Index.vue
-      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/tools/Index.vue
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/settings/Index.vue
       - custom/wijaya/batteries/marine_ai/frontend/routes/settings-marine/Index.vue
       - custom/wijaya/batteries/marine_ai/frontend/routes/settings-marine/marine.routes.js

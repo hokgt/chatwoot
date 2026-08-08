@@ -373,7 +373,6 @@ require_file spec/custom/wijaya/batteries/marine_ai/documents/sync_service_spec.
 require_file custom/wijaya/batteries/marine_ai/frontend/routes/marine/scenarios/Index.vue
 require_file custom/wijaya/batteries/marine_ai/frontend/routes/marine/playground/Index.vue
 require_file custom/wijaya/batteries/marine_ai/frontend/routes/marine/inboxes/Index.vue
-require_file custom/wijaya/batteries/marine_ai/frontend/routes/marine/tools/Index.vue
 require_file custom/wijaya/batteries/marine_ai/frontend/routes/marine/settings/Index.vue
 require_file custom/wijaya/batteries/marine_ai/frontend/routes/settings-marine/Index.vue
 require_file custom/wijaya/batteries/marine_ai/frontend/routes/settings-marine/marine.routes.js
