@@ -12,6 +12,7 @@ module Wijaya::Batteries::ErpLeadSidebar
 
     def initialize(draft)
       @draft = draft
+      @account = draft.account
     end
 
     # Idempotent ERP Lead sync. A given draft maps to at most one ERP Lead:
@@ -20,7 +21,7 @@ module Wijaya::Batteries::ErpLeadSidebar
     #     number and adopt it (PUT-update) instead of creating a duplicate.
     #   * Only when nothing is found do we POST-create a new Lead.
     def perform
-      raise SyncError, 'ERPNext connection is not configured' unless Config.erp_configured?
+      raise SyncError, 'ERPNext connection is not configured' unless Config.erp_configured?(@account)
 
       payload = PayloadBuilder.new(@draft.fields).payload
 
@@ -89,21 +90,19 @@ module Wijaya::Batteries::ErpLeadSidebar
     end
 
     def request_json(request_class, uri, payload)
-      request = request_class.new(uri)
-      request['Authorization'] = "token #{Config.erp_api_key}:#{Config.erp_api_secret}"
-      if payload
-        request['Content-Type'] = 'application/json'
-        request.body = payload.to_json
-      end
-
-      Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') do |http|
-        http.request(request)
-      end
+      method = { Net::HTTP::Get => :get, Net::HTTP::Post => :post, Net::HTTP::Put => :put }.fetch(request_class)
+      SafeHttp.request(
+        method: method,
+        uri: uri,
+        api_key: Config.erp_api_key(@account),
+        api_secret: Config.erp_api_secret(@account),
+        body: payload&.to_json
+      )
     end
 
     # /api/resource/Lead for create/list, /api/resource/Lead/:name for update.
     def resource_uri(name = nil)
-      base = "#{Config.erp_base_url.chomp('/')}/api/resource/Lead"
+      base = "#{Config.erp_base_url(@account).chomp('/')}/api/resource/Lead"
       base += "/#{ERB::Util.url_encode(name)}" if name.present?
       URI.parse(base)
     end

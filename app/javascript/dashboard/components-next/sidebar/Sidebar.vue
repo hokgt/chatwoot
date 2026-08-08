@@ -33,6 +33,9 @@ import { buildMarineSidebarSection } from '@wijaya/marine_ai/frontend/sidebar/ma
 // WIJAYA_CUSTOM_START meta_ads_team_routing
 import { buildMetaAdsRoutingSidebarItem } from '@wijaya/meta_ads_team_routing/frontend/sidebar/metaAdsRoutingSidebarItem';
 // WIJAYA_CUSTOM_END meta_ads_team_routing
+// WIJAYA_CUSTOM_START erp_lead_sidebar
+import { buildErpSettingsSidebarItem } from '@wijaya/erp_lead_sidebar/frontend/sidebar/erpSettingsSidebarItem';
+// WIJAYA_CUSTOM_END erp_lead_sidebar
 
 const props = defineProps({
   isMobileSidebarOpen: {
@@ -830,6 +833,9 @@ const menuItems = computed(() => {
         // WIJAYA_CUSTOM_START meta_ads_team_routing
         buildMetaAdsRoutingSidebarItem({ t, accountScopedRoute }),
         // WIJAYA_CUSTOM_END meta_ads_team_routing
+        // WIJAYA_CUSTOM_START erp_lead_sidebar
+        buildErpSettingsSidebarItem({ t, accountScopedRoute }),
+        // WIJAYA_CUSTOM_END erp_lead_sidebar
         {
           name: 'Settings Sla',
           label: t('SIDEBAR.SLA'),

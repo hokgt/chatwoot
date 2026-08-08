@@ -48,6 +48,9 @@ import marine from '@wijaya/marine_ai/frontend/i18n/marine.json';
 // WIJAYA_CUSTOM_START meta_ads_team_routing
 import wijayaMetaAdsRouting from '@wijaya/meta_ads_team_routing/frontend/i18n/wijayaMetaAdsRouting.json';
 // WIJAYA_CUSTOM_END meta_ads_team_routing
+// WIJAYA_CUSTOM_START erp_lead_sidebar
+import wijayaErpSettings from '@wijaya/erp_lead_sidebar/frontend/i18n/wijayaErpSettings.json';
+// WIJAYA_CUSTOM_END erp_lead_sidebar
 
 export default {
   ...advancedFilters,
@@ -100,4 +103,7 @@ export default {
   // WIJAYA_CUSTOM_START meta_ads_team_routing
   ...wijayaMetaAdsRouting,
   // WIJAYA_CUSTOM_END meta_ads_team_routing
+  // WIJAYA_CUSTOM_START erp_lead_sidebar
+  ...wijayaErpSettings,
+  // WIJAYA_CUSTOM_END erp_lead_sidebar
 };

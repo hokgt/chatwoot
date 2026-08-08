@@ -1,0 +1,47 @@
+{
+  "WIJAYA_ERP_SETTINGS": {
+    "SIDEBAR_LABEL": "ERPNext Settings",
+    "TITLE": "ERPNext Settings",
+    "DESCRIPTION": "Connect this account to your ERPNext instance so the conversation sidebar can create and update Leads. Credentials are stored encrypted and are never shown again.",
+    "LOADING": "Loading ERPNext settings...",
+    "HOST": {
+      "LABEL": "ERPNext Host",
+      "PLACEHOLDER": "https://erp.example.com",
+      "HINT": "Origin only (https://host), no path. HTTP is allowed only for local development hosts."
+    },
+    "API_KEY": {
+      "LABEL": "API Key",
+      "PLACEHOLDER": "Enter API key",
+      "HINT": "Leave blank to keep the stored key.",
+      "PRESENT": "A key is saved for this account.",
+      "PRESENT_ENV": "Using the deployment-wide key from the environment.",
+      "CHANGE": "Change",
+      "CANCEL": "Cancel"
+    },
+    "API_SECRET": {
+      "LABEL": "Secret Key",
+      "PLACEHOLDER": "Enter secret key",
+      "HINT": "Leave blank to keep the stored secret.",
+      "PRESENT": "A secret is saved for this account.",
+      "PRESENT_ENV": "Using the deployment-wide secret from the environment.",
+      "CHANGE": "Change",
+      "CANCEL": "Cancel"
+    },
+    "SOURCE": {
+      "ACCOUNT": "Saved for this account",
+      "ENV": "From environment"
+    },
+    "TEST": {
+      "BUTTON": "Test Connection",
+      "TESTING": "Testing...",
+      "SUCCESS": "Connected to ERPNext successfully.",
+      "ERROR": "Connection failed: {error}"
+    },
+    "SAVE": {
+      "BUTTON": "Save",
+      "SAVING": "Saving...",
+      "SUCCESS": "ERPNext settings saved.",
+      "ERROR": "Could not save the ERPNext settings."
+    }
+  }
+}

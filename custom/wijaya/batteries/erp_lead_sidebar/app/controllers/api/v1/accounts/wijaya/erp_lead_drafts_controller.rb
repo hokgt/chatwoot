@@ -13,7 +13,7 @@ class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::Ba
 
   # Populates the sidebar select dropdowns from their ERPNext source DocTypes.
   def options
-    render json: { options: ::Wijaya::Batteries::ErpLeadSidebar::OptionsService.new.fetch_all }
+    render json: { options: ::Wijaya::Batteries::ErpLeadSidebar::OptionsService.new(Current.account).fetch_all }
   rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError
     # Never surface the raw ERPNext response/exception to the agent.
     render json: { error: 'ERP options are currently unavailable.', options: {} }, status: :bad_gateway
@@ -60,7 +60,7 @@ class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::Ba
   end
 
   def option_values
-    ::Wijaya::Batteries::ErpLeadSidebar::OptionsService.new.fetch_all
+    ::Wijaya::Batteries::ErpLeadSidebar::OptionsService.new(Current.account).fetch_all
   rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError => e
     Rails.logger.warn("Wijaya ERP Lead options unavailable for draft show: #{e.class}")
     {}
@@ -92,7 +92,7 @@ class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::Ba
   end
 
   def erp_configured?
-    ::Wijaya::Batteries::ErpLeadSidebar::Config.erp_configured?
+    ::Wijaya::Batteries::ErpLeadSidebar::Config.erp_configured?(Current.account)
   end
 
   def permitted_fields

@@ -3,7 +3,8 @@
 # Static, Chatwoot-side configuration for the ERP Lead Sidebar battery.
 #
 # This module is the single backend source of truth for:
-#   * the ERPNext endpoint/auth (read from ENV, never hardcode secrets),
+#   * the ERPNext endpoint/auth (resolved per account from the encrypted
+#     Wijaya::ErpSetting row, falling back to ENV; never hardcode secrets),
 #   * the frozen Lead DocType name,
 #   * the allowed `status` Select values, and
 #   * the authoritative lists of individual checkbox integer fields for the
@@ -82,24 +83,55 @@ module Wijaya::Batteries::ErpLeadSidebar::Config
     custom_hijab
   ].freeze
 
-  # --- ERPNext connection (read from ENV; secrets never committed) ---------
-  # TODO(wijaya): set these in the deployment environment. The sidebar/draft
-  # works fully without them; only "Create Lead" needs a configured ERP.
-  def erp_base_url
-    ENV['WIJAYA_ERP_BASE_URL'].presence
+  # --- ERPNext connection ---------------------------------------------------
+  # Resolution for host/key/secret, per account:
+  #   * When the account has a saved Wijaya::ErpSetting row, that row is
+  #     authoritative: its stored host/key/secret are used as-is and the global
+  #     ENV values are NOT consulted (a saved account never silently borrows the
+  #     deployment-wide credentials, which could point at a different ERPNext).
+  #   * Only when the account has NO saved row do we fall back to the global ENV
+  #     values (WIJAYA_ERP_*), preserving the original backward-compatible
+  #     behavior for accounts that never configured the sidebar.
+  # Passing no account resolves ENV only (the original global behavior; kept so
+  # any legacy caller stays valid). A genuine database error is NOT swallowed
+  # into a silent ENV fallback — see erp_setting_for.
+  def erp_base_url(account = nil)
+    resolve(account, :host, 'WIJAYA_ERP_BASE_URL')
   end
 
-  def erp_api_key
-    ENV['WIJAYA_ERP_API_KEY'].presence
+  def erp_api_key(account = nil)
+    resolve(account, :api_key, 'WIJAYA_ERP_API_KEY')
   end
 
-  def erp_api_secret
-    ENV['WIJAYA_ERP_API_SECRET'].presence
+  def erp_api_secret(account = nil)
+    resolve(account, :api_secret, 'WIJAYA_ERP_API_SECRET')
   end
 
-  # True only when every piece needed to reach ERPNext is present.
-  def erp_configured?
-    erp_base_url.present? && erp_api_key.present? && erp_api_secret.present?
+  # True only when every piece needed to reach ERPNext resolves for the account.
+  def erp_configured?(account = nil)
+    erp_base_url(account).present? && erp_api_key(account).present? && erp_api_secret(account).present?
+  end
+
+  # Single resolution point. A saved row is authoritative (its value, even blank,
+  # wins and never mixes with ENV); ENV applies only when no row exists.
+  def resolve(account, attribute, env_key)
+    setting = erp_setting_for(account)
+    return setting.public_send(attribute).presence if setting
+
+    ENV[env_key].presence
+  end
+
+  # Loads the per-account settings row, or nil when there is no account, the
+  # model has not loaded yet, or the backing table does not exist yet (boot /
+  # pre-migration). A real query error is deliberately allowed to raise rather
+  # than being rescued into a silent ENV fallback.
+  def erp_setting_for(account)
+    return nil if account.nil?
+    return nil unless defined?(::Wijaya::ErpSetting)
+    return nil unless ::Wijaya::ErpSetting.table_exists?
+
+    account_id = account.respond_to?(:id) ? account.id : account
+    ::Wijaya::ErpSetting.find_by(account_id: account_id)
   end
 
   def status_allowed?(value)

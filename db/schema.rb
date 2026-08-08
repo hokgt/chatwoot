@@ -1469,6 +1469,16 @@ ActiveRecord::Schema[7.1].define(version: 2026_08_04_000000) do
     t.index ["conversation_id"], name: "index_wijaya_erp_lead_drafts_on_conversation_id"
   end
 
+  create_table "wijaya_erp_settings", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.string "host"
+    t.text "api_key"
+    t.text "api_secret"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_wijaya_erp_settings_on_account_id", unique: true
+  end
+
   create_table "wijaya_meta_ads_team_routing_rules", force: :cascade do |t|
     t.bigint "account_id", null: false
     t.bigint "team_id", null: false
@@ -1519,6 +1529,7 @@ ActiveRecord::Schema[7.1].define(version: 2026_08_04_000000) do
   add_foreign_key "user_sessions", "users"
   add_foreign_key "wijaya_erp_lead_drafts", "accounts"
   add_foreign_key "wijaya_erp_lead_drafts", "conversations"
+  add_foreign_key "wijaya_erp_settings", "accounts"
   add_foreign_key "wijaya_meta_ads_team_routing_rules", "accounts"
   add_foreign_key "wijaya_meta_ads_team_routing_rules", "teams"
   create_trigger("accounts_after_insert_row_tr", :generated => true, :compatibility => 1).

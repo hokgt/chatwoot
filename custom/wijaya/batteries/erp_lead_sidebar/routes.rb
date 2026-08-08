@@ -17,6 +17,10 @@ module Wijaya::Batteries::ErpLeadSidebar::Routes
             get :options
           end
         end
+        # Account-scoped singleton ERPNext connection settings (admin-only).
+        resource :erp_setting, only: %i[show update] do
+          post :test
+        end
       end
     end
   end

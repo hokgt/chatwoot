@@ -13,7 +13,8 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::SyncService do
   end
 
   let(:erp_lead_id) { nil }
-  let(:draft) { double('ErpLeadDraft', fields: fields, erp_lead_id: erp_lead_id) }
+  let(:account) { double('Account') }
+  let(:draft) { double('ErpLeadDraft', fields: fields, erp_lead_id: erp_lead_id, account: account) }
   let(:requests) { [] }
   # Default responder: create returns a fresh Lead; list/search returns nothing.
   let(:responder) do
@@ -43,9 +44,9 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::SyncService do
     )
     allow(draft).to receive(:update!)
 
-    http = instance_double(Net::HTTP)
-    allow(Net::HTTP).to receive(:start).and_yield(http)
-    allow(http).to receive(:request) do |request|
+    allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request) do |method:, uri:, body: nil, **|
+      request = SsrfFilter::VERB_MAP.fetch(method).new(uri)
+      request.body = body if body
       requests << request
       instance_exec(request, &responder)
     end

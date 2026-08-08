@@ -32,6 +32,9 @@ import marine from '@wijaya/marine_ai/frontend/routes/settings-marine/marine.rou
 // WIJAYA_CUSTOM_START meta_ads_team_routing
 import wijaya from '@wijaya/meta_ads_team_routing/frontend/routes/wijaya.routes';
 // WIJAYA_CUSTOM_END meta_ads_team_routing
+// WIJAYA_CUSTOM_START erp_lead_sidebar
+import wijayaErpSettings from '@wijaya/erp_lead_sidebar/frontend/routes/erpSettings.routes';
+// WIJAYA_CUSTOM_END erp_lead_sidebar
 
 export default {
   routes: [
@@ -79,5 +82,8 @@ export default {
     // WIJAYA_CUSTOM_START meta_ads_team_routing
     ...wijaya.routes,
     // WIJAYA_CUSTOM_END meta_ads_team_routing
+    // WIJAYA_CUSTOM_START erp_lead_sidebar
+    ...wijayaErpSettings.routes,
+    // WIJAYA_CUSTOM_END erp_lead_sidebar
   ],
 };

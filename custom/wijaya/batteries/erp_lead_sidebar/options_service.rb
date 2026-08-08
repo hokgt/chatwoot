@@ -47,12 +47,18 @@ module Wijaya::Batteries::ErpLeadSidebar
       AD_SOURCE_PATTERNS.any? { |pattern| pattern.match?(name.to_s) }
     end
 
+    # Resolves ERP credentials for the given account (DB settings, then ENV
+    # fallback). Passing no account resolves ENV only (legacy behavior).
+    def initialize(account = nil)
+      @account = account
+    end
+
     # Returns { 'utm_source' => [...], 'utm_campaign' => [...], ... } keyed by
     # the Chatwoot draft field, with each value a sorted list of ERP names.
     # The `utm_source` list is narrowed to ad/campaign sources (see
     # AD_SOURCE_PATTERNS); the other dropdowns pass through unfiltered.
     def fetch_all
-      raise SyncError, 'ERPNext connection is not configured' unless Config.erp_configured?
+      raise SyncError, 'ERPNext connection is not configured' unless Config.erp_configured?(@account)
 
       Config::OPTION_DOCTYPES.to_h do |field, doctype|
         names = fetch_names(doctype)
@@ -80,16 +86,16 @@ module Wijaya::Batteries::ErpLeadSidebar
 
     def get_list(doctype)
       uri = list_uri(doctype)
-      request = Net::HTTP::Get.new(uri)
-      request['Authorization'] = "token #{Config.erp_api_key}:#{Config.erp_api_secret}"
-
-      Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') do |http|
-        http.request(request)
-      end
+      SafeHttp.request(
+        method: :get,
+        uri: uri,
+        api_key: Config.erp_api_key(@account),
+        api_secret: Config.erp_api_secret(@account)
+      )
     end
 
     def list_uri(doctype)
-      base = Config.erp_base_url.chomp('/')
+      base = Config.erp_base_url(@account).chomp('/')
       uri = URI.parse("#{base}/api/resource/#{ERB::Util.url_encode(doctype)}")
       uri.query = URI.encode_www_form(
         fields: FIELDS,

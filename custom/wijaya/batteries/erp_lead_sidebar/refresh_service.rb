@@ -31,10 +31,11 @@ module Wijaya::Batteries::ErpLeadSidebar
   class RefreshService
     def initialize(draft)
       @draft = draft
+      @account = draft.account
     end
 
     def perform
-      return {} unless @draft.erp_lead_id.present? && Config.erp_configured?
+      return {} unless @draft.erp_lead_id.present? && Config.erp_configured?(@account)
 
       remote = fetch_remote_fields
       return fetch_failed_result if remote.nil?
@@ -120,16 +121,16 @@ module Wijaya::Batteries::ErpLeadSidebar
     end
 
     def request_get(uri)
-      request = Net::HTTP::Get.new(uri)
-      request['Authorization'] = "token #{Config.erp_api_key}:#{Config.erp_api_secret}"
-
-      Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') do |http|
-        http.request(request)
-      end
+      SafeHttp.request(
+        method: :get,
+        uri: uri,
+        api_key: Config.erp_api_key(@account),
+        api_secret: Config.erp_api_secret(@account)
+      )
     end
 
     def resource_uri(name)
-      base = "#{Config.erp_base_url.chomp('/')}/api/resource/Lead/#{ERB::Util.url_encode(name)}"
+      base = "#{Config.erp_base_url(@account).chomp('/')}/api/resource/Lead/#{ERB::Util.url_encode(name)}"
       URI.parse(base)
     end
 

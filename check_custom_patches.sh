@@ -137,6 +137,7 @@ require_file custom/wijaya/batteries/erp_lead_sidebar/config.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/lead_draft.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/payload_builder.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/sync_service.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/safe_http.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/refresh_service.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/options_service.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/ErpLeadPanel.vue
@@ -148,9 +149,33 @@ require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/api/wijayaErpLead
 require_file custom/wijaya/batteries/erp_lead_sidebar/conversation_extensions.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/loader.rb
 require_file db/migrate/20260706000000_create_wijaya_erp_lead_drafts.rb
+# Account-scoped ERPNext connection settings: model + encrypted credentials,
+# origin-only/SSRF host validation, sanitized connection test, admin-only API,
+# and the battery-owned Settings page (sidebar entry + route + i18n).
+require_file custom/wijaya/batteries/erp_lead_sidebar/erp_setting.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/host_validator.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/connection_test_service.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/app/controllers/api/v1/accounts/wijaya/erp_settings_controller.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/api/wijayaErpSettings.js
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/i18n/wijayaErpSettings.json
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/sidebar/erpSettingsSidebarItem.js
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/routes/erpSettings.routes.js
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/routes/ErpSettings.vue
+require_file db/migrate/20260712000000_create_wijaya_erp_settings.rb
+require_file db/schema.rb
+require_file spec/custom/wijaya/erp_lead_sidebar/erp_setting_spec.rb
+require_file spec/custom/wijaya/erp_lead_sidebar/config_spec.rb
+require_file spec/custom/wijaya/erp_lead_sidebar/host_validator_spec.rb
+require_file spec/custom/wijaya/erp_lead_sidebar/connection_test_service_spec.rb
+require_file spec/custom/wijaya/erp_lead_sidebar/safe_http_spec.rb
+require_file spec/custom/wijaya/erp_lead_sidebar/erp_settings_controller_spec.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/ErpSettings.spec.js
 
 for file in \
-  app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue; do
+  app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue \
+  app/javascript/dashboard/components-next/sidebar/Sidebar.vue \
+  app/javascript/dashboard/routes/dashboard/settings/settings.routes.js \
+  app/javascript/dashboard/i18n/locale/en/index.js; do
   require_marker "$file" "WIJAYA_CUSTOM_START erp_lead_sidebar"
   require_marker "$file" "WIJAYA_CUSTOM_END erp_lead_sidebar"
 done

@@ -44,13 +44,18 @@ module Wijaya
           root = ROOT
           Rails.application.config.to_prepare do
             require root.join('config').to_s
+            require root.join('host_validator').to_s
+            require root.join('erp_setting').to_s
             require root.join('lead_draft').to_s
             require root.join('payload_builder').to_s
             require root.join('sync_service').to_s
+            require root.join('safe_http').to_s
             require root.join('refresh_service').to_s
             require root.join('options_service').to_s
+            require root.join('connection_test_service').to_s
             require root.join('conversation_extensions').to_s
-            Conversation.include Wijaya::Batteries::ErpLeadSidebar::ConversationExtensions unless Conversation < Wijaya::Batteries::ErpLeadSidebar::ConversationExtensions
+            extensions = Wijaya::Batteries::ErpLeadSidebar::ConversationExtensions
+            Conversation.include extensions unless extensions >= Conversation
           rescue StandardError, ScriptError => e
             Rails.logger.error("[Wijaya] erp_lead_sidebar extension attach failed: #{e.class}")
           end
