@@ -41,6 +41,9 @@ patches:
     core_hook_touchpoints:
       - config/initializers/wijaya.rb
       - config/routes.rb
+      # Tailwind content array includes battery frontend paths so i-lucide/i-woot
+      # icon classes used only in battery files are generated in compiled CSS.
+      - tailwind.config.js
     tests:
       - spec/custom/wijaya/batteries/core/hooks_spec.rb
       # Proves every native seam falls back to its exact upstream default when the

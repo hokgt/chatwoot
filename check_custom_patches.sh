@@ -50,6 +50,10 @@ require_file custom/wijaya/batteries/HOOKS.md
 require_file spec/custom/wijaya/batteries/core/hooks_spec.rb
 require_marker config/routes.rb "WIJAYA_CUSTOM_START wijaya_routes"
 require_marker config/routes.rb "WIJAYA_CUSTOM_END wijaya_routes"
+# Tailwind content array must include battery frontend paths so icon CSS classes
+# used only in battery files (e.g. i-lucide-ship-wheel) are generated in compiled CSS.
+require_marker tailwind.config.js "WIJAYA_CUSTOM_START core"
+require_marker tailwind.config.js "WIJAYA_CUSTOM_END core"
 # Per-battery route modules: core/routes.rb owns only generic orchestration and
 # requires+draws each of these in an isolated, fail-open block.
 require_file custom/wijaya/batteries/marine_ai/routes.rb
