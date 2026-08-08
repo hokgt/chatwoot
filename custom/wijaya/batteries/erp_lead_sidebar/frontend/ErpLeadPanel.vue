@@ -475,211 +475,258 @@ watch(
       class="w-full"
       @click="openModal"
     />
-    <woot-modal v-model:show="isModalOpen" :on-close="() => {}">
+    <woot-modal v-model:show="isModalOpen" size="medium" :on-close="() => {}">
       <woot-modal-header :header-title="panelTitle" />
-      <div class="flex flex-col gap-3 p-8 pt-4 text-sm">
-        <div v-if="loading" class="text-n-slate-11">
+      <div class="flex max-h-[80vh] flex-col text-sm">
+        <div v-if="loading" class="px-8 pt-4 pb-8 text-n-slate-11">
           Loading ERP Lead draft…
         </div>
 
         <template v-else>
           <div
-            v-if="erpLeadId"
-            class="rounded-md bg-n-teal-3 text-n-teal-11 p-2"
+            class="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-8 pt-4 pb-4"
           >
-            ERP Lead created: <strong>{{ erpLeadId }}</strong>
-          </div>
-          <div
-            v-if="conflict"
-            class="rounded-md bg-n-amber-3 text-n-amber-11 p-2"
-          >
-            {{ refreshMessage }}
-          </div>
-          <div
-            v-else-if="refreshMessage"
-            class="rounded-md bg-n-teal-3 text-n-teal-11 p-2"
-          >
-            {{ refreshMessage }}
-          </div>
-          <div v-if="error" class="rounded-md bg-n-ruby-3 text-n-ruby-11 p-2">
-            {{ error }}
-          </div>
-
-          <label class="flex flex-col gap-1">
-            <span>Lead Owner</span>
-            <input
-              v-model="fields.lead_owner"
-              class="input"
-              type="text"
-              @input="scheduleSave()"
-            />
-          </label>
-
-          <label class="flex flex-col gap-1">
-            <span>First Name</span>
-            <input
-              v-model="fields.first_name"
-              class="input"
-              type="text"
-              @input="scheduleSave()"
-            />
-          </label>
-
-          <label class="flex flex-col gap-1">
-            <span>Organization Name</span>
-            <input
-              v-model="fields.company_name"
-              class="input"
-              type="text"
-              @input="scheduleSave()"
-            />
-          </label>
-
-          <label class="flex flex-col gap-1">
-            <span>WhatsApp</span>
-            <input
-              v-model="fields.whatsapp_no"
-              class="input"
-              type="text"
-              @input="
-                fields.mobile_no = fields.whatsapp_no;
-                scheduleSave();
-              "
-            />
-          </label>
-
-          <label class="flex flex-col gap-1">
-            <span>Mobile No</span>
-            <input
-              :value="fields.whatsapp_no"
-              class="input"
-              type="text"
-              readonly
-            />
-            <span class="text-xs text-n-slate-10">
-              Always sent with the same value as WhatsApp.
-            </span>
-          </label>
-
-          <label class="flex flex-col gap-1">
-            <span>Status</span>
-            <select
-              v-model="fields.status"
-              class="input"
-              @change="scheduleSave(0)"
+            <div
+              v-if="erpLeadId"
+              class="rounded-md bg-n-teal-3 text-n-teal-11 p-2"
             >
-              <option
-                v-for="option in STATUS_OPTIONS"
-                :key="option"
-                :value="option"
+              ERP Lead created: <strong>{{ erpLeadId }}</strong>
+            </div>
+            <div
+              v-if="conflict"
+              class="rounded-md bg-n-amber-3 text-n-amber-11 p-2"
+            >
+              {{ refreshMessage }}
+            </div>
+            <div
+              v-else-if="refreshMessage"
+              class="rounded-md bg-n-teal-3 text-n-teal-11 p-2"
+            >
+              {{ refreshMessage }}
+            </div>
+            <div v-if="error" class="rounded-md bg-n-ruby-3 text-n-ruby-11 p-2">
+              {{ error }}
+            </div>
+
+            <section class="flex flex-col gap-3">
+              <h3
+                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
               >
-                {{ option }}
-              </option>
-            </select>
-          </label>
+                Informasi Lead
+              </h3>
+              <div class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+                <label class="flex flex-col gap-1">
+                  <span>Lead Owner</span>
+                  <input
+                    v-model="fields.lead_owner"
+                    class="input"
+                    type="text"
+                    @input="scheduleSave()"
+                  />
+                </label>
 
-          <label class="flex flex-col gap-1">
-            <span>Source</span>
-            <SearchableSelect
-              v-model="fields.utm_source"
-              :options="withCurrent(fields.utm_source, sourceOptions)"
-              @change="scheduleSave(0)"
-            />
-          </label>
+                <label class="flex flex-col gap-1">
+                  <span>First Name</span>
+                  <input
+                    v-model="fields.first_name"
+                    class="input"
+                    type="text"
+                    @input="scheduleSave()"
+                  />
+                </label>
 
-          <label class="flex flex-col gap-1">
-            <span>Campaign</span>
-            <SearchableSelect
-              v-model="fields.utm_campaign"
-              :options="withCurrent(fields.utm_campaign, campaignOptions)"
-              @change="scheduleSave(0)"
-            />
-          </label>
+                <label class="flex flex-col gap-1 sm:col-span-2">
+                  <span>Organization Name</span>
+                  <input
+                    v-model="fields.company_name"
+                    class="input"
+                    type="text"
+                    @input="scheduleSave()"
+                  />
+                </label>
+              </div>
+            </section>
 
-          <label class="flex flex-col gap-1">
-            <span>Industry <span class="text-n-ruby-10">*</span></span>
-            <SearchableSelect
-              v-model="fields.industry"
-              :options="withCurrent(fields.industry, industryOptions)"
-              @change="scheduleSave(0)"
-            />
-          </label>
+            <section class="flex flex-col gap-3">
+              <h3
+                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+              >
+                Kontak
+              </h3>
+              <div class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+                <label class="flex flex-col gap-1">
+                  <span>WhatsApp</span>
+                  <input
+                    v-model="fields.whatsapp_no"
+                    class="input"
+                    type="text"
+                    @input="
+                      fields.mobile_no = fields.whatsapp_no;
+                      scheduleSave();
+                    "
+                  />
+                </label>
 
-          <label class="flex flex-col gap-1">
-            <span>Territory</span>
-            <SearchableSelect
-              v-model="fields.territory"
-              :options="withCurrent(fields.territory, territoryOptions)"
-              @change="scheduleSave(0)"
-            />
-          </label>
+                <label class="flex flex-col gap-1">
+                  <span>Mobile No</span>
+                  <input
+                    :value="fields.whatsapp_no"
+                    class="input"
+                    type="text"
+                    readonly
+                  />
+                  <span class="text-xs text-n-slate-10">
+                    Always sent with the same value as WhatsApp.
+                  </span>
+                </label>
+              </div>
+            </section>
 
-          <div class="flex flex-col gap-2">
-            <strong>Market Customer</strong>
-            <label
-              v-for="[label, key] in MARKET_CUSTOMER_OPTIONS"
-              :key="key"
-              class="flex items-center gap-2"
-            >
-              <input
-                v-model="fields[key]"
-                type="checkbox"
-                @change="scheduleSave(0)"
-              />
-              <span>{{ label }}</span>
-            </label>
+            <section class="flex flex-col gap-3">
+              <h3
+                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+              >
+                Sumber dan Klasifikasi
+              </h3>
+              <div class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+                <label class="flex flex-col gap-1">
+                  <span>Status</span>
+                  <select
+                    v-model="fields.status"
+                    class="input"
+                    @change="scheduleSave(0)"
+                  >
+                    <option
+                      v-for="option in STATUS_OPTIONS"
+                      :key="option"
+                      :value="option"
+                    >
+                      {{ option }}
+                    </option>
+                  </select>
+                </label>
+
+                <label class="flex flex-col gap-1">
+                  <span>Source</span>
+                  <SearchableSelect
+                    v-model="fields.utm_source"
+                    :options="withCurrent(fields.utm_source, sourceOptions)"
+                    @change="scheduleSave(0)"
+                  />
+                </label>
+
+                <label class="flex flex-col gap-1">
+                  <span>Campaign</span>
+                  <SearchableSelect
+                    v-model="fields.utm_campaign"
+                    :options="withCurrent(fields.utm_campaign, campaignOptions)"
+                    @change="scheduleSave(0)"
+                  />
+                </label>
+
+                <label class="flex flex-col gap-1">
+                  <span>Industry <span class="text-n-ruby-10">*</span></span>
+                  <SearchableSelect
+                    v-model="fields.industry"
+                    :options="withCurrent(fields.industry, industryOptions)"
+                    @change="scheduleSave(0)"
+                  />
+                </label>
+
+                <label class="flex flex-col gap-1">
+                  <span>Territory</span>
+                  <SearchableSelect
+                    v-model="fields.territory"
+                    :options="withCurrent(fields.territory, territoryOptions)"
+                    @change="scheduleSave(0)"
+                  />
+                </label>
+              </div>
+            </section>
+
+            <section class="flex flex-col gap-3">
+              <h3
+                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+              >
+                Market Customer
+              </h3>
+              <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                <label
+                  v-for="[label, key] in MARKET_CUSTOMER_OPTIONS"
+                  :key="key"
+                  class="flex items-center gap-2"
+                >
+                  <input
+                    v-model="fields[key]"
+                    type="checkbox"
+                    @change="scheduleSave(0)"
+                  />
+                  <span>{{ label }}</span>
+                </label>
+              </div>
+            </section>
+
+            <section class="flex flex-col gap-3">
+              <h3
+                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+              >
+                Jenis Pakaian
+              </h3>
+              <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                <label
+                  v-for="[label, key] in JENIS_PAKAIAN_OPTIONS"
+                  :key="key"
+                  class="flex items-center gap-2"
+                >
+                  <input
+                    v-model="fields[key]"
+                    type="checkbox"
+                    @change="scheduleSave(0)"
+                  />
+                  <span>{{ label }}</span>
+                </label>
+              </div>
+            </section>
           </div>
 
-          <div class="flex flex-col gap-2">
-            <strong>Jenis Pakaian</strong>
-            <label
-              v-for="[label, key] in JENIS_PAKAIAN_OPTIONS"
-              :key="key"
-              class="flex items-center gap-2"
+          <div
+            class="sticky bottom-0 flex shrink-0 flex-col gap-2 border-t border-n-weak bg-n-alpha-3 px-8 py-4"
+          >
+            <ul
+              v-if="validationErrors.length"
+              class="list-disc pl-4 text-n-ruby-10"
             >
-              <input
-                v-model="fields[key]"
-                type="checkbox"
-                @change="scheduleSave(0)"
-              />
-              <span>{{ label }}</span>
-            </label>
-          </div>
+              <li v-for="item in validationErrors" :key="item">{{ item }}</li>
+            </ul>
 
-          <ul
-            v-if="validationErrors.length"
-            class="list-disc pl-4 text-n-ruby-10"
-          >
-            <li v-for="item in validationErrors" :key="item">{{ item }}</li>
-          </ul>
-
-          <button
-            class="button button-primary"
-            :disabled="!canSync"
-            @click="createLead"
-          >
-            {{
-              syncing
-                ? erpLeadId
-                  ? 'Updating…'
-                  : 'Creating…'
-                : syncStatus === 'failed'
+            <button
+              class="button button-primary"
+              :disabled="!canSync"
+              @click="createLead"
+            >
+              {{
+                syncing
                   ? erpLeadId
-                    ? 'Retry Update Lead'
-                    : 'Retry Create Lead'
-                  : erpLeadId
-                    ? 'Update Lead'
-                    : 'Create Lead'
-            }}
-          </button>
-          <div class="text-xs text-n-slate-10">
-            {{
-              saving
-                ? 'Saving draft…'
-                : savedAt
-                  ? `Draft saved ${savedAt}`
-                  : 'Draft is saved locally before sync.'
-            }}
+                    ? 'Updating…'
+                    : 'Creating…'
+                  : syncStatus === 'failed'
+                    ? erpLeadId
+                      ? 'Retry Update Lead'
+                      : 'Retry Create Lead'
+                    : erpLeadId
+                      ? 'Update Lead'
+                      : 'Create Lead'
+              }}
+            </button>
+            <div class="text-xs text-n-slate-10">
+              {{
+                saving
+                  ? 'Saving draft…'
+                  : savedAt
+                    ? `Draft saved ${savedAt}`
+                    : 'Draft is saved locally before sync.'
+              }}
+            </div>
           </div>
         </template>
       </div>

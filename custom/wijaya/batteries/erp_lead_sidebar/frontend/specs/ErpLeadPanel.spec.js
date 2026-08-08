@@ -160,6 +160,99 @@ describe('ErpLeadPanel modal presentation', () => {
     expect(leadOwner).toBeTruthy();
   });
 
+  it('requests the wider supported WootModal size', async () => {
+    const wrapper = mountModalPanel();
+    await flushPromises();
+
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    // `size="medium"` maps to Modal.vue's `.medium` class (max-w-[80%]
+    // w-[56.25rem] ≈ 900px), the supported step up from the 600px default.
+    expect(wrapper.find('.woot-modal').attributes('size')).toBe('medium');
+  });
+
+  it('renders all five grouped section headings after opening', async () => {
+    const wrapper = mountModalPanel();
+    await flushPromises();
+
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    const headings = wrapper.findAll('h3').map(h => h.text());
+    expect(headings).toEqual([
+      'Informasi Lead',
+      'Kontak',
+      'Sumber dan Klasifikasi',
+      'Market Customer',
+      'Jenis Pakaian',
+    ]);
+  });
+
+  it('uses a responsive one/two-column field layout', async () => {
+    const wrapper = mountModalPanel();
+    await flushPromises();
+
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    // Field grids collapse to a single column on small screens and expand to
+    // two columns from the `sm` breakpoint up.
+    const fieldGrid = wrapper
+      .findAll('div')
+      .find(
+        d =>
+          d.classes().includes('grid-cols-1') &&
+          d.classes().includes('sm:grid-cols-2')
+      );
+    expect(fieldGrid).toBeTruthy();
+  });
+
+  it('lays out checkbox groups in a multi-column grid', async () => {
+    const wrapper = mountModalPanel();
+    await flushPromises();
+
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    // Market Customer + Jenis Pakaian render as multi-column grids rather than
+    // one checkbox per row on desktop while remaining single-column on mobile.
+    const checkboxGrids = wrapper
+      .findAll('div')
+      .filter(
+        d =>
+          d.classes().includes('grid-cols-1') &&
+          d.classes().includes('sm:grid-cols-2') &&
+          d.classes().includes('lg:grid-cols-3')
+      );
+    expect(checkboxGrids.length).toBe(2);
+    // Both groups keep every checkbox: 10 Market Customer + 24 Jenis Pakaian.
+    const checkboxes = wrapper.findAll('input[type="checkbox"]');
+    expect(checkboxes.length).toBe(34);
+  });
+
+  it('keeps the action area with Create/Update wiring inside the modal', async () => {
+    const wrapper = mountModalPanel();
+    await flushPromises();
+
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    const modal = wrapper.find('.woot-modal');
+    const createButton = modal
+      .findAll('button')
+      .find(btn => btn.text().includes('Create Lead'));
+    // The primary action lives inside the modal, in a sticky bottom action bar.
+    expect(createButton).toBeTruthy();
+    const actionBar = wrapper
+      .findAll('div')
+      .find(
+        d => d.classes().includes('sticky') && d.classes().includes('bottom-0')
+      );
+    expect(actionBar).toBeTruthy();
+    expect(actionBar.find('button').exists()).toBe(true);
+  });
+
   it('preserves an edited field across close/reopen in the same conversation', async () => {
     const wrapper = mountModalPanel();
     await flushPromises();
