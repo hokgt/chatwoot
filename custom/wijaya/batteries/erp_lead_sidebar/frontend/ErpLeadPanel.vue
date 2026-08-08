@@ -12,8 +12,7 @@ import {
   watch,
 } from 'vue';
 import ErpLeadDraftsAPI from '@wijaya/erp_lead_sidebar/frontend/api/wijayaErpLeadDrafts';
-import { useUISettings } from 'dashboard/composables/useUISettings';
-import AccordionItem from 'dashboard/components/Accordion/AccordionItem.vue';
+import NextButton from 'dashboard/components-next/button/Button.vue';
 import {
   STATUS_OPTIONS,
   MARKET_CUSTOMER_OPTIONS,
@@ -35,10 +34,15 @@ const props = defineProps({
   contact: { type: Object, default: () => ({}) },
 });
 
-// The accordion wrapper + collapse state live here (battery-owned) so the native
-// ContactPanel only mounts <ErpLeadPanel/>.
+// The ContactPanel only mounts <ErpLeadPanel/>; the battery renders a compact
+// trigger button and hosts the full form inside a standard modal. Modal
+// visibility is the ONLY thing toggled here — all form state lives in this
+// setup scope (see `fields`/refs below), so closing/reopening never resets it.
 const panelTitle = 'ERP Lead';
-const { isContactSidebarItemOpen, toggleSidebarUIState } = useUISettings();
+const isModalOpen = ref(false);
+const openModal = () => {
+  isModalOpen.value = true;
+};
 
 // When ERP is unconfigured the backend never persists a draft on open; mirror
 // that on the client by disabling all autosave so opening the panel creates zero
@@ -444,7 +448,17 @@ const createLead = async () => {
   }
 };
 
-watch(() => props.conversationId, loadDraft, { immediate: true });
+// On conversation switch, close/reset the modal and load the new conversation
+// exactly once. Toggling the modal alone never re-runs this, so in-conversation
+// close/reopen preserves the in-memory form state.
+watch(
+  () => props.conversationId,
+  () => {
+    isModalOpen.value = false;
+    loadDraft();
+  },
+  { immediate: true }
+);
 // WIJAYA_CUSTOM_END erp_lead_sidebar
 </script>
 
@@ -452,13 +466,18 @@ watch(() => props.conversationId, loadDraft, { immediate: true });
   <!-- eslint-disable vue/no-bare-strings-in-template, @intlify/vue-i18n/no-raw-text -->
   <!-- WIJAYA_CUSTOM_START erp_lead_sidebar -->
   <div class="px-2 pb-3">
-    <AccordionItem
-      :title="panelTitle"
-      :is-open="isContactSidebarItemOpen('is_erp_lead_open')"
-      compact
-      @toggle="value => toggleSidebarUIState('is_erp_lead_open', value)"
-    >
-      <div class="flex flex-col gap-3 p-3 text-sm">
+    <NextButton
+      :label="panelTitle"
+      icon="i-lucide-building-2"
+      faded
+      slate
+      sm
+      class="w-full"
+      @click="openModal"
+    />
+    <woot-modal v-model:show="isModalOpen" :on-close="() => {}">
+      <woot-modal-header :header-title="panelTitle" />
+      <div class="flex flex-col gap-3 p-8 pt-4 text-sm">
         <div v-if="loading" class="text-n-slate-11">
           Loading ERP Lead draft…
         </div>
@@ -664,7 +683,7 @@ watch(() => props.conversationId, loadDraft, { immediate: true });
           </div>
         </template>
       </div>
-    </AccordionItem>
+    </woot-modal>
   </div>
   <!-- WIJAYA_CUSTOM_END erp_lead_sidebar -->
 </template>
