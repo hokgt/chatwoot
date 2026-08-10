@@ -52,6 +52,10 @@ module Wijaya
             require root.join('safe_http').to_s
             require root.join('refresh_service').to_s
             require root.join('options_service').to_s
+            require root.join('lead_activity_person_directory').to_s
+            require root.join('lead_activity_options_service').to_s
+            require root.join('lead_activity_payload_builder').to_s
+            require root.join('lead_activity_service').to_s
             require root.join('connection_test_service').to_s
             require root.join('conversation_extensions').to_s
             extensions = Wijaya::Batteries::ErpLeadSidebar::ConversationExtensions

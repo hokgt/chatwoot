@@ -16,6 +16,13 @@ module Wijaya::Batteries::ErpLeadSidebar::Routes
           collection do
             get :options
           end
+          # Manual Lead Activity form, nested under the draft (addressed by the
+          # conversation display_id). Only runtime options + a guarded insert.
+          resources :lead_activities, only: %i[create] do
+            collection do
+              get :options
+            end
+          end
         end
         # Account-scoped singleton ERPNext connection settings (admin-only).
         resource :erp_setting, only: %i[show update] do

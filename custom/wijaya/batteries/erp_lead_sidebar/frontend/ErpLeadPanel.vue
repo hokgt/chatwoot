@@ -12,6 +12,7 @@ import {
   watch,
 } from 'vue';
 import ErpLeadDraftsAPI from '@wijaya/erp_lead_sidebar/frontend/api/wijayaErpLeadDrafts';
+import LeadActivityForm from './LeadActivityForm.vue';
 import NextButton from 'dashboard/components-next/button/Button.vue';
 import {
   STATUS_OPTIONS,
@@ -43,6 +44,12 @@ const isModalOpen = ref(false);
 const openModal = () => {
   isModalOpen.value = true;
 };
+
+// Two isolated views inside the same modal. 'details' is the default and hosts
+// the unchanged Lead Details create/update flow; 'activity' mounts the fully
+// separate LeadActivityForm (v-if, so its runtime options only fetch when the
+// tab is opened). Reset to 'details' on conversation switch.
+const activeTab = ref('details');
 
 // When ERP is unconfigured the backend never persists a draft on open; mirror
 // that on the client by disabling all autosave so opening the panel creates zero
@@ -455,6 +462,7 @@ watch(
   () => props.conversationId,
   () => {
     isModalOpen.value = false;
+    activeTab.value = 'details';
     loadDraft();
   },
   { immediate: true }
@@ -478,256 +486,306 @@ watch(
     <woot-modal v-model:show="isModalOpen" size="medium" :on-close="() => {}">
       <woot-modal-header :header-title="panelTitle" />
       <div class="flex max-h-[80vh] flex-col text-sm">
-        <div v-if="loading" class="px-8 pt-4 pb-8 text-n-slate-11">
-          Loading ERP Lead draft…
+        <div class="flex gap-1 border-b border-n-weak px-8 pt-3">
+          <button
+            type="button"
+            class="border-b-2 px-3 py-2 font-medium"
+            :class="
+              activeTab === 'details'
+                ? 'border-n-brand text-n-slate-12'
+                : 'border-transparent text-n-slate-10'
+            "
+            @click="activeTab = 'details'"
+          >
+            Lead Details
+          </button>
+          <button
+            type="button"
+            class="border-b-2 px-3 py-2 font-medium"
+            :class="
+              activeTab === 'activity'
+                ? 'border-n-brand text-n-slate-12'
+                : 'border-transparent text-n-slate-10'
+            "
+            @click="activeTab = 'activity'"
+          >
+            Lead Activity
+          </button>
+        </div>
+
+        <div
+          v-if="activeTab === 'activity'"
+          class="flex min-h-0 flex-1 flex-col overflow-y-auto px-8 pt-4 pb-4"
+        >
+          <LeadActivityForm
+            :conversation-id="conversationId"
+            :current-chat="currentChat"
+            :erp-lead-id="erpLeadId"
+            :configured="configured"
+          />
         </div>
 
         <template v-else>
-          <div
-            class="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-8 pt-4 pb-4"
-          >
-            <div
-              v-if="erpLeadId"
-              class="rounded-md bg-n-teal-3 text-n-teal-11 p-2"
-            >
-              ERP Lead created: <strong>{{ erpLeadId }}</strong>
-            </div>
-            <div
-              v-if="conflict"
-              class="rounded-md bg-n-amber-3 text-n-amber-11 p-2"
-            >
-              {{ refreshMessage }}
-            </div>
-            <div
-              v-else-if="refreshMessage"
-              class="rounded-md bg-n-teal-3 text-n-teal-11 p-2"
-            >
-              {{ refreshMessage }}
-            </div>
-            <div v-if="error" class="rounded-md bg-n-ruby-3 text-n-ruby-11 p-2">
-              {{ error }}
-            </div>
+          <div v-if="loading" class="px-8 pt-4 pb-8 text-n-slate-11">
+            Loading ERP Lead draft…
+          </div>
 
-            <section class="flex flex-col gap-3">
-              <h3
-                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+          <template v-else>
+            <div
+              class="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-8 pt-4 pb-4"
+            >
+              <div
+                v-if="erpLeadId"
+                class="rounded-md bg-n-teal-3 text-n-teal-11 p-2"
               >
-                Informasi Lead
-              </h3>
-              <div class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
-                <label class="flex flex-col gap-1">
-                  <span>Lead Owner</span>
-                  <input
-                    v-model="fields.lead_owner"
-                    class="input"
-                    type="text"
-                    @input="scheduleSave()"
-                  />
-                </label>
-
-                <label class="flex flex-col gap-1">
-                  <span>First Name</span>
-                  <input
-                    v-model="fields.first_name"
-                    class="input"
-                    type="text"
-                    @input="scheduleSave()"
-                  />
-                </label>
-
-                <label class="flex flex-col gap-1 sm:col-span-2">
-                  <span>Organization Name</span>
-                  <input
-                    v-model="fields.company_name"
-                    class="input"
-                    type="text"
-                    @input="scheduleSave()"
-                  />
-                </label>
+                ERP Lead created: <strong>{{ erpLeadId }}</strong>
               </div>
-            </section>
-
-            <section class="flex flex-col gap-3">
-              <h3
-                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+              <div
+                v-if="conflict"
+                class="rounded-md bg-n-amber-3 text-n-amber-11 p-2"
               >
-                Kontak
-              </h3>
-              <div class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
-                <label class="flex flex-col gap-1">
-                  <span>WhatsApp</span>
-                  <input
-                    v-model="fields.whatsapp_no"
-                    class="input"
-                    type="text"
-                    @input="
-                      fields.mobile_no = fields.whatsapp_no;
-                      scheduleSave();
-                    "
-                  />
-                </label>
-
-                <label class="flex flex-col gap-1">
-                  <span>Mobile No</span>
-                  <input
-                    :value="fields.whatsapp_no"
-                    class="input"
-                    type="text"
-                    readonly
-                  />
-                  <span class="text-xs text-n-slate-10">
-                    Always sent with the same value as WhatsApp.
-                  </span>
-                </label>
+                {{ refreshMessage }}
               </div>
-            </section>
-
-            <section class="flex flex-col gap-3">
-              <h3
-                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+              <div
+                v-else-if="refreshMessage"
+                class="rounded-md bg-n-teal-3 text-n-teal-11 p-2"
               >
-                Sumber dan Klasifikasi
-              </h3>
-              <div class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
-                <label class="flex flex-col gap-1">
-                  <span>Status</span>
-                  <select
-                    v-model="fields.status"
-                    class="input"
-                    @change="scheduleSave(0)"
-                  >
-                    <option
-                      v-for="option in STATUS_OPTIONS"
-                      :key="option"
-                      :value="option"
+                {{ refreshMessage }}
+              </div>
+              <div
+                v-if="error"
+                class="rounded-md bg-n-ruby-3 text-n-ruby-11 p-2"
+              >
+                {{ error }}
+              </div>
+
+              <section class="flex flex-col gap-3">
+                <h3
+                  class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+                >
+                  Informasi Lead
+                </h3>
+                <div class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+                  <label class="flex flex-col gap-1">
+                    <span>Lead Owner</span>
+                    <input
+                      v-model="fields.lead_owner"
+                      class="input"
+                      type="text"
+                      @input="scheduleSave()"
+                    />
+                  </label>
+
+                  <label class="flex flex-col gap-1">
+                    <span>First Name</span>
+                    <input
+                      v-model="fields.first_name"
+                      class="input"
+                      type="text"
+                      @input="scheduleSave()"
+                    />
+                  </label>
+
+                  <label class="flex flex-col gap-1 sm:col-span-2">
+                    <span>Organization Name</span>
+                    <input
+                      v-model="fields.company_name"
+                      class="input"
+                      type="text"
+                      @input="scheduleSave()"
+                    />
+                  </label>
+                </div>
+              </section>
+
+              <section class="flex flex-col gap-3">
+                <h3
+                  class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+                >
+                  Kontak
+                </h3>
+                <div class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+                  <label class="flex flex-col gap-1">
+                    <span>WhatsApp</span>
+                    <input
+                      v-model="fields.whatsapp_no"
+                      class="input"
+                      type="text"
+                      @input="
+                        fields.mobile_no = fields.whatsapp_no;
+                        scheduleSave();
+                      "
+                    />
+                  </label>
+
+                  <label class="flex flex-col gap-1">
+                    <span>Mobile No</span>
+                    <input
+                      :value="fields.whatsapp_no"
+                      class="input"
+                      type="text"
+                      readonly
+                    />
+                    <span class="text-xs text-n-slate-10">
+                      Always sent with the same value as WhatsApp.
+                    </span>
+                  </label>
+                </div>
+              </section>
+
+              <section class="flex flex-col gap-3">
+                <h3
+                  class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+                >
+                  Sumber dan Klasifikasi
+                </h3>
+                <div class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+                  <label class="flex flex-col gap-1">
+                    <span>Status</span>
+                    <select
+                      v-model="fields.status"
+                      class="input"
+                      @change="scheduleSave(0)"
                     >
-                      {{ option }}
-                    </option>
-                  </select>
-                </label>
+                      <option
+                        v-for="option in STATUS_OPTIONS"
+                        :key="option"
+                        :value="option"
+                      >
+                        {{ option }}
+                      </option>
+                    </select>
+                  </label>
 
-                <label class="flex flex-col gap-1">
-                  <span>Source</span>
-                  <SearchableSelect
-                    v-model="fields.utm_source"
-                    :options="withCurrent(fields.utm_source, sourceOptions)"
-                    @change="scheduleSave(0)"
-                  />
-                </label>
+                  <label class="flex flex-col gap-1">
+                    <span>Source</span>
+                    <SearchableSelect
+                      v-model="fields.utm_source"
+                      :options="withCurrent(fields.utm_source, sourceOptions)"
+                      @change="scheduleSave(0)"
+                    />
+                  </label>
 
-                <label class="flex flex-col gap-1">
-                  <span>Campaign</span>
-                  <SearchableSelect
-                    v-model="fields.utm_campaign"
-                    :options="withCurrent(fields.utm_campaign, campaignOptions)"
-                    @change="scheduleSave(0)"
-                  />
-                </label>
+                  <label class="flex flex-col gap-1">
+                    <span>Campaign</span>
+                    <SearchableSelect
+                      v-model="fields.utm_campaign"
+                      :options="
+                        withCurrent(fields.utm_campaign, campaignOptions)
+                      "
+                      @change="scheduleSave(0)"
+                    />
+                  </label>
 
-                <label class="flex flex-col gap-1">
-                  <span>Industry <span class="text-n-ruby-10">*</span></span>
-                  <SearchableSelect
-                    v-model="fields.industry"
-                    :options="withCurrent(fields.industry, industryOptions)"
-                    @change="scheduleSave(0)"
-                  />
-                </label>
+                  <label class="flex flex-col gap-1">
+                    <span>Industry <span class="text-n-ruby-10">*</span></span>
+                    <SearchableSelect
+                      v-model="fields.industry"
+                      :options="withCurrent(fields.industry, industryOptions)"
+                      @change="scheduleSave(0)"
+                    />
+                  </label>
 
-                <label class="flex flex-col gap-1">
-                  <span>Territory</span>
-                  <SearchableSelect
-                    v-model="fields.territory"
-                    :options="withCurrent(fields.territory, territoryOptions)"
-                    @change="scheduleSave(0)"
-                  />
-                </label>
-              </div>
-            </section>
+                  <label class="flex flex-col gap-1">
+                    <span>Territory</span>
+                    <SearchableSelect
+                      v-model="fields.territory"
+                      :options="withCurrent(fields.territory, territoryOptions)"
+                      @change="scheduleSave(0)"
+                    />
+                  </label>
+                </div>
+              </section>
 
-            <section class="flex flex-col gap-3">
-              <h3
-                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
-              >
-                Market Customer
-              </h3>
-              <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                <label
-                  v-for="[label, key] in MARKET_CUSTOMER_OPTIONS"
-                  :key="key"
-                  class="flex items-center gap-2"
+              <section class="flex flex-col gap-3">
+                <h3
+                  class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
                 >
-                  <input
-                    v-model="fields[key]"
-                    type="checkbox"
-                    @change="scheduleSave(0)"
-                  />
-                  <span>{{ label }}</span>
-                </label>
-              </div>
-            </section>
-
-            <section class="flex flex-col gap-3">
-              <h3
-                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
-              >
-                Jenis Pakaian
-              </h3>
-              <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                <label
-                  v-for="[label, key] in JENIS_PAKAIAN_OPTIONS"
-                  :key="key"
-                  class="flex items-center gap-2"
+                  Market Customer
+                </h3>
+                <div
+                  class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3"
                 >
-                  <input
-                    v-model="fields[key]"
-                    type="checkbox"
-                    @change="scheduleSave(0)"
-                  />
-                  <span>{{ label }}</span>
-                </label>
-              </div>
-            </section>
-          </div>
+                  <label
+                    v-for="[label, key] in MARKET_CUSTOMER_OPTIONS"
+                    :key="key"
+                    class="flex items-center gap-2"
+                  >
+                    <input
+                      v-model="fields[key]"
+                      type="checkbox"
+                      @change="scheduleSave(0)"
+                    />
+                    <span>{{ label }}</span>
+                  </label>
+                </div>
+              </section>
 
-          <div
-            class="sticky bottom-0 flex shrink-0 flex-col gap-2 border-t border-n-weak bg-n-alpha-3 px-8 py-4"
-          >
-            <ul
-              v-if="validationErrors.length"
-              class="list-disc pl-4 text-n-ruby-10"
-            >
-              <li v-for="item in validationErrors" :key="item">{{ item }}</li>
-            </ul>
-
-            <button
-              class="button button-primary"
-              :disabled="!canSync"
-              @click="createLead"
-            >
-              {{
-                syncing
-                  ? erpLeadId
-                    ? 'Updating…'
-                    : 'Creating…'
-                  : syncStatus === 'failed'
-                    ? erpLeadId
-                      ? 'Retry Update Lead'
-                      : 'Retry Create Lead'
-                    : erpLeadId
-                      ? 'Update Lead'
-                      : 'Create Lead'
-              }}
-            </button>
-            <div class="text-xs text-n-slate-10">
-              {{
-                saving
-                  ? 'Saving draft…'
-                  : savedAt
-                    ? `Draft saved ${savedAt}`
-                    : 'Draft is saved locally before sync.'
-              }}
+              <section class="flex flex-col gap-3">
+                <h3
+                  class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+                >
+                  Jenis Pakaian
+                </h3>
+                <div
+                  class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3"
+                >
+                  <label
+                    v-for="[label, key] in JENIS_PAKAIAN_OPTIONS"
+                    :key="key"
+                    class="flex items-center gap-2"
+                  >
+                    <input
+                      v-model="fields[key]"
+                      type="checkbox"
+                      @change="scheduleSave(0)"
+                    />
+                    <span>{{ label }}</span>
+                  </label>
+                </div>
+              </section>
             </div>
-          </div>
+
+            <div
+              class="sticky bottom-0 flex shrink-0 flex-col gap-2 border-t border-n-weak bg-n-alpha-3 px-8 py-4"
+            >
+              <ul
+                v-if="validationErrors.length"
+                class="list-disc pl-4 text-n-ruby-10"
+              >
+                <li v-for="item in validationErrors" :key="item">{{ item }}</li>
+              </ul>
+
+              <button
+                class="button button-primary"
+                :disabled="!canSync"
+                @click="createLead"
+              >
+                {{
+                  syncing
+                    ? erpLeadId
+                      ? 'Updating…'
+                      : 'Creating…'
+                    : syncStatus === 'failed'
+                      ? erpLeadId
+                        ? 'Retry Update Lead'
+                        : 'Retry Create Lead'
+                      : erpLeadId
+                        ? 'Update Lead'
+                        : 'Create Lead'
+                }}
+              </button>
+              <div class="text-xs text-n-slate-10">
+                {{
+                  saving
+                    ? 'Saving draft…'
+                    : savedAt
+                      ? `Draft saved ${savedAt}`
+                      : 'Draft is saved locally before sync.'
+                }}
+              </div>
+            </div>
+          </template>
         </template>
       </div>
     </woot-modal>

@@ -220,6 +220,28 @@ patches:
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/routes/erpSettings.routes.js
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/routes/ErpSettings.vue
       - db/migrate/20260712000000_create_wijaya_erp_settings.rb
+      # Manual Lead Activity form: an isolated tab inside the ERP Lead modal that
+      # inserts a single Lead Activity child row on explicit agent click. It never
+      # touches the Lead Details create/update/refresh/sync flow and never creates
+      # activities automatically. Its own runtime options source (Lead Activity
+      # Master), server-authoritative validation/normalization, and idempotent
+      # guarded insert live in these battery-owned files.
+      # Single shared agent -> ERP User mapping source read verbatim by BOTH the
+      # backend directory and frontend/mappings.js so they can never diverge
+      # (committed empty; real mappings must stay source-controlled and may only
+      # be added by a future, explicitly approved code change, never hand-edited
+      # in a deployed copy).
+      - custom/wijaya/batteries/erp_lead_sidebar/agent_erp_user_map.json
+      - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_person_directory.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_options_service.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_payload_builder.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_service.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/app/controllers/api/v1/accounts/wijaya/lead_activities_controller.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/api/wijayaErpLeadActivities.js
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/LeadActivityForm.vue
+      # Strict real-calendar YYYY-MM-DD validation shared by the form (mirrors the
+      # backend Date.iso8601 round-trip); extracted so it is directly unit-testable.
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/dateValidation.js
     core_hook_touchpoints:
       # Generated schema touchpoint for the account-scoped ERP settings table.
       - db/schema.rb
@@ -256,6 +278,16 @@ patches:
       - spec/custom/wijaya/erp_lead_sidebar/safe_http_spec.rb
       - spec/custom/wijaya/erp_lead_sidebar/erp_settings_controller_spec.rb
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/ErpSettings.spec.js
+      # Manual Lead Activity coverage: strict payload build/validation, isolated
+      # options + timezone default date, guarded idempotent insert (lock/retry/
+      # outcome cache, PIC resolution, no PUT/DELETE), the nested endpoint guards,
+      # and the isolated form's explicit-click submit + state handling.
+      - spec/custom/wijaya/erp_lead_sidebar/lead_activity_payload_builder_spec.rb
+      - spec/custom/wijaya/erp_lead_sidebar/lead_activity_options_service_spec.rb
+      - spec/custom/wijaya/erp_lead_sidebar/lead_activity_service_spec.rb
+      - spec/custom/wijaya/erp_lead_sidebar/lead_activities_controller_spec.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/LeadActivityForm.spec.js
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/dateValidation.spec.js
 
   - id: development_version
     name: Wijaya Internal Development Versioning

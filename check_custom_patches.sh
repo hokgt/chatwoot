@@ -163,6 +163,20 @@ require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/routes/erpSetting
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/routes/ErpSettings.vue
 require_file db/migrate/20260712000000_create_wijaya_erp_settings.rb
 require_file db/schema.rb
+# Manual Lead Activity form (isolated tab): own runtime options source, strict
+# server-side validation/normalization, and an idempotent guarded insert.
+# Shared agent -> ERP User mapping source read by BOTH backend + frontend.
+require_file custom/wijaya/batteries/erp_lead_sidebar/agent_erp_user_map.json
+require_file custom/wijaya/batteries/erp_lead_sidebar/lead_activity_person_directory.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/lead_activity_options_service.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/lead_activity_payload_builder.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/lead_activity_service.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/app/controllers/api/v1/accounts/wijaya/lead_activities_controller.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/api/wijayaErpLeadActivities.js
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/LeadActivityForm.vue
+# Real-calendar date validation shared by the form + its direct unit spec.
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/dateValidation.js
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/dateValidation.spec.js
 require_file spec/custom/wijaya/erp_lead_sidebar/erp_setting_spec.rb
 require_file spec/custom/wijaya/erp_lead_sidebar/config_spec.rb
 require_file spec/custom/wijaya/erp_lead_sidebar/host_validator_spec.rb
@@ -170,6 +184,11 @@ require_file spec/custom/wijaya/erp_lead_sidebar/connection_test_service_spec.rb
 require_file spec/custom/wijaya/erp_lead_sidebar/safe_http_spec.rb
 require_file spec/custom/wijaya/erp_lead_sidebar/erp_settings_controller_spec.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/ErpSettings.spec.js
+require_file spec/custom/wijaya/erp_lead_sidebar/lead_activity_payload_builder_spec.rb
+require_file spec/custom/wijaya/erp_lead_sidebar/lead_activity_options_service_spec.rb
+require_file spec/custom/wijaya/erp_lead_sidebar/lead_activity_service_spec.rb
+require_file spec/custom/wijaya/erp_lead_sidebar/lead_activities_controller_spec.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/LeadActivityForm.spec.js
 
 for file in \
   app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue \

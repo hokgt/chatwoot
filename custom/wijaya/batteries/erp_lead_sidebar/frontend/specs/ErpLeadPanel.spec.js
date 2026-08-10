@@ -104,10 +104,21 @@ const NextButton = {
     '<button class="erp-trigger" @click="$emit(\'click\')">{{ label }}</button>',
 };
 
+// The Lead Activity tab hosts a fully separate component with its own API. Stub
+// it so the Lead Details specs never reach that network surface, and so switching
+// tabs can be asserted without mounting the real form.
+const LeadActivityForm = {
+  name: 'LeadActivityForm',
+  props: ['conversationId', 'currentChat', 'erpLeadId', 'configured'],
+  template: '<div class="lead-activity-form-stub" />',
+};
+
 const mountModalPanel = (conversationId = 42) =>
   mount(ErpLeadPanel, {
     props: { conversationId },
-    global: { stubs: { WootModal, WootModalHeader, NextButton } },
+    global: {
+      stubs: { WootModal, WootModalHeader, NextButton, LeadActivityForm },
+    },
   });
 
 const triggerLabel = wrapper => wrapper.find('.erp-trigger').text();
@@ -304,6 +315,62 @@ describe('ErpLeadPanel modal presentation', () => {
     await flushPromises();
 
     expect(wrapper.find('.woot-modal').exists()).toBe(false);
+  });
+
+  it('defaults to the Lead Details tab and does not mount the Activity form', async () => {
+    const wrapper = mountModalPanel();
+    await flushPromises();
+
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    // Both tab buttons are present; details content (headings) is shown.
+    const tabLabels = wrapper
+      .findAll('button')
+      .map(b => b.text())
+      .filter(t => t === 'Lead Details' || t === 'Lead Activity');
+    expect(tabLabels).toEqual(['Lead Details', 'Lead Activity']);
+    expect(wrapper.findAll('h3').length).toBe(5);
+    expect(wrapper.find('.lead-activity-form-stub').exists()).toBe(false);
+  });
+
+  it('mounts the Activity form and hides Lead Details when the Activity tab is opened', async () => {
+    const wrapper = mountModalPanel();
+    await flushPromises();
+
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    const activityTab = wrapper
+      .findAll('button')
+      .find(b => b.text() === 'Lead Activity');
+    await activityTab.trigger('click');
+
+    expect(wrapper.find('.lead-activity-form-stub').exists()).toBe(true);
+    // Lead Details sections are no longer rendered while on the Activity tab.
+    expect(wrapper.findAll('h3').length).toBe(0);
+  });
+
+  it('resets to the Lead Details tab when the conversation changes', async () => {
+    const wrapper = mountModalPanel(42);
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    const activityTab = wrapper
+      .findAll('button')
+      .find(b => b.text() === 'Lead Activity');
+    await activityTab.trigger('click');
+    expect(wrapper.find('.lead-activity-form-stub').exists()).toBe(true);
+
+    await wrapper.setProps({ conversationId: 99 });
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    // Back on details after the conversation switch.
+    expect(wrapper.find('.lead-activity-form-stub').exists()).toBe(false);
+    expect(wrapper.findAll('h3').length).toBe(5);
   });
 
   it('keeps the Create/Update Lead action wired inside the modal', async () => {
