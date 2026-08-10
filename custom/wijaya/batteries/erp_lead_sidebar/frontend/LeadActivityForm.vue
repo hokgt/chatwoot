@@ -72,7 +72,9 @@ const loadOptions = async () => {
   loadingOptions.value = true;
   optionsError.value = '';
   try {
-    const { data } = await ErpLeadActivitiesAPI.options(props.conversationId);
+    const { data } = await ErpLeadActivitiesAPI.fetchOptions(
+      props.conversationId
+    );
     activityOptions.value = Array.isArray(data.options) ? data.options : [];
     defaultDate.value = data.default_date || '';
     if (!form.date) form.date = defaultDate.value;

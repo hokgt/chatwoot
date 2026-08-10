@@ -10,7 +10,7 @@ class WijayaErpLeadActivitiesAPI extends ApiClient {
     super('wijaya/erp_lead_drafts', { accountScoped: true });
   }
 
-  options(conversationId) {
+  fetchOptions(conversationId) {
     return axios.get(`${this.url}/${conversationId}/lead_activities/options`);
   }
 

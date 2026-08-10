@@ -6,15 +6,15 @@ import LeadActivityForm from '@wijaya/erp_lead_sidebar/frontend/LeadActivityForm
 // when the server-derived erp_lead_id is present. These specs drive the real
 // component and assert that contract at the API surface.
 
-const { optionsSpy, createSpy } = vi.hoisted(() => ({
-  optionsSpy: vi.fn(),
+const { fetchOptionsSpy, createSpy } = vi.hoisted(() => ({
+  fetchOptionsSpy: vi.fn(),
   createSpy: vi.fn(),
 }));
 
 vi.mock(
   '@wijaya/erp_lead_sidebar/frontend/api/wijayaErpLeadActivities',
   () => ({
-    default: { options: optionsSpy, create: createSpy },
+    default: { fetchOptions: fetchOptionsSpy, create: createSpy },
   })
 );
 
@@ -38,7 +38,7 @@ const submitButton = wrapper =>
 describe('LeadActivityForm', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    optionsSpy.mockResolvedValue({
+    fetchOptionsSpy.mockResolvedValue({
       data: { options: ['Call', 'WhatsApp'], default_date: '2026-08-10' },
     });
     createSpy.mockResolvedValue({
@@ -52,15 +52,34 @@ describe('LeadActivityForm', () => {
 
     expect(wrapper.text()).toContain('Create or link an ERP Lead first');
     expect(submitButton(wrapper)).toBeUndefined();
-    expect(optionsSpy).not.toHaveBeenCalled();
+    expect(fetchOptionsSpy).not.toHaveBeenCalled();
   });
 
   it('fetches runtime options on mount for a linked, configured draft', async () => {
     mountForm();
     await flushPromises();
 
-    expect(optionsSpy).toHaveBeenCalledTimes(1);
-    expect(optionsSpy).toHaveBeenCalledWith(42);
+    expect(fetchOptionsSpy).toHaveBeenCalledTimes(1);
+    expect(fetchOptionsSpy).toHaveBeenCalledWith(42);
+  });
+
+  // Regression: ApiClient assigns `this.options` in its constructor, which
+  // shadowed a prototype method named `options`. The renamed `fetchOptions`
+  // must resolve and its options/default_date must populate the form.
+  it('populates activity options and the default date from the response', async () => {
+    const wrapper = mountForm();
+    await flushPromises();
+
+    expect(fetchOptionsSpy).toHaveBeenCalledWith(42);
+    const activitySelect = findByLabel(wrapper, 'Lead Activity').find('select');
+    expect(activitySelect.findAll('option').map(o => o.text())).toEqual([
+      '— Select —',
+      'Call',
+      'WhatsApp',
+    ]);
+    expect(findByLabel(wrapper, 'Date').find('input').element.value).toBe(
+      '2026-08-10'
+    );
   });
 
   it('keeps submit disabled until required fields are valid', async () => {
