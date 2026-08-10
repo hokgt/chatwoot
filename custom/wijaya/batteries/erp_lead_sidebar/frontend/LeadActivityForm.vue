@@ -6,11 +6,13 @@
 // only ever inserts a Lead Activity child row on an explicit agent click.
 import { computed, onMounted, reactive, ref } from 'vue';
 import ErpLeadActivitiesAPI from '@wijaya/erp_lead_sidebar/frontend/api/wijayaErpLeadActivities';
-import { AGENT_TO_ERP_USER } from './mappings';
 import { isRealISODate } from './dateValidation';
 
 const props = defineProps({
   conversationId: { type: [Number, String], required: true },
+  // Accepted from ErpLeadPanel for interface parity; the manual Person In Charge
+  // picker no longer derives anything from the conversation assignee.
+  // eslint-disable-next-line vue/no-unused-properties
   currentChat: { type: Object, default: () => ({}) },
   // The server-derived linked ERP Lead id. Submit stays disabled until a Lead
   // exists; options are only fetched for a linked, configured draft.
@@ -26,17 +28,6 @@ const newSubmissionId = () => crypto.randomUUID();
 
 const linked = computed(() => Boolean(props.erpLeadId));
 
-// Display-only hint of the mapped person-in-charge (never the assignee email),
-// read from the same shared mapping the backend uses. It is NOT sent to the
-// server: the backend derives + verifies the person-in-charge itself from the
-// server-side conversation assignee.
-const proposedPersonInCharge = () => {
-  const assignee = props.currentChat?.meta?.assignee || {};
-  return (
-    AGENT_TO_ERP_USER[assignee.id] || AGENT_TO_ERP_USER[assignee.name] || ''
-  );
-};
-
 const form = reactive({
   date: '',
   lead_activity: '',
@@ -48,6 +39,11 @@ const form = reactive({
 });
 
 const activityOptions = ref([]);
+// Selectable ERP Users [{ value, label }] for the manual Person In Charge
+// picker, plus whether the directory was reachable. When unavailable the picker
+// is disabled but a blank Person In Charge may still be submitted.
+const personInChargeOptions = ref([]);
+const personInChargeAvailable = ref(true);
 const submissionId = ref(newSubmissionId());
 const loadingOptions = ref(false);
 const optionsError = ref('');
@@ -64,7 +60,8 @@ const resetActivityFields = () => {
   form.follow_up_date = '';
   form.follow_up_activity = '';
   form.remark = '';
-  form.person_in_charge = proposedPersonInCharge();
+  // Person In Charge is a manual choice: reset to blank only after a success.
+  form.person_in_charge = '';
 };
 
 const loadOptions = async () => {
@@ -76,10 +73,12 @@ const loadOptions = async () => {
       props.conversationId
     );
     activityOptions.value = Array.isArray(data.options) ? data.options : [];
+    personInChargeOptions.value = Array.isArray(data.person_in_charge_options)
+      ? data.person_in_charge_options
+      : [];
+    personInChargeAvailable.value = data.person_in_charge_available !== false;
     defaultDate.value = data.default_date || '';
     if (!form.date) form.date = defaultDate.value;
-    if (!form.person_in_charge)
-      form.person_in_charge = proposedPersonInCharge();
   } catch (e) {
     optionsError.value =
       e?.response?.data?.error ||
@@ -146,6 +145,7 @@ const submit = async () => {
     follow_up: form.follow_up,
     follow_up_date: form.follow_up === 'Yes' ? form.follow_up_date : '',
     follow_up_activity: form.follow_up === 'Yes' ? form.follow_up_activity : '',
+    person_in_charge: form.person_in_charge,
     remark: form.remark,
   };
   try {
@@ -176,7 +176,7 @@ const submit = async () => {
 
 onMounted(() => {
   form.date = '';
-  form.person_in_charge = proposedPersonInCharge();
+  form.person_in_charge = '';
   loadOptions();
 });
 // WIJAYA_CUSTOM_END erp_lead_sidebar
@@ -286,15 +286,23 @@ onMounted(() => {
 
         <label class="flex flex-col gap-1">
           <span>Person In Charge</span>
-          <input
-            :value="form.person_in_charge"
+          <select
+            v-model="form.person_in_charge"
             class="input"
-            type="text"
-            readonly
-          />
-          <span class="text-xs text-n-slate-10">
-            Set from the approved agent mapping and verified in ERP; blank when
-            unmapped.
+            :disabled="!personInChargeAvailable"
+          >
+            <option value="">— None —</option>
+            <option
+              v-for="option in personInChargeOptions"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
+          </select>
+          <span v-if="!personInChargeAvailable" class="text-xs text-n-amber-11">
+            The ERP user list is unavailable right now; you can still submit
+            without a Person In Charge.
           </span>
         </label>
 

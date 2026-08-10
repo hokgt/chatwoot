@@ -226,11 +226,18 @@ patches:
       # activities automatically. Its own runtime options source (Lead Activity
       # Master), server-authoritative validation/normalization, and idempotent
       # guarded insert live in these battery-owned files.
-      # Single shared agent -> ERP User mapping source read verbatim by BOTH the
-      # backend directory and frontend/mappings.js so they can never diverge
-      # (committed empty; real mappings must stay source-controlled and may only
-      # be added by a future, explicitly approved code change, never hand-edited
-      # in a deployed copy).
+      # person_in_charge is chosen MANUALLY by the agent from an account-scoped
+      # ERPNext User directory (lead_activity_person_directory.rb): the backend
+      # fetches the selectable enabled/non-Guest Users (value + label only, over
+      # Config + SafeHttp) and exact-revalidates any nonblank chosen value
+      # (exact User.name, enabled=1, not Guest) immediately before insert, so an
+      # invalid/disabled/deleted/Guest/stale value never reaches ERP. It is NOT
+      # derived from the conversation assignee or any agent mapping.
+      # agent_erp_user_map.json is NOT the Lead Activity PIC source; it remains
+      # solely the Lead Details autofill mapping consumed by ErpLeadPanel.vue via
+      # frontend/mappings.js (committed empty; real mappings must stay
+      # source-controlled and may only be added by a future, explicitly approved
+      # code change, never hand-edited in a deployed copy).
       - custom/wijaya/batteries/erp_lead_sidebar/agent_erp_user_map.json
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_person_directory.rb
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_options_service.rb
@@ -280,8 +287,10 @@ patches:
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/ErpSettings.spec.js
       # Manual Lead Activity coverage: strict payload build/validation, isolated
       # options + timezone default date, guarded idempotent insert (lock/retry/
-      # outcome cache, PIC resolution, no PUT/DELETE), the nested endpoint guards,
-      # and the isolated form's explicit-click submit + state handling.
+      # outcome cache, no PUT/DELETE), manual person_in_charge selection with
+      # exact ERP User revalidation before insert (422 invalid / 502 directory
+      # outage, zero insert on either), the nested endpoint conversation-policy
+      # guards, and the isolated form's explicit-click submit + state handling.
       - spec/custom/wijaya/erp_lead_sidebar/lead_activity_payload_builder_spec.rb
       - spec/custom/wijaya/erp_lead_sidebar/lead_activity_options_service_spec.rb
       - spec/custom/wijaya/erp_lead_sidebar/lead_activity_service_spec.rb

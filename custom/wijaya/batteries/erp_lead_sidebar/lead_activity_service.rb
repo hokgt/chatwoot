@@ -19,10 +19,12 @@ require 'securerandom'
 #   * Timeout / connection loss / 5xx / ambiguous failure => outcome_unknown.
 #   * Local validation errors and definite 4xx rejections release the lock and
 #     allow an explicit corrected retry (no outcome cached). No automatic retry.
-#   * person_in_charge is fully server-derived: the mapped candidate comes from the
-#     server-side conversation assignee (LeadActivityPersonDirectory), never from a
-#     browser-supplied value, and is re-confirmed against ERPNext before it is kept;
-#     anything else normalizes to empty and never blocks the activity.
+#   * person_in_charge is chosen manually by the agent and arrives as an untrusted
+#     param. Blank is permitted (the ERP field is optional). Any nonblank value is
+#     exact-revalidated against the live ERP User directory (LeadActivityPersonDirectory)
+#     immediately before insert: an unknown/disabled/deleted/Guest/stale value yields
+#     a definite 422 and zero POST; a directory outage yields a 502 and zero POST.
+#     Neither pre-insert failure caches an outcome, so a corrected retry is allowed.
 #
 # Declared with the nested module style (matching the sibling battery files) so
 # the unqualified sibling references (Config, SafeHttp, PayloadBuilder, etc.)
@@ -81,19 +83,22 @@ module Wijaya::Batteries::ErpLeadSidebar
       valid_activities = fetch_valid_activities
       return options_unavailable_result if valid_activities.nil?
 
-      payload = build_payload(submission_id, valid_activities)
+      person_in_charge = resolve_person_in_charge
+      return person_in_charge if person_in_charge.is_a?(Result) # PIC rejection / directory outage
+
+      payload = build_payload(submission_id, valid_activities, person_in_charge)
       return payload if payload.is_a?(Result) # validation failure
 
       post_activity(submission_id, payload)
     end
 
-    def build_payload(submission_id, valid_activities)
+    def build_payload(submission_id, valid_activities, person_in_charge)
       LeadActivityPayloadBuilder.new(
         fields: @params,
         parent: @draft.erp_lead_id,
         submission_id: submission_id,
         valid_activities: valid_activities,
-        person_in_charge: resolve_person_in_charge
+        person_in_charge: person_in_charge
       ).payload
     rescue ValidationError => e
       validation_result(e.message)
@@ -152,50 +157,20 @@ module Wijaya::Batteries::ErpLeadSidebar
 
     # --- person in charge -----------------------------------------------------
 
-    # Derive the candidate from the server-side conversation assignee (never a
-    # browser-supplied value), then keep it only when ERPNext confirms it exists.
-    # Any absence/failure normalizes to '' and never blocks the activity.
+    # The manually chosen person in charge, taken only from the untrusted params.
+    # Blank is permitted and continues (the ERP field is optional). A nonblank
+    # value is exact-revalidated against the live ERP User directory: an invalid
+    # value returns a definite 422 Result (no POST), a directory outage returns a
+    # 502 Result (no POST). Neither caches an outcome, so a corrected retry works.
+    # Returns the validated name string, '' for blank, or a Result to short-circuit.
     def resolve_person_in_charge
-      candidate = LeadActivityPersonDirectory.erp_user_for(conversation_assignee)
+      candidate = @params['person_in_charge'].to_s.strip
       return '' if candidate.empty?
-      return candidate if confirm_erp_user(candidate)
+      return candidate if LeadActivityPersonDirectory.valid?(@account, candidate)
 
-      ''
-    rescue StandardError
-      ''
-    end
-
-    # The server-side assignee of the draft's conversation; the sole source for
-    # the mapped person-in-charge candidate.
-    def conversation_assignee
-      @draft.conversation&.assignee
-    end
-
-    # Exact-match lookup for a single ERP User by name (never lists all users).
-    def confirm_erp_user(name)
-      response = SafeHttp.request(
-        method: :get,
-        uri: user_lookup_uri(name),
-        api_key: Config.erp_api_key(@account),
-        api_secret: Config.erp_api_secret(@account)
-      )
-      return false unless response.is_a?(Net::HTTPSuccess)
-
-      data = JSON.parse(response.body.presence || '{}')['data']
-      Array(data).any? { |row| row.is_a?(Hash) && row['name'] == name }
-    rescue StandardError
-      false
-    end
-
-    def user_lookup_uri(name)
-      base = Config.erp_base_url(@account).chomp('/')
-      uri = URI.parse("#{base}/api/resource/User")
-      uri.query = URI.encode_www_form(
-        fields: '["name"]',
-        filters: [['User', 'name', '=', name]].to_json,
-        limit_page_length: 1
-      )
-      uri
+      person_invalid_result
+    rescue SyncError
+      person_unavailable_result
     end
 
     # --- redis helpers --------------------------------------------------------
@@ -290,6 +265,25 @@ module Wijaya::Batteries::ErpLeadSidebar
       Result.new(
         status: 'rejected', http_status: :unprocessable_entity,
         body: { status: 'rejected', error: 'ERPNext rejected the Lead Activity. Please review the fields and retry.' }
+      )
+    end
+
+    # A nonblank Person In Charge that is not an exact, currently-selectable ERP
+    # User: a definite client-fixable rejection (no POST, no cached outcome).
+    def person_invalid_result
+      Result.new(
+        status: 'invalid', http_status: :unprocessable_entity,
+        body: { status: 'invalid', error: 'Person In Charge is not a valid ERP user. Please pick one from the list.' }
+      )
+    end
+
+    # The ERP User directory could not be reached to revalidate a nonblank
+    # Person In Charge: ambiguous availability, so refuse the insert (no POST, no
+    # cached outcome) and let the agent retry.
+    def person_unavailable_result
+      Result.new(
+        status: 'options_unavailable', http_status: :bad_gateway,
+        body: { status: 'options_unavailable', error: 'Person In Charge could not be verified right now. Please try again.' }
       )
     end
   end

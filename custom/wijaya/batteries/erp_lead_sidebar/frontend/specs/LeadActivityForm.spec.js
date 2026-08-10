@@ -39,7 +39,14 @@ describe('LeadActivityForm', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchOptionsSpy.mockResolvedValue({
-      data: { options: ['Call', 'WhatsApp'], default_date: '2026-08-10' },
+      data: {
+        options: ['Call', 'WhatsApp'],
+        default_date: '2026-08-10',
+        person_in_charge_options: [
+          { value: 'agent@erp.example', label: 'Agent Example' },
+        ],
+        person_in_charge_available: true,
+      },
     });
     createSpy.mockResolvedValue({
       data: { status: 'success', message: 'Lead Activity added successfully.' },
@@ -188,6 +195,92 @@ describe('LeadActivityForm', () => {
     expect(
       findByLabel(wrapper, 'Lead Activity').find('select').element.value
     ).toBe('Call');
+  });
+
+  it('renders the Person In Charge options with a blank default and no assignee prefill', async () => {
+    // Even with an assigned agent, nothing is derived from the assignee: the
+    // agent must pick manually, so the picker defaults to blank.
+    const wrapper = mountForm({
+      currentChat: { meta: { assignee: { id: 55, name: 'Agent Smith' } } },
+    });
+    await flushPromises();
+
+    const picSelect = findByLabel(wrapper, 'Person In Charge').find('select');
+    expect(picSelect.findAll('option').map(o => o.text())).toEqual([
+      '— None —',
+      'Agent Example',
+    ]);
+    expect(picSelect.element.value).toBe('');
+  });
+
+  it('submits the manually selected Person In Charge value only on click', async () => {
+    const wrapper = mountForm();
+    await flushPromises();
+
+    await findByLabel(wrapper, 'Lead Activity').find('select').setValue('Call');
+    await findByLabel(wrapper, 'Person In Charge')
+      .find('select')
+      .setValue('agent@erp.example');
+
+    // Nothing submitted until the explicit click.
+    expect(createSpy).not.toHaveBeenCalled();
+
+    await submitButton(wrapper).trigger('click');
+    await flushPromises();
+
+    expect(createSpy.mock.calls[0][1].person_in_charge).toBe(
+      'agent@erp.example'
+    );
+  });
+
+  it('retains the selected Person In Charge on failure and resets it to blank on success', async () => {
+    createSpy.mockRejectedValueOnce({
+      response: { data: { status: 'invalid', error: 'PIC invalid.' } },
+    });
+
+    const wrapper = mountForm();
+    await flushPromises();
+
+    const pic = () => findByLabel(wrapper, 'Person In Charge').find('select');
+    await findByLabel(wrapper, 'Lead Activity').find('select').setValue('Call');
+    await pic().setValue('agent@erp.example');
+
+    // Failure keeps the entered value for a corrected retry.
+    await submitButton(wrapper).trigger('click');
+    await flushPromises();
+    expect(pic().element.value).toBe('agent@erp.example');
+
+    // A subsequent success resets the picker back to blank.
+    await findByLabel(wrapper, 'Lead Activity').find('select').setValue('Call');
+    await submitButton(wrapper).trigger('click');
+    await flushPromises();
+    expect(pic().element.value).toBe('');
+  });
+
+  it('disables the Person In Charge picker and warns when the directory is unavailable, still allowing blank submit', async () => {
+    fetchOptionsSpy.mockResolvedValue({
+      data: {
+        options: ['Call'],
+        default_date: '2026-08-10',
+        person_in_charge_options: [],
+        person_in_charge_available: false,
+      },
+    });
+
+    const wrapper = mountForm();
+    await flushPromises();
+
+    const picSelect = findByLabel(wrapper, 'Person In Charge').find('select');
+    expect(picSelect.attributes('disabled')).toBeDefined();
+    expect(wrapper.text()).toContain('ERP user list is unavailable');
+
+    // A blank Person In Charge can still be submitted.
+    await findByLabel(wrapper, 'Lead Activity').find('select').setValue('Call');
+    await submitButton(wrapper).trigger('click');
+    await flushPromises();
+
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(createSpy.mock.calls[0][1].person_in_charge).toBe('');
   });
 
   it('shows a failure message and keeps values on a definite rejection', async () => {
