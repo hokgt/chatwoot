@@ -305,4 +305,58 @@ describe('LeadActivityForm', () => {
       findByLabel(wrapper, 'Lead Activity').find('select').element.value
     ).toBe('Call');
   });
+
+  it('lays out a single scrollable body with a stable non-scrolling footer action', async () => {
+    const wrapper = mountForm();
+    await flushPromises();
+
+    // Exactly one scrollable content region.
+    const scrollers = wrapper
+      .findAll('div')
+      .filter(d => d.classes().includes('overflow-y-auto'));
+    expect(scrollers.length).toBe(1);
+
+    // The primary action sits in a non-scrolling footer sibling (shrink-0),
+    // which is not the scroller, so it cannot cover the fields.
+    const footer = wrapper
+      .findAll('div')
+      .find(
+        d =>
+          d.classes().includes('shrink-0') &&
+          d.classes().includes('border-t') &&
+          d.find('button').exists()
+      );
+    expect(footer).toBeTruthy();
+    expect(footer.classes()).not.toContain('overflow-y-auto');
+    expect(footer.classes()).not.toContain('sticky');
+    expect(submitButton(wrapper)).toBeTruthy();
+  });
+
+  it('explains the primary action and shows a plain-language disabled reason', async () => {
+    const wrapper = mountForm();
+    await flushPromises();
+
+    // No Lead Activity selected yet -> disabled with a clear reason.
+    expect(submitButton(wrapper).attributes('disabled')).toBeDefined();
+    expect(wrapper.text()).toContain(
+      'Adds a new activity to the linked ERP Lead in ERPNext.'
+    );
+    expect(wrapper.text()).toContain(
+      'Complete the required fields marked * before adding the activity.'
+    );
+  });
+
+  it('marks the required fields with an accessible required cue', async () => {
+    const wrapper = mountForm();
+    await flushPromises();
+
+    expect(
+      findByLabel(wrapper, 'Date').find('input').attributes('aria-required')
+    ).toBe('true');
+    expect(
+      findByLabel(wrapper, 'Lead Activity')
+        .find('select')
+        .attributes('aria-required')
+    ).toBe('true');
+  });
 });

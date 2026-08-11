@@ -6,6 +6,7 @@
 // only ever inserts a Lead Activity child row on an explicit agent click.
 import { computed, onMounted, reactive, ref } from 'vue';
 import ErpLeadActivitiesAPI from '@wijaya/erp_lead_sidebar/frontend/api/wijayaErpLeadActivities';
+import NextButton from 'dashboard/components-next/button/Button.vue';
 import { isRealISODate } from './dateValidation';
 
 const props = defineProps({
@@ -174,6 +175,62 @@ const submit = async () => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// Display-only presentation derived from the existing refs — no state, payload,
+// validation, or reset/retry semantics change here.
+// ---------------------------------------------------------------------------
+
+const FEEDBACK_TONES = {
+  info: 'bg-n-slate-3 text-n-slate-12',
+  success: 'bg-n-teal-3 text-n-teal-11',
+  warning: 'bg-n-amber-3 text-n-amber-11',
+  danger: 'bg-n-ruby-3 text-n-ruby-11',
+};
+
+// One contextual feedback line consolidating the loading/options-error and the
+// success/unknown/failure outcomes. Messages are surfaced exactly as produced by
+// the existing state; this only chooses which single line to render.
+const feedback = computed(() => {
+  if (loadingOptions.value)
+    return { tone: 'info', text: 'Loading Lead Activity options…' };
+  if (optionsError.value) return { tone: 'danger', text: optionsError.value };
+  if (state.value === 'success')
+    return { tone: 'success', text: message.value };
+  if (state.value === 'unknown')
+    return { tone: 'warning', text: warning.value };
+  if (state.value === 'failure') return { tone: 'danger', text: message.value };
+  return { tone: 'info', text: '' };
+});
+
+// Field-level copy reuses the exact same conditions/messages as
+// `validationErrors`, rendered next to the affected required field.
+const dateError = computed(() => {
+  if (!form.date) return 'Date is required.';
+  if (!isRealISODate(form.date))
+    return 'Date must be a valid calendar date (YYYY-MM-DD).';
+  return '';
+});
+const activityError = computed(() => {
+  if (!form.lead_activity) return 'Lead Activity is required.';
+  if (!activityOptions.value.includes(form.lead_activity))
+    return 'Lead Activity must be a known option.';
+  return '';
+});
+
+const submitLabel = computed(() =>
+  state.value === 'submitting' ? 'Adding…' : 'Add Lead Activity'
+);
+
+const disabledReason = computed(() => {
+  if (state.value === 'submitting') return '';
+  if (state.value === 'unknown')
+    return 'Verify in ERP whether the previous activity was saved before adding another.';
+  if (!linked.value) return '';
+  if (validationErrors.value.length)
+    return 'Complete the required fields marked * before adding the activity.';
+  return '';
+});
+
 onMounted(() => {
   form.date = '';
   form.person_in_charge = '';
@@ -185,144 +242,203 @@ onMounted(() => {
 <template>
   <!-- eslint-disable vue/no-bare-strings-in-template, @intlify/vue-i18n/no-raw-text -->
   <!-- WIJAYA_CUSTOM_START erp_lead_sidebar -->
-  <div class="flex flex-col gap-4">
-    <div v-if="!linked" class="rounded-md bg-n-amber-3 text-n-amber-11 p-2">
-      Create or link an ERP Lead first, then add activities here.
+  <div class="flex h-full min-h-0 flex-1 flex-col">
+    <div v-if="!linked" class="px-6 pt-3 pb-4">
+      <div class="rounded-md bg-n-amber-3 text-n-amber-11 p-2">
+        Create or link an ERP Lead first, then add activities here.
+      </div>
     </div>
 
     <template v-else>
-      <div v-if="loadingOptions" class="text-n-slate-11">
-        Loading Lead Activity options…
-      </div>
+      <!-- One contextual feedback line for options/success/unknown/failure. -->
       <div
-        v-if="optionsError"
-        class="rounded-md bg-n-ruby-3 text-n-ruby-11 p-2"
+        v-if="feedback.text"
+        class="mx-6 mt-3 shrink-0 rounded-md p-2 text-xs"
+        :class="FEEDBACK_TONES[feedback.tone]"
+        role="status"
+        aria-live="polite"
       >
-        {{ optionsError }}
-      </div>
-      <div
-        v-if="state === 'success'"
-        class="rounded-md bg-n-teal-3 text-n-teal-11 p-2"
-      >
-        {{ message }}
-      </div>
-      <div
-        v-if="state === 'unknown'"
-        class="rounded-md bg-n-amber-3 text-n-amber-11 p-2"
-      >
-        {{ warning }}
-      </div>
-      <div
-        v-if="state === 'failure'"
-        class="rounded-md bg-n-ruby-3 text-n-ruby-11 p-2"
-      >
-        {{ message }}
+        {{ feedback.text }}
       </div>
 
-      <div class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
-        <label class="flex flex-col gap-1">
-          <span>Date <span class="text-n-ruby-10">*</span></span>
-          <input v-model="form.date" class="input" type="date" />
-        </label>
+      <!-- Single scrollable body. -->
+      <div
+        class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pt-3 pb-6"
+      >
+        <p class="text-xs text-n-slate-10">
+          Fields marked <span class="text-n-ruby-10">*</span> are required; all
+          others are optional.
+        </p>
 
-        <label class="flex flex-col gap-1">
-          <span>Lead Activity <span class="text-n-ruby-10">*</span></span>
-          <select v-model="form.lead_activity" class="input">
-            <option value="">— Select —</option>
-            <option
-              v-for="option in activityOptions"
-              :key="option"
-              :value="option"
+        <div class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+          <label class="flex flex-col gap-1" for="erp-activity-date">
+            <span>Date <span class="text-n-ruby-10">*</span></span>
+            <input
+              id="erp-activity-date"
+              v-model="form.date"
+              class="input"
+              type="date"
+              aria-required="true"
+              :aria-invalid="dateError ? 'true' : undefined"
+              aria-describedby="erp-activity-date-help"
+            />
+            <span
+              v-if="dateError"
+              id="erp-activity-date-help"
+              class="text-xs text-n-ruby-10"
             >
-              {{ option }}
-            </option>
-          </select>
-        </label>
+              {{ dateError }}
+            </span>
+          </label>
 
-        <label class="flex flex-col gap-1">
-          <span>Follow Up</span>
-          <select
-            v-model="form.follow_up"
-            class="input"
-            @change="onFollowUpChange"
+          <label class="flex flex-col gap-1" for="erp-activity-type">
+            <span>Lead Activity <span class="text-n-ruby-10">*</span></span>
+            <select
+              id="erp-activity-type"
+              v-model="form.lead_activity"
+              class="input"
+              aria-required="true"
+              :aria-invalid="activityError ? 'true' : undefined"
+              aria-describedby="erp-activity-type-help"
+            >
+              <option value="">— Select —</option>
+              <option
+                v-for="option in activityOptions"
+                :key="option"
+                :value="option"
+              >
+                {{ option }}
+              </option>
+            </select>
+            <span
+              v-if="activityError"
+              id="erp-activity-type-help"
+              class="text-xs text-n-ruby-10"
+            >
+              {{ activityError }}
+            </span>
+          </label>
+
+          <label class="flex flex-col gap-1" for="erp-activity-followup">
+            <span>Follow Up</span>
+            <select
+              id="erp-activity-followup"
+              v-model="form.follow_up"
+              class="input"
+              @change="onFollowUpChange"
+            >
+              <option
+                v-for="option in FOLLOW_UP_VALUES"
+                :key="option"
+                :value="option"
+              >
+                {{ option }}
+              </option>
+            </select>
+          </label>
+
+          <label class="flex flex-col gap-1" for="erp-activity-followup-date">
+            <span>Follow Up Date</span>
+            <input
+              id="erp-activity-followup-date"
+              v-model="form.follow_up_date"
+              class="input"
+              type="date"
+              :disabled="form.follow_up !== 'Yes'"
+            />
+          </label>
+
+          <label class="flex flex-col gap-1" for="erp-activity-followup-type">
+            <span>Follow Up Activity</span>
+            <select
+              id="erp-activity-followup-type"
+              v-model="form.follow_up_activity"
+              class="input"
+              :disabled="form.follow_up !== 'Yes'"
+            >
+              <option value="">— Select —</option>
+              <option
+                v-for="option in activityOptions"
+                :key="option"
+                :value="option"
+              >
+                {{ option }}
+              </option>
+            </select>
+          </label>
+
+          <label class="flex flex-col gap-1" for="erp-activity-pic">
+            <span>Person In Charge</span>
+            <select
+              id="erp-activity-pic"
+              v-model="form.person_in_charge"
+              class="input"
+              :disabled="!personInChargeAvailable"
+              aria-describedby="erp-activity-pic-help"
+            >
+              <option value="">— None —</option>
+              <option
+                v-for="option in personInChargeOptions"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+            <span
+              v-if="!personInChargeAvailable"
+              id="erp-activity-pic-help"
+              class="text-xs text-n-amber-11"
+            >
+              The ERP user list is unavailable right now; you can still submit
+              without a Person In Charge.
+            </span>
+          </label>
+
+          <label
+            class="flex flex-col gap-1 sm:col-span-2"
+            for="erp-activity-remark"
           >
-            <option
-              v-for="option in FOLLOW_UP_VALUES"
-              :key="option"
-              :value="option"
-            >
-              {{ option }}
-            </option>
-          </select>
-        </label>
+            <span>Remark</span>
+            <textarea
+              id="erp-activity-remark"
+              v-model="form.remark"
+              class="input"
+              rows="3"
+            />
+          </label>
+        </div>
 
-        <label class="flex flex-col gap-1">
-          <span>Follow Up Date</span>
-          <input
-            v-model="form.follow_up_date"
-            class="input"
-            type="date"
-            :disabled="form.follow_up !== 'Yes'"
-          />
-        </label>
-
-        <label class="flex flex-col gap-1">
-          <span>Follow Up Activity</span>
-          <select
-            v-model="form.follow_up_activity"
-            class="input"
-            :disabled="form.follow_up !== 'Yes'"
-          >
-            <option value="">— Select —</option>
-            <option
-              v-for="option in activityOptions"
-              :key="option"
-              :value="option"
-            >
-              {{ option }}
-            </option>
-          </select>
-        </label>
-
-        <label class="flex flex-col gap-1">
-          <span>Person In Charge</span>
-          <select
-            v-model="form.person_in_charge"
-            class="input"
-            :disabled="!personInChargeAvailable"
-          >
-            <option value="">— None —</option>
-            <option
-              v-for="option in personInChargeOptions"
-              :key="option.value"
-              :value="option.value"
-            >
-              {{ option.label }}
-            </option>
-          </select>
-          <span v-if="!personInChargeAvailable" class="text-xs text-n-amber-11">
-            The ERP user list is unavailable right now; you can still submit
-            without a Person In Charge.
-          </span>
-        </label>
-
-        <label class="flex flex-col gap-1 sm:col-span-2">
-          <span>Remark</span>
-          <textarea v-model="form.remark" class="input" rows="3" />
-        </label>
+        <ul
+          v-if="validationErrors.length"
+          class="list-disc pl-4 text-xs text-n-ruby-10"
+          role="alert"
+        >
+          <li v-for="item in validationErrors" :key="item">{{ item }}</li>
+        </ul>
       </div>
 
-      <ul v-if="validationErrors.length" class="list-disc pl-4 text-n-ruby-10">
-        <li v-for="item in validationErrors" :key="item">{{ item }}</li>
-      </ul>
-
-      <button
-        class="button button-primary"
-        :disabled="!canSubmit"
-        @click="submit"
+      <!-- Stable non-scrolling action footer. -->
+      <div
+        class="flex shrink-0 flex-col gap-2 border-t border-n-weak bg-n-alpha-2 px-6 py-3"
       >
-        {{ state === 'submitting' ? 'Adding…' : 'Add Lead Activity' }}
-      </button>
+        <NextButton
+          :label="submitLabel"
+          :is-loading="state === 'submitting'"
+          :disabled="!canSubmit"
+          color="blue"
+          class="w-full"
+          @click="submit"
+        >
+          {{ submitLabel }}
+        </NextButton>
+        <p class="text-xs text-n-slate-11">
+          Adds a new activity to the linked ERP Lead in ERPNext.
+        </p>
+        <p v-if="disabledReason" class="text-xs text-n-amber-11">
+          {{ disabledReason }}
+        </p>
+      </div>
     </template>
   </div>
   <!-- WIJAYA_CUSTOM_END erp_lead_sidebar -->

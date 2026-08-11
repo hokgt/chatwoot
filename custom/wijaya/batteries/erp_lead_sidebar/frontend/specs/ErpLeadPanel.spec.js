@@ -242,7 +242,7 @@ describe('ErpLeadPanel modal presentation', () => {
     expect(checkboxes.length).toBe(34);
   });
 
-  it('keeps the action area with Create/Update wiring inside the modal', async () => {
+  it('keeps the action area inside the modal in a non-scrolling footer below a single scroll body', async () => {
     const wrapper = mountModalPanel();
     await flushPromises();
 
@@ -253,15 +253,29 @@ describe('ErpLeadPanel modal presentation', () => {
     const createButton = modal
       .findAll('button')
       .find(btn => btn.text().includes('Create Lead'));
-    // The primary action lives inside the modal, in a sticky bottom action bar.
+    // The primary action lives inside the modal.
     expect(createButton).toBeTruthy();
-    const actionBar = wrapper
+
+    // Exactly one scrollable content region in the Lead Details panel.
+    const scrollers = wrapper
+      .findAll('div')
+      .filter(d => d.classes().includes('overflow-y-auto'));
+    expect(scrollers.length).toBe(1);
+
+    // The footer is a stable, non-scrolling sibling below the scroll body: it is
+    // not sticky and is not itself the scroller, so it cannot cover the fields.
+    const footer = wrapper
       .findAll('div')
       .find(
-        d => d.classes().includes('sticky') && d.classes().includes('bottom-0')
+        d =>
+          d.classes().includes('shrink-0') &&
+          d.classes().includes('border-t') &&
+          d.find('button').exists()
       );
-    expect(actionBar).toBeTruthy();
-    expect(actionBar.find('button').exists()).toBe(true);
+    expect(footer).toBeTruthy();
+    expect(footer.classes()).not.toContain('sticky');
+    expect(footer.classes()).not.toContain('overflow-y-auto');
+    expect(footer.find('button').exists()).toBe(true);
   });
 
   it('preserves an edited field across close/reopen in the same conversation', async () => {
@@ -382,7 +396,7 @@ describe('ErpLeadPanel modal presentation', () => {
 
     const statusLabel = wrapper
       .findAll('label')
-      .find(l => l.find('span').exists() && l.find('span').text() === 'Status');
+      .find(l => l.attributes('for') === 'erp-status');
     const options = statusLabel.findAll('option').map(o => o.element.value);
     expect(options).toEqual([
       'Lead',
@@ -413,5 +427,163 @@ describe('ErpLeadPanel modal presentation', () => {
     // The existing draft-then-sync pipeline still fires against the same APIs.
     expect(saveSpy).toHaveBeenCalled();
     expect(syncSpy).toHaveBeenCalledWith(42, expect.any(Object));
+  });
+
+  it('shows plain-language guidance describing the modal purpose', async () => {
+    const wrapper = mountModalPanel();
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('.woot-modal').text()).toContain(
+      'Manage the ERP Lead linked to this conversation'
+    );
+  });
+
+  it('exposes accessible tab semantics with active state and exact helper text', async () => {
+    const wrapper = mountModalPanel();
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    const tablist = wrapper.find('[role="tablist"]');
+    expect(tablist.exists()).toBe(true);
+
+    const detailsTab = wrapper.find('#erp-tab-details');
+    const activityTab = wrapper.find('#erp-tab-activity');
+    expect(detailsTab.attributes('role')).toBe('tab');
+    expect(activityTab.attributes('role')).toBe('tab');
+    // Active tab is obvious to assistive tech and associated with its panel.
+    expect(detailsTab.attributes('aria-selected')).toBe('true');
+    expect(activityTab.attributes('aria-selected')).toBe('false');
+    expect(detailsTab.attributes('aria-controls')).toBe('erp-tabpanel-details');
+    expect(wrapper.find('#erp-tabpanel-details').attributes('role')).toBe(
+      'tabpanel'
+    );
+    // Contextual helper for Lead Details.
+    expect(wrapper.text()).toContain(
+      'View and update the ERP Lead linked to this conversation.'
+    );
+
+    await activityTab.trigger('click');
+    expect(activityTab.attributes('aria-selected')).toBe('true');
+    expect(detailsTab.attributes('aria-selected')).toBe('false');
+    // Contextual helper for Lead Activity.
+    expect(wrapper.text()).toContain(
+      'Manually record a new activity for the linked Lead.'
+    );
+  });
+
+  it('renders the footer action explanation and a plain-language disabled reason', async () => {
+    // Missing Industry keeps the required rule unmet, so the primary action is
+    // disabled and a plain-language reason is shown (guard logic unchanged).
+    showSpy.mockResolvedValueOnce({
+      data: {
+        configured: true,
+        fields: { first_name: 'Bob', status: 'Lead', industry: '' },
+      },
+    });
+    const wrapper = mountModalPanel();
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain(
+      'Creates a new Lead in ERPNext from these details.'
+    );
+    expect(wrapper.text()).toContain(
+      'Complete the required fields marked * before continuing.'
+    );
+  });
+
+  it('labels the primary action Update Lead / Retry Update Lead for a linked draft', async () => {
+    showSpy.mockResolvedValueOnce({
+      data: {
+        configured: true,
+        erp_lead_id: 'LEAD-9',
+        sync_status: 'synced',
+        fields: { first_name: 'Bob', status: 'Lead', industry: 'Retail' },
+      },
+    });
+    const wrapper = mountModalPanel();
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    const primary = () =>
+      wrapper
+        .findAll('button')
+        .find(
+          b => b.text().includes('Update Lead') || b.text().includes('Retry')
+        );
+    // Linked + not failed -> Update Lead.
+    expect(primary().text()).toContain('Update Lead');
+
+    // The draft save keeps the linked id; the sync then fails.
+    saveSpy.mockResolvedValue({
+      data: { sync_status: 'draft', erp_lead_id: 'LEAD-9' },
+    });
+    syncSpy.mockRejectedValueOnce({ response: { data: {} } });
+    await primary().trigger('click');
+    await flushPromises();
+    expect(primary().text()).toContain('Retry Update Lead');
+  });
+
+  it('shows a clear loading label while a create is in flight', async () => {
+    let resolveSync;
+    saveSpy.mockResolvedValue({ data: { sync_status: 'draft' } });
+    syncSpy.mockReturnValueOnce(
+      new Promise(resolve => {
+        resolveSync = resolve;
+      })
+    );
+
+    const wrapper = mountModalPanel();
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    const create = wrapper
+      .findAll('button')
+      .find(b => b.text().includes('Create Lead'));
+    await create.trigger('click');
+    await flushPromises();
+
+    // While syncing, the label reflects the in-flight create.
+    expect(
+      wrapper.findAll('button').find(b => b.text().includes('Creating…'))
+    ).toBeTruthy();
+
+    resolveSync({ data: { sync_status: 'synced', erp_lead_id: 'LEAD-1' } });
+    await flushPromises();
+  });
+
+  it('presents a single synchronization status without duplicate success banners', async () => {
+    const wrapper = mountModalPanel();
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    const create = wrapper
+      .findAll('button')
+      .find(b => b.text().includes('Create Lead'));
+    // Sync succeeds and returns an ERP Lead id (no server message).
+    await create.trigger('click');
+    await flushPromises();
+
+    // Exactly one status region, and the id appears exactly once (no separate
+    // "ERP Lead created" chip plus a duplicate success banner).
+    const statuses = wrapper.findAll('[role="status"]');
+    expect(statuses.length).toBe(1);
+    const occurrences = (
+      wrapper
+        .find('.woot-modal')
+        .text()
+        .match(/LEAD-1/g) || []
+    ).length;
+    expect(occurrences).toBe(1);
+    expect(wrapper.find('.woot-modal').text()).not.toContain(
+      'ERP Lead created'
+    );
   });
 });
