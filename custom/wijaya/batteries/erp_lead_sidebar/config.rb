@@ -34,7 +34,7 @@ module Wijaya::Batteries::ErpLeadSidebar::Config
   # Allowed values for the required `status` Select field. Order matches the
   # dev-tex contract. `Lead` is the default.
   STATUS_VALUES = [
-    'Lead', 'Open', 'Replied', 'Opportunity', 'Quotation', 'Lost Quotation', 'Interested', 'Converted', 'Do Not Contact'
+    'Lead', 'Qualified', 'Catalogue Request', 'Sample Request', 'Converted', 'Regular Customer', 'Lost Quotation'
   ].freeze
 
   DEFAULT_STATUS = 'Lead'

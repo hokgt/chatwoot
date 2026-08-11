@@ -65,6 +65,31 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::Config do
     end
   end
 
+  describe 'STATUS_VALUES' do
+    it 'is the exact ordered dev-tex status contract' do
+      expect(described_class::STATUS_VALUES).to eq(
+        [
+          'Lead', 'Qualified', 'Catalogue Request', 'Sample Request',
+          'Converted', 'Regular Customer', 'Lost Quotation'
+        ]
+      )
+    end
+  end
+
+  describe '.status_allowed?' do
+    it 'accepts every current status value' do
+      described_class::STATUS_VALUES.each do |value|
+        expect(described_class.status_allowed?(value)).to be(true)
+      end
+    end
+
+    it 'rejects removed legacy status values' do
+      ['Open', 'Opportunity', 'Replied', 'Quotation', 'Interested', 'Do Not Contact'].each do |value|
+        expect(described_class.status_allowed?(value)).to be(false)
+      end
+    end
+  end
+
   describe '.erp_setting_for' do
     it 'does not swallow a genuine query error into a silent nil' do
       allow(Wijaya::ErpSetting).to receive(:table_exists?).and_return(true)
