@@ -18,6 +18,14 @@ vi.mock(
   })
 );
 
+// The global NextButton stub renders only its default slot; the real Button
+// renders :label instead. Mirror that here now the form passes :label with no
+// redundant slot, so text-based button lookups keep working.
+const LabelledNextButton = {
+  props: { label: { type: String, default: '' } },
+  template: '<button><slot>{{ label }}</slot></button>',
+};
+
 const mountForm = (props = {}) =>
   mount(LeadActivityForm, {
     props: {
@@ -27,6 +35,7 @@ const mountForm = (props = {}) =>
       configured: true,
       ...props,
     },
+    global: { stubs: { NextButton: LabelledNextButton } },
   });
 
 const findByLabel = (wrapper, labelText) =>
@@ -273,6 +282,10 @@ describe('LeadActivityForm', () => {
     const picSelect = findByLabel(wrapper, 'Person In Charge').find('select');
     expect(picSelect.attributes('disabled')).toBeDefined();
     expect(wrapper.text()).toContain('ERP user list is unavailable');
+    // The warning hint is present, so its association is wired (not dangling).
+    expect(picSelect.attributes('aria-describedby')).toBe(
+      'erp-activity-pic-help'
+    );
 
     // A blank Person In Charge can still be submitted.
     await findByLabel(wrapper, 'Lead Activity').find('select').setValue('Call');
@@ -358,5 +371,27 @@ describe('LeadActivityForm', () => {
         .find('select')
         .attributes('aria-required')
     ).toBe('true');
+  });
+
+  it('binds field aria-describedby only when the conditional hint is rendered', async () => {
+    const wrapper = mountForm();
+    await flushPromises();
+
+    // Date is valid (default date applied), so no hint span and no reference.
+    const dateInput = findByLabel(wrapper, 'Date').find('input');
+    expect(wrapper.find('#erp-activity-date-help').exists()).toBe(false);
+    expect(dateInput.attributes('aria-describedby')).toBe(undefined);
+
+    // Lead Activity is required and unselected, so its hint is shown and wired.
+    const activitySelect = findByLabel(wrapper, 'Lead Activity').find('select');
+    expect(wrapper.find('#erp-activity-type-help').exists()).toBe(true);
+    expect(activitySelect.attributes('aria-describedby')).toBe(
+      'erp-activity-type-help'
+    );
+
+    // Person In Charge directory is available, so no warning and no reference.
+    const picSelect = findByLabel(wrapper, 'Person In Charge').find('select');
+    expect(wrapper.find('#erp-activity-pic-help').exists()).toBe(false);
+    expect(picSelect.attributes('aria-describedby')).toBe(undefined);
   });
 });

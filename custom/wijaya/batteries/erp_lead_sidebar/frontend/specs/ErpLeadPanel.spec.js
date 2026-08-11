@@ -16,7 +16,19 @@ vi.mock('@wijaya/erp_lead_sidebar/frontend/api/wijayaErpLeadDrafts', () => ({
   default: { show: showSpy, save: saveSpy, sync: syncSpy },
 }));
 
-const mountPanel = () => mount(ErpLeadPanel, { props: { conversationId: 42 } });
+// The global NextButton stub renders only its default slot; the real Button
+// renders :label instead. Mirror that here now the panel passes :label with no
+// redundant slot, so text-based button lookups keep working.
+const LabelledNextButton = {
+  props: { label: { type: String, default: '' } },
+  template: '<button><slot>{{ label }}</slot></button>',
+};
+
+const mountPanel = () =>
+  mount(ErpLeadPanel, {
+    props: { conversationId: 42 },
+    global: { stubs: { NextButton: LabelledNextButton } },
+  });
 
 describe('ErpLeadPanel unconfigured gating', () => {
   beforeEach(() => {
@@ -471,6 +483,77 @@ describe('ErpLeadPanel modal presentation', () => {
     // Contextual helper for Lead Activity.
     expect(wrapper.text()).toContain(
       'Manually record a new activity for the linked Lead.'
+    );
+  });
+
+  it('keeps both tabs in the normal keyboard Tab order regardless of selection', async () => {
+    const wrapper = mountModalPanel();
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    const detailsTab = wrapper.find('#erp-tab-details');
+    const activityTab = wrapper.find('#erp-tab-activity');
+
+    // No roving tabindex: neither native <button> is removed from Tab order
+    // (a tabindex of -1 on the inactive tab would make it unreachable).
+    expect(detailsTab.attributes('tabindex')).toBeUndefined();
+    expect(activityTab.attributes('tabindex')).toBeUndefined();
+    // Selection/association semantics stay correct.
+    expect(detailsTab.attributes('aria-selected')).toBe('true');
+    expect(activityTab.attributes('aria-selected')).toBe('false');
+    expect(detailsTab.attributes('aria-controls')).toBe('erp-tabpanel-details');
+    expect(activityTab.attributes('aria-controls')).toBe(
+      'erp-tabpanel-activity'
+    );
+
+    // Switching the active tab still leaves both reachable.
+    await activityTab.trigger('click');
+    expect(detailsTab.attributes('tabindex')).toBeUndefined();
+    expect(activityTab.attributes('tabindex')).toBeUndefined();
+    expect(activityTab.attributes('aria-selected')).toBe('true');
+    expect(detailsTab.attributes('aria-selected')).toBe('false');
+  });
+
+  it('omits the Status/Industry aria-describedby when no error hint is rendered', async () => {
+    // Default draft has a valid Status and Industry, so neither hint span is
+    // present — the describedby reference must not dangle.
+    const wrapper = mountModalPanel();
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('#erp-status-help').exists()).toBe(false);
+    expect(wrapper.find('#erp-status').attributes('aria-describedby')).toBe(
+      undefined
+    );
+    expect(wrapper.find('#erp-industry-help').exists()).toBe(false);
+    expect(wrapper.find('#erp-industry').attributes('aria-describedby')).toBe(
+      undefined
+    );
+  });
+
+  it('binds the Status/Industry aria-describedby only when the error hint is shown', async () => {
+    // Missing Status + Industry render both error hints, so the reference must
+    // point at the now-present target.
+    showSpy.mockResolvedValueOnce({
+      data: {
+        configured: true,
+        fields: { first_name: 'Bob', status: '', industry: '' },
+      },
+    });
+    const wrapper = mountModalPanel();
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('#erp-status-help').exists()).toBe(true);
+    expect(wrapper.find('#erp-status').attributes('aria-describedby')).toBe(
+      'erp-status-help'
+    );
+    expect(wrapper.find('#erp-industry-help').exists()).toBe(true);
+    expect(wrapper.find('#erp-industry').attributes('aria-describedby')).toBe(
+      'erp-industry-help'
     );
   });
 

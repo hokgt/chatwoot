@@ -280,7 +280,9 @@ onMounted(() => {
               type="date"
               aria-required="true"
               :aria-invalid="dateError ? 'true' : undefined"
-              aria-describedby="erp-activity-date-help"
+              :aria-describedby="
+                dateError ? 'erp-activity-date-help' : undefined
+              "
             />
             <span
               v-if="dateError"
@@ -299,7 +301,9 @@ onMounted(() => {
               class="input"
               aria-required="true"
               :aria-invalid="activityError ? 'true' : undefined"
-              aria-describedby="erp-activity-type-help"
+              :aria-describedby="
+                activityError ? 'erp-activity-type-help' : undefined
+              "
             >
               <option value="">— Select —</option>
               <option
@@ -374,7 +378,9 @@ onMounted(() => {
               v-model="form.person_in_charge"
               class="input"
               :disabled="!personInChargeAvailable"
-              aria-describedby="erp-activity-pic-help"
+              :aria-describedby="
+                !personInChargeAvailable ? 'erp-activity-pic-help' : undefined
+              "
             >
               <option value="">— None —</option>
               <option
@@ -429,9 +435,7 @@ onMounted(() => {
           color="blue"
           class="w-full"
           @click="submit"
-        >
-          {{ submitLabel }}
-        </NextButton>
+        />
         <p class="text-xs text-n-slate-11">
           Adds a new activity to the linked ERP Lead in ERPNext.
         </p>

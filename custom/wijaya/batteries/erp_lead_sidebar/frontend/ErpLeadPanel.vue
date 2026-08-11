@@ -612,7 +612,6 @@ watch(
             role="tab"
             :aria-selected="activeTab === 'details' ? 'true' : 'false'"
             aria-controls="erp-tabpanel-details"
-            :tabindex="activeTab === 'details' ? 0 : -1"
             class="rounded-t border-b-2 px-3 py-2 font-medium outline-none focus-visible:ring-2 focus-visible:ring-n-brand"
             :class="
               activeTab === 'details'
@@ -629,7 +628,6 @@ watch(
             role="tab"
             :aria-selected="activeTab === 'activity' ? 'true' : 'false'"
             aria-controls="erp-tabpanel-activity"
-            :tabindex="activeTab === 'activity' ? 0 : -1"
             class="rounded-t border-b-2 px-3 py-2 font-medium outline-none focus-visible:ring-2 focus-visible:ring-n-brand"
             :class="
               activeTab === 'activity'
@@ -810,7 +808,9 @@ watch(
                     class="input"
                     aria-required="true"
                     :aria-invalid="statusError ? 'true' : undefined"
-                    aria-describedby="erp-status-help"
+                    :aria-describedby="
+                      statusError ? 'erp-status-help' : undefined
+                    "
                     @change="scheduleSave(0)"
                   >
                     <option
@@ -857,7 +857,7 @@ watch(
                     v-model="fields.industry"
                     :options="withCurrent(fields.industry, industryOptions)"
                     :invalid="Boolean(industryError)"
-                    describedby="erp-industry-help"
+                    :describedby="industryError ? 'erp-industry-help' : ''"
                     @change="scheduleSave(0)"
                   />
                   <span
@@ -950,9 +950,7 @@ watch(
               color="blue"
               class="w-full"
               @click="createLead"
-            >
-              {{ primaryLabel }}
-            </NextButton>
+            />
 
             <p class="text-xs text-n-slate-11">{{ footerActionHint }}</p>
             <p v-if="disabledReason" class="text-xs text-n-amber-11">
