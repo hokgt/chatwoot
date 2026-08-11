@@ -373,6 +373,28 @@ describe('ErpLeadPanel modal presentation', () => {
     expect(wrapper.findAll('h3').length).toBe(5);
   });
 
+  it('renders the exact ordered Status options', async () => {
+    const wrapper = mountModalPanel();
+    await flushPromises();
+
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    const statusLabel = wrapper
+      .findAll('label')
+      .find(l => l.find('span').exists() && l.find('span').text() === 'Status');
+    const options = statusLabel.findAll('option').map(o => o.element.value);
+    expect(options).toEqual([
+      'Lead',
+      'Qualified',
+      'Catalogue Request',
+      'Sample Request',
+      'Converted',
+      'Regular Customer',
+      'Lost Quotation',
+    ]);
+  });
+
   it('keeps the Create/Update Lead action wired inside the modal', async () => {
     const wrapper = mountModalPanel();
     await flushPromises();

@@ -1,14 +1,12 @@
 // WIJAYA_CUSTOM_START erp_lead_sidebar
 export const STATUS_OPTIONS = [
   'Lead',
-  'Open',
-  'Replied',
-  'Opportunity',
-  'Quotation',
-  'Lost Quotation',
-  'Interested',
+  'Qualified',
+  'Catalogue Request',
+  'Sample Request',
   'Converted',
-  'Do Not Contact',
+  'Regular Customer',
+  'Lost Quotation',
 ];
 
 export const MARKET_CUSTOMER_OPTIONS = [
