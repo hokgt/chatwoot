@@ -53,7 +53,7 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder do
   end
 
   it 'rejects removed legacy status values' do
-    ['Open', 'Opportunity'].each do |status|
+    %w[Open Opportunity].each do |status|
       expect { described_class.new(valid_fields.merge('status' => status)).payload }
         .to raise_error(Wijaya::Batteries::ErpLeadSidebar::ValidationError, /status is not allowed/)
     end
