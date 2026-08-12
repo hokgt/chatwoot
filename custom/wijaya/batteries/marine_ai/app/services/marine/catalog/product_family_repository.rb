@@ -40,6 +40,36 @@ module Marine
         rows.map { |row| { code: row['code'], name: row['name'] } }
       end
 
+      # Deterministic exact resolution to a SINGLE active family template. Matches an
+      # exact item_code OR a case-insensitive exact item_name, requiring a template row
+      # (has_variants = true) that is active (disabled = false). Bounded by LIMIT 2 so a
+      # unique family can be told apart from an ambiguous one. Returns { code:, name: }
+      # ONLY when exactly one row matches; returns nil for zero OR multiple matches — it
+      # fails closed and never returns an arbitrary first row. The client identifier is
+      # always passed as a bind parameter, never interpolated into SQL.
+      def resolve_exact(identifier)
+        value = identifier.to_s.strip
+        return nil if value.empty?
+
+        ensure_configured!
+        rows = Connection.select(resolve_exact_sql, [value])
+        return nil unless rows.length == 1
+
+        row = rows.first
+        { code: row['code'], name: row['name'] }
+      end
+
+      # Bounded, deterministic list of ACTIVE family templates (has_variants = true AND
+      # disabled = false). `query` is an optional case-insensitive filter on item_code or
+      # item_name, normalized/truncated exactly like #search; `limit` is clamped to
+      # [1, MAX_LIMIT]. Returns an array of { code:, name: } hashes ordered by item_code.
+      def active_candidates(query: nil, limit: DEFAULT_LIMIT)
+        ensure_configured!
+        normalized = normalize_query(query)
+        rows = Connection.select(active_candidates_sql, [normalized, like_pattern(normalized), clamp_limit(limit)])
+        rows.map { |row| { code: row['code'], name: row['name'] } }
+      end
+
       private
 
       def ensure_configured!
@@ -55,6 +85,32 @@ module Marine
           SELECT item_code AS code, item_name AS name
           FROM #{Config.qualified_table}
           WHERE has_variants = true
+            AND ($1 = '' OR item_code ILIKE $2 OR item_name ILIKE $2)
+          ORDER BY item_code ASC
+          LIMIT $3
+        SQL
+      end
+
+      # Active family template, matched by exact item_code OR case-insensitive exact
+      # item_name; LIMIT 2 lets the caller tell a unique match apart from an ambiguous one.
+      def resolve_exact_sql
+        <<~SQL.squish
+          SELECT item_code AS code, item_name AS name
+          FROM #{Config.qualified_table}
+          WHERE has_variants = true
+            AND disabled = false
+            AND (item_code = $1 OR LOWER(item_name) = LOWER($1))
+          ORDER BY item_code ASC
+          LIMIT 2
+        SQL
+      end
+
+      def active_candidates_sql
+        <<~SQL.squish
+          SELECT item_code AS code, item_name AS name
+          FROM #{Config.qualified_table}
+          WHERE has_variants = true
+            AND disabled = false
             AND ($1 = '' OR item_code ILIKE $2 OR item_name ILIKE $2)
           ORDER BY item_code ASC
           LIMIT $3

@@ -132,4 +132,97 @@ RSpec.describe Marine::Catalog::ProductFamilyRepository, type: :model do
       end
     end
   end
+
+  describe '#resolve_exact' do
+    context 'with a blank identifier' do
+      it 'returns nil without touching the database' do
+        expect(repository.resolve_exact('')).to be_nil
+        expect(repository.resolve_exact('   ')).to be_nil
+        expect(repository.resolve_exact(nil)).to be_nil
+        expect(Marine::Catalog::Connection).not_to have_received(:select)
+      end
+    end
+
+    context 'when exactly one active family template matches' do
+      let(:stubbed_rows) { [{ 'code' => 'FAM-1', 'name' => 'Family One' }] }
+
+      it 'resolves the single row, binds the identifier, and requires an active template' do
+        expect(repository.resolve_exact('FAM-1')).to eq(code: 'FAM-1', name: 'Family One')
+
+        call = captured.last
+        expect(call[:params]).to eq(['FAM-1'])
+        expect(call[:sql]).to include('has_variants = true')
+        expect(call[:sql]).to include('disabled = false')
+        expect(call[:sql]).to include('item_code = $1 OR LOWER(item_name) = LOWER($1)')
+        expect(call[:sql]).to include('LIMIT 2')
+        expect(call[:sql]).not_to include('FAM-1')
+      end
+
+      it 'strips surrounding whitespace from the identifier' do
+        repository.resolve_exact('  FAM-1  ')
+        expect(captured.last[:params]).to eq(['FAM-1'])
+      end
+    end
+
+    context 'when no family matches' do
+      let(:stubbed_rows) { [] }
+
+      it 'returns nil (not found)' do
+        expect(repository.resolve_exact('NOPE')).to be_nil
+      end
+    end
+
+    context 'when the match is ambiguous' do
+      let(:stubbed_rows) do
+        [{ 'code' => 'FAM-1', 'name' => 'Family One' }, { 'code' => 'FAM-2', 'name' => 'Family Two' }]
+      end
+
+      it 'returns nil and never picks the first ambiguous row' do
+        expect(repository.resolve_exact('AMBIG')).to be_nil
+      end
+    end
+
+    context 'when the catalog is not configured' do
+      it 'fails closed with CatalogUnavailableError' do
+        allow(Marine::Catalog::Config).to receive(:configured?).and_return(false)
+        expect { repository.resolve_exact('FAM-1') }
+          .to raise_error(Marine::Catalog::Errors::CatalogUnavailableError)
+        expect(Marine::Catalog::Connection).not_to have_received(:select)
+      end
+    end
+  end
+
+  describe '#active_candidates' do
+    let(:stubbed_rows) do
+      [
+        { 'code' => 'FAM-1', 'name' => 'Family One' },
+        { 'code' => 'FAM-2', 'name' => 'Family Two' }
+      ]
+    end
+
+    it 'lists only active family templates, binds params, and orders by item_code' do
+      result = repository.active_candidates(query: 'fam', limit: 10)
+
+      call = captured.last
+      expect(call[:params]).to eq(['fam', '%fam%', 10])
+      expect(call[:sql]).to include('has_variants = true')
+      expect(call[:sql]).to include('disabled = false')
+      expect(call[:sql]).to include('ORDER BY item_code ASC')
+      expect(call[:sql]).to include('$3')
+      expect(result).to eq([{ code: 'FAM-1', name: 'Family One' }, { code: 'FAM-2', name: 'Family Two' }])
+    end
+
+    it 'clamps the limit to MAX_LIMIT' do
+      repository.active_candidates(query: 'x', limit: 9_999)
+      expect(captured.last[:params][2]).to eq(described_class::MAX_LIMIT)
+    end
+
+    context 'when the catalog is not configured' do
+      it 'fails closed with CatalogUnavailableError' do
+        allow(Marine::Catalog::Config).to receive(:configured?).and_return(false)
+        expect { repository.active_candidates(query: 'x') }
+          .to raise_error(Marine::Catalog::Errors::CatalogUnavailableError)
+      end
+    end
+  end
 end

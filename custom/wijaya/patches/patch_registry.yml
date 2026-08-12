@@ -409,6 +409,12 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/config.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/connection.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_family_repository.rb
+      # Phase 1 — Deterministic Catalog Data Layer: generic variant resolution, general
+      # selling User Price lookup, and binary stock-availability status (numeric stock
+      # never leaves PostgreSQL). Read-only, parameterized, bounded, fail-closed.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/variant_repository.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_repository.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/stock_repository.rb
       - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
       - custom/wijaya/batteries/marine_ai/docs/product_catalog_db.md
       # Commit 1C — SOP extraction + OCR foundation (safe command runner, PDF/image
@@ -608,6 +614,10 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/controllers/documents_sop_controller_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_family_repository_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/connection_spec.rb
+      # Phase 1 — Deterministic Catalog Data Layer specs.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/variant_repository_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/price_repository_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/stock_repository_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/documents_controller_spec.rb
       - spec/factories/marine/document.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/custom_tools_controller_spec.rb
