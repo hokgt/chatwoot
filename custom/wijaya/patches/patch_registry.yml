@@ -420,6 +420,17 @@ patches:
       # normalized, allowlisted intent hash. Candidate-only, no repository/DB access,
       # no state mutation; every LLM failure collapses to a safe unknown result.
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/intent_extractor.rb
+      # Phase 3 — Product Flow State, Processing Claim, and Eligibility primitives.
+      # Battery-contained, not yet wired to hooks/jobs/orchestration. State lives in
+      # a Marine-owned namespace inside Conversation/Message additional_attributes
+      # (wijaya_marine_ai.product_flow_v1 / processing_claim_v1); all mutations run
+      # under a row lock that reloads latest, preserves every sibling, replaces only
+      # the Marine namespace, and are strictly allowlisted/bounded (no raw stock,
+      # quantity, price, SQL, error, or LLM content). Eligibility is a read-only,
+      # side-effect-free canonical human-takeover decision over public fields.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_flow_state_store.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/conversation/processing_claim.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/conversation/eligibility.rb
       - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
       - custom/wijaya/batteries/marine_ai/docs/product_catalog_db.md
       # Commit 1C — SOP extraction + OCR foundation (safe command runner, PDF/image
@@ -625,6 +636,10 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/catalog/stock_repository_spec.rb
       # Phase 2 — Contextual Product Intent Understanding spec.
       - spec/custom/wijaya/batteries/marine_ai/catalog/intent_extractor_spec.rb
+      # Phase 3 — Product Flow State, Processing Claim, and Eligibility specs.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/conversation/eligibility_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/documents_controller_spec.rb
       - spec/factories/marine/document.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/custom_tools_controller_spec.rb
