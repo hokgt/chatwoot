@@ -415,6 +415,11 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/variant_repository.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_repository.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/stock_repository.rb
+      # Phase 2 — Contextual Product Intent Understanding: LLM-backed extractor that
+      # turns customer text + bounded context + a safe state summary into a strict,
+      # normalized, allowlisted intent hash. Candidate-only, no repository/DB access,
+      # no state mutation; every LLM failure collapses to a safe unknown result.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/intent_extractor.rb
       - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
       - custom/wijaya/batteries/marine_ai/docs/product_catalog_db.md
       # Commit 1C — SOP extraction + OCR foundation (safe command runner, PDF/image
@@ -618,6 +623,8 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/catalog/variant_repository_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/price_repository_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/stock_repository_spec.rb
+      # Phase 2 — Contextual Product Intent Understanding spec.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/intent_extractor_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/documents_controller_spec.rb
       - spec/factories/marine/document.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/custom_tools_controller_spec.rb
