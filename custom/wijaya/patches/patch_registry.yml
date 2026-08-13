@@ -452,6 +452,10 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/conversation/product_message_delivery_service.rb
       - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
       - custom/wijaya/batteries/marine_ai/docs/product_catalog_db.md
+      # Phase 7 — Cross-flow hardening: Marine-owned release-readiness report distinguishing
+      # verified source contracts from the unavailable operational/runtime gates, plus the
+      # rollback posture (Phase 6 -> Phase 5, no destructive JSON cleanup, async job deferred).
+      - custom/wijaya/batteries/marine_ai/docs/product_catalog_release_readiness.md
       # Commit 1C — SOP extraction + OCR foundation (safe command runner, PDF/image
       # extraction with page-level OCR fallback, SOP create service + async job, and the
       # battery-owned OCR runtime derivative image).
@@ -666,6 +670,13 @@ patches:
       # Phase 6 — Native Product Catalog attachment delivery specs.
       - spec/custom/wijaya/batteries/marine_ai/documents/product_catalog_selector_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/product_message_delivery_service_spec.rb
+      # Phase 7 — Cross-flow hardening: aggregate security + regression invariants that
+      # span the orchestrator, renderer, repositories, and native delivery job (approved-
+      # tables-only, single-SELECT, no numeric stock, no direct provider/channel egress,
+      # adversarial-field/customer-text safety, exhaustive fact-safe text map, safe
+      # outgoing metadata). Each proves a whole-path contract no single unit spec does.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_security_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_regression_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/documents_controller_spec.rb
       - spec/factories/marine/document.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/custom_tools_controller_spec.rb

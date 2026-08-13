@@ -121,7 +121,11 @@ RSpec.describe 'Api::V1::Accounts::Marine::Scenarios', type: :request do
         expect(json_response[:account_id]).to eq(account.id)
       end
 
-      it 'accepts valid custom tool references and resolves them into tools' do
+      it 'ignores tool:// references and materializes no tools even when the referenced custom tool exists' do
+        # Custom-tool execution/reference paths are disabled by design: a tool://
+        # reference that formerly resolved to a real custom tool is now inert. The
+        # scenario is still created, but Scenario#resolve_tool_references forces the
+        # tools field to nil and validation is a no-op, so nothing is materialized.
         create(:marine_custom_tool, account: account, slug: 'custom_fetch-order')
         post "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}/scenarios",
              params: { scenario: { title: 'Order flow', description: 'Handles orders',
@@ -130,7 +134,7 @@ RSpec.describe 'Api::V1::Accounts::Marine::Scenarios', type: :request do
              as: :json
 
         expect(response).to have_http_status(:success)
-        expect(json_response[:tools]).to eq(['custom_fetch-order'])
+        expect(json_response[:tools]).to be_nil
       end
 
       context 'with invalid parameters' do
@@ -144,16 +148,19 @@ RSpec.describe 'Api::V1::Accounts::Marine::Scenarios', type: :request do
         end
       end
 
-      context 'with an invalid tool reference' do
-        it 'returns unprocessable entity status' do
+      context 'with an unknown tool reference' do
+        it 'ignores the unknown tool:// reference without a validation error and materializes no tools' do
+          # Tool-reference validation is a no-op now that custom tools are disabled,
+          # so an unknown tool:// reference does NOT fail closed with a 422: the
+          # scenario is created successfully and no tools are materialized.
           post "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}/scenarios",
                params: { scenario: { title: 'Bad', description: 'Bad tool',
                                      instruction: 'Use [@Unknown](tool://unknown_tool)' } },
                headers: admin.create_new_auth_token,
                as: :json
 
-          expect(response).to have_http_status(:unprocessable_entity)
-          expect(json_response[:message]).to include('invalid tools: unknown_tool')
+          expect(response).to have_http_status(:success)
+          expect(json_response[:tools]).to be_nil
         end
       end
     end
