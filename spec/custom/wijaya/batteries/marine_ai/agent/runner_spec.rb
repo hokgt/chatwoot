@@ -157,6 +157,47 @@ RSpec.describe Marine::Agent::Runner do
     end
   end
 
+  describe 'product path (Phase 5)' do
+    let(:account) { build_stubbed(:account) }
+    let(:conversation) { build_stubbed(:conversation, account: account) }
+    let(:message) { build_stubbed(:message, conversation: conversation, message_type: :incoming, content: 'price for impeller 3 inch') }
+    let(:runner) { described_class.new(assistant: assistant, conversation: conversation, source: message) }
+    let(:orchestrator) { instance_double(Marine::Catalog::ProductQueryOrchestrator) }
+
+    before do
+      allow(Marine::Catalog::ProductQueryOrchestrator).to receive(:new).and_return(orchestrator)
+    end
+
+    it 'runs the orchestrator before RAG and returns the product plan payload' do
+      plan = { action: :reply, reply: { kind: :price_available }, state: { operation: :update, changes: {} } }
+      allow(orchestrator).to receive(:process).and_return(plan)
+      allow(generator).to receive(:generate)
+
+      payload = runner.run(additional_message: 'price for impeller 3 inch')
+
+      expect(payload).to eq('action' => 'product', 'orchestration_path' => 'product', 'product_plan' => plan)
+      expect(generator).not_to have_received(:generate)
+    end
+
+    it 'passes the exact incoming message content and the current flow snapshot to the orchestrator' do
+      allow(orchestrator).to receive(:process).and_return(action: :not_product, reply: nil, state: { operation: :none, changes: {} })
+      allow(generator).to receive(:generate).and_return(reply_payload)
+
+      runner.run(additional_message: 'ignored — text comes from the trigger message')
+
+      expect(orchestrator).to have_received(:process).with(hash_including(text: 'price for impeller 3 inch', suppressed: false))
+    end
+
+    it 'falls through to the unchanged retrieval path on a not_product plan' do
+      allow(orchestrator).to receive(:process).and_return(action: :not_product, reply: nil, state: { operation: :none, changes: {} })
+      allow(generator).to receive(:generate).and_return(reply_payload)
+
+      payload = runner.run(additional_message: 'just saying hello')
+
+      expect(payload).to include('response' => 'Your order is on the way', 'orchestration_path' => 'retrieval')
+    end
+  end
+
   describe 'independence from Captain premium gates' do
     it 'does not reference any Captain runtime dependency in the source' do
       source = File.read(Rails.root.join('custom/wijaya/batteries/marine_ai/app/services/marine/agent/runner.rb'))

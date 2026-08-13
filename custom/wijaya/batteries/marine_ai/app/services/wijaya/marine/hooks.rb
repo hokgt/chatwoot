@@ -71,8 +71,12 @@ module Wijaya::Marine::Hooks
     conversation.messages.outgoing.where(private: false).where(sender_type: 'User').empty?
   end
 
+  # Phase 5 — bind the scheduled Marine response to the EXACT incoming message.id
+  # that triggered it. The job's third argument is optional (defaults to nil) so
+  # already-enqueued 2-arg jobs keep their legacy behavior; a present id activates
+  # the trigger-bound product/RAG flow with per-message idempotency.
   def schedule_marine_response(conversation, message)
-    job_args = [conversation, conversation.inbox.marine_assistant]
+    job_args = [conversation, conversation.inbox.marine_assistant, message.id]
     if message.attachments.blank?
       ::Marine::Conversation::ResponseBuilderJob.perform_later(*job_args)
     else

@@ -28,6 +28,10 @@ class Marine::Agent::Runner
   PATH_HANDOFF = 'handoff'.freeze
   PATH_RETRIEVAL = 'retrieval'.freeze
   PATH_SCENARIO_RETRIEVAL = 'scenario_retrieval'.freeze
+  PATH_PRODUCT = 'product'.freeze
+
+  # Bounded prior-turn context handed to the product intent extractor.
+  MAX_PRODUCT_CONTEXT = 10
 
   def initialize(assistant:, conversation: nil, source: nil)
     @assistant = assistant
@@ -38,7 +42,10 @@ class Marine::Agent::Runner
   def run(additional_message: nil, message_history: [])
     query = resolve_query(additional_message, message_history)
     log_event('runner.start', assistant_id: assistant_id, conversation_id: conversation_id,
-                              source: source, query_present: query.present?)
+                              source: source_label, query_present: query.present?)
+
+    product = product_payload(message_history)
+    return product if product
 
     scenario = select_scenario(query)
     tool_slugs = resolved_tool_slugs(scenario)
@@ -55,6 +62,47 @@ class Marine::Agent::Runner
   private
 
   attr_reader :assistant, :conversation, :source
+
+  # Phase 5 — product orchestration runs BEFORE general RAG. Only active when the
+  # trigger-bound job passed the exact incoming Message as `source:`; a legacy
+  # (source-less) run skips it entirely and behaves exactly as before. The
+  # deterministic Phase 4 orchestrator plans over the customer's text, bounded
+  # context, and the current (read-only) flow snapshot. A `:not_product` plan
+  # returns nil so the caller falls through to the unchanged retrieval path; any
+  # other action is returned as a product payload the ResponseBuilderJob finalizes
+  # (state apply + deterministic TEXT / handoff). Unexpected errors propagate to the
+  # runner's own fail-safe (handoff payload), never a fabricated product answer.
+  def product_payload(message_history)
+    message = trigger_message
+    return nil unless message
+
+    plan = product_orchestrator.process(text: message.content.to_s, context: Array(message_history).last(MAX_PRODUCT_CONTEXT),
+                                        flow: product_flow, suppressed: false)
+    return nil if plan[:action] == :not_product
+
+    log_event('answer.product', action: plan[:action])
+    { 'action' => 'product', 'orchestration_path' => PATH_PRODUCT, 'product_plan' => plan }
+  end
+
+  def trigger_message
+    source if source.is_a?(::Message) && source.incoming?
+  end
+
+  def product_orchestrator
+    @product_orchestrator ||= Marine::Catalog::ProductQueryOrchestrator.new(
+      intent_extractor: Marine::Catalog::IntentExtractor.new(account: product_account)
+    )
+  end
+
+  # Read-only current flow snapshot for the orchestrator; never mutated here — the
+  # job applies any state operation at finalization.
+  def product_flow
+    Marine::Catalog::ProductFlowStateStore.new(conversation: conversation).current
+  end
+
+  def product_account
+    conversation&.account || (assistant.account if assistant.respond_to?(:account))
+  end
 
   def response_generator
     @response_generator ||= Marine::Charge::ResponseGenerator.new(
@@ -147,5 +195,12 @@ class Marine::Agent::Runner
 
   def conversation_id
     conversation.id if conversation.respond_to?(:id)
+  end
+
+  # Never log a raw Message (its content is customer data); emit a safe id label.
+  def source_label
+    return "message:#{source.id}" if source.is_a?(::Message)
+
+    source
   end
 end

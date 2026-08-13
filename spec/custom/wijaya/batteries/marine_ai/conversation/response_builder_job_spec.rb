@@ -41,4 +41,186 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       job.send(:create_marine_reply)
     end
   end
+
+  describe '#perform (trigger-bound Phase 5)' do
+    let(:conversation) { create(:conversation) }
+    let(:assistant) { create(:marine_assistant, account: conversation.account) }
+    let(:incoming) { create(:message, conversation: conversation, message_type: :incoming, content: 'price for impeller 3 inch') }
+
+    def stub_reasoning(payload)
+      chat = instance_double(Marine::Llm::AssistantChatService, generate_response: payload)
+      allow(Marine::Llm::AssistantChatService).to receive(:new).and_return(chat)
+    end
+
+    def product_payload(action:, reply: nil, operation: :none, changes: {})
+      {
+        'action' => 'product', 'orchestration_path' => 'product',
+        'product_plan' => { action: action, reply: reply, state: { operation: operation, changes: changes } }
+      }
+    end
+
+    def claim_status
+      incoming.reload.additional_attributes.dig('wijaya_marine_ai', 'processing_claim_v1', 'status')
+    end
+
+    def usage_count
+      conversation.account.reload.custom_attributes['marine_responses_usage'].to_i
+    end
+
+    def product_state
+      Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload).current
+    end
+
+    it 'creates a deterministic product text reply, applies flow state, and completes the claim' do
+      stub_reasoning(product_payload(
+                       action: :reply,
+                       reply: { kind: :price_available, currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
+                       operation: :update,
+                       changes: { 'validated_family' => 'IMP', 'validated_variant' => 'IMP-3', 'current_intent' => 'price' }
+                     ))
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      conversation.messages.reload
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq('The price is IDR 150000 per pcs.')
+      expect(reply.additional_attributes['source_type']).to eq('marine_product')
+      expect(reply.attachments).to be_empty
+      expect(product_state['validated_variant']).to eq('IMP-3')
+      expect(usage_count).to eq(1)
+      expect(claim_status).to eq('completed')
+    end
+
+    it 'produces no second output and no double usage on a duplicate delivery of the same incoming message' do
+      stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available }))
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      expect(conversation.messages.outgoing.count).to eq(1)
+      expect(usage_count).to eq(1)
+    end
+
+    it 'stops without output when a newer relevant incoming message exists (stale job)' do
+      trigger = incoming # force the trigger message to exist BEFORE the newer one
+      create(:message, conversation: conversation, message_type: :incoming, content: 'actually, a different question')
+      baseline = conversation.messages.outgoing.count
+      stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available }))
+
+      described_class.perform_now(conversation, assistant, trigger.id)
+
+      expect(conversation.messages.outgoing.count).to eq(baseline)
+      expect(claim_status).to eq('completed')
+    end
+
+    it 'creates no Marine output when a human takes over DURING reasoning/finalization' do
+      chat = instance_double(Marine::Llm::AssistantChatService)
+      allow(Marine::Llm::AssistantChatService).to receive(:new).and_return(chat)
+      allow(chat).to receive(:generate_response) do
+        # takeover appears only after pre-reasoning eligibility passed
+        create(:message, conversation: conversation, message_type: :outgoing, sender: create(:user, account: conversation.account))
+        product_payload(action: :reply, reply: { kind: :stock_available })
+      end
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      expect(conversation.messages.outgoing.where.not(sender_type: 'User').count).to eq(0)
+      expect(claim_status).to eq('completed')
+    end
+
+    it 'stops without output when a human agent has taken over before reasoning' do
+      create(:message, conversation: conversation, message_type: :outgoing, sender: create(:user, account: conversation.account))
+      stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available }))
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      expect(conversation.messages.outgoing.where.not(sender_type: 'User').count).to eq(0)
+      expect(claim_status).to eq('completed')
+    end
+
+    it 'renders send_catalog as text-only clarification with no attachment' do
+      stub_reasoning(product_payload(
+                       action: :send_catalog, reply: nil, operation: :update,
+                       changes: { 'validated_family' => 'IMP', 'current_intent' => 'price', 'expected_attributes' => %w[size material] }
+                     ))
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq('Could you specify the size, material you need?')
+      expect(reply.attachments).to be_empty
+    end
+
+    it 'routes a product handoff plan through the existing Marine circuit handoff service' do
+      stub_reasoning(product_payload(action: :handoff, reply: { kind: :unsupported }))
+      handoff = instance_double(Marine::Circuit::HandoffService, perform: nil)
+      expect(Marine::Circuit::HandoffService).to receive(:new)
+        .with(hash_including(conversation: conversation, assistant: assistant, reason: 'product_unsupported')).and_return(handoff)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      expect(claim_status).to eq('completed')
+    end
+
+    it 'creates a RAG reply with preserved metadata for a nonproduct payload' do
+      stub_reasoning('response' => 'Our office is open 9-5.', 'action' => 'reply', 'agent_name' => 'Marine Bot',
+                     'confidence' => 0.9, 'source_type' => 'manual', 'orchestration_path' => 'retrieval')
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq('Our office is open 9-5.')
+      expect(reply.additional_attributes['source_type']).to eq('manual')
+      expect(reply.additional_attributes['confidence']).to eq(0.9)
+      expect(claim_status).to eq('completed')
+    end
+
+    it 'rolls back product flow state and leaves the claim retryable when message creation fails' do
+      stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available },
+                                     operation: :update, changes: { 'validated_family' => 'IMP' }))
+      allow_any_instance_of(described_class).to receive(:create_product_reply).and_raise(ActiveRecord::RecordInvalid)
+
+      expect { described_class.perform_now(conversation, assistant, incoming.id) }.not_to raise_error
+      expect(product_state).to be_nil
+      expect(usage_count).to eq(0)
+      expect(claim_status).to eq('processing')
+    end
+
+    it 'rolls back a partially completed handoff and leaves the claim retryable' do
+      stub_reasoning(product_payload(action: :handoff, reply: { kind: :unsupported },
+                                     operation: :update, changes: { 'validated_family' => 'IMP' }))
+      allow_any_instance_of(Marine::Circuit::HandoffService).to receive(:perform) do
+        conversation.messages.create!(message_type: :outgoing, private: true, account_id: conversation.account_id,
+                                      inbox_id: conversation.inbox_id, sender: assistant, content: 'partial handoff note')
+        raise ActiveRecord::RecordInvalid
+      end
+
+      expect { described_class.perform_now(conversation, assistant, incoming.id) }.not_to raise_error
+      expect(conversation.messages.where(private: true).count).to eq(0)
+      expect(product_state).to be_nil
+      expect(claim_status).to eq('processing')
+    end
+
+    it 'is a safe no-op (no output, no claim) when the trigger id is not an incoming message' do
+      outgoing = create(:message, conversation: conversation, message_type: :outgoing, sender: assistant)
+      baseline = conversation.messages.count
+      stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available }))
+
+      described_class.perform_now(conversation, assistant, outgoing.id)
+
+      expect(conversation.messages.reload.count).to eq(baseline)
+      expect(outgoing.reload.additional_attributes).not_to have_key('wijaya_marine_ai')
+    end
+
+    it 'keeps legacy 2-arg behavior (no source, no claim) when the trigger id is nil' do
+      chat = instance_double(Marine::Llm::AssistantChatService,
+                             generate_response: { 'response' => 'legacy reply', 'action' => 'reply', 'agent_name' => 'Marine Bot' })
+      expect(Marine::Llm::AssistantChatService).to receive(:new).with(assistant: assistant, conversation: conversation).and_return(chat)
+
+      described_class.perform_now(conversation, assistant)
+
+      expect(conversation.messages.outgoing.last.content).to eq('legacy reply')
+      expect(incoming.reload.additional_attributes).not_to have_key('wijaya_marine_ai')
+    end
+  end
 end

@@ -70,9 +70,9 @@ RSpec.describe Wijaya::Marine::Hooks do
       allow(messages).to receive(:empty?).and_return(true)
     end
 
-    it 'claims (returns true) and schedules the response on a genuine inbound turn' do
-      message = double('message', incoming?: true, attachments: double(blank?: true))
-      expect(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later)
+    it 'claims (returns true) and schedules the response bound to the exact incoming message id' do
+      message = double('message', incoming?: true, id: 4242, attachments: double(blank?: true))
+      expect(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later).with(conversation, assistant, 4242)
 
       expect(described_class.claim_message_templates!(conversation: conversation, inbox: inbox, message: message)).to be(true)
     end
