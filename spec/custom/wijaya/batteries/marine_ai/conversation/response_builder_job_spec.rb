@@ -138,7 +138,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       expect(claim_status).to eq('completed')
     end
 
-    it 'renders send_catalog as text-only clarification with no attachment' do
+    it 'renders send_catalog as text-only clarification with no attachment when no usable catalog exists' do
       stub_reasoning(product_payload(
                        action: :send_catalog, reply: nil, operation: :update,
                        changes: { 'validated_family' => 'IMP', 'current_intent' => 'price', 'expected_attributes' => %w[size material] }
@@ -149,6 +149,78 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       reply = conversation.messages.outgoing.last
       expect(reply.content).to eq('Could you specify the size, material you need?')
       expect(reply.attachments).to be_empty
+    end
+
+    # --- Phase 6: native Product Catalog attachment delivery -------------------
+
+    def usable_catalog(family: 'IMP')
+      create(:marine_document, :product_catalog, assistant: assistant, product_family_code: family, status: :available)
+    end
+
+    def send_catalog_payload(operation: :start)
+      product_payload(action: :send_catalog, reply: nil, operation: operation,
+                      changes: { 'validated_family' => 'IMP', 'current_intent' => 'price', 'expected_attributes' => %w[size material] })
+    end
+
+    it 'delivers exactly one native attachment reusing the document blob and marks state only after message success' do
+      document = usable_catalog
+      stub_reasoning(send_catalog_payload)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq('Could you specify the size, material you need?')
+      expect(reply.additional_attributes['source_type']).to eq('marine_product')
+      expect(reply.attachments.count).to eq(1)
+      expect(reply.attachments.first.file.blob.id).to eq(document.source_file.blob.id)
+
+      state = product_state
+      expect(state['catalog_sent']).to be(true)
+      expect(state['catalog_document_id']).to eq(document.id)
+      expect(state['catalog_message_id']).to eq(reply.id)
+      expect(usage_count).to eq(1)
+      expect(claim_status).to eq('completed')
+    end
+
+    it 'sends only text (no second attachment) when the flow has already sent a catalog' do
+      document = usable_catalog
+      store = Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload)
+      store.start!('validated_family' => 'IMP', 'current_intent' => 'price')
+      store.update!('catalog_sent' => true, 'catalog_document_id' => document.id, 'catalog_message_id' => 987)
+      stub_reasoning(send_catalog_payload(operation: :update))
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq('Could you specify the size, material you need?')
+      expect(reply.attachments).to be_empty
+      expect(product_state['catalog_message_id']).to eq(987)
+    end
+
+    it 'rolls back flow state and leaves the claim retryable when catalog delivery fails' do
+      usable_catalog
+      stub_reasoning(send_catalog_payload)
+      allow_any_instance_of(Marine::Conversation::ProductMessageDeliveryService).to receive(:call).and_raise(ActiveRecord::RecordInvalid)
+
+      expect { described_class.perform_now(conversation, assistant, incoming.id) }.not_to raise_error
+      expect(conversation.messages.outgoing.count).to eq(0)
+      expect(product_state).to be_nil
+      expect(usage_count).to eq(0)
+      expect(claim_status).to eq('processing')
+    end
+
+    it 'delivers no catalog attachment when a newer relevant incoming message makes the job stale' do
+      trigger = incoming
+      create(:message, conversation: conversation, message_type: :incoming, content: 'actually never mind')
+      usable_catalog
+      baseline = conversation.messages.outgoing.count
+      stub_reasoning(send_catalog_payload)
+
+      described_class.perform_now(conversation, assistant, trigger.id)
+
+      expect(conversation.messages.outgoing.count).to eq(baseline)
+      expect(product_state).to be_nil
+      expect(claim_status).to eq('completed')
     end
 
     it 'routes a product handoff plan through the existing Marine circuit handoff service' do

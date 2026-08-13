@@ -13,8 +13,11 @@
 #     when finally eligible. The claim is completed only AFTER a successful outgoing
 #     text / terminal no-output decision — never before delivery — so a mid-flight
 #     failure leaves it retryable/stale rather than crashing a complete-before-deliver
-#     window. Catalog-needed becomes deterministic TEXT clarification; native
-#     attachment delivery is Phase 6.
+#     window. Phase 6: a catalog-needed (send_catalog) turn delivers ONE native Product
+#     Catalog attachment (reusing the existing document blob) when a single usable
+#     primary catalog exists for the validated family and none has been sent this flow —
+#     marking catalog_sent/document/message only after the Message is created — and
+#     otherwise falls back to the identical deterministic clarify-variant TEXT.
 # rubocop:disable Metrics/ClassLength -- Phase 5 concentrates the trigger-bound
 # orchestration the blueprint assigns to this job (claim, eligibility, finalization
 # safety, state apply, action handling, and the small deterministic product-text
@@ -128,13 +131,69 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     plan = @response['product_plan']
     apply_product_state(plan[:state])
 
-    if plan[:action] == :handoff
+    case plan[:action]
+    when :handoff
       process_handoff(product_handoff_reason(plan))
+    when :send_catalog
+      deliver_product_catalog(plan)
+      increment_marine_usage
     else
       create_product_reply(plan)
       increment_marine_usage
     end
     complete_claim
+  end
+
+  # Phase 6 — Native Product Catalog attachment delivery for a send_catalog action.
+  # Runs INSIDE finalize's Conversation row lock + transaction, AFTER apply_product_state
+  # has persisted the validated family, so selection reads the freshest flow. When exactly
+  # one usable primary catalog exists for the validated family AND this flow has not
+  # already sent a catalog, deliver ONE native attachment (reusing the existing blob) and
+  # mark catalog_sent/document/message ONLY after the Message is created; otherwise fall
+  # back to the identical deterministic clarify-variant TEXT so the customer can still
+  # continue with an exact code. A create failure raises, rolling the whole finalization
+  # back (no markers, no completed claim), leaving the job retryable.
+  def deliver_product_catalog(plan)
+    flow = current_product_flow
+    document = catalog_selection(flow['validated_family'])
+
+    if document && !catalog_already_sent?(flow)
+      deliver_catalog_message(plan, document)
+    else
+      create_product_reply(plan)
+    end
+  end
+
+  def deliver_catalog_message(plan, document)
+    message = Marine::Conversation::ProductMessageDeliveryService.new(
+      conversation: @conversation, assistant: @assistant,
+      document: document, content: product_reply_text(plan)
+    ).call
+    mark_catalog_sent(document, message)
+  end
+
+  # One catalog per flow: record the delivery markers only after the Message exists, as a
+  # version-bumping flow update within the same finalize transaction.
+  def mark_catalog_sent(document, message)
+    Marine::Catalog::ProductFlowStateStore.new(conversation: @conversation).update!(
+      'catalog_sent' => true,
+      'catalog_document_id' => document.id,
+      'catalog_message_id' => message.id
+    )
+  end
+
+  def catalog_selection(family_code)
+    Marine::Documents::ProductCatalogSelector.new(
+      account: @conversation.account, assistant: @assistant, family_code: family_code
+    ).call
+  end
+
+  def current_product_flow
+    Marine::Catalog::ProductFlowStateStore.new(conversation: @conversation).current || {}
+  end
+
+  def catalog_already_sent?(flow)
+    flow['catalog_sent'] == true
   end
 
   def apply_product_state(state)
@@ -197,9 +256,11 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
   GENERIC_PRODUCT_TEXT = 'Could you share a little more detail about the product you need?'.freeze
 
-  # send_catalog in Phase 5 is a text-only variant clarification (NO attachment /
-  # document selection); every other product reply maps its frozen descriptor kind to
-  # a fixed or field-interpolated, fact-safe template.
+  # For a send_catalog turn this renders the deterministic variant clarification, used
+  # both as the text fallback (no usable catalog) and as the caption accompanying the
+  # native catalog attachment (Phase 6) so the customer can continue with an exact code;
+  # every other product reply maps its frozen descriptor kind to a fixed or
+  # field-interpolated, fact-safe template.
   def product_reply_text(plan)
     return clarify_variant_text(Array(plan.dig(:state, :changes, 'expected_attributes'))) if plan[:action] == :send_catalog
 
