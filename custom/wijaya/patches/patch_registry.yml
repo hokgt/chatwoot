@@ -431,6 +431,17 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_flow_state_store.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/conversation/processing_claim.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/conversation/eligibility.rb
+      # Phase 4 — Product Decision and State Machine Orchestrator. Integration domain
+      # layer BEFORE any runtime side effect: combines untrusted Phase 2 intent, the
+      # deterministic Phase 1 repositories, the Phase 3 canonical flow snapshot, and
+      # context-aware catalog reasoning into a strict, frozen action plan + state-operation
+      # plan. No Message/Attachment/provider/DB-write side effect; never calls a
+      # ProductFlowStateStore mutation (returns a start/update/none plan for a later phase);
+      # reply content is structured deterministic descriptors (no raw stock/warehouse/SQL/
+      # error, no arbitrary LLM text). Not wired to any runtime hook/job.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/variant_resolver.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_renderer.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_query_orchestrator.rb
       - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
       - custom/wijaya/batteries/marine_ai/docs/product_catalog_db.md
       # Commit 1C — SOP extraction + OCR foundation (safe command runner, PDF/image
@@ -640,6 +651,10 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/eligibility_spec.rb
+      # Phase 4 — Product Decision and State Machine Orchestrator specs.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/variant_resolver_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/reply_renderer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_query_orchestrator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/documents_controller_spec.rb
       - spec/factories/marine/document.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/custom_tools_controller_spec.rb
