@@ -442,6 +442,10 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/variant_resolver.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_renderer.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_query_orchestrator.rb
+      # Cohesive plan-envelope helper mixed into the orchestrator: builds the frozen
+      # action/state-change plan payloads and deep-freezes them (no repository/provider/
+      # state access), keeping the orchestrator on decision/state-machine logic.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/plan_builder.rb
       # Phase 6 — Native Product Catalog attachment delivery. Read-only deterministic
       # selection of the single usable primary catalog document for a validated family,
       # and a native outgoing Message + one Attachment that reuses the existing document

@@ -25,7 +25,7 @@ module Marine
         price_available price_unavailable price_conflict
         stock_available stock_empty stock_unavailable
         clarify_family clarify_variant
-        catalog_unavailable unsupported
+        catalog catalog_unavailable unsupported
       ].freeze
 
       # Defensive display ceilings — the upstream repositories already bound their
@@ -42,6 +42,14 @@ module Marine
       # Parent-level answer for a validated family template ({ code:, name: }).
       def parent_info(family)
         descriptor(:parent_info, family_code: family[:code], family_name: family[:name])
+      end
+
+      # Direct Product Catalog request for a validated family ({ code:, name: }). Marks the
+      # send_catalog plan as a DIRECT catalog request (distinct from a catalog-assisted variant
+      # clarification, whose reply is nil), so the runtime renders a catalog caption / no-catalog
+      # fallback instead of asking for a variant.
+      def catalog(family)
+        descriptor(:catalog, family_code: family[:code], family_name: family[:name])
       end
 
       # Supported info for a validated, row-derived child within a validated family.

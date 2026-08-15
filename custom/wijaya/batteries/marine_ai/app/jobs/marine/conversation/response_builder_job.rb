@@ -159,6 +159,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
     if document && !catalog_already_sent?(flow)
       deliver_catalog_message(plan, document)
+    elsif direct_catalog_request?(plan)
+      create_product_message(direct_catalog_fallback_text(plan, flow, document))
     else
       create_product_reply(plan)
     end
@@ -231,12 +233,16 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # Deterministic product TEXT only — no citations, confidence, or raw catalog facts
   # beyond the approved display fields the presenter already bounded.
   def create_product_reply(plan)
+    create_product_message(product_reply_text(plan))
+  end
+
+  def create_product_message(content)
     @conversation.messages.create!(
       message_type: :outgoing,
       account_id: @conversation.account_id,
       inbox_id: @conversation.inbox_id,
       sender: @assistant,
-      content: product_reply_text(plan),
+      content: content,
       additional_attributes: { source_type: 'marine_product', orchestration_path: 'product' }
     )
   end
@@ -256,16 +262,19 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
   GENERIC_PRODUCT_TEXT = 'Could you share a little more detail about the product you need?'.freeze
 
-  # For a send_catalog turn this renders the deterministic variant clarification, used
-  # both as the text fallback (no usable catalog) and as the caption accompanying the
-  # native catalog attachment (Phase 6) so the customer can continue with an exact code;
-  # every other product reply maps its frozen descriptor kind to a fixed or
-  # field-interpolated, fact-safe template.
+  # Renders the caption/text for a plan. A DIRECT catalog request carries a :catalog reply
+  # descriptor and renders a catalog caption; a catalog-ASSISTED send_catalog (reply nil)
+  # renders the deterministic variant clarification, used both as its no-usable-catalog text
+  # fallback and as the caption accompanying the native catalog attachment (Phase 6) so the
+  # customer can continue with an exact code; every other product reply maps its frozen
+  # descriptor kind to a fixed or field-interpolated, fact-safe template.
   def product_reply_text(plan)
+    descriptor = plan[:reply] || {}
+    dynamic = dynamic_product_text(descriptor)
+    return dynamic if dynamic
     return clarify_variant_text(Array(plan.dig(:state, :changes, 'expected_attributes'))) if plan[:action] == :send_catalog
 
-    descriptor = plan[:reply] || {}
-    dynamic_product_text(descriptor) || STATIC_PRODUCT_TEXT[descriptor[:kind]] || GENERIC_PRODUCT_TEXT
+    STATIC_PRODUCT_TEXT[descriptor[:kind]] || GENERIC_PRODUCT_TEXT
   end
 
   def dynamic_product_text(descriptor)
@@ -275,7 +284,35 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     when :price_available then price_available_text(descriptor)
     when :clarify_family then clarify_family_text(descriptor[:candidates])
     when :clarify_variant then clarify_variant_text(descriptor[:attribute_names])
+    when :catalog then catalog_ready_text(descriptor)
     end
+  end
+
+  # True when the plan carries a DIRECT catalog descriptor (Phase 4 #plan_catalog), as
+  # opposed to a catalog-assisted variant clarification (reply nil). Only a direct request
+  # gets a catalog caption and a no-catalog fallback that never asks for a variant.
+  def direct_catalog_request?(plan)
+    plan.dig(:reply, :kind) == :catalog
+  end
+
+  def catalog_ready_text(descriptor)
+    "Here is the product catalog for #{catalog_family_name(descriptor)}."
+  end
+
+  # No usable catalog for a DIRECT request: never ask for a variant (there is nothing to
+  # disambiguate). If one was already sent this flow, say so; otherwise state none is
+  # available. Both are deterministic and reference only the row-derived family name.
+  def direct_catalog_fallback_text(plan, flow, document)
+    name = catalog_family_name(plan[:reply] || {})
+    if document && catalog_already_sent?(flow)
+      "I've already shared the #{name} catalog with you above."
+    else
+      "I'm sorry, I don't have a catalog available for #{name} right now."
+    end
+  end
+
+  def catalog_family_name(descriptor)
+    descriptor[:family_name].presence || descriptor[:family_code] || 'that product'
   end
 
   def parent_info_text(descriptor)

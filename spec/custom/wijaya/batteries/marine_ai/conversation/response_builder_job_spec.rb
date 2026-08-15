@@ -197,6 +197,37 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       expect(product_state['catalog_message_id']).to eq(987)
     end
 
+    # --- Direct Product Catalog request (explicit "send me the catalog" intent) --
+
+    def direct_catalog_payload(operation: :start)
+      product_payload(action: :send_catalog,
+                      reply: { kind: :catalog, family_code: 'IMP', family_name: 'Impeller' },
+                      operation: operation, changes: { 'validated_family' => 'IMP', 'current_intent' => 'catalog' })
+    end
+
+    it 'delivers the native catalog with a direct-catalog caption for an explicit catalog request' do
+      document = usable_catalog
+      stub_reasoning(direct_catalog_payload)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq('Here is the product catalog for Impeller.')
+      expect(reply.attachments.count).to eq(1)
+      expect(reply.attachments.first.file.blob.id).to eq(document.source_file.blob.id)
+      expect(product_state['catalog_sent']).to be(true)
+    end
+
+    it 'falls back to a deterministic no-catalog message (never a variant ask) when no catalog exists for a direct request' do
+      stub_reasoning(direct_catalog_payload)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq("I'm sorry, I don't have a catalog available for Impeller right now.")
+      expect(reply.attachments).to be_empty
+    end
+
     it 'rolls back flow state and leaves the claim retryable when catalog delivery fails' do
       usable_catalog
       stub_reasoning(send_catalog_payload)

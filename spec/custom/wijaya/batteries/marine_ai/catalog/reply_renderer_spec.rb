@@ -17,6 +17,12 @@ RSpec.describe Marine::Catalog::ReplyRenderer do
         kind: :variant_info, family_code: 'FAM-1', variant_code: 'CHILD-9'
       )
     end
+
+    it 'renders a direct catalog descriptor from a row-derived family' do
+      expect(renderer.catalog(code: 'FAM-1', name: 'Impeller')).to eq(
+        kind: :catalog, family_code: 'FAM-1', family_name: 'Impeller'
+      )
+    end
   end
 
   describe 'price' do
@@ -113,6 +119,7 @@ RSpec.describe Marine::Catalog::ReplyRenderer do
         renderer.price_unavailable, renderer.price_conflict,
         renderer.stock_available, renderer.stock_empty, renderer.stock_unavailable,
         renderer.clarify_family([]), renderer.clarify_variant([]),
+        renderer.catalog(code: 'F', name: 'N'),
         renderer.catalog_unavailable, renderer.unsupported
       ]
 

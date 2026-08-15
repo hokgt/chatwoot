@@ -44,7 +44,7 @@ RSpec.describe Marine::Catalog::IntentExtractor do
   end
 
   describe 'supported intents' do
-    %w[price stock parent_info variant_info].each do |intent|
+    %w[price stock parent_info variant_info catalog].each do |intent|
       it "passes through the #{intent} intent" do
         stub_llm(message: %({"product_related": true, "intent": "#{intent}"}))
 

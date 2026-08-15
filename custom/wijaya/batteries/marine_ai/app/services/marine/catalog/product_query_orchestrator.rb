@@ -27,12 +27,16 @@
 module Marine
   module Catalog
     class ProductQueryOrchestrator
+      # Plan envelope / state-change payload construction and deep freeze live in this
+      # cohesive helper, keeping this class focused on the decision / state-machine logic.
+      include PlanBuilder
+
       ACTIONS = %i[not_product reply clarify_family clarify_variant send_catalog handoff stop].freeze
       STATE_OPERATIONS = %i[none start update].freeze
 
       # Intents that always demand an exact, validated child before any answer.
       VARIANT_REQUIRED_INTENTS = %w[price stock variant_info].freeze
-      SUPPORTED_INTENTS = (VARIANT_REQUIRED_INTENTS + %w[parent_info]).freeze
+      SUPPORTED_INTENTS = (VARIANT_REQUIRED_INTENTS + %w[parent_info catalog]).freeze
 
       # Bounded safe family-candidate list surfaced with a clarify_family.
       CLARIFY_FAMILY_LIMIT = 10
@@ -126,6 +130,8 @@ module Marine
         family = family_repository.resolve_exact(identifier)
         return clarify_family_plan(identifier) if family.nil?
 
+        return plan_catalog(intent, family, state_op) if intent[:intent] == 'catalog'
+
         if requires_variant?(intent)
           plan_variant(intent, flow, family, continuing, state_op)
         else
@@ -133,14 +139,22 @@ module Marine
         end
       end
 
-      # Parent-level answer. On an intent switch to a parent-level intent within the same
-      # flow (:update), close any pending variant clarification AND drop the now-stale
-      # validated variant — Phase 3 #update! sanitization compacts the nil optional away.
-      # A family switch (:start) already begins a fresh flow, so it carries neither key.
+      # Direct Product Catalog request. After a freshly revalidated family (explicitly named
+      # this turn, or reused from the active flow), send the catalog straight away — NO variant
+      # is required. The reply descriptor marks this as a DIRECT catalog request so the runtime
+      # renders a catalog caption / no-catalog fallback rather than a variant clarification.
+      # A later phase selects and sends the document and sets catalog_sent; the plan sets no
+      # catalog markers itself.
+      def plan_catalog(intent, family, state_op)
+        build(:send_catalog, reply: reply_renderer.catalog(family),
+                             operation: state_op, changes: family_level_changes(family, intent, state_op))
+      end
+
+      # Parent-level answer. Catalog and parent are both family-level (no variant), so both
+      # clear stale variant context via #family_level_changes.
       def plan_parent(intent, family, state_op)
-        changes = family_changes(family, intent).merge('expected_attributes' => [])
-        changes = changes.merge('validated_variant' => nil) if state_op == :update
-        build(:reply, reply: reply_renderer.parent_info(family), operation: state_op, changes: changes)
+        build(:reply, reply: reply_renderer.parent_info(family),
+                      operation: state_op, changes: family_level_changes(family, intent, state_op))
       end
 
       def plan_variant(intent, flow, family, continuing, state_op)
@@ -258,14 +272,6 @@ module Marine
 
       # --- builders / helpers -----------------------------------------------------
 
-      def family_changes(family, intent)
-        { 'validated_family' => family[:code], 'current_intent' => intent[:intent] }
-      end
-
-      def build(action, reply: nil, operation: :none, changes: {})
-        deep_freeze(action: action, reply: reply, state: { operation: operation, changes: changes })
-      end
-
       # A minimal, SAFE state summary for the intent extractor: only coarse, non-sensitive
       # hints (never a raw fact). awaiting_code is true when a family is validated but its
       # variant is not, so a bare numeric reply may be a code the assistant is waiting for.
@@ -288,14 +294,6 @@ module Marine
 
       def truthy(value)
         value == true || value == 'true' || value == 1
-      end
-
-      def deep_freeze(value)
-        case value
-        when Hash then value.each_value { |v| deep_freeze(v) }.freeze
-        when Array then value.each { |v| deep_freeze(v) }.freeze
-        else value.freeze
-        end
       end
     end
   end

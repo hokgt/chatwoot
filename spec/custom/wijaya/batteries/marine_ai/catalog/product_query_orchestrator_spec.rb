@@ -234,6 +234,77 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
     end
   end
 
+  describe 'direct product catalog request' do
+    def catalog_intent(overrides = {})
+      intent(intent: 'catalog', requires_exact_variant: false).merge(overrides)
+    end
+
+    it 'validates the explicitly named family and sends the catalog directly, no variant required' do
+      plan = orchestrator.plan_for_intent(intent: catalog_intent(family_mention: 'Impeller'), flow: nil)
+
+      expect(family_repository).to have_received(:resolve_exact).with('Impeller')
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-1', family_name: 'Impeller')
+      expect(plan[:state][:operation]).to eq(:start)
+      expect(plan[:state][:changes]).to eq('validated_family' => 'FAM-1', 'current_intent' => 'catalog', 'expected_attributes' => [])
+      expect(variant_resolver).not_to have_received(:resolve)
+    end
+
+    it 'reuses and revalidates the active flow family on a continuation with no repeated name' do
+      flow = active_flow('current_intent' => 'catalog', 'validated_variant' => nil)
+
+      plan = orchestrator.plan_for_intent(intent: catalog_intent(family_mention: nil), flow: flow)
+
+      expect(family_repository).to have_received(:resolve_exact).with('FAM-1')
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-1', family_name: 'Impeller')
+      expect(plan[:state][:operation]).to eq(:update)
+    end
+
+    it 'clears stale variant context when a catalog continuation reuses a prior variant-required flow family' do
+      flow = active_flow('current_intent' => 'price', 'validated_variant' => 'CHILD-1', 'expected_attributes' => %w[Size])
+
+      plan = orchestrator.plan_for_intent(intent: catalog_intent(family_mention: nil), flow: flow)
+
+      expect(family_repository).to have_received(:resolve_exact).with('FAM-1')
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-1', family_name: 'Impeller')
+      expect(plan[:state][:operation]).to eq(:update)
+      expect(plan[:state][:changes]).to include(
+        'validated_family' => 'FAM-1', 'current_intent' => 'catalog',
+        'validated_variant' => nil, 'expected_attributes' => []
+      )
+    end
+
+    it 'starts a fresh flow for a catalog request that explicitly switches family' do
+      flow = active_flow('validated_variant' => 'CHILD-1', 'catalog_sent' => true)
+      allow(family_repository).to receive(:resolve_exact).with('Gasket').and_return(code: 'FAM-2', name: 'Gasket')
+
+      plan = orchestrator.plan_for_intent(intent: catalog_intent(family_mention: 'Gasket', family_changed: true), flow: flow)
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-2', family_name: 'Gasket')
+      expect(plan[:state][:operation]).to eq(:start)
+      expect(plan[:state][:changes]).not_to have_key('validated_variant')
+    end
+
+    it 'clarifies (never sends a catalog) when the family is ambiguous / unresolved' do
+      allow(family_repository).to receive(:resolve_exact).and_return(nil)
+
+      plan = orchestrator.plan_for_intent(intent: catalog_intent(family_mention: 'Impeller'), flow: nil)
+
+      expect(plan[:action]).to eq(:clarify_family)
+      expect(plan[:reply][:kind]).to eq(:clarify_family)
+    end
+
+    it 'clarifies when no family is named and no active flow family exists' do
+      plan = orchestrator.plan_for_intent(intent: catalog_intent(family_mention: nil), flow: nil)
+
+      expect(family_repository).not_to have_received(:resolve_exact)
+      expect(plan[:action]).to eq(:clarify_family)
+    end
+  end
+
   describe 'variant resolved from repository only' do
     it 'answers variant_info from a unique attribute/value resolution' do
       allow(variant_resolver).to receive(:resolve)

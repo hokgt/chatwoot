@@ -21,7 +21,7 @@ module Marine
       # Product intents we actively support downstream. Anything else that is still a
       # product query normalizes to `unsupported`; a failed/unavailable/malformed
       # extraction normalizes to `unknown`.
-      SUPPORTED_PRODUCT_INTENTS = %w[price stock parent_info variant_info].freeze
+      SUPPORTED_PRODUCT_INTENTS = %w[price stock parent_info variant_info catalog].freeze
       INTENTS = (SUPPORTED_PRODUCT_INTENTS + %w[unsupported unknown]).freeze
       CONFIDENCE_LEVELS = %w[low medium high].freeze
 
@@ -257,12 +257,14 @@ module Marine
       SYSTEM_PROMPT = <<~PROMPT.strip
         You classify a customer's product intent for a marine parts catalog assistant. You only UNDERSTAND intent;
         you never look anything up, price, or confirm it. Respond with a single JSON object and nothing else, with these keys:
-        product_related (boolean); intent (one of "price", "stock", "parent_info", "variant_info", "unsupported");
+        product_related (boolean); intent (one of "price", "stock", "parent_info", "variant_info", "catalog", "unsupported");
         family_mention (string|null, a candidate name only); explicit_child_code (string|null, a candidate code only);
         explicit_child_code_from_context (boolean, true only when the customer is clearly giving a code the assistant just asked for);
         attribute_candidates (array of short strings); requires_exact_variant (boolean); clarification_reply (string|null, ask when ambiguous);
         multiple_numeric_candidates (boolean); confidence ("low"/"medium"/"high"). Numbers are NOT automatically codes —
         a bare number may be a quantity, price, or size; never invent codes, families, or attributes.
+        Use "catalog" ONLY when the customer explicitly asks to see or receive the product catalog document itself for a
+        product family, rather than a specific price, stock level, or single-variant detail.
       PROMPT
     end
   end

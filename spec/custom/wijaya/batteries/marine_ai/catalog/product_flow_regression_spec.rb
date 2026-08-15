@@ -96,6 +96,7 @@ RSpec.describe 'Marine product flow cross-component regression' do
     def descriptor_for(kind)
       case kind
       when :parent_info then renderer.parent_info(code: 'FAM-1', name: 'Impeller')
+      when :catalog then renderer.catalog(code: 'FAM-1', name: 'Impeller')
       when :variant_info then renderer.variant_info({ code: 'FAM-1' }, 'C-1')
       when :price_available then renderer.price_available(price_list_rate: '10.00', currency: 'USD', uom: 'ea')
       when :clarify_family then renderer.clarify_family([{ code: 'FAM-1', name: 'Impeller' }])
