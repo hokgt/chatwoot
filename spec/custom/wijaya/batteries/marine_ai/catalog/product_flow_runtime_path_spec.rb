@@ -235,6 +235,53 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
       expect(usage_count).to eq(2)
     end
 
+    context 'when the provider returns a BLANK family mention on an active different-family flow' do
+      # The real continuation bug: with family_mention nil the extractor's family_changed? is
+      # false, so the orchestrator would silently reuse the stale active family (FAM-OLD, which
+      # has no catalog). Only the raw turn's partial token ("Alpha") names a DIFFERENT active
+      # family — it must be treated as a genuine switch.
+      let(:intent_json) do
+        { product_related: true, intent: 'catalog',
+          family_mention: nil, customer_language: customer_language }.to_json
+      end
+
+      it 'treats the unique raw-turn family as a switch: fresh flow, one native catalog, stale markers replaced, localized' do
+        document = usable_catalog('FAM-CAT')
+        seed_stale_flow!
+        stub_cld3('jv')
+
+        Marine::Conversation::ResponseBuilderJob.perform_now(conversation, assistant, trigger.id)
+
+        reply = conversation.messages.reload.outgoing.last
+        # One outgoing catalog reusing the exact existing blob — no new blob.
+        expect(conversation.messages.outgoing.count).to eq(1)
+        expect(reply.attachments.count).to eq(1)
+        expect(reply.attachments.first.file.blob.id).to eq(document.source_file.blob.id)
+
+        # Switched to the row-derived family via a fresh :start flow, replacing the stale
+        # active family AND all of its catalog markers: catalog_document_id now equals the
+        # freshly delivered document (never the seeded stale marker) via a :start, not :update.
+        state = product_state
+        expect(state['validated_family']).to eq('FAM-CAT')
+        expect(state['catalog_sent']).to be(true)
+        expect(state['catalog_document_id']).to eq(document.id)
+        expect(state['catalog_message_id']).to eq(reply.id)
+
+        # Provider language (id) wins over the wrong CLD3 result (jv), with no extra call.
+        expect(reply.content).to eq(TRANSLATED_MARKER)
+        expect(translation_calls.length).to eq(1)
+        expect(translation_calls.first[:system]).to include('to id')
+        expect(translation_calls.first[:system]).not_to include('to jv')
+
+        # No outbound send job and no external (non-localhost) network was touched.
+        expect(performed_jobs).to be_empty
+        expect(a_request(:any, %r{\Ahttps?://(?!(localhost|127\.0\.0\.1))}i)).not_to have_been_made
+
+        expect(usage_count).to eq(1)
+        expect(claim_status_for(trigger)).to eq('completed')
+      end
+    end
+
     context 'when a partial token is shared by two multi-word families' do
       # Two active multi-word families SHARE the word "Coastal"; the turn carries only that
       # shared partial token, so recovery must fail closed rather than guess between them.
@@ -353,6 +400,118 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
 
       expect(plan[:action]).to eq(:clarify_family)
       expect(plan[:state]).to eq(operation: :none, changes: {})
+    end
+
+    # Continuation cases: an ACTIVE flow with a blank/unchanged mention, where only the raw
+    # turn carries family evidence. A string-keyed active flow snapshot on a stale family.
+    def continuation_flow(validated_family)
+      { 'version' => 2, 'flow_id' => 'flow-1', 'status' => 'active',
+        'expires_at' => '2999-01-01T00:00:00Z', 'expected_attributes' => [],
+        'validated_family' => validated_family, 'current_intent' => 'catalog',
+        'catalog_sent' => true }
+    end
+
+    it 'switches to a unique DIFFERENT active family named only by the raw turn (:start)' do
+      allow(extractor).to receive(:extract).and_return(
+        product_related: true, intent: 'catalog', family_mention: nil,
+        customer_language: 'id', family_changed: false
+      )
+
+      plan = orchestrator.process(text: 'Please send Alpha catalog now', context: [], flow: continuation_flow('FAM-OLD'))
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-CAT', family_name: 'Coastal Alpha Series')
+      expect(plan[:state][:operation]).to eq(:start)
+      expect(plan[:state][:changes]).to include('validated_family' => 'FAM-CAT', 'current_intent' => 'catalog')
+    end
+
+    it 'continues and revalidates the active family when the raw turn carries no family evidence (:update)' do
+      allow(extractor).to receive(:extract).and_return(
+        product_related: true, intent: 'catalog', family_mention: nil, family_changed: false
+      )
+
+      plan = orchestrator.process(text: 'Kindly resend the catalog document', context: [], flow: continuation_flow('FAM-OLD'))
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-OLD', family_name: 'Harbor Bravo Line')
+      expect(plan[:state][:operation]).to eq(:update)
+    end
+
+    it 'fails closed to clarify_family (no switch, no state change) when the raw turn is ambiguous on an active flow' do
+      allow(extractor).to receive(:extract).and_return(
+        product_related: true, intent: 'catalog', family_mention: nil, family_changed: false
+      )
+
+      plan = orchestrator.process(text: 'Please send Alpha and Bravo now', context: [], flow: continuation_flow('FAM-OLD'))
+
+      expect(plan[:action]).to eq(:clarify_family)
+      expect(plan[:state]).to eq(operation: :none, changes: {})
+    end
+
+    it 'keeps the active family (:update) when the extracted mention resolves to it, ignoring an incidental raw token for another family' do
+      allow(extractor).to receive(:extract).and_return(
+        product_related: true, intent: 'catalog', family_mention: 'Harbor Bravo Line',
+        customer_language: 'id', family_changed: false
+      )
+
+      # The raw turn's "Alpha" token names a DIFFERENT active family, but the exactly-resolved
+      # extracted mention (the active family) wins: continue and revalidate it, never clarify.
+      plan = orchestrator.process(text: 'Please send Alpha catalog now', context: [], flow: continuation_flow('FAM-OLD'))
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-OLD', family_name: 'Harbor Bravo Line')
+      expect(plan[:state][:operation]).to eq(:update)
+    end
+
+    it 'keeps the active family (:update, no re-delivery) when a NONBLANK mention re-resolves to it even though family_changed is set' do
+      allow(extractor).to receive(:extract).and_return(
+        product_related: true, intent: 'catalog', family_mention: 'Harbor Bravo Line',
+        customer_language: 'id', family_changed: true
+      )
+
+      # family_changed? is string inequality against the flow code, so a re-mention of the
+      # SAME canonical family can still set it true. Continuation is recomputed from canonical
+      # identity + active-flow preconditions, NOT that flag: continue and revalidate the active
+      # family (:update), never a spurious :start that would clear markers and duplicate the
+      # catalog.
+      plan = orchestrator.process(text: 'Please send catalog now', context: [], flow: continuation_flow('FAM-OLD'))
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-OLD', family_name: 'Harbor Bravo Line')
+      expect(plan[:state][:operation]).to eq(:update)
+    end
+
+    it 'starts a fresh flow (:start) when the resolved mention matches a validated family carried by an INACTIVE flow' do
+      allow(extractor).to receive(:extract).and_return(
+        product_related: true, intent: 'catalog', family_mention: 'Harbor Bravo Line',
+        customer_language: 'id', family_changed: false
+      )
+
+      # Defensive: bare same_family? alone would wrongly continue a terminated flow's stale
+      # family. An inactive flow fails the active-flow precondition, so the resolved mention
+      # opens a fresh :start flow instead of resurrecting the dead one.
+      inactive_flow = continuation_flow('FAM-OLD').merge('status' => 'expired')
+      plan = orchestrator.process(text: 'Please send catalog now', context: [], flow: inactive_flow)
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-OLD', family_name: 'Harbor Bravo Line')
+      expect(plan[:state][:operation]).to eq(:start)
+    end
+
+    it 'switches to the exactly-resolved DIFFERENT extracted family (:start), ignoring an incidental raw token for a third family' do
+      allow(extractor).to receive(:extract).and_return(
+        product_related: true, intent: 'catalog', family_mention: 'Coastal Alpha Series',
+        customer_language: 'id', family_changed: false
+      )
+
+      # The raw turn's "Charlie" token names yet another active family; the exactly-resolved
+      # extracted family wins over both the stale flow and the incidental raw token.
+      plan = orchestrator.process(text: 'Please send Charlie catalog now', context: [], flow: continuation_flow('FAM-OLD'))
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-CAT', family_name: 'Coastal Alpha Series')
+      expect(plan[:state][:operation]).to eq(:start)
+      expect(plan[:state][:changes]).to include('validated_family' => 'FAM-CAT', 'current_intent' => 'catalog')
     end
   end
 

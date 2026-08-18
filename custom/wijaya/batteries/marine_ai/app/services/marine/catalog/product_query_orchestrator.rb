@@ -144,21 +144,78 @@ module Marine
         VARIANT_REQUIRED_INTENTS.include?(flow['current_intent'].to_s)
       end
 
+      # Small coordinator: settle the canonical family decision/context for the turn, resolve the
+      # row-derived family it implies, then dispatch to the matching catalog/variant/parent planner.
+      # Both clarify exits surface the identifier the decision settled on (the raw mention for an
+      # ambiguous raw-turn switch, the finalized identifier for an unresolved family).
       def resolve_and_plan(intent, flow)
-        continuing = continuing_family?(intent, flow)
-        identifier = continuing ? flow['validated_family'] : intent[:family_mention]
+        decision = family_decision(intent, flow)
+        return clarify_family_plan(decision[:identifier]) if decision[:clarify]
+
+        family = resolve_planned_family(decision)
+        return clarify_family_plan(decision[:identifier]) if family.nil?
+
+        dispatch_plan(intent, flow, family, decision[:continuing])
+      end
+
+      # Family decision/context for the turn. Returns the settled
+      # { mentioned, switched, continuing, identifier }, or { clarify: true, identifier: } on an
+      # ambiguous raw-turn switch.
+      #
+      # Extracted-family evidence has TOP priority. A NONBLANK mention resolved on its own — an
+      # exact match, else a single active row — decides continue-vs-switch by CANONICAL identity,
+      # NOT the string-level family_changed flag: that flag is mere text inequality against the flow
+      # code and can be true even when the mention re-resolves to the SAME row, so continuation is
+      # recomputed from the active-flow preconditions (active, with a nonblank validated family) AND
+      # same_family?. A resolution to that same row continues it (:update); any other resolved
+      # family — or an inactive/terminated flow carrying a stale family — is a genuine switch to a
+      # fresh :start flow (which clears stale catalog markers). Incidental raw-turn tokens NEVER
+      # override a resolved mention.
+      #
+      # Bounded whole-token raw-turn evidence is consulted ONLY when the extracted mention is blank
+      # or did not resolve, and only on an active flow: a single active row that differs from the
+      # flow family is a genuine switch (a fresh :start), ambiguous rows fail closed to clarify, and
+      # no evidence (or only the active family) continues and revalidates the active family
+      # unchanged.
+      def family_decision(intent, flow)
+        mention = intent[:family_mention]
+        mentioned = resolve_family(mention) unless mention.to_s.strip.empty?
+        continuing = family_continuation?(intent, flow, mentioned)
+
+        switched = raw_turn_switch_family(intent, flow) if mentioned.nil? && continuing
+        return { clarify: true, identifier: mention } if switched == :ambiguous
+
+        continuing = false if switched
+        { mentioned: mentioned, switched: switched, continuing: continuing,
+          identifier: continuing ? flow['validated_family'] : mention }
+      end
+
+      # Continue-vs-switch precondition. A resolved mention continues only when it re-resolves to
+      # the active flow's validated family (canonical identity, not the family_changed flag); with
+      # no resolved mention, defer to the string-level continuing_family? check.
+      def family_continuation?(intent, flow, mentioned)
+        if mentioned
+          active_validated_flow?(flow) && same_family?(mentioned, flow)
+        else
+          continuing_family?(intent, flow)
+        end
+      end
+
+      # Every child/price/stock/catalog action is gated on a freshly revalidated, row-derived
+      # family: the extracted resolution when present, else the raw-turn switch, else — on a
+      # continuation — a revalidation of the active family (which clarifies rather than recovering
+      # if it fails, so a bare reply can never silently switch), else a bounded data-driven recovery
+      # from the raw turn tokens on a fresh NEW-family turn. Zero, multiple, or ambiguous candidates
+      # still fail closed to clarify_family, so an ambiguous family can never reach a catalog.
+      def resolve_planned_family(decision)
+        decision[:mentioned] || decision[:switched] ||
+          (decision[:continuing] ? resolve_family(decision[:identifier]) : recover_family(decision[:identifier]))
+      end
+
+      # Dispatch a resolved family to the matching planner. Catalog needs no variant; a
+      # variant-required intent awaits/fulfills a child, otherwise a parent-level answer.
+      def dispatch_plan(intent, flow, family, continuing)
         state_op = continuing ? :update : :start
-
-        # Every child/price/stock/catalog action is gated on a freshly revalidated,
-        # row-derived family. Exact match wins; only when it misses may a bounded search
-        # promote a SINGLE unambiguous active family for a partial mention. On a NEW-family
-        # turn a further data-driven recovery from the raw turn tokens runs when the mention
-        # is missing/noisy. Zero, multiple, or ambiguous candidates still fail closed to
-        # clarify_family, so an ambiguous family can never reach a catalog. A recovered row
-        # arrives with state_op :start (a fresh flow), which clears stale catalog markers.
-        family = resolve_family_with_recovery(identifier, continuing)
-        return clarify_family_plan(identifier) if family.nil?
-
         return plan_catalog(intent, family, state_op) if intent[:intent] == 'catalog'
 
         if requires_variant?(intent)
@@ -272,17 +329,20 @@ module Marine
         build(:clarify_family, reply: reply_renderer.clarify_family(candidates))
       end
 
-      # Family resolution with a data-driven fallback. First the deterministic
-      # exact/unique-active resolution over the extracted identifier. On a NEW-family turn
-      # (never a continuation of an already-validated flow family) that misses, recover a
-      # single active family from bounded tokens of the mention AND the raw turn. A
-      # continuation that fails to revalidate its own family clarifies rather than recovers
-      # from noisy text, so a bare reply can never silently switch families.
-      def resolve_family_with_recovery(identifier, continuing)
-        family = resolve_family(identifier) unless identifier.to_s.strip.empty?
-        return family if family || continuing
+      # Continuation switch detection. Classifies the DISTINCT active families evidenced by
+      # bounded whole-token raw-turn matching relative to the flow's validated family:
+      #   * exactly one active row that DIFFERS from the flow family -> that row (a genuine
+      #     switch the caller applies with a fresh :start flow);
+      #   * two or more distinct rows -> :ambiguous (the caller fails closed to clarify);
+      #   * none, or a single row that IS the active family -> nil (continue/revalidate).
+      # Same bounded token/whole-token matching and repository read-only access as recovery.
+      def raw_turn_switch_family(intent, flow)
+        matches = matched_families(intent[:family_mention])
+        return nil if matches.empty?
+        return :ambiguous if matches.length > 1
 
-        recover_family(identifier)
+        row = matches.first
+        row unless same_family?(row, flow)
       end
 
       # Exact-match priority, then a safe, data-driven promotion: when no exact family
@@ -303,13 +363,21 @@ module Marine
       # clarifies. No stopword/language/alias list — a token that matches nothing simply
       # contributes nothing, and any ambiguity fails closed. Read-only repository access.
       def recover_family(identifier)
-        tokens = recovery_tokens(identifier)
-        return nil if tokens.empty?
-
-        matches = family_repository.active_candidates(limit: RECOVERY_FAMILY_LIMIT)
-                                   .select { |family| family_named_by?(family, tokens) }
-                                   .uniq { |family| family[:code] }
+        matches = matched_families(identifier)
         matches.first if matches.length == 1
+      end
+
+      # Distinct active families evidenced by bounded whole-token matching over the extracted
+      # mention AND the raw turn, deduplicated by code (empty when no bounded token is
+      # present). Shared by #recover_family and #raw_turn_switch_family. Read-only repository
+      # access bounded by RECOVERY_FAMILY_LIMIT (the repository clamps to its own MAX_LIMIT).
+      def matched_families(identifier)
+        tokens = recovery_tokens(identifier)
+        return [] if tokens.empty?
+
+        family_repository.active_candidates(limit: RECOVERY_FAMILY_LIMIT)
+                         .select { |family| family_named_by?(family, tokens) }
+                         .uniq { |family| family[:code] }
       end
 
       # Bounded, deduplicated, lowercased word tokens drawn from the extracted mention and
@@ -349,7 +417,20 @@ module Marine
       # and the customer did not switch families. A family switch (or a fresh conversation)
       # falls through to a NEW flow (:start), which clears every prior variant/marker.
       def continuing_family?(intent, flow)
-        flow_active?(flow) && flow['validated_family'].to_s.strip.present? && !truthy(intent[:family_changed])
+        active_validated_flow?(flow) && !truthy(intent[:family_changed])
+      end
+
+      # Active flow that already carries a validated family — the precondition, independent of
+      # the string-level family_changed flag, for continuing (vs. starting) a flow when the
+      # canonical family for the turn is already known. An inactive/terminated flow with a
+      # stale family therefore never continues on same_family? alone.
+      def active_validated_flow?(flow)
+        flow_active?(flow) && flow['validated_family'].to_s.strip.present?
+      end
+
+      # A resolved family row IS the active flow family when their row-derived codes match.
+      def same_family?(family, flow)
+        family[:code].to_s == flow['validated_family'].to_s
       end
 
       def requires_variant?(intent)
