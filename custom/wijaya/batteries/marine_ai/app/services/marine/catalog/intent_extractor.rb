@@ -14,10 +14,18 @@
 # Output contract (exactly these keys, always):
 #   product_related, intent, family_mention, explicit_child_code,
 #   attribute_candidates, requires_exact_variant, clarification_reply,
-#   family_changed, intent_changed, multiple_numeric_candidates, confidence, reason
+#   family_changed, intent_changed, multiple_numeric_candidates, confidence,
+#   customer_language, reason
+#
+# customer_language is a bounded, allowlisted BCP-47-like code for the language of
+# the CUSTOMER'S turn, read from the SAME extraction response (no extra provider
+# call). It is untrusted delivery metadata only: a later phase may prefer it when
+# localizing the outgoing reply, but it NEVER influences family/child/catalog
+# selection. A missing or malformed value normalizes to nil so the caller falls back
+# to local detection.
 module Marine
   module Catalog
-    class IntentExtractor
+    class IntentExtractor # rubocop:disable Metrics/ClassLength
       # Product intents we actively support downstream. Anything else that is still a
       # product query normalizes to `unsupported`; a failed/unavailable/malformed
       # extraction normalizes to `unknown`.
@@ -37,6 +45,12 @@ module Marine
       MAX_CLARIFICATION_LENGTH = 400
       MAX_ATTRIBUTES = 16
       MAX_ATTRIBUTE_LENGTH = 80
+
+      # Bounded, allowlisted shape for the untrusted customer-language code: a 2–3 letter
+      # primary subtag with an optional single subtag (e.g. "id", "en", "zh-hans", "pt-br").
+      # Anything else normalizes to nil. This is a FORMAT allowlist, not a language list —
+      # no specific languages or phrases are enumerated.
+      LANGUAGE_PATTERN = /\A[a-z]{2,3}(?:-[a-z0-9]{2,8})?\z/
 
       def initialize(account: nil, base_service: nil)
         @account = account
@@ -101,8 +115,17 @@ module Marine
           intent_changed: intent_changed?(intent, state),
           multiple_numeric_candidates: multiple_numeric,
           confidence: normalize_confidence(parsed['confidence']),
+          customer_language: normalize_language(parsed['customer_language']),
           reason: product_related ? 'extracted' : 'not_product'
         }
+      end
+
+      # Untrusted customer-language code, folded to a bounded, allowlisted format or nil.
+      def normalize_language(value)
+        return nil unless value.is_a?(String)
+
+        code = value.strip.downcase
+        code if code.match?(LANGUAGE_PATTERN)
       end
 
       # A number is never automatically a code. Only a candidate containing at least one
@@ -244,6 +267,7 @@ module Marine
           intent_changed: false,
           multiple_numeric_candidates: false,
           confidence: 'low',
+          customer_language: nil,
           reason: REASONS.include?(reason) ? reason : 'llm_error'
         }
       end
@@ -261,7 +285,9 @@ module Marine
         family_mention (string|null, a candidate name only); explicit_child_code (string|null, a candidate code only);
         explicit_child_code_from_context (boolean, true only when the customer is clearly giving a code the assistant just asked for);
         attribute_candidates (array of short strings); requires_exact_variant (boolean); clarification_reply (string|null, ask when ambiguous);
-        multiple_numeric_candidates (boolean); confidence ("low"/"medium"/"high"). Numbers are NOT automatically codes —
+        multiple_numeric_candidates (boolean); confidence ("low"/"medium"/"high");
+        customer_language (string|null, the language of the CUSTOMER's message as a short BCP-47 code such as "en", "id", "zh-hans"; null if unsure).
+        Numbers are NOT automatically codes —
         a bare number may be a quantity, price, or size; never invent codes, families, or attributes.
         Use "catalog" ONLY when the customer explicitly asks to see or receive the product catalog document itself for a
         product family, rather than a specific price, stock level, or single-variant detail.

@@ -134,6 +134,9 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # flow.
   def finalize_product
     plan = @response['product_plan']
+    # Bounded delivery-language the extractor read from the same customer turn; the
+    # localizer prefers it over local (CLD3) detection. Never influences selection.
+    @product_language = plan[:language]
     apply_product_state(plan[:state])
 
     case plan[:action]
@@ -253,7 +256,9 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   end
 
   # Rewrites a deterministic English product reply into the latest customer's language
-  # (attachment caption or plain product text alike). Localization is delivery-only: it
+  # (attachment caption or plain product text alike). It prefers the bounded language the
+  # intent extractor read from the same turn (@product_language) and only falls back to
+  # local CLD3 detection when that is missing/malformed. Localization is delivery-only: it
   # never changes the selected family/document or one-catalog-per-flow markers, and it
   # degrades to the original English on unknown/unconfigured/failed translation.
   def localized_product_text(content)
@@ -265,6 +270,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       text: content,
       trigger_text: @trigger_message.content.to_s,
       context: customer_language_context,
+      provider_language: @product_language,
       account: @conversation.account
     ).call
   end

@@ -690,6 +690,10 @@ patches:
       # outgoing metadata). Each proves a whole-path contract no single unit spec does.
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_security_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_regression_spec.rb
+      # Full trigger-bound runtime-path regression: real IntentExtractor -> orchestrator
+      # (data-driven family recovery) -> state store -> selector/delivery -> localizer,
+      # with only the provider/CLD3/outbound-job boundaries stubbed.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_runtime_path_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/documents_controller_spec.rb
       - spec/factories/marine/document.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/custom_tools_controller_spec.rb

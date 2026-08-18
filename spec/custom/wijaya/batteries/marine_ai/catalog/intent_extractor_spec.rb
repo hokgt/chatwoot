@@ -20,7 +20,7 @@ RSpec.describe Marine::Catalog::IntentExtractor do
   CONTRACT_KEYS = %i[
     product_related intent family_mention explicit_child_code attribute_candidates
     requires_exact_variant clarification_reply family_changed intent_changed
-    multiple_numeric_candidates confidence reason
+    multiple_numeric_candidates confidence customer_language reason
   ].freeze
 
   def extract(text: 'hello', context: nil, state: nil)

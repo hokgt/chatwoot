@@ -3,11 +3,15 @@
 # caption, family/variant clarification, duplicate-catalog and no-catalog fallback,
 # and the other deterministic product replies) follows the latest customer turn.
 #
-# It is generic and data-driven: language comes from the shared LanguageDetector and
-# the actual rewrite from the shared TranslateResponseService — no per-language
-# branches, phrase maps, or hardcoded translations live here. The trigger incoming
-# message is the primary language signal; a bounded slice of prior customer turns is
-# consulted ONLY when the trigger alone is too short/unknown to classify.
+# It is generic and data-driven: the actual rewrite comes from the shared
+# TranslateResponseService — no per-language branches, phrase maps, or hardcoded
+# translations live here. The customer's language is preferred from `provider_language`
+# (a bounded code the intent extractor already read from the SAME customer turn, so no
+# extra provider call is made). Only when that is missing/malformed does it fall back to
+# the shared LanguageDetector over the trigger message, then a bounded slice of prior
+# customer turns when the trigger alone is too short/unknown to classify. Preferring the
+# provider code avoids trusting CLD3 as the sole authority (CLD3 misclassifies some short
+# regional texts), while the language never affects family/catalog/document selection.
 #
 # It never raises and never blocks delivery. An English (source-language) or unknown
 # target, an unconfigured or failing translator, or blank text all return the original
@@ -20,10 +24,15 @@ module Marine
       SOURCE_LANGUAGE = 'en'.freeze
       UNKNOWN = 'unknown'.freeze
 
-      def initialize(text:, trigger_text:, context: [], account: nil)
+      # Bounded, allowlisted customer-language format (a FORMAT allowlist, not a language
+      # list): a 2–3 letter primary subtag with an optional single subtag.
+      LANGUAGE_PATTERN = /\A[a-z]{2,3}(?:-[a-z0-9]{2,8})?\z/
+
+      def initialize(text:, trigger_text:, context: [], provider_language: nil, account: nil)
         @text = text.to_s
         @trigger_text = trigger_text.to_s
         @context = Array(context)
+        @provider_language = normalize_language(provider_language)
         @account = account
       end
 
@@ -47,12 +56,25 @@ module Marine
         ).call[:text].presence || @text
       end
 
-      # Primary signal: the trigger message. Only when it classifies as unknown (e.g. a
-      # very short "iya" reply) do we fall back to bounded recent customer context.
+      # Preferred signal: the provider language read from the same customer turn. Only when
+      # it is absent/malformed do we classify the trigger message locally, then fall back to
+      # bounded recent customer context when the trigger alone is unknown.
       def target_language
+        return @provider_language if @provider_language
+
         language = classify(@trigger_text)
         language = classify(context_text) if language == UNKNOWN
         language
+      end
+
+      # Bounded, allowlisted customer-language code, or nil for a missing/malformed value.
+      def normalize_language(value)
+        return nil unless value.is_a?(String)
+
+        code = value.strip.downcase
+        return nil if code.blank? || code == UNKNOWN
+
+        code if code.match?(LANGUAGE_PATTERN)
       end
 
       def classify(text)

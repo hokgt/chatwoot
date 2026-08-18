@@ -26,8 +26,14 @@ module Marine
         changes
       end
 
+      # The optional :language key is bounded delivery metadata (the customer-language
+      # code the extractor read from the same turn). It rides alongside the plan for the
+      # runtime localizer and never influences family/child/catalog selection. It is
+      # omitted entirely when no usable code is available.
       def build(action, reply: nil, operation: :none, changes: {})
-        deep_freeze(action: action, reply: reply, state: { operation: operation, changes: changes })
+        plan = { action: action, reply: reply, state: { operation: operation, changes: changes } }
+        plan[:language] = @plan_language if @plan_language
+        deep_freeze(plan)
       end
 
       def deep_freeze(value)

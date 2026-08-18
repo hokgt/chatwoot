@@ -15,10 +15,14 @@
 #
 # Plan shape (top-level symbol keys; state changes use Phase 3 canonical string keys):
 #   {
-#     action:  one of ACTIONS,
-#     reply:   a frozen ReplyRenderer descriptor or nil,
-#     state:   { operation: :none | :start | :update, changes: { <flow keys> => ... } }
+#     action:   one of ACTIONS,
+#     reply:    a frozen ReplyRenderer descriptor or nil,
+#     state:    { operation: :none | :start | :update, changes: { <flow keys> => ... } },
+#     language: (optional) bounded customer-language code for delivery localization
 #   }
+# The optional :language key is untrusted delivery metadata drawn from the same intent
+# extraction; it is present only when a usable code was extracted and never affects the
+# family/child/catalog decision.
 # operation :start maps to ProductFlowStateStore#start! (a fresh flow — which inherently
 # clears any prior variant / attributes / catalog markers), :update maps to #update!,
 # and :none means no state change. The plan is deeply frozen and contains only
@@ -26,7 +30,7 @@
 # internals beyond the three approved fields, SQL, error, or ActiveRecord object.
 module Marine
   module Catalog
-    class ProductQueryOrchestrator
+    class ProductQueryOrchestrator # rubocop:disable Metrics/ClassLength
       # Plan envelope / state-change payload construction and deep freeze live in this
       # cohesive helper, keeping this class focused on the decision / state-machine logic.
       include PlanBuilder
@@ -40,6 +44,21 @@ module Marine
 
       # Bounded safe family-candidate list surfaced with a clarify_family.
       CLARIFY_FAMILY_LIMIT = 10
+
+      # Data-driven family recovery bounds. When the extracted mention is missing or noisy
+      # and does not resolve, bounded normalized word tokens from the mention and the raw
+      # turn are matched against the active family rows. A token must be at least
+      # MIN_TOKEN_LENGTH chars; at most MAX_RECOVERY_TOKENS distinct tokens are considered;
+      # and at most RECOVERY_FAMILY_LIMIT active rows are scanned (the repository clamps to
+      # its own MAX_LIMIT regardless). No stopword/language/alias list is used.
+      MIN_TOKEN_LENGTH = 2
+      MAX_RECOVERY_TOKENS = 24
+      RECOVERY_FAMILY_LIMIT = 50
+      RECOVERY_TOKEN_PATTERN = /[[:alnum:]]{#{MIN_TOKEN_LENGTH},}/
+
+      # Bounded, allowlisted customer-language format (a FORMAT allowlist, never a list of
+      # languages/phrases): a 2–3 letter primary subtag with an optional single subtag.
+      LANGUAGE_PATTERN = /\A[a-z]{2,3}(?:-[a-z0-9]{2,8})?\z/
 
       # `repositories` bundles the four Phase 1 read-only repositories under the keys
       # :family, :variant, :price, :stock (each defaulting to the real repository), so
@@ -59,17 +78,25 @@ module Marine
       # extractor, so a no-provider test uses #plan_for_intent with a pre-extracted intent.
       def process(text:, context: nil, flow: nil, suppressed: false)
         intent = intent_extractor.extract(text: text, context: context, state: state_summary(flow))
-        plan_for_intent(intent: intent, flow: flow, suppressed: suppressed)
+        plan_for_intent(intent: intent, flow: flow, suppressed: suppressed, text: text)
       end
 
       # Deterministic planning over an already-extracted (untrusted) intent hash and a
       # safe flow snapshot. `suppressed` models the state-machine TERMINATED / duplicate /
       # stale transition (takeover/resolved/snoozed) that a later phase computes from
       # Eligibility/ProcessingClaim — when true, Marine emits no output.
-      def plan_for_intent(intent:, flow: nil, suppressed: false)
+      # `text` is the OPTIONAL raw customer turn. When supplied (the full #process path),
+      # it enables data-driven family recovery from the untrusted turn when the extracted
+      # family mention is missing or noisy; direct-component callers may omit it.
+      def plan_for_intent(intent:, flow: nil, suppressed: false, text: nil)
+        intent = symbolize(intent)
+        # Raw turn (family recovery) and bounded delivery language are captured per call
+        # before any early return so every built plan carries consistent metadata.
+        @turn_text = text.to_s
+        @plan_language = normalize_language(intent[:customer_language])
+
         return build(:stop) if suppressed
 
-        intent = symbolize(intent)
         flow = string_keyed(flow)
 
         return build(:not_product) unless truthy(intent[:product_related])
@@ -122,14 +149,14 @@ module Marine
         identifier = continuing ? flow['validated_family'] : intent[:family_mention]
         state_op = continuing ? :update : :start
 
-        return clarify_family_plan(identifier) if identifier.to_s.strip.empty?
-
         # Every child/price/stock/catalog action is gated on a freshly revalidated,
         # row-derived family. Exact match wins; only when it misses may a bounded search
-        # promote a SINGLE unambiguous active family for a partial mention. Zero, multiple,
-        # or ambiguous candidates still fail closed to clarify_family, so an ambiguous
-        # family can never reach a catalog.
-        family = resolve_family(identifier)
+        # promote a SINGLE unambiguous active family for a partial mention. On a NEW-family
+        # turn a further data-driven recovery from the raw turn tokens runs when the mention
+        # is missing/noisy. Zero, multiple, or ambiguous candidates still fail closed to
+        # clarify_family, so an ambiguous family can never reach a catalog. A recovered row
+        # arrives with state_op :start (a fresh flow), which clears stale catalog markers.
+        family = resolve_family_with_recovery(identifier, continuing)
         return clarify_family_plan(identifier) if family.nil?
 
         return plan_catalog(intent, family, state_op) if intent[:intent] == 'catalog'
@@ -245,12 +272,67 @@ module Marine
         build(:clarify_family, reply: reply_renderer.clarify_family(candidates))
       end
 
+      # Family resolution with a data-driven fallback. First the deterministic
+      # exact/unique-active resolution over the extracted identifier. On a NEW-family turn
+      # (never a continuation of an already-validated flow family) that misses, recover a
+      # single active family from bounded tokens of the mention AND the raw turn. A
+      # continuation that fails to revalidate its own family clarifies rather than recovers
+      # from noisy text, so a bare reply can never silently switch families.
+      def resolve_family_with_recovery(identifier, continuing)
+        family = resolve_family(identifier) unless identifier.to_s.strip.empty?
+        return family if family || continuing
+
+        recover_family(identifier)
+      end
+
       # Exact-match priority, then a safe, data-driven promotion: when no exact family
       # matches the (possibly partial) identifier, the bounded active-family search may
       # stand in for it ONLY when it yields exactly one active family. Any other count —
       # zero or several — returns nil so the caller clarifies, never guessing a family.
       def resolve_family(identifier)
         family_repository.resolve_exact(identifier) || unique_active_family(identifier)
+      end
+
+      # Data-driven recovery for a missing/noisy mention. Draws bounded, normalized word
+      # tokens from BOTH the extracted mention and the raw customer turn, then keeps only
+      # the active family rows evidenced by the turn — a row-derived code token, or ANY
+      # single row-derived name token (so a partial mention of a multi-word family, e.g.
+      # one word of its name, still recovers). Promotes a family ONLY when the evidence
+      # converges on exactly one distinct active row; zero, several, or conflicting matches
+      # (two families sharing the partial token/fragment) return nil so the caller
+      # clarifies. No stopword/language/alias list — a token that matches nothing simply
+      # contributes nothing, and any ambiguity fails closed. Read-only repository access.
+      def recover_family(identifier)
+        tokens = recovery_tokens(identifier)
+        return nil if tokens.empty?
+
+        matches = family_repository.active_candidates(limit: RECOVERY_FAMILY_LIMIT)
+                                   .select { |family| family_named_by?(family, tokens) }
+                                   .uniq { |family| family[:code] }
+        matches.first if matches.length == 1
+      end
+
+      # Bounded, deduplicated, lowercased word tokens drawn from the extracted mention and
+      # the raw turn text.
+      def recovery_tokens(identifier)
+        [identifier, @turn_text].compact.join(' ').downcase
+                                .scan(RECOVERY_TOKEN_PATTERN).uniq.first(MAX_RECOVERY_TOKENS).to_set
+      end
+
+      # A family is evidenced by the turn when its row-derived code appears as a whole
+      # token, or when ANY single word token of its row-derived name is present as a whole
+      # token. Matching is whole-token equality (never a substring in the middle of a
+      # word), so a partial natural-language mention of a multi-word family — a single one
+      # of its name words, or a contiguous run of them — is enough to evidence it. This is
+      # deliberately permissive: when two families are both evidenced (they share the
+      # partial token/fragment) #recover_family sees more than one distinct row and fails
+      # closed to clarify rather than guessing between them.
+      def family_named_by?(family, tokens)
+        code = family[:code].to_s.strip.downcase
+        return true if code.present? && tokens.include?(code)
+
+        name_tokens = family[:name].to_s.downcase.scan(RECOVERY_TOKEN_PATTERN)
+        name_tokens.any? { |token| tokens.include?(token) }
       end
 
       # LIMIT 2 lets a unique active family be told apart from an ambiguous one without
@@ -300,6 +382,15 @@ module Marine
           current_family: flow['validated_family'],
           current_intent: flow['current_intent']
         }
+      end
+
+      # Defensive re-normalization of the (already extractor-normalized) untrusted
+      # customer-language code into the bounded allowlisted format, or nil.
+      def normalize_language(value)
+        return nil unless value.is_a?(String)
+
+        code = value.strip.downcase
+        code if code.match?(LANGUAGE_PATTERN)
       end
 
       def symbolize(intent)
