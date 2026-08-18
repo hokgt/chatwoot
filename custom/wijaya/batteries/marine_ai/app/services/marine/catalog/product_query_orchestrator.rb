@@ -125,9 +125,11 @@ module Marine
         return clarify_family_plan(identifier) if identifier.to_s.strip.empty?
 
         # Every child/price/stock/catalog action is gated on a freshly revalidated,
-        # row-derived family; resolve_exact fails closed (nil) for BOTH zero and
-        # ambiguous matches, so an ambiguous family can never reach a catalog.
-        family = family_repository.resolve_exact(identifier)
+        # row-derived family. Exact match wins; only when it misses may a bounded search
+        # promote a SINGLE unambiguous active family for a partial mention. Zero, multiple,
+        # or ambiguous candidates still fail closed to clarify_family, so an ambiguous
+        # family can never reach a catalog.
+        family = resolve_family(identifier)
         return clarify_family_plan(identifier) if family.nil?
 
         return plan_catalog(intent, family, state_op) if intent[:intent] == 'catalog'
@@ -241,6 +243,22 @@ module Marine
       def clarify_family_plan(identifier)
         candidates = family_repository.active_candidates(query: identifier, limit: CLARIFY_FAMILY_LIMIT)
         build(:clarify_family, reply: reply_renderer.clarify_family(candidates))
+      end
+
+      # Exact-match priority, then a safe, data-driven promotion: when no exact family
+      # matches the (possibly partial) identifier, the bounded active-family search may
+      # stand in for it ONLY when it yields exactly one active family. Any other count —
+      # zero or several — returns nil so the caller clarifies, never guessing a family.
+      def resolve_family(identifier)
+        family_repository.resolve_exact(identifier) || unique_active_family(identifier)
+      end
+
+      # LIMIT 2 lets a unique active family be told apart from an ambiguous one without
+      # fetching the whole clarify list; the single row (its row-derived code/name) is
+      # promoted only when exactly one exists.
+      def unique_active_family(identifier)
+        candidates = family_repository.active_candidates(query: identifier, limit: 2)
+        candidates.first if candidates.length == 1
       end
 
       # --- predicates -------------------------------------------------------------

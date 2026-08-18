@@ -74,8 +74,10 @@ RSpec.describe 'Marine product flow cross-component regression' do
 
     it 'strips malformed / oversized family candidate fields before the plan' do
       allow(family_repository).to receive(:resolve_exact).and_return(nil)
+      # Two candidates keep this AMBIGUOUS so it stays on the clarify_family path (a lone
+      # active candidate is legitimately promoted); the adversarial fields must still be stripped.
       allow(family_repository).to receive(:active_candidates).and_return(
-        [{ code: 'FAM-1', name: 'A' * 500, cost: 999, sql: 'SELECT 1' }]
+        [{ code: 'FAM-1', name: 'A' * 500, cost: 999, sql: 'SELECT 1' }, { code: 'FAM-2', name: 'B' }]
       )
 
       plan = orchestrator.plan_for_intent(intent: price_intent.merge(explicit_child_code: nil), flow: nil)

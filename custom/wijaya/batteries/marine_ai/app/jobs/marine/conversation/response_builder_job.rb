@@ -26,6 +26,10 @@
 class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   queue_as :default
 
+  # Bounded recent customer turns consulted for language detection when the trigger
+  # message alone is too short/unknown to classify.
+  MAX_LANGUAGE_CONTEXT = 5
+
   def perform(conversation, assistant, trigger_message_id = nil)
     @conversation = conversation
     @assistant = assistant
@@ -67,6 +71,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     message = trigger_message
     return unless message # not found / not incoming: stop safely, no claim, no output
 
+    @trigger_message = message # primary language signal for product-reply localization
     @claim = Marine::Conversation::ProcessingClaim.new(message: message)
     acquired = @claim.acquire!
     return unless acquired.owner? # duplicate / completed / competing fresh claim: no second output
@@ -169,7 +174,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   def deliver_catalog_message(plan, document)
     message = Marine::Conversation::ProductMessageDeliveryService.new(
       conversation: @conversation, assistant: @assistant,
-      document: document, content: product_reply_text(plan)
+      document: document, content: localized_product_text(product_reply_text(plan))
     ).call
     mark_catalog_sent(document, message)
   end
@@ -242,9 +247,32 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       account_id: @conversation.account_id,
       inbox_id: @conversation.inbox_id,
       sender: @assistant,
-      content: content,
+      content: localized_product_text(content),
       additional_attributes: { source_type: 'marine_product', orchestration_path: 'product' }
     )
+  end
+
+  # Rewrites a deterministic English product reply into the latest customer's language
+  # (attachment caption or plain product text alike). Localization is delivery-only: it
+  # never changes the selected family/document or one-catalog-per-flow markers, and it
+  # degrades to the original English on unknown/unconfigured/failed translation.
+  def localized_product_text(content)
+    # No trigger message (legacy path) means no customer-language signal to follow, so
+    # deliver the deterministic English unchanged — the safe default.
+    return content if @trigger_message.nil?
+
+    Marine::Catalog::ReplyLocalizer.new(
+      text: content,
+      trigger_text: @trigger_message.content.to_s,
+      context: customer_language_context,
+      account: @conversation.account
+    ).call
+  end
+
+  # Bounded recent customer turns, newest first — a fallback language signal only used
+  # when the trigger message itself is too short/unknown to classify.
+  def customer_language_context
+    @conversation.messages.incoming.where(private: false).order(id: :desc).limit(MAX_LANGUAGE_CONTEXT).pluck(:content)
   end
 
   def process_handoff(reason = nil)

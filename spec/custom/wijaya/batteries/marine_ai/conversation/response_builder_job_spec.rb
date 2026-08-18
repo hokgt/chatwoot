@@ -228,6 +228,67 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       expect(reply.attachments).to be_empty
     end
 
+    # --- Customer-language localization of the product path (generic mechanism) ---
+
+    def stub_language(language)
+      allow(Marine::Llm::LanguageDetector).to receive(:new).and_return(
+        instance_double(Marine::Llm::LanguageDetector, detect: { language: language, reliable: true, confidence: 1.0 })
+      )
+    end
+
+    it 'localizes the direct-catalog caption into the customer language while keeping the selected attachment' do
+      document = usable_catalog
+      indo = create(:message, conversation: conversation, message_type: :incoming, content: 'boleh minta katalog impeller')
+      stub_reasoning(direct_catalog_payload)
+      stub_language('id')
+      allow(Marine::Llm::TranslateResponseService).to receive(:new).and_return(
+        instance_double(Marine::Llm::TranslateResponseService,
+                        call: { ok: true, text: 'Ini katalog produk untuk Impeller.', translated: true })
+      )
+
+      described_class.perform_now(conversation, assistant, indo.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq('Ini katalog produk untuk Impeller.')
+      # Translation must not alter document selection or one-catalog-per-flow behavior.
+      expect(reply.attachments.count).to eq(1)
+      expect(reply.attachments.first.file.blob.id).to eq(document.source_file.blob.id)
+      expect(product_state['catalog_sent']).to be(true)
+      expect(product_state['catalog_document_id']).to eq(document.id)
+    end
+
+    it 'leaves an English direct-catalog caption untranslated and skips the translator entirely' do
+      document = usable_catalog
+      english = create(:message, conversation: conversation, message_type: :incoming, content: 'please send me the impeller catalog')
+      stub_reasoning(direct_catalog_payload)
+      stub_language('en')
+      expect(Marine::Llm::TranslateResponseService).not_to receive(:new)
+
+      described_class.perform_now(conversation, assistant, english.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq('Here is the product catalog for Impeller.')
+      expect(reply.attachments.first.file.blob.id).to eq(document.source_file.blob.id)
+    end
+
+    it 'delivers the original English text when translation fails, never blocking the reply' do
+      indo = create(:message, conversation: conversation, message_type: :incoming, content: 'berapa harga impeller')
+      stub_reasoning(product_payload(
+                       action: :send_catalog, reply: nil, operation: :update,
+                       changes: { 'validated_family' => 'IMP', 'current_intent' => 'price', 'expected_attributes' => %w[size material] }
+                     ))
+      stub_language('id')
+      # Simulate the translator degrading (unconfigured / error): it returns the original text.
+      original = 'Could you specify the size, material you need?'
+      allow(Marine::Llm::TranslateResponseService).to receive(:new).and_return(
+        instance_double(Marine::Llm::TranslateResponseService, call: { ok: false, text: original, translated: false, error: 'x' })
+      )
+
+      described_class.perform_now(conversation, assistant, indo.id)
+
+      expect(conversation.messages.outgoing.last.content).to eq(original)
+    end
+
     it 'rolls back flow state and leaves the claim retryable when catalog delivery fails' do
       usable_catalog
       stub_reasoning(send_catalog_payload)

@@ -429,6 +429,58 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
     end
   end
 
+  describe 'data-driven family promotion for a partial mention' do
+    # Exact match misses (partial mention); the bounded active-family search decides.
+    before { allow(family_repository).to receive(:resolve_exact).and_return(nil) }
+
+    it 'promotes a UNIQUE active family and plans send_catalog for a partial catalog mention' do
+      allow(family_repository).to receive(:active_candidates)
+        .with(query: 'Wid', limit: 2).and_return([{ code: 'FAM-9', name: 'Widget Deluxe' }])
+
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'catalog', family_mention: 'Wid'), flow: nil)
+
+      expect(family_repository).to have_received(:resolve_exact).with('Wid')
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-9', family_name: 'Widget Deluxe')
+      expect(plan[:state][:operation]).to eq(:start)
+      expect(plan[:state][:changes]).to include('validated_family' => 'FAM-9', 'current_intent' => 'catalog')
+    end
+
+    it 'still clarifies (never a catalog) when SEVERAL active families match the partial mention' do
+      candidates = [{ code: 'FAM-9', name: 'Widget Deluxe' }, { code: 'FAM-10', name: 'Widget Basic' }]
+      allow(family_repository).to receive(:active_candidates).and_return(candidates)
+
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'catalog', family_mention: 'Widget'), flow: nil)
+
+      expect(plan[:action]).to eq(:clarify_family)
+      expect(plan[:reply][:kind]).to eq(:clarify_family)
+      expect(plan[:state]).to eq(operation: :none, changes: {})
+    end
+
+    it 'stays safe (clarify_family) when NO active family matches the partial mention' do
+      allow(family_repository).to receive(:active_candidates).and_return([])
+
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'catalog', family_mention: 'Nope'), flow: nil)
+
+      expect(plan[:action]).to eq(:clarify_family)
+    end
+
+    it 'switches from an active family to a uniquely matched new family without looping on clarification' do
+      flow = active_flow('validated_family' => 'FAM-BASE', 'current_intent' => 'catalog', 'catalog_sent' => true)
+      allow(family_repository).to receive(:active_candidates)
+        .with(query: 'Gask', limit: 2).and_return([{ code: 'FAM-2', name: 'Gasket Ring' }])
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'catalog', family_mention: 'Gask', family_changed: true), flow: flow
+      )
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-2', family_name: 'Gasket Ring')
+      expect(plan[:state][:operation]).to eq(:start)
+      expect(plan[:state][:changes]).to include('validated_family' => 'FAM-2')
+    end
+  end
+
   describe 'no side effects and safe object graph' do
     it 'never instantiates a state store, provider, or writes state' do
       expect(Marine::Catalog::ProductFlowStateStore).not_to receive(:new)

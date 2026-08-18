@@ -442,6 +442,13 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/variant_resolver.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_renderer.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_query_orchestrator.rb
+      # Delivery-only localizer for customer-facing product/catalog text: detects the
+      # latest customer's language (shared LanguageDetector, trigger message first, bounded
+      # context fallback) and rewrites the deterministic English reply via the shared
+      # TranslateResponseService. Generic/data-driven (no per-language phrase maps); never
+      # raises and degrades to the original English on unknown/unconfigured/failed
+      # translation; never alters family/document selection or one-catalog-per-flow markers.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_localizer.rb
       # Cohesive plan-envelope helper mixed into the orchestrator: builds the frozen
       # action/state-change plan payloads and deep-freezes them (no repository/provider/
       # state access), keeping the orchestrator on decision/state-machine logic.
@@ -671,6 +678,8 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/catalog/variant_resolver_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/reply_renderer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_query_orchestrator_spec.rb
+      # Delivery-only product-reply localizer spec.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/reply_localizer_spec.rb
       # Phase 6 — Native Product Catalog attachment delivery specs.
       - spec/custom/wijaya/batteries/marine_ai/documents/product_catalog_selector_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/product_message_delivery_service_spec.rb
