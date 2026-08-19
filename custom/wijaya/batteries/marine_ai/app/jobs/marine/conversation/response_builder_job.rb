@@ -1,9 +1,10 @@
 # Phase 5 — Automatic Response Integration and deterministic text replies.
 #
 # perform(conversation, assistant, trigger_message_id = nil):
-#   * trigger_message_id nil  -> LEGACY 2-arg behavior, byte-for-byte, for jobs that
-#     were already enqueued before Phase 5. It never starts the dynamic product flow
-#     (which requires an incoming-message identity) and keeps the prior RAG path.
+#   * trigger_message_id nil  -> LEGACY 2-arg compatibility path, for jobs that
+#     were already enqueued before Phase 5. It now derives canonical bounded context
+#     from the latest public incoming message and passes the current trigger separately,
+#     while still not starting the dynamic product flow (it has no bound source).
 #   * trigger_message_id set   -> TRIGGER-BOUND flow bound to that exact incoming
 #     Message: claim BEFORE reasoning (per-message idempotency + duplicate-output
 #     prevention), pre-reasoning eligibility, product orchestration BEFORE general
@@ -40,20 +41,50 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
   private
 
-  # --- Legacy (2-arg) path — unchanged from before Phase 5 --------------------
+  # --- Legacy (2-arg) path — canonical bounded context, product flow disabled -----
+  #
+  # This path is used by jobs enqueued without a trigger-message id (pre-Phase-5, or any
+  # source-less caller). It now grounds on the SAME canonical Phase 2 context as the
+  # trigger-bound path: the latest eligible public incoming turn is the query trigger,
+  # supplied SEPARATELY exactly once, and the bounded prior history (10 × 500 chars) is the
+  # message history — replacing the former unbounded whole-conversation dump. The
+  # AssistantChatService is still constructed with NO `source:`, so Agent::Runner derives no
+  # canonical_context of its own and its product_payload stays disabled: Product Flow behavior
+  # is unchanged on this path.
 
   def legacy_perform
     return unless conversation_pending?
 
     Current.executed_by = @assistant
-    @response = Marine::Llm::AssistantChatService.new(assistant: @assistant,
-                                                      conversation: @conversation).generate_response(message_history: collect_previous_messages)
+    @response = generate_legacy_response
     process_response
   rescue StandardError => e
     ChatwootExceptionTracker.new(e, account: @conversation.account).capture_exception
     process_handoff('charge_error') if conversation_pending?
   ensure
     Current.executed_by = nil
+  end
+
+  # Canonical legacy reasoning: bound the latest incoming turn as a separate trigger and pass
+  # the bounded prior history alongside it. No `source:` is supplied (Product Flow stays off).
+  def generate_legacy_response
+    chat = Marine::Llm::AssistantChatService.new(assistant: @assistant, conversation: @conversation)
+    trigger = legacy_trigger_message
+    # No eligible incoming turn (impossible for a pending conversation, kept only for
+    # compatibility): fall back to the prior unbounded whole-conversation history so behavior
+    # degrades no worse than before rather than inventing a new response rule.
+    return chat.generate_response(message_history: collect_previous_messages) if trigger.nil?
+
+    context = Marine::Conversation::ContextBuilder.new(conversation: @conversation, trigger_message: trigger).build
+    chat.generate_response(additional_message: context.trigger, message_history: context.history)
+  end
+
+  # The latest public incoming turn, chosen deterministically by (created_at, id) — the same
+  # ordering key ContextBuilder uses. This gives identity to the "last user message" the old
+  # source-less Runner picked from the flattened history, so the bounded trigger is resolved
+  # exactly once instead of being buried inside an unbounded history.
+  def legacy_trigger_message
+    @conversation.messages.incoming.where(private: false).reorder(created_at: :desc, id: :desc).first
   end
 
   def process_response
@@ -80,8 +111,12 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     return complete_no_output unless eligible? # takeover/resolved/snoozed BEFORE reasoning
 
     Current.executed_by = @assistant
+    # No message_history is passed: the trigger-bound Agent::Runner derives the canonical
+    # prior history and separately bounded current trigger from the Conversation + this exact
+    # incoming Message (source:), so product-intent and RAG ground on the same context and the
+    # trigger is supplied exactly once.
     @response = Marine::Llm::AssistantChatService.new(assistant: @assistant, conversation: @conversation,
-                                                      source: message).generate_response(message_history: collect_previous_messages)
+                                                      source: message).generate_response
     finalize
   rescue StandardError => e
     # A failure anywhere in reasoning/finalization (including message-create) must
@@ -414,6 +449,10 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
   # --- Shared helpers --------------------------------------------------------
 
+  # Unbounded whole-conversation history. Retained ONLY as the legacy no-trigger fallback
+  # (see #generate_legacy_response) — an impossible case for a pending conversation, where
+  # there is no incoming turn to bound. Normal legacy execution uses the canonical bounded
+  # ContextBuilder context instead, so this is never the standard policy.
   def collect_previous_messages
     @conversation.messages.where(message_type: [:incoming, :outgoing]).where(private: false).map do |message|
       { role: message.incoming? ? 'user' : 'assistant', content: message.content.to_s }

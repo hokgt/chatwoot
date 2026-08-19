@@ -198,6 +198,58 @@ RSpec.describe Marine::Agent::Runner do
     end
   end
 
+  # Phase 2 — the trigger-bound runner derives canonical prior history + a separately bounded
+  # current trigger from the real Conversation, and feeds the SAME history and the trigger
+  # (once) to both the product-intent path and the RAG path. Uses persisted records so the
+  # canonical ContextBuilder query runs for real.
+  describe 'canonical conversation context integration (Phase 2)' do
+    let(:account) { create(:account) }
+    let(:marine) { create(:marine_assistant, account: account) }
+    let(:conversation) { create(:conversation, account: account) }
+    let(:base) { Time.zone.parse('2026-06-01 09:00:00') }
+    let(:runner) { described_class.new(assistant: marine, conversation: conversation, source: trigger) }
+    let(:orchestrator) { instance_double(Marine::Catalog::ProductQueryOrchestrator) }
+
+    let!(:prior_incoming) do
+      create(:message, conversation: conversation, account: account, inbox: conversation.inbox,
+                       message_type: :incoming, content: 'earlier customer question', created_at: base + 1)
+    end
+    let!(:prior_marine) do
+      create(:message, conversation: conversation, account: account, inbox: conversation.inbox,
+                       message_type: :outgoing, sender: marine, content: 'earlier marine answer', created_at: base + 2)
+    end
+    let!(:trigger) do
+      create(:message, conversation: conversation, account: account, inbox: conversation.inbox,
+                       message_type: :incoming, content: 'current customer turn', created_at: base + 10)
+    end
+    let(:canonical_history) do
+      [{ role: 'user', content: 'earlier customer question' },
+       { role: 'assistant', content: 'earlier marine answer' }]
+    end
+
+    before do
+      allow(Marine::Catalog::ProductQueryOrchestrator).to receive(:new).and_return(orchestrator)
+      allow(orchestrator).to receive(:process).and_return(action: :not_product, reply: nil, state: { operation: :none, changes: {} })
+      allow(generator).to receive(:generate).and_return(reply_payload)
+    end
+
+    it 'gives the product IntentExtractor path the canonical prior history and the separate trigger (never duplicated in context)' do
+      runner.run
+
+      expect(orchestrator).to have_received(:process).with(
+        hash_including(text: 'current customer turn', context: canonical_history, suppressed: false)
+      )
+    end
+
+    it 'gives the RAG ResponseGenerator the same canonical history and the separate trigger' do
+      runner.run
+
+      expect(generator).to have_received(:generate).with(
+        additional_message: 'current customer turn', message_history: canonical_history
+      )
+    end
+  end
+
   describe 'independence from Captain premium gates' do
     it 'does not reference any Captain runtime dependency in the source' do
       source = File.read(Rails.root.join('custom/wijaya/batteries/marine_ai/app/services/marine/agent/runner.rb'))

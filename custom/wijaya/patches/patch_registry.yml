@@ -431,6 +431,13 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_flow_state_store.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/conversation/processing_claim.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/conversation/eligibility.rb
+      # Phase 2 (conversation) — Canonical bounded conversation context + interaction-phase
+      # detection. Read-only, in-memory: eligible PRIOR public incoming/outgoing turns
+      # (bounded/ordered/truncated) plus the separately bounded current trigger (excluded by
+      # id, capped at the 4,000-char input limit), and an opening/follow-up phase exposed as
+      # structured metadata only. Integrated at the Agent::Runner boundary so product-intent
+      # and RAG ground on the same history and receive the trigger exactly once.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/conversation/context_builder.rb
       # Handoff idempotency — battery-owned handoff lifecycle marker (wijaya_marine_ai.
       # handoff_v1). Makes Marine::Circuit::HandoffService idempotent/concurrency-safe and
       # feeds Eligibility's terminal active_handoff reason so a handed-off conversation
@@ -679,6 +686,8 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/eligibility_spec.rb
+      # Phase 2 (conversation) — Canonical context builder + interaction-phase spec.
+      - spec/custom/wijaya/batteries/marine_ai/conversation/context_builder_spec.rb
       # Handoff idempotency — HandoffStateStore marker + service idempotency/rollback specs.
       - spec/custom/wijaya/batteries/marine_ai/circuit/handoff_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/circuit/handoff_service_spec.rb

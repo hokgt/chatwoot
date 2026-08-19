@@ -30,27 +30,34 @@ class Marine::Agent::Runner
   PATH_SCENARIO_RETRIEVAL = 'scenario_retrieval'.freeze
   PATH_PRODUCT = 'product'.freeze
 
-  # Bounded prior-turn context handed to the product intent extractor.
-  MAX_PRODUCT_CONTEXT = 10
-
   def initialize(assistant:, conversation: nil, source: nil)
     @assistant = assistant
     @conversation = conversation
     @source = source
   end
 
+  # A trigger-bound run derives its prior history and separately bounded current trigger from
+  # the canonical ContextBuilder (source = the incoming Message), so both the product-intent
+  # and RAG paths ground on the SAME prior turns and receive the trigger exactly once. A legacy
+  # (source-less) or direct-unit run has no trigger and falls back to the caller-supplied
+  # additional_message / message_history unchanged.
   def run(additional_message: nil, message_history: [])
-    query = resolve_query(additional_message, message_history)
-    log_event('runner.start', assistant_id: assistant_id, conversation_id: conversation_id,
-                              source: source_label, query_present: query.present?)
+    context = canonical_context
+    history = context ? context.history : Array(message_history)
+    trigger = context ? context.trigger : additional_message
+    query = resolve_query(trigger, history)
 
-    product = product_payload(message_history)
+    log_event('runner.start', assistant_id: assistant_id, conversation_id: conversation_id,
+                              source: source_label, query_present: query.present?,
+                              interaction_phase: context&.phase)
+
+    product = product_payload(context)
     return product if product
 
     scenario = select_scenario(query)
     tool_slugs = resolved_tool_slugs(scenario)
 
-    payload = response_generator.generate(additional_message: additional_message, message_history: message_history)
+    payload = response_generator.generate(additional_message: trigger, message_history: history)
     enriched = enrich(payload, scenario, tool_slugs)
 
     log_result(enriched)
@@ -63,20 +70,31 @@ class Marine::Agent::Runner
 
   attr_reader :assistant, :conversation, :source
 
-  # Phase 5 — product orchestration runs BEFORE general RAG. Only active when the
-  # trigger-bound job passed the exact incoming Message as `source:`; a legacy
-  # (source-less) run skips it entirely and behaves exactly as before. The
-  # deterministic Phase 4 orchestrator plans over the customer's text, bounded
-  # context, and the current (read-only) flow snapshot. A `:not_product` plan
-  # returns nil so the caller falls through to the unchanged retrieval path; any
-  # other action is returned as a product payload the ResponseBuilderJob finalizes
-  # (state apply + deterministic TEXT / handoff). Unexpected errors propagate to the
-  # runner's own fail-safe (handoff payload), never a fabricated product answer.
-  def product_payload(message_history)
+  # Canonical bounded prior history + separately bounded current trigger + interaction phase
+  # for a trigger-bound turn; nil when there is no incoming trigger message (legacy / direct
+  # callers), so the caller-supplied history/message is used unchanged.
+  def canonical_context
     message = trigger_message
-    return nil unless message
+    return nil unless message && conversation
 
-    plan = product_orchestrator.process(text: message.content.to_s, context: Array(message_history).last(MAX_PRODUCT_CONTEXT),
+    Marine::Conversation::ContextBuilder.new(conversation: conversation, trigger_message: message).build
+  end
+
+  # Phase 5 — product orchestration runs BEFORE general RAG. Only active on a trigger-bound
+  # run (canonical context present, i.e. the job passed the exact incoming Message as
+  # `source:`); a legacy (source-less) run gets no context and skips it entirely, behaving
+  # exactly as before. The deterministic Phase 4 orchestrator plans over the SEPARATELY
+  # bounded current trigger (context.trigger, capped at 4,000 chars) and the canonical prior
+  # history (context.history, trigger excluded — no duplicate current-message concatenation),
+  # plus the current (read-only) flow snapshot. A `:not_product` plan returns nil so the caller
+  # falls through to the unchanged retrieval path; any other action is returned as a product
+  # payload the ResponseBuilderJob finalizes (state apply + deterministic TEXT / handoff).
+  # Unexpected errors propagate to the runner's own fail-safe (handoff payload), never a
+  # fabricated product answer.
+  def product_payload(context)
+    return nil unless context
+
+    plan = product_orchestrator.process(text: context.trigger, context: context.history,
                                         flow: product_flow, suppressed: false)
     return nil if plan[:action] == :not_product
 

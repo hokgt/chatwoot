@@ -408,4 +408,50 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       expect(incoming.reload.additional_attributes).not_to have_key('wijaya_marine_ai')
     end
   end
+
+  describe '#perform (legacy 2-arg path — canonical bounded context, no product flow)' do
+    let(:conversation) { create(:conversation) }
+    let(:assistant) { create(:marine_assistant, account: conversation.account) }
+    let(:base) { Time.zone.parse('2026-06-01 09:00:00') }
+
+    def add(type, at:, content:, sender: nil)
+      create(:message, conversation: conversation, message_type: type, content: content, sender: sender, created_at: at)
+    end
+
+    it 'supplies the latest incoming as a separate bounded trigger, bounded chronological history, and no source' do
+      add(:incoming, at: base + 1, content: 'first question')
+      add(:outgoing, at: base + 2, sender: assistant, content: 'earlier marine answer')
+      add(:incoming, at: base + 3, content: 'x' * 600) # truncated to 500 chars in history
+      add(:incoming, at: base + 4, content: 'latest question') # the trigger
+
+      init_args = nil
+      call_args = nil
+      chat = instance_double(Marine::Llm::AssistantChatService)
+      allow(Marine::Llm::AssistantChatService).to receive(:new) do |**kwargs|
+        init_args = kwargs
+        chat
+      end
+      allow(chat).to receive(:generate_response) do |**kwargs|
+        call_args = kwargs
+        { 'response' => 'ok', 'action' => 'reply', 'agent_name' => 'Marine Bot' }
+      end
+
+      described_class.perform_now(conversation, assistant)
+
+      # No `source:` is passed, so Agent::Runner's product_payload stays disabled: no Product Flow.
+      expect(init_args).to eq(assistant: assistant, conversation: conversation)
+      expect(init_args).not_to have_key(:source)
+
+      # Latest incoming is the trigger, supplied separately exactly once.
+      expect(call_args[:additional_message]).to eq('latest question')
+
+      # Earlier context is chronological and bounded (500 chars/turn); trigger absent from history.
+      expect(call_args[:message_history]).to eq(
+        [{ role: 'user', content: 'first question' },
+         { role: 'assistant', content: 'earlier marine answer' },
+         { role: 'user', content: 'x' * 500 }]
+      )
+      expect(call_args[:message_history].map { |h| h[:content] }).not_to include('latest question')
+    end
+  end
 end

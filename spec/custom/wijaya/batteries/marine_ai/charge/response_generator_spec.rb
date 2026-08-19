@@ -415,4 +415,42 @@ RSpec.describe Marine::Charge::ResponseGenerator do
       end
     end
   end
+
+  # Phase 2 — the canonical current trigger is supplied SEPARATELY (as additional_message) on
+  # top of a trigger-excluded prior history, so it reaches the LLM input exactly once with no
+  # duplicate current-message concatenation.
+  describe 'canonical current-trigger integration (Phase 2)' do
+    before do
+      stub_no_translation
+      allow(assistant).to receive(:config).and_return({ 'instructions' => 'You are Marine.' })
+    end
+
+    def capture_llm_messages(message: 'ok')
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      captured = { messages: nil }
+      allow(llm).to receive(:chat) do |args|
+        captured[:messages] = args[:messages]
+        { ok: true, message: message, error: nil }
+      end
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      captured
+    end
+
+    it 'appends the separate trigger to the trigger-excluded history exactly once in the LLM input' do
+      history = [
+        { role: 'user', content: 'earlier customer question' },
+        { role: 'assistant', content: 'earlier marine answer' }
+      ]
+      allow(knowledge_base).to receive(:retrieve).and_return(
+        Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match')
+      )
+      captured = capture_llm_messages
+
+      generator.generate(additional_message: 'current customer turn', message_history: history)
+
+      contents = captured[:messages].map { |m| m[:content] || m['content'] }
+      expect(contents).to eq(['earlier customer question', 'earlier marine answer', 'current customer turn'])
+      expect(contents.count('current customer turn')).to eq(1)
+    end
+  end
 end
