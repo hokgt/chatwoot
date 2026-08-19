@@ -64,11 +64,21 @@ module Wijaya::Marine::Hooks
     return false unless message.incoming?
     return false unless inbox.respond_to?(:marine_assistant) && inbox.marine_assistant.present?
     return false if conversation.resolved? || conversation.snoozed?
+    # Once Marine has announced a circuit handoff it stays silent for the lifetime of
+    # this Conversation record — never enqueue another response, even on later turns.
+    return false if marine_handoff_active?(conversation)
 
     # Marine handles until a human agent replies.  WhatsApp conversations
     # are created as 'open' (not 'pending' like web widget), so we check
     # for human (User) outgoing messages instead of the conversation status.
     conversation.messages.outgoing.where(private: false).where(sender_type: 'User').empty?
+  end
+
+  # Suppression (marine_handling_conversation?) deliberately does NOT consult this: while
+  # a handoff is active Marine must keep claiming the native welcome/OOO/email-collect
+  # templates so they stay suppressed. Only response scheduling is gated on it.
+  def marine_handoff_active?(conversation)
+    ::Marine::Circuit::HandoffStateStore.new(conversation: conversation).active?
   end
 
   # Phase 5 — bind the scheduled Marine response to the EXACT incoming message.id

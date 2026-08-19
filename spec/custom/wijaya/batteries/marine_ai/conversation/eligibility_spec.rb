@@ -83,6 +83,37 @@ RSpec.describe Marine::Conversation::Eligibility do
     end
   end
 
+  describe 'active handoff' do
+    def activate_handoff!
+      Marine::Circuit::HandoffStateStore.new(conversation: conversation.reload).activate!(message_ids: [1])
+    end
+
+    it 'is a terminal active_handoff decision once Marine has announced handoff' do
+      activate_handoff!
+
+      decision = eligibility.decision
+      expect(decision.eligible?).to be(false)
+      expect(decision.reason).to eq('active_handoff')
+    end
+
+    it 'stays terminal after the same conversation is resolved and reopened' do
+      activate_handoff!
+      conversation.update!(status: :resolved)
+      conversation.update!(status: :open)
+
+      expect(eligibility.decision.eligible?).to be(false)
+      expect(eligibility.decision.reason).to eq('active_handoff')
+    end
+
+    it 'fails closed: a present-but-malformed handoff marker is a terminal active_handoff decision' do
+      conversation.update!(additional_attributes: { 'wijaya_marine_ai' => { 'handoff_v1' => { 'status' => 'active' } } })
+
+      decision = eligibility.decision
+      expect(decision.eligible?).to be(false)
+      expect(decision.reason).to eq('active_handoff')
+    end
+  end
+
   describe 'eligible conversation' do
     it 'returns the canonical eligible decision with an incoming message present' do
       create(:message, conversation: conversation, account: account, inbox: conversation.inbox, message_type: :incoming)

@@ -59,7 +59,12 @@ RSpec.describe Wijaya::Marine::Hooks do
     let(:messages) { double('messages') }
     let(:inbox) { double('inbox', marine_assistant: assistant) }
     let(:conversation) do
-      double('conversation', resolved?: false, snoozed?: false, messages: messages, inbox: inbox, account: double('account'))
+      double('conversation', resolved?: false, snoozed?: false, messages: messages, inbox: inbox,
+                             account: double('account'), additional_attributes: {})
+    end
+    let(:active_handoff_attributes) do
+      { 'wijaya_marine_ai' => { 'handoff_v1' => { 'version' => 1, 'status' => 'active',
+                                                  'announced_at' => '2026-01-01T00:00:00Z', 'message_ids' => [] } } }
     end
 
     before do
@@ -82,6 +87,51 @@ RSpec.describe Wijaya::Marine::Hooks do
       message = double('message', incoming?: true)
 
       expect(described_class.claim_message_templates!(conversation: conversation, inbox: inbox, message: message)).to be(false)
+    end
+
+    it 'still claims templates but schedules no response while a handoff is active' do
+      allow(conversation).to receive(:additional_attributes).and_return(active_handoff_attributes)
+      message = double('message', incoming?: true, id: 77, attachments: double(blank?: true))
+      expect(Marine::Conversation::ResponseBuilderJob).not_to receive(:perform_later)
+
+      expect(described_class.claim_message_templates!(conversation: conversation, inbox: inbox, message: message)).to be(true)
+    end
+  end
+
+  describe '.should_process_marine_response?' do
+    let(:assistant) { double('assistant') }
+    let(:messages) { double('messages') }
+    let(:inbox) { double('inbox', marine_assistant: assistant) }
+    let(:message) { double('message', incoming?: true) }
+    let(:conversation) do
+      double('conversation', resolved?: false, snoozed?: false, messages: messages, additional_attributes: {})
+    end
+
+    before do
+      allow(messages).to receive(:outgoing).and_return(messages)
+      allow(messages).to receive(:where).and_return(messages)
+      allow(messages).to receive(:empty?).and_return(true)
+    end
+
+    it 'processes an inbound turn with no takeover and no active handoff' do
+      expect(described_class.should_process_marine_response?(conversation, inbox, message)).to be(true)
+    end
+
+    it 'does not process while a handoff is active' do
+      allow(conversation).to receive(:additional_attributes).and_return(
+        'wijaya_marine_ai' => { 'handoff_v1' => { 'version' => 1, 'status' => 'active',
+                                                  'announced_at' => '2026-01-01T00:00:00Z', 'message_ids' => [] } }
+      )
+
+      expect(described_class.should_process_marine_response?(conversation, inbox, message)).to be(false)
+    end
+
+    it 'fails closed: does not process while a present-but-malformed handoff marker exists' do
+      allow(conversation).to receive(:additional_attributes).and_return(
+        'wijaya_marine_ai' => { 'handoff_v1' => { 'status' => 'active' } }
+      )
+
+      expect(described_class.should_process_marine_response?(conversation, inbox, message)).to be(false)
     end
   end
 end

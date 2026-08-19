@@ -5,6 +5,9 @@
 #
 # A conversation is INELIGIBLE (terminal) when:
 #   * it is resolved or snoozed, or
+#   * Marine has already announced a circuit handoff (an active handoff marker), which
+#     stays active for the lifetime of the Conversation record so Marine never re-engages
+#     a handed-off conversation, or
 #   * a human has taken over — i.e. there is a public (non-private) OUTGOING
 #     message that is either sent by a User agent, or is an external_echo (a reply
 #     the human sent from the native app: WhatsApp Business, Instagram, etc.).
@@ -22,7 +25,8 @@ class Marine::Conversation::Eligibility
   REASON_RESOLVED = 'resolved'.freeze
   REASON_SNOOZED = 'snoozed'.freeze
   REASON_HUMAN_TAKEOVER = 'human_takeover'.freeze
-  REASONS = [REASON_ELIGIBLE, REASON_RESOLVED, REASON_SNOOZED, REASON_HUMAN_TAKEOVER].freeze
+  REASON_ACTIVE_HANDOFF = 'active_handoff'.freeze
+  REASONS = [REASON_ELIGIBLE, REASON_RESOLVED, REASON_SNOOZED, REASON_HUMAN_TAKEOVER, REASON_ACTIVE_HANDOFF].freeze
 
   Decision = Struct.new(:eligible, :reason, keyword_init: true) do
     def eligible?
@@ -37,6 +41,7 @@ class Marine::Conversation::Eligibility
   def decision
     return terminal(REASON_RESOLVED) if conversation.resolved?
     return terminal(REASON_SNOOZED) if conversation.snoozed?
+    return terminal(REASON_ACTIVE_HANDOFF) if active_handoff?
     return terminal(REASON_HUMAN_TAKEOVER) if human_takeover?
 
     Decision.new(eligible: true, reason: REASON_ELIGIBLE)
@@ -48,6 +53,12 @@ class Marine::Conversation::Eligibility
 
   def terminal(reason)
     Decision.new(eligible: false, reason: reason)
+  end
+
+  # An active circuit-handoff marker is terminal: once Marine has announced handoff it
+  # never re-engages this Conversation record, regardless of later resolve/reopen.
+  def active_handoff?
+    Marine::Circuit::HandoffStateStore.new(conversation: conversation).active?
   end
 
   # Any public outgoing message that is a genuine human reply counts as a

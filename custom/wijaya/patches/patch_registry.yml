@@ -431,6 +431,11 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_flow_state_store.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/conversation/processing_claim.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/conversation/eligibility.rb
+      # Handoff idempotency — battery-owned handoff lifecycle marker (wijaya_marine_ai.
+      # handoff_v1). Makes Marine::Circuit::HandoffService idempotent/concurrency-safe and
+      # feeds Eligibility's terminal active_handoff reason so a handed-off conversation
+      # stays silent for the lifetime of the Conversation record.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/handoff_state_store.rb
       # Phase 4 — Product Decision and State Machine Orchestrator. Integration domain
       # layer BEFORE any runtime side effect: combines untrusted Phase 2 intent, the
       # deterministic Phase 1 repositories, the Phase 3 canonical flow snapshot, and
@@ -674,6 +679,9 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/eligibility_spec.rb
+      # Handoff idempotency — HandoffStateStore marker + service idempotency/rollback specs.
+      - spec/custom/wijaya/batteries/marine_ai/circuit/handoff_state_store_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/circuit/handoff_service_spec.rb
       # Phase 4 — Product Decision and State Machine Orchestrator specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/variant_resolver_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/reply_renderer_spec.rb

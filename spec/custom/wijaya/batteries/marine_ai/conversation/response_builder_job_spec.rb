@@ -138,6 +138,27 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       expect(claim_status).to eq('completed')
     end
 
+    it 'stops without Marine output when a handoff is already active (queued/in-flight job)' do
+      Marine::Circuit::HandoffStateStore.new(conversation: conversation.reload).activate!(message_ids: [1])
+      stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available }))
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      expect(conversation.messages.outgoing.where.not(sender_type: 'User').count).to eq(0)
+      expect(claim_status).to eq('completed')
+    end
+
+    it 'announces a handoff once; a distinct later incoming message while active produces no further output' do
+      stub_reasoning(product_payload(action: :handoff, reply: { kind: :unsupported }))
+      described_class.perform_now(conversation, assistant, incoming.id)
+      announced_count = conversation.messages.outgoing.count
+
+      later = create(:message, conversation: conversation, message_type: :incoming, content: 'are you there?')
+      described_class.perform_now(conversation, assistant, later.id)
+
+      expect(conversation.messages.outgoing.count).to eq(announced_count)
+    end
+
     it 'renders send_catalog as text-only clarification with no attachment when no usable catalog exists' do
       stub_reasoning(product_payload(
                        action: :send_catalog, reply: nil, operation: :update,
