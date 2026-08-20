@@ -1,3 +1,7 @@
+# rubocop:disable Metrics/ClassLength -- Phase 4 expands the grounded-RAG interaction policy
+# (RAG_INSTRUCTION) and the opening/follow-up greeting gating this class already owns; the
+# added policy text pushes an at-limit class a few lines over. Splitting the RAG grounding
+# concern out would fragment one cohesive generator rather than clarify it.
 class Marine::Charge::ResponseGenerator
   DEFAULT_LANGUAGE = 'en'.freeze
 
@@ -5,10 +9,13 @@ class Marine::Charge::ResponseGenerator
   # answer truncated to RAG_ENTRY_TRUNCATE chars, keep the system prompt bounded.
   RAG_MAX_ENTRIES = 20
   RAG_ENTRY_TRUNCATE = 500
-  RAG_INSTRUCTION = 'Answer ONLY using the information in the Knowledge Base Context above. ' \
-                    'If the answer is not found in the context, say you do not have that information ' \
-                    'and offer to connect the customer with a human agent. ' \
-                    'Never invent or fabricate information.'.freeze
+  RAG_INSTRUCTION = 'Answer ONLY using the information in the Knowledge Base Context above. If the answer is not found in the context, ' \
+                    'say you do not have that information and offer to connect the customer with a human agent. ' \
+                    'Never invent or fabricate information. Address the latest customer request first. ' \
+                    'Use earlier messages in this conversation only when they are relevant to the latest request, and do not ' \
+                    'unnecessarily repeat an answer you have already given. Acknowledge relevant details the customer has already ' \
+                    'provided. Keep your reply concise. If the customer asks for something the Knowledge Base Context does not ' \
+                    'support, say so naturally while still relying only on the approved information above.'.freeze
 
   def initialize(assistant:, conversation: nil, source: nil)
     @assistant = assistant
@@ -16,7 +23,14 @@ class Marine::Charge::ResponseGenerator
     @source = source
   end
 
-  def generate(additional_message: nil, message_history: []) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength
+  # `opening:` is the canonical interaction-phase signal threaded from ContextBuilder via the
+  # runner (Phase 4): true before Marine has posted any earlier PUBLIC reply in this
+  # conversation (greeting allowed), false on every later follow-up turn (opening greeting
+  # prohibited). Defaults to true so legacy / direct-unit callers keep the prior greeting
+  # behavior. It gates ONLY the generated-RAG greeting; retrieval, the exact-FAQ path, and all
+  # metadata are unaffected.
+  def generate(additional_message: nil, message_history: [], opening: true) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength
+    @opening = opening
     customer_query = additional_message.presence || extract_last_user_message(message_history)
     query_translation = translate_query(customer_query)
     retrieval_query = query_translation[:text].presence || customer_query.to_s
@@ -102,17 +116,11 @@ class Marine::Charge::ResponseGenerator
   # office addresses) that a persona-only prompt produced. Returns nil when the LLM is
   # unconfigured or fails so the caller falls through to handoff.
   def llm_fallback_payload(customer_query, message_history, fallback_reason, query_translation)
-    service = Marine::Llm::BaseService.new(account: llm_account)
-    return nil unless service.configured?
-
-    result = service.chat(
-      messages: messages_with_query(message_history, customer_query),
-      system: rag_system_prompt
-    )
-    return nil unless result[:ok] && result[:message].present?
+    response = generated_rag_reply(customer_query, message_history)
+    return nil if response.blank?
 
     {
-      'response' => greeting_context.normalize_opening_greeting(result[:message]),
+      'response' => response,
       'action' => 'reply',
       'agent_name' => assistant.name,
       'source_type' => 'llm_rag',
@@ -131,17 +139,11 @@ class Marine::Charge::ResponseGenerator
   # the customer question. Exact matches (confidence 1.0) skip this fast path. Returns
   # nil when the LLM is unconfigured or fails so the caller returns the raw FAQ answer.
   def rag_synthesis_payload(customer_query, message_history, result, query_translation)
-    service = Marine::Llm::BaseService.new(account: llm_account)
-    return nil unless service.configured?
-
-    llm_result = service.chat(
-      messages: messages_with_query(message_history, customer_query),
-      system: rag_system_prompt
-    )
-    return nil unless llm_result[:ok] && llm_result[:message].present?
+    response = generated_rag_reply(customer_query, message_history)
+    return nil if response.blank?
 
     {
-      'response' => greeting_context.normalize_opening_greeting(llm_result[:message]),
+      'response' => response,
       'action' => 'reply',
       'agent_name' => assistant.name,
       'source_type' => 'llm_rag',
@@ -153,8 +155,28 @@ class Marine::Charge::ResponseGenerator
     }.merge(translation_metadata(query_translation, nil))
   end
 
+  # Shared generated-RAG step for both grounded-LLM branches: run the configured LLM chat over
+  # the query-appended history, validate the result, and apply Phase-4 greeting enforcement
+  # (an opening turn normalizes a wrong-time greeting; a follow-up turn removes an opening
+  # greeting, which can strip a greeting-only reply down to blank). Returns the enforced reply
+  # via `.presence`, so a blank or unusable result becomes nil and each caller falls through to
+  # its OWN existing fail-closed fallback (handoff / raw approved FAQ answer) rather than
+  # emitting a blank. Callers keep their distinct payload/metadata construction.
+  def generated_rag_reply(customer_query, message_history)
+    service = Marine::Llm::BaseService.new(account: llm_account)
+    return nil unless service.configured?
+
+    result = service.chat(
+      messages: messages_with_query(message_history, customer_query),
+      system: rag_system_prompt
+    )
+    return nil unless result[:ok] && result[:message].present?
+
+    greeting_context.enforce(result[:message], opening: @opening).presence
+  end
+
   def rag_system_prompt # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
-    sections = [assistant.config.to_h['instructions'].to_s.strip.presence, greeting_context.system_prompt]
+    sections = [assistant.config.to_h['instructions'].to_s.strip.presence, greeting_context.interaction_prompt(opening: @opening)]
 
     guardrails = Array(assistant.try(:guardrails)).map(&:to_s).map(&:strip).reject(&:blank?)
     sections << "Guardrails:\n#{guardrails.map { |g| "- #{g}" }.join("\n")}" if guardrails.any?
@@ -169,8 +191,9 @@ class Marine::Charge::ResponseGenerator
     sections.compact.join("\n\n").presence
   end
 
-  # Marine-battery service owning the authoritative business-time grounding block and
-  # the opening-greeting normalization safety net (see Marine::Charge::GreetingContext).
+  # Marine-battery service owning the authoritative business-time grounding block, the phase-4
+  # opening/follow-up greeting policy, and the opening-greeting normalization/removal safety net
+  # (see Marine::Charge::GreetingContext).
   def greeting_context = @greeting_context ||= Marine::Charge::GreetingContext.new(account: llm_account)
 
   # Builds the grounding block from every approved FAQ entry and document-backed
@@ -237,3 +260,4 @@ class Marine::Charge::ResponseGenerator
     message&.dig(:content) || message&.dig('content')
   end
 end
+# rubocop:enable Metrics/ClassLength

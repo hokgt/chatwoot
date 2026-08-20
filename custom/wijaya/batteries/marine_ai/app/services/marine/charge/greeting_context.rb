@@ -19,9 +19,41 @@ class Marine::Charge::GreetingContext
   # opens with "Selamat" — e.g. "Kami mengucapkan Selamat sore" — is never rewritten.
   OPENING_GREETING_REGEX = /\A(\s*(?:(?:#{OPENING_SALUTATIONS})[\s!,.]+)?)(selamat)\s+(#{GREETING_WORDS})\b/i
 
+  # Matches a STANDALONE opening salutation from the same canonical set (Halo/Hai/Hello/Hi) that
+  # is NOT part of a "Selamat <period>" opening greeting. Anchored at \A with optional leading
+  # whitespace (the LLM reply is enforced verbatim, so it may open with stray whitespace), a
+  # trailing word boundary, and a required safe separator (whitespace/punctuation) or
+  # end-of-string, so it never matches a prefix word (e.g. "History"/"Halodoc") and never touches
+  # a later/in-body mention. The leading whitespace and separator are part of the match so only
+  # the salutation plus its surrounding whitespace/separator is removed.
+  STANDALONE_OPENING_SALUTATION_REGEX = /\A\s*(?:#{OPENING_SALUTATIONS})\b(?:[\s!,.]+|\z)/i
+
+  # Follow-up interaction policy (Phase 4): once Marine has already replied publicly in a
+  # conversation, later turns are follow-ups and must not open with a fresh greeting. Generic
+  # and language-neutral — it enumerates no greeting phrases; the deterministic safety net
+  # (#remove_opening_greeting) reuses the same canonical opening-greeting recognition.
+  FOLLOW_UP_PROMPT = <<~PROMPT.strip
+    This is a follow-up message in an ongoing conversation.
+    Do NOT begin your reply with an opening greeting or salutation; you have already responded earlier in this conversation, so this is an ongoing follow-up.
+    Continue the conversation naturally.
+  PROMPT
+
   def initialize(account: nil)
     @account = account
   end
+
+  # Follow-up interaction policy block (Phase 4), served in place of the opening business-time
+  # greeting grounding once Marine has already responded earlier in the conversation (an
+  # ongoing follow-up — the earlier response need not itself have carried a greeting).
+  def follow_up_prompt = FOLLOW_UP_PROMPT
+
+  # Phase-4 greeting policy for the generated-RAG system prompt: an opening turn grounds the
+  # authoritative business-time greeting; a follow-up turn carries the no-new-greeting policy.
+  def interaction_prompt(opening:) = opening ? system_prompt : follow_up_prompt
+
+  # Phase-4 deterministic enforcement over the LLM reply: an opening turn corrects a wrong-time
+  # opening greeting; a follow-up turn removes a recognized opening greeting entirely.
+  def enforce(message, opening:) = opening ? normalize_opening_greeting(message) : remove_opening_greeting(message)
 
   # Authoritative current-time block for the system prompt. States the local business
   # date/time, timezone, and the correct greeting so the LLM never infers "now" from
@@ -52,9 +84,41 @@ class Marine::Charge::GreetingContext
     end
   end
 
+  # Follow-up enforcement (Phase 4): a follow-up turn must not open with a fresh greeting or
+  # salutation. Remove a recognized OPENING greeting — the SAME anchored recognition used by
+  # #normalize_opening_greeting (an optional Halo/Hai/Hello/Hi lead-in followed by
+  # "Selamat <period>", at the very start) — OR a STANDALONE opening salutation from that same
+  # canonical set (Halo/Hai/Hello/Hi not followed by "Selamat <period>"), together with its
+  # trailing separator, then re-capitalize the remainder. Only a real opening greeting/salutation
+  # is removed: later in-body greeting mentions, prose that merely starts with "Selamat", and
+  # prefix words (e.g. "History") are never matched by the anchored recognizers and are left
+  # untouched. Returns blank when the reply is only that greeting/salutation so the caller fails
+  # closed. A no-op when the reply does not open with a greeting or salutation.
+  def remove_opening_greeting(text)
+    return text if text.blank?
+
+    if text.match?(OPENING_GREETING_REGEX)
+      remainder = text.sub(OPENING_GREETING_REGEX, '').sub(/\A[\s!,.]+/, '')
+    elsif text.match?(STANDALONE_OPENING_SALUTATION_REGEX)
+      remainder = text.sub(STANDALONE_OPENING_SALUTATION_REGEX, '')
+    else
+      return text
+    end
+
+    capitalize_first(remainder)
+  end
+
   private
 
   attr_reader :account
+
+  # Uppercase only the first character so the sentence left after removing an opening greeting
+  # reads naturally; the rest of the reply is preserved verbatim.
+  def capitalize_first(text)
+    return text if text.empty?
+
+    text[0].upcase + text[1..]
+  end
 
   def business_time
     Time.now.in_time_zone(business_timezone)

@@ -416,6 +416,216 @@ RSpec.describe Marine::Charge::ResponseGenerator do
     end
   end
 
+  # Phase 4 — context-aware grounded RAG interaction policy: the opening/follow-up signal
+  # threaded from the canonical ContextBuilder gates the greeting, and the generated-RAG
+  # interaction policy instructs the model generically (latest-first, relevant-history-only,
+  # no-needless-repeat, concise, acknowledge-supplied, unsupported-but-closed-book).
+  describe 'context-aware RAG interaction policy (Phase 4)' do
+    before do
+      stub_no_translation
+      allow(assistant).to receive(:config).and_return({ 'instructions' => 'You are Marine.' })
+    end
+
+    def capture_llm(message: 'ok')
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      captured = { system: nil }
+      allow(llm).to receive(:chat) do |args|
+        captured[:system] = args[:system]
+        { ok: true, message: message, error: nil }
+      end
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      captured
+    end
+
+    def stub_llm_fallback_retrieval
+      allow(knowledge_base).to receive(:retrieve).and_return(
+        Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match')
+      )
+    end
+
+    it 'includes the generic interaction policy and preserves the closed-book/no-fabrication rules' do
+      captured = capture_llm
+      stub_llm_fallback_retrieval
+      generator.generate(additional_message: 'halo')
+
+      expect(captured[:system]).to include('Answer ONLY using the information in the Knowledge Base Context above.')
+      expect(captured[:system]).to include('Never invent or fabricate information.')
+      expect(captured[:system]).to include('Address the latest customer request first.')
+      expect(captured[:system]).to include('only when they are relevant to the latest request')
+      expect(captured[:system]).to include('do not unnecessarily repeat an answer you have already given')
+      expect(captured[:system]).to include('Acknowledge relevant details the customer has already provided.')
+      expect(captured[:system]).to include('Keep your reply concise.')
+      expect(captured[:system]).to include('say so naturally while still relying only on the approved information above.')
+    end
+
+    it 'grounds the business-time greeting on an opening turn (opening: true)' do
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        captured = capture_llm
+        stub_llm_fallback_retrieval
+        generator.generate(additional_message: 'halo', opening: true)
+        expect(captured[:system]).to include('Selamat pagi')
+        expect(captured[:system]).to include('The correct Indonesian time-of-day greeting')
+      end
+    end
+
+    it 'prohibits a new opening greeting on a follow-up turn (opening: false)' do
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        captured = capture_llm
+        stub_llm_fallback_retrieval
+        generator.generate(additional_message: 'follow-up question', opening: false)
+        expect(captured[:system]).to include('Do NOT begin your reply with an opening greeting')
+        expect(captured[:system]).not_to include('The correct Indonesian time-of-day greeting')
+      end
+    end
+
+    it 'removes a recognized opening greeting from the LLM reply on a follow-up turn' do
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        capture_llm(message: 'Halo! Selamat sore, ada yang bisa dibantu?')
+        stub_llm_fallback_retrieval
+        payload = generator.generate(additional_message: 'follow-up question', opening: false)
+        expect(payload['response']).to eq('Ada yang bisa dibantu?')
+      end
+    end
+
+    it 'leaves later greeting mentions and unrelated prose untouched on a follow-up turn' do
+      body = 'Kami tutup pukul lima. Untuk sapaan, ucapkan Selamat sore.'
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        capture_llm(message: body)
+        stub_llm_fallback_retrieval
+        payload = generator.generate(additional_message: 'follow-up question', opening: false)
+        expect(payload['response']).to eq(body)
+      end
+    end
+
+    it 'strips a standalone opening salutation and preserves the substantive text on a follow-up turn' do
+      capture_llm(message: 'Halo, ada yang bisa dibantu?')
+      stub_llm_fallback_retrieval
+      payload = generator.generate(additional_message: 'follow-up question', opening: false)
+      expect(payload['response']).to eq('Ada yang bisa dibantu?')
+    end
+
+    it 'strips a whitespace-prefixed standalone opening salutation and capitalizes the remainder on a follow-up turn' do
+      capture_llm(message: '  Halo, ada yang bisa dibantu?')
+      stub_llm_fallback_retrieval
+      payload = generator.generate(additional_message: 'follow-up question', opening: false)
+      expect(payload['response']).to eq('Ada yang bisa dibantu?')
+    end
+
+    it 'leaves an in-body salutation mention untouched on a follow-up turn' do
+      body = 'Silakan sapa tim kami dengan halo kapan saja.'
+      capture_llm(message: body)
+      stub_llm_fallback_retrieval
+      payload = generator.generate(additional_message: 'follow-up question', opening: false)
+      expect(payload['response']).to eq(body)
+    end
+
+    it 'leaves a prefix word that merely starts with a salutation untouched on a follow-up turn' do
+      body = 'History pesanan Anda sudah kami kirim.'
+      capture_llm(message: body)
+      stub_llm_fallback_retrieval
+      payload = generator.generate(additional_message: 'follow-up question', opening: false)
+      expect(payload['response']).to eq(body)
+    end
+  end
+
+  # Finding 2 — the follow-up greeting policy can strip a greeting-only LLM reply down to
+  # blank. Enforcement runs BEFORE the payload is built and a blank result is treated as an
+  # unusable LLM output, so each generated-RAG branch fails closed to its EXISTING fallback
+  # (never a blank outgoing message): the no-match fallback branch hands off; the non-exact
+  # synthesis branch returns the raw approved FAQ answer.
+  describe 'fail-closed on blank follow-up enforcement (Finding 2)' do
+    before do
+      stub_no_translation
+      allow(assistant).to receive(:config).and_return({ 'instructions' => 'You are Marine.' })
+    end
+
+    def stub_llm(message)
+      llm = double(configured?: true)
+      allow(llm).to receive(:chat).and_return({ ok: true, message: message, error: nil })
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+    end
+
+    it 'hands off when the follow-up policy strips the LLM fallback reply to blank' do
+      stub_llm('Selamat sore!')
+      allow(knowledge_base).to receive(:retrieve).and_return(
+        Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match')
+      )
+
+      payload = generator.generate(additional_message: 'follow-up question', opening: false)
+
+      expect(payload).to include('action' => 'handoff', 'action_reason' => 'no_confident_cell_match')
+    end
+
+    it 'returns the raw approved FAQ answer when the follow-up policy strips the RAG synthesis to blank' do
+      stub_llm('Halo! Selamat pagi.')
+      response = Marine::AssistantResponse.new(id: 7, question: 'Apa itu MOQ?', answer: 'MOQ is the minimum order quantity.')
+      result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 0.5)
+      allow(knowledge_base).to receive(:retrieve).and_return(result)
+
+      payload = generator.generate(additional_message: 'follow-up question', opening: false)
+
+      expect(payload).to include(
+        'response' => 'MOQ is the minimum order quantity.',
+        'source_type' => 'manual',
+        'confidence' => 0.5
+      )
+    end
+
+    it 'hands off when the follow-up policy strips a standalone-salutation-only LLM fallback reply to blank' do
+      stub_llm('Halo!')
+      allow(knowledge_base).to receive(:retrieve).and_return(
+        Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match')
+      )
+
+      payload = generator.generate(additional_message: 'follow-up question', opening: false)
+
+      expect(payload).to include('action' => 'handoff', 'action_reason' => 'no_confident_cell_match')
+    end
+
+    it 'hands off when the follow-up policy strips a whitespace-prefixed salutation-only LLM fallback reply to blank' do
+      stub_llm('  Halo!')
+      allow(knowledge_base).to receive(:retrieve).and_return(
+        Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match')
+      )
+
+      payload = generator.generate(additional_message: 'follow-up question', opening: false)
+
+      expect(payload).to include('action' => 'handoff', 'action_reason' => 'no_confident_cell_match')
+    end
+
+    it 'returns the raw approved FAQ answer when the follow-up policy strips a standalone-salutation-only RAG synthesis to blank' do
+      stub_llm('Hai')
+      response = Marine::AssistantResponse.new(id: 7, question: 'Apa itu MOQ?', answer: 'MOQ is the minimum order quantity.')
+      result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 0.5)
+      allow(knowledge_base).to receive(:retrieve).and_return(result)
+
+      payload = generator.generate(additional_message: 'follow-up question', opening: false)
+
+      expect(payload).to include(
+        'response' => 'MOQ is the minimum order quantity.',
+        'source_type' => 'manual',
+        'confidence' => 0.5
+      )
+    end
+
+    it 'still emits the normal llm_rag payload/metadata when the follow-up reply is non-blank' do
+      stub_llm('Halo! Selamat pagi, ada yang bisa dibantu?')
+      allow(knowledge_base).to receive(:retrieve).and_return(
+        Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match')
+      )
+
+      payload = generator.generate(additional_message: 'follow-up question', opening: false)
+
+      expect(payload).to include(
+        'response' => 'Ada yang bisa dibantu?',
+        'action' => 'reply',
+        'source_type' => 'llm_rag',
+        'fallback_reason' => 'no_confident_cell_match',
+        'confidence' => 0.0
+      )
+    end
+  end
+
   # Phase 2 — the canonical current trigger is supplied SEPARATELY (as additional_message) on
   # top of a trigger-excluded prior history, so it reaches the LLM input exactly once with no
   # duplicate current-message concatenation.

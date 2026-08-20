@@ -57,7 +57,8 @@ class Marine::Agent::Runner
     scenario = select_scenario(query)
     tool_slugs = resolved_tool_slugs(scenario)
 
-    payload = response_generator.generate(additional_message: trigger, message_history: history)
+    payload = response_generator.generate(additional_message: trigger, message_history: history,
+                                          opening: interaction_opening?(context))
     enriched = enrich(payload, scenario, tool_slugs)
 
     log_result(enriched)
@@ -78,6 +79,30 @@ class Marine::Agent::Runner
     return nil unless message && conversation
 
     Marine::Conversation::ContextBuilder.new(conversation: conversation, trigger_message: message).build
+  end
+
+  # Canonical interaction phase for the greeting gate. A trigger-bound run uses the
+  # ContextBuilder phase directly. A source-less run (the legacy ResponseBuilderJob path or any
+  # direct source-less caller) has no trigger boundary, so it derives the SAME rule straight
+  # from the Conversation: greeting is opening ONLY until Marine has posted any earlier PUBLIC
+  # reply — once any public Marine response exists, every later generation for that Conversation
+  # is a follow-up, with no inactivity/status/reopen heuristic re-enabling opening. A nil
+  # conversation (playground / direct-unit) keeps the prior opening default.
+  def interaction_opening?(context)
+    return context.opening? if context
+    return true unless conversation
+
+    !earlier_public_marine_reply?
+  end
+
+  # Any public Marine reply already sent in this Conversation. Reuses the canonical
+  # ContextBuilder sender_type (no new sender/phrase constant); private Marine notes and human
+  # User replies never match, so neither turns a source-less run into a follow-up. Used only on
+  # the source-less path, where there is no trigger boundary and existence alone decides.
+  def earlier_public_marine_reply?
+    conversation.messages
+                .exists?(message_type: :outgoing, private: false,
+                         sender_type: Marine::Conversation::ContextBuilder::MARINE_SENDER_TYPE)
   end
 
   # Phase 5 — product orchestration runs BEFORE general RAG. Only active on a trigger-bound

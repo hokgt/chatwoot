@@ -244,9 +244,112 @@ RSpec.describe Marine::Agent::Runner do
     it 'gives the RAG ResponseGenerator the same canonical history and the separate trigger' do
       runner.run
 
+      # A prior public Marine reply exists (prior_marine), so this is a follow-up turn and the
+      # opening/greeting signal threaded to the generator is false (Phase 4).
       expect(generator).to have_received(:generate).with(
-        additional_message: 'current customer turn', message_history: canonical_history
+        additional_message: 'current customer turn', message_history: canonical_history, opening: false
       )
+    end
+  end
+
+  # Phase 4 — the runner threads the canonical opening/follow-up signal to the RAG generator so
+  # the greeting is gated by whether Marine has already replied publicly in this conversation.
+  describe 'opening/follow-up greeting signal wiring (Phase 4)' do
+    let(:account) { create(:account) }
+    let(:marine) { create(:marine_assistant, account: account) }
+    let(:conversation) { create(:conversation, account: account) }
+    let(:base) { Time.zone.parse('2026-06-01 09:00:00') }
+    let(:runner) { described_class.new(assistant: marine, conversation: conversation, source: trigger) }
+    let(:orchestrator) { instance_double(Marine::Catalog::ProductQueryOrchestrator) }
+
+    before do
+      allow(Marine::Catalog::ProductQueryOrchestrator).to receive(:new).and_return(orchestrator)
+      allow(orchestrator).to receive(:process).and_return(action: :not_product, reply: nil, state: { operation: :none, changes: {} })
+      allow(generator).to receive(:generate).and_return(reply_payload)
+    end
+
+    context 'when no earlier public Marine reply exists (opening turn)' do
+      let!(:trigger) do
+        create(:message, conversation: conversation, account: account, inbox: conversation.inbox,
+                         message_type: :incoming, content: 'first customer turn', created_at: base + 10)
+      end
+
+      it 'threads opening: true to the generator' do
+        runner.run
+        expect(generator).to have_received(:generate).with(hash_including(opening: true))
+      end
+    end
+
+    context 'when an earlier public Marine reply exists (follow-up turn)' do
+      let!(:prior_marine) do
+        create(:message, conversation: conversation, account: account, inbox: conversation.inbox,
+                         message_type: :outgoing, sender: marine, content: 'earlier marine answer', created_at: base + 2)
+      end
+      let!(:trigger) do
+        create(:message, conversation: conversation, account: account, inbox: conversation.inbox,
+                         message_type: :incoming, content: 'follow-up turn', created_at: base + 10)
+      end
+
+      it 'threads opening: false to the generator' do
+        runner.run
+        expect(generator).to have_received(:generate).with(hash_including(opening: false))
+      end
+    end
+  end
+
+  # Finding 1 — a source-less run (no bound trigger Message: the legacy ResponseBuilderJob path
+  # or any direct source-less caller) has no ContextBuilder result, but still obeys the exact
+  # opening rule. With no trigger boundary the phase is derived straight from the Conversation:
+  # opening ONLY until any public Marine reply exists, follow-up forever after. Product Flow
+  # stays disabled on this path (no source), so only the greeting signal changes.
+  describe 'source-less conversation greeting phase (Finding 1)' do
+    let(:account) { create(:account) }
+    let(:marine) { create(:marine_assistant, account: account) }
+    let(:conversation) { create(:conversation, account: account) }
+    let(:agent) { create(:user, account: account, role: :agent) }
+    let(:runner) { described_class.new(assistant: marine, conversation: conversation) }
+
+    before do
+      allow(generator).to receive(:generate).and_return(reply_payload)
+    end
+
+    def marine_reply(**attrs)
+      create(:message, conversation: conversation, account: account, inbox: conversation.inbox,
+                       message_type: :outgoing, sender: marine, **attrs)
+    end
+
+    it 'threads opening: false when a prior public Marine reply exists' do
+      marine_reply(content: 'earlier marine answer')
+
+      runner.run(additional_message: 'another question')
+
+      expect(generator).to have_received(:generate).with(hash_including(opening: false))
+    end
+
+    it 'threads opening: true when no prior public Marine reply exists' do
+      runner.run(additional_message: 'first customer turn')
+
+      expect(generator).to have_received(:generate).with(hash_including(opening: true))
+    end
+
+    it 'stays opening when only a private Marine note or a human User public reply exists' do
+      marine_reply(content: 'internal note', private: true)
+      create(:message, conversation: conversation, account: account, inbox: conversation.inbox,
+                       message_type: :outgoing, sender: agent, content: 'human agent reply')
+
+      runner.run(additional_message: 'still the first customer turn')
+
+      expect(generator).to have_received(:generate).with(hash_including(opening: true))
+    end
+
+    it 'never re-enables opening after a public Marine reply despite resolve/reopen/inactivity' do
+      marine_reply(content: 'earlier marine answer', created_at: 90.days.ago)
+      conversation.update!(status: :resolved)
+      conversation.update!(status: :open)
+
+      runner.run(additional_message: 'much later customer turn')
+
+      expect(generator).to have_received(:generate).with(hash_including(opening: false))
     end
   end
 

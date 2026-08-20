@@ -162,5 +162,17 @@ RSpec.describe Marine::Conversation::ContextBuilder do
 
       expect(build(trigger).phase).to eq(:opening)
     end
+
+    it 'stays follow_up regardless of elapsed time or a resolve/reopen since the earlier Marine reply' do
+      # Phase depends ONLY on the existence of an earlier public Marine reply — never on
+      # elapsed time, inactivity, or conversation status. A months-long gap and a
+      # resolve/reopen must NOT re-enable an opening greeting.
+      add(:outgoing, at: base, sender: marine, content: 'earlier marine answer')
+      conversation.update!(status: :resolved)
+      conversation.update!(status: :open)
+      trigger = add(:incoming, at: base + 90.days, content: 'much later customer turn')
+
+      expect(build(trigger).phase).to eq(:follow_up)
+    end
   end
 end
