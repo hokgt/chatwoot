@@ -382,6 +382,8 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/cell/citation_builder.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/charge/response_generator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/charge/greeting_context.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/charge/grounded_wording_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/charge/fact_preservation_validator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/charge/confidence_scorer.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/handoff_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/assistant_chat_service.rb
@@ -647,6 +649,8 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/cell/citation_builder_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/charge/confidence_scorer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/charge/response_generator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/grounded_wording_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/fact_preservation_validator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/response_builder_job_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/copilot/reply_suggestion_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/copilot/summary_service_spec.rb

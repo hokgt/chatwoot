@@ -663,4 +663,170 @@ RSpec.describe Marine::Charge::ResponseGenerator do
       expect(contents.count('current customer turn')).to eq(1)
     end
   end
+
+  # Phase 5 — contextual wording for approved-FAQ answers ONLY. On an exact approved-FAQ
+  # match the generator may replace the response BODY with validated contextual wording,
+  # while every existing key/value (metadata + translation flow) stays byte-for-byte. Any
+  # wording failure returns the existing translated-or-original exact fallback. Non-exact,
+  # no-match/handoff, and document-backed exact results never invoke the composer.
+  describe 'contextual wording for approved-FAQ answers (Phase 5)' do
+    def stub_wording(candidate)
+      wording = instance_double(Marine::Charge::GroundedWordingService, call: candidate)
+      allow(Marine::Charge::GroundedWordingService).to receive(:new).and_return(wording)
+      wording
+    end
+
+    it 'uses the accepted contextual wording while keeping all existing metadata identical' do
+      stub_no_translation
+      response = Marine::AssistantResponse.new(id: 9, question: 'Hi', answer: 'Hello!')
+      result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 1.0)
+      allow(knowledge_base).to receive(:retrieve).and_return(result)
+      stub_wording('Hi there — Hello!')
+
+      payload = generator.generate(additional_message: 'Hi')
+
+      expect(payload['response']).to eq('Hi there — Hello!')
+      expect(payload).to include(
+        'action' => 'reply',
+        'agent_name' => 'Marine Bot',
+        'marine_cell_response_id' => 9,
+        'confidence' => 1.0,
+        'source_type' => 'manual',
+        'response_ids' => [9],
+        'document_ids' => [],
+        'fallback_reason' => nil
+      )
+      expect(payload['citations']).to eq(result.citations)
+    end
+
+    it 'returns the exact approved answer and replies (no handoff) when the wording service declines' do
+      stub_no_translation
+      response = Marine::AssistantResponse.new(id: 9, question: 'Hi', answer: 'Hello!')
+      result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 1.0)
+      allow(knowledge_base).to receive(:retrieve).and_return(result)
+      stub_wording(nil)
+
+      payload = generator.generate(additional_message: 'Hi')
+
+      expect(payload).to include(
+        'response' => 'Hello!',
+        'action' => 'reply',
+        'marine_cell_response_id' => 9,
+        'confidence' => 1.0,
+        'source_type' => 'manual',
+        'fallback_reason' => nil
+      )
+    end
+
+    it 'passes the STORED approved answer (not the translated delivery fallback) to the composer and keeps translation metadata unchanged' do
+      allow(Marine::Llm::TranslateQueryService).to receive(:new).and_return(
+        double(call: { text: 'Where is my order', source_language: 'id', translated: true, error: nil })
+      )
+      allow(Marine::Llm::TranslateResponseService).to receive(:new).and_return(
+        double(call: { text: 'Pesanan Anda dalam perjalanan', source_language: 'en', target_language: 'id', translated: true, error: nil })
+      )
+      response = Marine::AssistantResponse.new(id: 9, question: 'Where is my order', answer: 'Your order is on the way')
+      result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 1.0)
+      allow(knowledge_base).to receive(:retrieve).with('Where is my order', limit: 1).and_return(result)
+
+      wording = instance_double(Marine::Charge::GroundedWordingService)
+      captured = {}
+      allow(wording).to receive(:call) do |args|
+        captured.merge!(args)
+        'Tentu! Pesanan Anda dalam perjalanan.'
+      end
+      allow(Marine::Charge::GroundedWordingService).to receive(:new).and_return(wording)
+
+      history = [{ role: 'user', content: 'halo' }]
+      payload = generator.generate(additional_message: 'Pesanan saya di mana', message_history: history, opening: false)
+
+      # the composer receives the STORED approved answer as the sole authoritative factual
+      # source, even though the current translation succeeded and produced a delivery fallback
+      expect(captured[:approved_answer]).to eq('Your order is on the way')
+      expect(captured[:customer_request]).to eq('Pesanan saya di mana')
+      expect(captured[:message_history]).to eq(history)
+      expect(captured[:opening]).to be(false)
+      expect(payload['response']).to eq('Tentu! Pesanan Anda dalam perjalanan.')
+      expect(payload).to include(
+        'query_language' => 'id',
+        'response_language' => 'id',
+        'translated_query' => 'Where is my order',
+        'translation_applied' => true,
+        'response_translation_applied' => true
+      )
+    end
+
+    it 'returns the exact translated delivery fallback (not the stored answer) when the composer declines' do
+      allow(Marine::Llm::TranslateQueryService).to receive(:new).and_return(
+        double(call: { text: 'Where is my order', source_language: 'id', translated: true, error: nil })
+      )
+      allow(Marine::Llm::TranslateResponseService).to receive(:new).and_return(
+        double(call: { text: 'Pesanan Anda dalam perjalanan', source_language: 'en', target_language: 'id', translated: true, error: nil })
+      )
+      response = Marine::AssistantResponse.new(id: 9, question: 'Where is my order', answer: 'Your order is on the way')
+      result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 1.0)
+      allow(knowledge_base).to receive(:retrieve).with('Where is my order', limit: 1).and_return(result)
+
+      wording = instance_double(Marine::Charge::GroundedWordingService)
+      captured = {}
+      allow(wording).to receive(:call) do |args|
+        captured.merge!(args)
+        nil
+      end
+      allow(Marine::Charge::GroundedWordingService).to receive(:new).and_return(wording)
+
+      payload = generator.generate(additional_message: 'Pesanan saya di mana', opening: false)
+
+      # composer still receives the stored answer; on decline the delivery fallback is the translation
+      expect(captured[:approved_answer]).to eq('Your order is on the way')
+      expect(payload['response']).to eq('Pesanan Anda dalam perjalanan')
+      expect(payload).to include(
+        'response_language' => 'id',
+        'translation_applied' => true,
+        'response_translation_applied' => true
+      )
+    end
+
+    it 'does not invoke the composer on a non-exact RAG match' do
+      stub_no_translation
+      stub_llm_unconfigured
+      allow(Marine::Charge::GroundedWordingService).to receive(:new)
+      response = Marine::AssistantResponse.new(id: 7, question: 'Apa itu MOQ?', answer: 'MOQ is the minimum order quantity.')
+      result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 0.5)
+      allow(knowledge_base).to receive(:retrieve).and_return(result)
+
+      payload = generator.generate(additional_message: 'Apa itu Textilindo?')
+
+      expect(Marine::Charge::GroundedWordingService).not_to have_received(:new)
+      expect(payload['response']).to eq('MOQ is the minimum order quantity.')
+    end
+
+    it 'does not invoke the composer when there is no confident match (handoff)' do
+      stub_no_translation
+      stub_llm_unconfigured
+      allow(Marine::Charge::GroundedWordingService).to receive(:new)
+      result = Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match')
+      allow(knowledge_base).to receive(:retrieve).and_return(result)
+
+      payload = generator.generate(additional_message: 'unknown')
+
+      expect(Marine::Charge::GroundedWordingService).not_to have_received(:new)
+      expect(payload).to include('action' => 'handoff')
+    end
+
+    it 'does not invoke the composer on a document-backed exact match' do
+      stub_no_translation
+      allow(Marine::Charge::GroundedWordingService).to receive(:new)
+      response = Marine::AssistantResponse.new(id: 5, question: 'Contact', answer: 'Office: Jl. Real Address 1, Bandung.')
+      result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 1.0)
+      allow(result).to receive(:source_type).and_return('document')
+      allow(knowledge_base).to receive(:retrieve).and_return(result)
+
+      payload = generator.generate(additional_message: 'Contact')
+
+      expect(Marine::Charge::GroundedWordingService).not_to have_received(:new)
+      expect(payload['response']).to eq('Office: Jl. Real Address 1, Bandung.')
+      expect(payload['source_type']).to eq('document')
+    end
+  end
 end

@@ -27,9 +27,9 @@ class Marine::Charge::ResponseGenerator
   # runner (Phase 4): true before Marine has posted any earlier PUBLIC reply in this
   # conversation (greeting allowed), false on every later follow-up turn (opening greeting
   # prohibited). Defaults to true so legacy / direct-unit callers keep the prior greeting
-  # behavior. It gates ONLY the generated-RAG greeting; retrieval, the exact-FAQ path, and all
-  # metadata are unaffected.
-  def generate(additional_message: nil, message_history: [], opening: true) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength
+  # behavior. It gates the generated-RAG greeting and the Phase 5 contextual exact-FAQ wording
+  # greeting; retrieval, the exact approved fallback, and all metadata remain unaffected.
+  def generate(additional_message: nil, message_history: [], opening: true) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
     @opening = opening
     customer_query = additional_message.presence || extract_last_user_message(message_history)
     query_translation = translate_query(customer_query)
@@ -51,6 +51,10 @@ class Marine::Charge::ResponseGenerator
 
     response_translation = translate_response(result.answer, query_translation[:source_language])
     final_answer = response_translation[:text].presence || result.answer
+    # Phase 5 — the STORED approved answer (result.answer) is the sole authoritative factual
+    # source handed to the composer; final_answer stays the translated-or-original delivery
+    # fallback, returned unchanged when contextual wording declines (nil).
+    final_answer = contextual_wording(result.answer, customer_query, message_history) || final_answer if exact_faq?(result)
 
     {
       'response' => final_answer,
@@ -66,6 +70,24 @@ class Marine::Charge::ResponseGenerator
 
   def knowledge_base
     @knowledge_base ||= Marine::Cell::KnowledgeBaseService.new(assistant: assistant)
+  end
+
+  # Phase 5 applies contextual wording ONLY to an exact approved-FAQ entry: a perfect
+  # match (confidence 1.0 == ConfidenceScorer::EXACT_MATCH_SCORE, the query equals the
+  # FAQ question) whose source is a manual response (documentable_type blank). An exact
+  # document-backed match keeps its raw answer, and a non-exact match that fell through
+  # to its raw answer (confidence < 1.0) is never contextualized.
+  def exact_faq?(result) = result.confidence >= 1.0 && result.source_type == 'manual'
+
+  # Phase 5 — offer the STORED approved answer (the sole authoritative factual source) to
+  # the grounded wording composer, which returns validated contextual wording or nil. The
+  # model may choose the contextual language; the validator compares the exact post-greeting
+  # candidate against this stored answer (cross-language where applicable). On nil the caller
+  # keeps the translated-or-original delivery fallback and its unchanged metadata.
+  def contextual_wording(approved_answer, customer_query, message_history)
+    Marine::Charge::GroundedWordingService
+      .new(account: llm_account)
+      .call(approved_answer: approved_answer, customer_request: customer_query, message_history: message_history, opening: @opening)
   end
 
   def metadata(result)
