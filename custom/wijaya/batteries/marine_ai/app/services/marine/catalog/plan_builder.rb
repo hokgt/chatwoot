@@ -23,7 +23,16 @@ module Marine
       def family_level_changes(family, intent, state_op)
         changes = family_changes(family, intent).merge('expected_attributes' => [])
         changes = changes.merge('validated_variant' => nil) if state_op == :update
-        changes
+        cleared_clarification(changes, state_op)
+      end
+
+      # A RESOLVED plan represents validated progress, so on a continuation (:update) it clears
+      # any prior clarification-progression metadata (Phase 3): the nils are compacted away by
+      # #update! sanitization. A fresh :start flow carries no such metadata, so it is untouched.
+      def cleared_clarification(changes, state_op)
+        return changes unless state_op == :update
+
+        changes.merge('clarification_kind' => nil, 'clarification_count' => nil)
       end
 
       # The optional :language key is bounded delivery metadata (the customer-language

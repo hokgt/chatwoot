@@ -112,7 +112,9 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(plan[:action]).to eq(:clarify_family)
       expect(plan[:reply][:kind]).to eq(:clarify_family)
       expect(plan[:reply][:candidates].length).to eq(2)
-      expect(plan[:state]).to eq(operation: :none, changes: {})
+      # Phase 3: a fresh unresolved family clarification opens a flow tracking occurrence 1.
+      expect(plan[:state][:operation]).to eq(:start)
+      expect(plan[:state][:changes]).to include('clarification_kind' => 'family', 'clarification_count' => 1, 'current_intent' => 'price')
     end
   end
 
@@ -454,7 +456,9 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
 
       expect(plan[:action]).to eq(:clarify_family)
       expect(plan[:reply][:kind]).to eq(:clarify_family)
-      expect(plan[:state]).to eq(operation: :none, changes: {})
+      # Phase 3: still a clarify (never a catalog) — opening occurrence 1 on a fresh flow.
+      expect(plan[:state][:operation]).to eq(:start)
+      expect(plan[:state][:changes]).to include('clarification_kind' => 'family', 'clarification_count' => 1)
     end
 
     it 'stays safe (clarify_family) when NO active family matches the partial mention' do
@@ -478,6 +482,317 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-2', family_name: 'Gasket Ring')
       expect(plan[:state][:operation]).to eq(:start)
       expect(plan[:state][:changes]).to include('validated_family' => 'FAM-2')
+    end
+  end
+
+  # Phase 3 — structured clarification progression. Identity is generic (kind + supported
+  # intent + validated family + expected attributes), NEVER raw text/candidate values.
+  describe 'family clarification progression' do
+    before do
+      allow(family_repository).to receive(:resolve_exact).and_return(nil)
+      # Two families that do not uniquely recover, so the mention stays unresolved -> clarify.
+      allow(family_repository).to receive(:active_candidates).and_return(
+        [{ code: 'FAM-A', name: 'Alpha One' }, { code: 'FAM-B', name: 'Alpha Two' }]
+      )
+    end
+
+    def family_clarify_flow(count, overrides = {})
+      {
+        'version' => 2, 'flow_id' => 'flow-1', 'status' => 'active', 'expires_at' => '2999-01-01T00:00:00Z',
+        'expected_attributes' => [], 'current_intent' => 'price', 'clarification_kind' => 'family',
+        'clarification_count' => count
+      }.merge(overrides)
+    end
+
+    it 'opens occurrence 1 on a fresh conversation (:start, count 1)' do
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'price', family_mention: 'Zzz'), flow: nil)
+
+      expect(plan[:action]).to eq(:clarify_family)
+      expect(plan[:state][:operation]).to eq(:start)
+      expect(plan[:state][:changes]).to include('clarification_kind' => 'family', 'clarification_count' => 1, 'current_intent' => 'price')
+    end
+
+    it 'increments the SAME unresolved family state to occurrence 2 (:update, count 2)' do
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'price', family_mention: 'Zzz'), flow: family_clarify_flow(1))
+
+      expect(plan[:action]).to eq(:clarify_family)
+      expect(plan[:state][:operation]).to eq(:update)
+      expect(plan[:state][:changes]).to include('clarification_kind' => 'family', 'clarification_count' => 2)
+    end
+
+    it 'hands off on the third occurrence of the same unresolved family state' do
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'price', family_mention: 'Zzz'), flow: family_clarify_flow(2))
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply][:kind]).to eq(:clarify_family)
+    end
+
+    it 'resets the progression to 1 when the supported intent switches' do
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'stock', family_mention: 'Zzz'), flow: family_clarify_flow(2))
+
+      expect(plan[:action]).to eq(:clarify_family)
+      expect(plan[:state][:changes]).to include('clarification_count' => 1, 'current_intent' => 'stock')
+    end
+
+    it 'preserves the validated family and catalog markers on an ambiguity over an active family (metadata-only update)' do
+      allow(family_repository).to receive(:active_candidates).and_return(
+        [{ code: 'FAM-1', name: 'Alpha' }, { code: 'FAM-2', name: 'Alpha' }]
+      )
+      flow = active_flow('validated_family' => 'FAM-1', 'catalog_sent' => true, 'catalog_document_id' => 77)
+
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'catalog', family_mention: 'Alpha'), flow: flow)
+
+      expect(plan[:action]).to eq(:clarify_family)
+      expect(plan[:state][:operation]).to eq(:update)
+      expect(plan[:state][:changes]).to include('clarification_kind' => 'family', 'clarification_count' => 1)
+      expect(plan[:state][:changes]).not_to have_key('validated_family')
+      expect(plan[:state][:changes]).not_to have_key('catalog_sent')
+    end
+
+    it 'establishing the family from a prior family clarification is validated progress (resolved, metadata cleared)' do
+      allow(family_repository).to receive(:resolve_exact).with('Impeller').and_return(code: 'FAM-1', name: 'Impeller')
+
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'parent_info', family_mention: 'Impeller'),
+                                          flow: family_clarify_flow(2, 'current_intent' => 'parent_info'))
+
+      expect(plan[:action]).to eq(:reply)
+      expect(plan[:state][:operation]).to eq(:start) # switch to the newly validated family
+      expect(plan[:state][:changes]).not_to have_key('clarification_count')
+    end
+  end
+
+  describe 'clarification progression does not apply to non-clarification paths' do
+    it 'never adds clarification metadata to an unsupported-intent handoff' do
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'unsupported'), flow: nil)
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:state]).to eq(operation: :none, changes: {})
+    end
+
+    it 'never adds clarification metadata to a repository-error handoff' do
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'CHILD-1')
+      allow(stock_repository).to receive(:status_for).and_raise(Marine::Catalog::Errors::CatalogUnavailableError)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'stock', explicit_child_code: 'CHILD-1', family_mention: 'Impeller'), flow: nil
+      )
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:state]).to eq(operation: :none, changes: {})
+    end
+
+    it 'never adds clarification metadata to a price-conflict handoff' do
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'CHILD-1')
+      allow(price_repository).to receive(:price_for).and_return(status: :conflict)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'price', explicit_child_code: 'CHILD-1', requires_exact_variant: true, family_mention: 'Impeller'),
+        flow: nil
+      )
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:state][:changes]).not_to have_key('clarification_count')
+    end
+
+    it 'never enters progression on a nonproduct turn' do
+      plan = orchestrator.plan_for_intent(intent: intent(product_related: false, intent: 'unknown'), flow: nil)
+
+      expect(plan[:action]).to eq(:not_product)
+      expect(plan[:state]).to eq(operation: :none, changes: {})
+    end
+  end
+
+  describe 'variant clarification progression' do
+    def variant_flow(count, overrides = {})
+      active_flow('current_intent' => 'variant_info', 'validated_variant' => nil, 'expected_attributes' => %w[Size],
+                  'clarification_kind' => 'variant', 'clarification_count' => count).merge(overrides)
+    end
+
+    def unresolved_variant_intent(overrides = {})
+      intent(intent: 'variant_info', requires_exact_variant: true, explicit_child_code: 'CHILD-X', family_mention: 'Impeller').merge(overrides)
+    end
+
+    before { allow(variant_resolver).to receive(:resolve).and_return(status: :unresolved, reason: :ambiguous) }
+
+    it 'clarifies occurrence 1 for an unresolved explicit candidate (:start, count 1)' do
+      plan = orchestrator.plan_for_intent(intent: unresolved_variant_intent, flow: nil)
+
+      expect(plan[:action]).to eq(:clarify_variant)
+      expect(plan[:state][:operation]).to eq(:start)
+      expect(plan[:state][:changes]).to include('clarification_kind' => 'variant', 'clarification_count' => 1, 'expected_attributes' => %w[Size])
+    end
+
+    it 'increments to occurrence 2 on the SAME unresolved variant state (:update, count 2)' do
+      plan = orchestrator.plan_for_intent(intent: unresolved_variant_intent, flow: variant_flow(1))
+
+      expect(plan[:action]).to eq(:clarify_variant)
+      expect(plan[:state][:operation]).to eq(:update)
+      expect(plan[:state][:changes]).to include('clarification_count' => 2)
+    end
+
+    it 'still increments (no progress) when only the candidate value changes without repository validation' do
+      plan = orchestrator.plan_for_intent(intent: unresolved_variant_intent('explicit_child_code' => 'TOTALLY-DIFFERENT'),
+                                          flow: variant_flow(1))
+
+      expect(plan[:action]).to eq(:clarify_variant)
+      expect(plan[:state][:changes]).to include('clarification_count' => 2)
+    end
+
+    it 'hands off on the third unresolved variant occurrence' do
+      plan = orchestrator.plan_for_intent(intent: unresolved_variant_intent, flow: variant_flow(2))
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply][:kind]).to eq(:clarify_variant)
+    end
+
+    it 'clears clarification metadata and executes the price behavior when a unique variant validates' do
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'CHILD-1')
+      allow(price_repository).to receive(:price_for).with('CHILD-1').and_return(available_price)
+
+      plan = orchestrator.plan_for_intent(
+        intent: unresolved_variant_intent(intent: 'price'), flow: variant_flow(2, 'current_intent' => 'price')
+      )
+
+      expect(plan[:action]).to eq(:reply)
+      expect(plan[:reply]).to eq(kind: :price_available, price_list_rate: '125.50', currency: 'USD', uom: 'Nos')
+      expect(plan[:state][:operation]).to eq(:update)
+      expect(plan[:state][:changes]['clarification_kind']).to be_nil
+      expect(plan[:state][:changes]['clarification_count']).to be_nil
+    end
+  end
+
+  describe 'catalog-assisted variant clarification progression' do
+    def variant_intent
+      intent(intent: 'variant_info', requires_exact_variant: true, family_mention: 'Impeller')
+    end
+
+    it 'offers the native catalog on occurrence 1 (send_catalog, count 1)' do
+      plan = orchestrator.plan_for_intent(intent: variant_intent, flow: nil)
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to be_nil
+      expect(plan[:state][:changes]).to include('clarification_kind' => 'variant', 'clarification_count' => 1)
+    end
+
+    it 'clarifies without a second attachment on occurrence 2 once the catalog was sent (count 2)' do
+      flow = active_flow('current_intent' => 'variant_info', 'validated_variant' => nil, 'catalog_sent' => true,
+                         'expected_attributes' => %w[Size], 'clarification_kind' => 'variant', 'clarification_count' => 1)
+
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'variant_info', family_mention: nil), flow: flow)
+
+      expect(plan[:action]).to eq(:clarify_variant)
+      expect(plan[:state][:changes]).to include('clarification_count' => 2)
+    end
+
+    it 'hands off on occurrence 3 (never a second attachment)' do
+      flow = active_flow('current_intent' => 'variant_info', 'validated_variant' => nil, 'catalog_sent' => true,
+                         'expected_attributes' => %w[Size], 'clarification_kind' => 'variant', 'clarification_count' => 2)
+
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'variant_info', family_mention: nil), flow: flow)
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply][:kind]).to eq(:clarify_variant)
+    end
+  end
+
+  # Phase 3 — a PATHOLOGICAL repository attribute list (>MAX items, duplicates, an overlong
+  # item, a control character, and blanks) must canonicalize identically before the descriptor,
+  # the progression identity, and the persisted state changes. Without one shared canonical
+  # normalization, occurrence 1 (raw list) and its persisted-shaped occurrence 2 would compare
+  # unequal, resetting the count to 1 forever instead of ever reaching a handoff.
+  describe 'variant clarification progression survives a pathological repository attribute list' do
+    let(:pathological) do
+      %w[Size Size] + ['  Color  ', "Volt\u0000age", '', '   ', 'D' * 200] + Array.new(20) { |i| "Attr#{i}" }
+    end
+    let(:canonical) { Marine::Catalog::ProductFlowStateStore.normalize_expected_attributes(pathological) }
+
+    def unresolved_variant_intent
+      intent(intent: 'variant_info', requires_exact_variant: true, explicit_child_code: 'CHILD-X', family_mention: 'Impeller')
+    end
+
+    def pathological_variant_flow(count)
+      active_flow('current_intent' => 'variant_info', 'validated_variant' => nil, 'expected_attributes' => canonical,
+                  'clarification_kind' => 'variant', 'clarification_count' => count)
+    end
+
+    before do
+      allow(variant_repository).to receive(:attribute_names).and_return(pathological)
+      allow(variant_resolver).to receive(:resolve).and_return(status: :unresolved, reason: :ambiguous)
+    end
+
+    it 'is genuinely pathological: the raw list differs from its canonical (bounded) shape' do
+      expect(canonical).not_to eq(pathological)
+      expect(canonical.length).to eq(Marine::Catalog::ProductFlowStateStore::MAX_ATTRIBUTES)
+    end
+
+    it 'bounds the customer-facing descriptor and the persisted expected_attributes identically on occurrence 1' do
+      plan = orchestrator.plan_for_intent(intent: unresolved_variant_intent, flow: nil)
+
+      expect(plan[:action]).to eq(:clarify_variant)
+      expect(plan[:state][:operation]).to eq(:start)
+      expect(plan[:state][:changes]['expected_attributes']).to eq(canonical)
+      expect(plan[:reply][:attribute_names]).to eq(canonical)
+      expect(plan[:state][:changes]).to include('clarification_count' => 1)
+    end
+
+    it 'matches the persisted-shaped occurrence 2 and increments the count (never resets to 1)' do
+      plan = orchestrator.plan_for_intent(intent: unresolved_variant_intent, flow: pathological_variant_flow(1))
+
+      expect(plan[:action]).to eq(:clarify_variant)
+      expect(plan[:state][:operation]).to eq(:update)
+      expect(plan[:state][:changes]).to include('clarification_count' => 2)
+    end
+
+    it 'hands off on occurrence 3 rather than looping forever' do
+      plan = orchestrator.plan_for_intent(intent: unresolved_variant_intent, flow: pathological_variant_flow(2))
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply][:kind]).to eq(:clarify_variant)
+    end
+  end
+
+  # Phase 3 — clarification identity compares the expected-attribute SET, not its order. A
+  # repository that returns the SAME bounded/deduplicated attributes in a DIFFERENT order on a
+  # later turn must still match the persisted occurrence and increment (never falsely reset to
+  # occurrence 1); only a GENUINELY changed set resets.
+  describe 'variant clarification progression is insensitive to expected-attribute order' do
+    def unresolved_variant_intent
+      intent(intent: 'variant_info', requires_exact_variant: true, explicit_child_code: 'CHILD-X', family_mention: 'Impeller')
+    end
+
+    def variant_flow(count, persisted_attributes)
+      active_flow('current_intent' => 'variant_info', 'validated_variant' => nil, 'expected_attributes' => persisted_attributes,
+                  'clarification_kind' => 'variant', 'clarification_count' => count)
+    end
+
+    before { allow(variant_resolver).to receive(:resolve).and_return(status: :unresolved, reason: :ambiguous) }
+
+    it 'increments occurrence 1 -> 2 when the same set is returned in a different order' do
+      allow(variant_repository).to receive(:attribute_names).and_return(%w[Color Size])
+
+      plan = orchestrator.plan_for_intent(intent: unresolved_variant_intent, flow: variant_flow(1, %w[Size Color]))
+
+      expect(plan[:action]).to eq(:clarify_variant)
+      expect(plan[:state][:operation]).to eq(:update)
+      expect(plan[:state][:changes]).to include('clarification_count' => 2)
+    end
+
+    it 'hands off on occurrence 3 for the same set surfaced in a different order' do
+      allow(variant_repository).to receive(:attribute_names).and_return(%w[Color Size])
+
+      plan = orchestrator.plan_for_intent(intent: unresolved_variant_intent, flow: variant_flow(2, %w[Size Color]))
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply][:kind]).to eq(:clarify_variant)
+    end
+
+    it 'resets to occurrence 1 when the canonical set genuinely changes' do
+      allow(variant_repository).to receive(:attribute_names).and_return(%w[Color Material])
+
+      plan = orchestrator.plan_for_intent(intent: unresolved_variant_intent, flow: variant_flow(1, %w[Size Color]))
+
+      expect(plan[:action]).to eq(:clarify_variant)
+      expect(plan[:state][:changes]).to include('clarification_count' => 1)
     end
   end
 

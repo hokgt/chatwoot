@@ -112,10 +112,12 @@ class Marine::Agent::Runner
     )
   end
 
-  # Read-only current flow snapshot for the orchestrator; never mutated here — the
-  # job applies any state operation at finalization.
+  # Read-only EFFECTIVE planning snapshot for the orchestrator; never mutated here — the
+  # job applies any state operation at finalization. An elapsed active flow is presented as
+  # expired (status 'expired') WITHOUT persisting the transition, so reasoning never reuses an
+  # expired flow's validated family/variant/catalog markers or clarification count.
   def product_flow
-    Marine::Catalog::ProductFlowStateStore.new(conversation: conversation).current
+    Marine::Catalog::ProductFlowStateStore.new(conversation: conversation).current_for_planning
   end
 
   def product_account

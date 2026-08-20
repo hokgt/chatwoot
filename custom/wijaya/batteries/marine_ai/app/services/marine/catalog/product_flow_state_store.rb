@@ -20,6 +20,9 @@
 #     never fabricates success, so a future job can retry.
 module Marine
   module Catalog
+    # rubocop:disable Metrics/ClassLength -- a single cohesive trust boundary: the bounded,
+    # allowlisted field set plus its strict read-validation/normalization and row-locked
+    # mutations belong together; splitting them would obscure the one-object contract.
     class ProductFlowStateStore
       FEATURE_KEY = 'wijaya_marine_ai'.freeze
       FLOW_KEY = 'product_flow_v1'.freeze
@@ -29,6 +32,17 @@ module Marine
       STATUS_COMPLETED = 'completed'.freeze
       STATUSES = [STATUS_ACTIVE, STATUS_EXPIRED, STATUS_COMPLETED].freeze
 
+      # Phase 3 clarification-progression metadata. clarification_kind is an ENUM (a
+      # family-vs-variant clarification), clarification_count a SMALL bounded integer. A
+      # persisted value outside this enum/range is dropped on read (treated as no prior
+      # occurrence), so malformed/forged clarification state can never be trusted to
+      # force a handoff. The orchestrator only ever persists counts 1..MAX (a third
+      # occurrence hands off without persisting), so MAX_CLARIFICATION_COUNT bounds it.
+      CLARIFICATION_KIND_FAMILY = 'family'.freeze
+      CLARIFICATION_KIND_VARIANT = 'variant'.freeze
+      CLARIFICATION_KINDS = [CLARIFICATION_KIND_FAMILY, CLARIFICATION_KIND_VARIANT].freeze
+      MAX_CLARIFICATION_COUNT = 2
+
       # Allowlisted, bounded state keys. Nothing outside this set persists.
       # original_intent records the intent the flow opened with; current_intent
       # tracks the (possibly switched) intent the flow is now serving. A legacy
@@ -37,7 +51,12 @@ module Marine
       STRING_FIELDS = %w[flow_id original_intent current_intent validated_family validated_variant].freeze
       INTEGER_FIELDS = %w[origin_message_id last_relevant_message_id catalog_document_id catalog_message_id].freeze
       BOOLEAN_FIELDS = %w[catalog_sent].freeze
-      FIELDS = (%w[version status expires_at expected_attributes] + STRING_FIELDS + INTEGER_FIELDS + BOOLEAN_FIELDS).freeze
+      # Bounded clarification metadata, validated/normalized separately (enum + range) so it
+      # reuses current_intent/validated_family/expected_attributes for identity rather than
+      # duplicating raw signature fields.
+      CLARIFICATION_FIELDS = %w[clarification_kind clarification_count].freeze
+      FIELDS = (%w[version status expires_at expected_attributes] +
+                STRING_FIELDS + INTEGER_FIELDS + BOOLEAN_FIELDS + CLARIFICATION_FIELDS).freeze
       # version and flow_id are owned by the store; callers may set everything else.
       CALLER_FIELDS = (FIELDS - %w[version flow_id]).freeze
 
@@ -46,6 +65,31 @@ module Marine
       MAX_STRING_LENGTH = 120
       MAX_ATTRIBUTES = 16
       MAX_ATTRIBUTE_LENGTH = 80
+
+      # Canonical, trust-boundary-owned normalization of an expected-attributes list, applying
+      # EXACTLY the persisted bounded_array semantics: clean/strip control characters, reject
+      # blanks, truncate each item to MAX_ATTRIBUTE_LENGTH, de-duplicate, and cap at
+      # MAX_ATTRIBUTES (order preserved). Owned here so the orchestrator can reuse it for
+      # clarification identity/comparison AND the state changes it plans, so the structured
+      # state it reasons over and the value later persisted here normalize IDENTICALLY — a
+      # pathological repository list can never split occurrence 1 from occurrence 2. A
+      # non-array normalizes to []. Persistence sanitization (bounded_array) delegates here.
+      def self.normalize_expected_attributes(value)
+        return [] unless value.is_a?(Array)
+
+        value.filter_map { |item| normalize_bounded_string(item, MAX_ATTRIBUTE_LENGTH) }.uniq.first(MAX_ATTRIBUTES)
+      end
+
+      # Shared per-item bounded-string cleaner (control characters -> space, strip, reject
+      # blank, truncate): a single trust-boundary definition governs both expected-attribute
+      # normalization and per-field string bounds so the two can never drift apart.
+      def self.normalize_bounded_string(value, limit)
+        return nil unless value.is_a?(String) || value.is_a?(Numeric)
+
+        cleaned = value.to_s.gsub(/[[:cntrl:]]/, ' ').strip
+        cleaned.empty? ? nil : cleaned[0, limit]
+      end
+      private_class_method :normalize_bounded_string
 
       def initialize(conversation:, clock: nil, id_generator: nil)
         @conversation = conversation
@@ -57,6 +101,21 @@ module Marine
       # is none / it is malformed.
       def current
         sanitize(raw_flow)
+      end
+
+      # Read-only EFFECTIVE planning snapshot for the orchestrator. Identical to #current,
+      # except an ACTIVE flow whose expiry has elapsed against the (injected/current) clock
+      # is returned as an in-memory copy with status 'expired' — WITHOUT persisting the
+      # transition or bumping the version. Reasoning must never mutate flow state, so the
+      # real #expire! transition is deferred to a later finalization phase. A missing/malformed
+      # flow stays nil (strict fail-closed), and an already expired/completed flow is returned
+      # unchanged (still inactive). Every sibling/top-level key is untouched (no write happens).
+      def current_for_planning
+        flow = current
+        return flow if flow.nil?
+        return flow.merge('status' => STATUS_EXPIRED) if flow['status'] == STATUS_ACTIVE && expired?(flow)
+
+        flow
       end
 
       def active?
@@ -228,7 +287,22 @@ module Marine
         (STRING_FIELDS - %w[flow_id]).each { |k| fields[k] = bounded_string(source[k], MAX_STRING_LENGTH) }
         INTEGER_FIELDS.each { |k| fields[k] = bounded_integer(source[k]) }
         BOOLEAN_FIELDS.each { |k| fields[k] = boolean(source[k]) if source.key?(k) }
+        fields['clarification_kind'] = clarification_kind(source['clarification_kind'])
+        fields['clarification_count'] = clarification_count(source['clarification_count'])
         fields.compact
+      end
+
+      # A persisted clarification kind is trusted only when it is one of the enum values;
+      # anything else reads as nil (dropped by compact -> no prior occurrence).
+      def clarification_kind(value)
+        value if CLARIFICATION_KINDS.include?(value)
+      end
+
+      # A persisted clarification count is trusted only when it parses to an integer within
+      # 1..MAX; a forged/out-of-range value reads as nil so it can never force a handoff.
+      def clarification_count(value)
+        parsed = bounded_integer(value)
+        parsed if parsed && parsed >= 1 && parsed <= MAX_CLARIFICATION_COUNT
       end
 
       # A persisted status is valid only when it is one of the allowlisted values.
@@ -237,10 +311,7 @@ module Marine
       end
 
       def bounded_string(value, limit)
-        return nil unless value.is_a?(String) || value.is_a?(Numeric)
-
-        cleaned = value.to_s.gsub(/[[:cntrl:]]/, ' ').strip
-        cleaned.empty? ? nil : cleaned[0, limit]
+        self.class.send(:normalize_bounded_string, value, limit)
       end
 
       def bounded_integer(value)
@@ -260,9 +331,7 @@ module Marine
       end
 
       def bounded_array(value)
-        return [] unless value.is_a?(Array)
-
-        value.filter_map { |item| bounded_string(item, MAX_ATTRIBUTE_LENGTH) }.uniq.first(MAX_ATTRIBUTES)
+        self.class.normalize_expected_attributes(value)
       end
 
       def safe_time(value)
@@ -282,5 +351,6 @@ module Marine
         @clock.call
       end
     end
+    # rubocop:enable Metrics/ClassLength
   end
 end

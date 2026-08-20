@@ -347,6 +347,52 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       expect(claim_status).to eq('completed')
     end
 
+    # --- Phase 3: clarification progression finalization -----------------------
+
+    it 'applies returned clarification metadata only in finalization' do
+      stub_reasoning(product_payload(
+                       action: :clarify_variant, reply: { kind: :clarify_variant, attribute_names: %w[size] }, operation: :start,
+                       changes: { 'validated_family' => 'IMP', 'current_intent' => 'variant_info',
+                                  'expected_attributes' => %w[size], 'clarification_kind' => 'variant', 'clarification_count' => 1 }
+                     ))
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      state = product_state
+      expect(state['clarification_kind']).to eq('variant')
+      expect(state['clarification_count']).to eq(1)
+      expect(conversation.messages.outgoing.last.content).to eq('Could you specify the size you need?')
+      expect(claim_status).to eq('completed')
+    end
+
+    it 'routes a third-occurrence clarification handoff through the existing HandoffService with a safe reason, once' do
+      stub_reasoning(product_payload(action: :handoff, reply: { kind: :clarify_variant, attribute_names: %w[size] }))
+      handoff = instance_double(Marine::Circuit::HandoffService, perform: nil)
+      expect(Marine::Circuit::HandoffService).to receive(:new)
+        .with(hash_including(conversation: conversation, assistant: assistant, reason: 'product_clarify_variant')).and_return(handoff)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      expect(claim_status).to eq('completed')
+    end
+
+    it 'leaves an elapsed product flow untouched on a nonproduct RAG turn' do
+      conversation.update!(additional_attributes: { 'wijaya_marine_ai' => { 'product_flow_v1' => {
+                             'version' => 3, 'flow_id' => 'stale', 'status' => 'active', 'expires_at' => 1.year.ago.iso8601,
+                             'validated_family' => 'FAM-OLD', 'clarification_count' => 2, 'clarification_kind' => 'variant'
+                           } } })
+      stub_reasoning('response' => 'Our office is open 9-5.', 'action' => 'reply', 'agent_name' => 'Marine Bot',
+                     'orchestration_path' => 'retrieval')
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      expect(conversation.messages.outgoing.last.content).to eq('Our office is open 9-5.')
+      state = product_state
+      expect(state['version']).to eq(3)
+      expect(state['validated_family']).to eq('FAM-OLD')
+      expect(state['clarification_count']).to eq(2)
+    end
+
     it 'creates a RAG reply with preserved metadata for a nonproduct payload' do
       stub_reasoning('response' => 'Our office is open 9-5.', 'action' => 'reply', 'agent_name' => 'Marine Bot',
                      'confidence' => 0.9, 'source_type' => 'manual', 'orchestration_path' => 'retrieval')

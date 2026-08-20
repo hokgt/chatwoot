@@ -315,6 +315,143 @@ RSpec.describe Marine::Catalog::ProductFlowStateStore do
     end
   end
 
+  # Phase 3 — read-only EFFECTIVE planning snapshot for the orchestrator. An elapsed active
+  # flow reads as expired WITHOUT persisting the transition or bumping the version.
+  describe '#current_for_planning' do
+    it 'returns the active flow unchanged before expiry' do
+      store.start!(current_intent: 'price', validated_family: 'Bearings')
+
+      snapshot = store.current_for_planning
+
+      expect(snapshot['status']).to eq('active')
+      expect(snapshot['validated_family']).to eq('Bearings')
+    end
+
+    it 'presents an active-but-elapsed flow as expired at exactly the expiry instant' do
+      store.start!(current_intent: 'price')
+
+      advance(described_class::DEFAULT_TTL) # now == expires_at (expired? is <=)
+
+      expect(store.current_for_planning['status']).to eq('expired')
+    end
+
+    it 'does not persist the expiry transition or bump the version during planning' do
+      store.start!(current_intent: 'price') # version 1, active
+      advance(described_class::DEFAULT_TTL + 1)
+
+      2.times { expect(store.current_for_planning['status']).to eq('expired') }
+
+      # The persisted row is still the original active version-1 flow (no write happened).
+      persisted = conversation.reload.additional_attributes['wijaya_marine_ai']['product_flow_v1']
+      expect(persisted['status']).to eq('active')
+      expect(persisted['version']).to eq(1)
+    end
+
+    it 'reads nil for a malformed flow (strict fail-closed)' do
+      conversation.update!(additional_attributes: { 'wijaya_marine_ai' => { 'product_flow_v1' => 'garbage' } })
+
+      expect(store.current_for_planning).to be_nil
+    end
+
+    it 'returns an already-expired or completed flow unchanged (still inactive)' do
+      store.start!(current_intent: 'price')
+      store.update!(status: 'completed')
+
+      expect(store.current_for_planning['status']).to eq('completed')
+
+      other = described_class.new(conversation: create(:conversation).reload, clock: clock, id_generator: id_generator)
+      other.start!(current_intent: 'price')
+      other.expire!
+      expect(other.current_for_planning['status']).to eq('expired')
+    end
+
+    it 'lets a fresh start! after expiry reset version/id/TTL and drop clarification metadata, preserving siblings' do
+      conversation.update!(additional_attributes: { 'top' => 'keep', 'wijaya_marine_ai' => { 'sibling_v1' => { 'x' => 1 } } })
+      store.start!(current_intent: 'price', validated_family: 'Bearings',
+                   clarification_kind: 'variant', clarification_count: 2)
+      store.update!(validated_variant: 'B-100') # version 2
+      advance(described_class::DEFAULT_TTL + 1)
+      expect(store.current_for_planning['status']).to eq('expired')
+
+      fresh = store.start!(current_intent: 'stock')
+
+      expect(fresh['version']).to eq(1)
+      expect(fresh['flow_id']).to eq('flow-fixed-id')
+      expect(fresh['expires_at']).to eq((clock_state[:now] + described_class::DEFAULT_TTL).iso8601)
+      expect(fresh).not_to have_key('validated_family')
+      expect(fresh).not_to have_key('validated_variant')
+      expect(fresh).not_to have_key('clarification_kind')
+      expect(fresh).not_to have_key('clarification_count')
+      attributes = conversation.reload.additional_attributes
+      expect(attributes['top']).to eq('keep')
+      expect(attributes['wijaya_marine_ai']['sibling_v1']).to eq('x' => 1)
+    end
+  end
+
+  describe 'clarification metadata allowlisting' do
+    it 'persists a valid enum kind and bounded count' do
+      flow = store.start!(current_intent: 'price', clarification_kind: 'variant', clarification_count: 2)
+
+      expect(flow['clarification_kind']).to eq('variant')
+      expect(flow['clarification_count']).to eq(2)
+    end
+
+    it 'drops an unknown clarification kind and an out-of-range/forged count (never trusted to force handoff)' do
+      conversation.update!(additional_attributes: { 'wijaya_marine_ai' => { 'product_flow_v1' => {
+                             'version' => 3, 'flow_id' => 'id', 'status' => 'active',
+                             'expires_at' => (clock_state[:now] + 3600).iso8601,
+                             'clarification_kind' => 'haxx', 'clarification_count' => 99
+                           } } })
+
+      flow = store.current
+
+      expect(flow).not_to have_key('clarification_kind')
+      expect(flow).not_to have_key('clarification_count')
+    end
+
+    it 'clears clarification metadata when a subsequent update! sends nil (progress)' do
+      store.start!(current_intent: 'price', clarification_kind: 'variant', clarification_count: 2)
+
+      updated = store.update!('clarification_kind' => nil, 'clarification_count' => nil, 'validated_variant' => 'B-1')
+
+      expect(updated).not_to have_key('clarification_kind')
+      expect(updated).not_to have_key('clarification_count')
+      expect(updated['validated_variant']).to eq('B-1')
+    end
+  end
+
+  # Phase 3 — the ONE canonical expected-attributes normalization owned by the store's trust
+  # boundary. Persistence (bounded_array) and the orchestrator's clarification identity BOTH
+  # reuse this, so a pathological repository list normalizes identically on either side.
+  describe '.normalize_expected_attributes' do
+    it 'control-strips, blank-rejects, truncates, dedupes, and caps at MAX_ATTRIBUTES (order preserved)' do
+      raw = ['Size', 'Size', '  Color  ', "Volt\u0000age", '', '   ',
+             'L' * (described_class::MAX_ATTRIBUTE_LENGTH + 20)] +
+            Array.new(described_class::MAX_ATTRIBUTES) { |i| "Attr#{i}" }
+
+      result = described_class.normalize_expected_attributes(raw)
+
+      expect(result.length).to eq(described_class::MAX_ATTRIBUTES)                 # capped
+      expect(result).to eq(result.uniq)                                           # deduped
+      expect(result).not_to include('', '   ')                                    # blanks rejected
+      expect(result.first(4)).to eq(['Size', 'Color', 'Volt age',
+                                     'L' * described_class::MAX_ATTRIBUTE_LENGTH]) # strip + control + truncate
+    end
+
+    it 'normalizes a non-array (or nil) to []' do
+      expect(described_class.normalize_expected_attributes('nope')).to eq([])
+      expect(described_class.normalize_expected_attributes(nil)).to eq([])
+    end
+
+    it 'equals the value the store actually persists for the same pathological list (persistence delegates here)' do
+      raw = ['Size', 'Size', '  Color  ', '', 'D' * 200] + Array.new(20) { |i| "A#{i}" }
+
+      flow = store.start!(current_intent: 'variant_info', expected_attributes: raw)
+
+      expect(flow['expected_attributes']).to eq(described_class.normalize_expected_attributes(raw))
+    end
+  end
+
   describe 'reset!' do
     it 'removes only product_flow_v1 and preserves siblings' do
       conversation.update!(additional_attributes: { 'top' => 'keep', 'wijaya_marine_ai' => { 'sibling_v1' => { 'x' => 1 } } })

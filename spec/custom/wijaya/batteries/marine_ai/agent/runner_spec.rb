@@ -250,6 +250,47 @@ RSpec.describe Marine::Agent::Runner do
     end
   end
 
+  # Phase 3 — the runner supplies the EFFECTIVE planning snapshot (current_for_planning), so an
+  # active flow whose TTL has elapsed reaches the orchestrator as expired and is never reused.
+  describe 'effective expiry snapshot (Phase 3)' do
+    let(:account) { create(:account) }
+    let(:marine) { create(:marine_assistant, account: account) }
+    let(:conversation) { create(:conversation, account: account) }
+    let(:trigger) do
+      create(:message, conversation: conversation, account: account, inbox: conversation.inbox,
+                       message_type: :incoming, content: 'price please')
+    end
+    let(:runner) { described_class.new(assistant: marine, conversation: conversation, source: trigger) }
+    let(:orchestrator) { instance_double(Marine::Catalog::ProductQueryOrchestrator) }
+
+    before do
+      allow(Marine::Catalog::ProductQueryOrchestrator).to receive(:new).and_return(orchestrator)
+      allow(orchestrator).to receive(:process).and_return(action: :not_product, reply: nil, state: { operation: :none, changes: {} })
+      allow(generator).to receive(:generate).and_return(reply_payload)
+      # A valid, active flow whose expiry is already in the past (validated family + catalog markers).
+      conversation.update!(additional_attributes: { 'wijaya_marine_ai' => { 'product_flow_v1' => {
+                             'version' => 3, 'flow_id' => 'stale', 'status' => 'active', 'expires_at' => 1.year.ago.iso8601,
+                             'validated_family' => 'FAM-OLD', 'catalog_sent' => true, 'clarification_count' => 2, 'clarification_kind' => 'variant'
+                           } } })
+    end
+
+    it 'passes the orchestrator an expired snapshot (never the active status) so nothing elapsed is reused' do
+      runner.run
+
+      expect(orchestrator).to have_received(:process).with(
+        hash_including(flow: hash_including('status' => 'expired', 'validated_family' => 'FAM-OLD'))
+      )
+    end
+
+    it 'does not persist the expiry transition during reasoning (the DB row stays active until finalization)' do
+      runner.run
+
+      persisted = conversation.reload.additional_attributes['wijaya_marine_ai']['product_flow_v1']
+      expect(persisted['status']).to eq('active')
+      expect(persisted['version']).to eq(3)
+    end
+  end
+
   describe 'independence from Captain premium gates' do
     it 'does not reference any Captain runtime dependency in the source' do
       source = File.read(Rails.root.join('custom/wijaya/batteries/marine_ai/app/services/marine/agent/runner.rb'))

@@ -368,6 +368,38 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
     end
   end
 
+  # Phase 3 — an ACTIVE flow whose TTL has already elapsed must never contribute its validated
+  # family / catalog markers / clarification counter. The next structured request opens a fresh
+  # :start flow (real runner -> real orchestrator -> real store).
+  describe 'expired flow is never reused as a continuation' do
+    # A valid, still-'active' flow row whose expiry is in the past, carrying a stale family and
+    # catalog markers plus a maxed clarification counter.
+    def seed_expired_flow!
+      conversation.reload.update!(additional_attributes: { 'wijaya_marine_ai' => { 'product_flow_v1' => {
+                                    'version' => 4, 'flow_id' => 'stale', 'status' => 'active', 'expires_at' => 1.year.ago.iso8601,
+                                    'validated_family' => 'FAM-OLD', 'current_intent' => 'catalog', 'catalog_sent' => true,
+                                    'catalog_document_id' => 111, 'catalog_message_id' => 222,
+                                    'clarification_kind' => 'variant', 'clarification_count' => 2
+                                  } } })
+    end
+
+    it 'opens a fresh :start flow for the next structured request, dropping the elapsed family/markers/counter' do
+      document = usable_catalog('FAM-CAT')
+      seed_expired_flow!
+      stub_cld3('jv')
+
+      Marine::Conversation::ResponseBuilderJob.perform_now(conversation, assistant, trigger.id)
+
+      state = product_state
+      expect(state['version']).to eq(2)                       # fresh :start (v1) + catalog-sent marker (v2), NOT a bump of v4
+      expect(state['validated_family']).to eq('FAM-CAT')      # recovered family, not the elapsed FAM-OLD
+      expect(state['catalog_document_id']).to eq(document.id) # the freshly delivered doc, never 111
+      expect(state['catalog_document_id']).not_to eq(111)
+      expect(state).not_to have_key('clarification_count')     # the elapsed counter is gone
+      expect(conversation.messages.outgoing.last.attachments.count).to eq(1)
+    end
+  end
+
   # --- Focused unit coverage of the two mechanisms (no provider, no network) -----------
 
   describe Marine::Catalog::ProductQueryOrchestrator do
@@ -399,7 +431,9 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
       plan = orchestrator.process(text: 'Please send Alpha and Bravo now', context: [], flow: nil)
 
       expect(plan[:action]).to eq(:clarify_family)
-      expect(plan[:state]).to eq(operation: :none, changes: {})
+      # Phase 3: a fresh unresolved family clarification opens a flow tracking occurrence 1.
+      expect(plan[:state][:operation]).to eq(:start)
+      expect(plan[:state][:changes]).to include('clarification_kind' => 'family', 'clarification_count' => 1)
     end
 
     # Continuation cases: an ACTIVE flow with a blank/unchanged mention, where only the raw
@@ -437,7 +471,7 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
       expect(plan[:state][:operation]).to eq(:update)
     end
 
-    it 'fails closed to clarify_family (no switch, no state change) when the raw turn is ambiguous on an active flow' do
+    it 'fails closed to clarify_family (metadata-only update, no switch) when the raw turn is ambiguous on an active flow' do
       allow(extractor).to receive(:extract).and_return(
         product_related: true, intent: 'catalog', family_mention: nil, family_changed: false
       )
@@ -445,7 +479,10 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
       plan = orchestrator.process(text: 'Please send Alpha and Bravo now', context: [], flow: continuation_flow('FAM-OLD'))
 
       expect(plan[:action]).to eq(:clarify_family)
-      expect(plan[:state]).to eq(operation: :none, changes: {})
+      # Phase 3: preserve the validated family / catalog markers; only bump clarification metadata.
+      expect(plan[:state][:operation]).to eq(:update)
+      expect(plan[:state][:changes]).to include('clarification_kind' => 'family', 'clarification_count' => 1)
+      expect(plan[:state][:changes]).not_to have_key('validated_family')
     end
 
     it 'keeps the active family (:update) when the extracted mention resolves to it, ignoring an incidental raw token for another family' do

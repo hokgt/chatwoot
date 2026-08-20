@@ -45,6 +45,11 @@ module Marine
       # Bounded safe family-candidate list surfaced with a clarify_family.
       CLARIFY_FAMILY_LIMIT = 10
 
+      # Phase 3 structured clarification progression. An unresolved structured state may be
+      # clarified at most MAX_CLARIFICATIONS times; the NEXT (third) occurrence of the SAME
+      # unresolved state — with no validated progress — hands off instead of clarifying again.
+      MAX_CLARIFICATIONS = 2
+
       # Data-driven family recovery bounds. When the extracted mention is missing or noisy
       # and does not resolve, bounded normalized word tokens from the mention and the raw
       # turn are matched against the active family rows. A token must be at least
@@ -150,10 +155,10 @@ module Marine
       # ambiguous raw-turn switch, the finalized identifier for an unresolved family).
       def resolve_and_plan(intent, flow)
         decision = family_decision(intent, flow)
-        return clarify_family_plan(decision[:identifier]) if decision[:clarify]
+        return clarify_family_plan(intent, flow, decision[:identifier]) if decision[:clarify]
 
         family = resolve_planned_family(decision)
-        return clarify_family_plan(decision[:identifier]) if family.nil?
+        return clarify_family_plan(intent, flow, decision[:identifier]) if family.nil?
 
         dispatch_plan(intent, flow, family, decision[:continuing])
       end
@@ -273,7 +278,9 @@ module Marine
       end
 
       def fulfill_variant(intent, family, code, state_op)
-        changes = family_changes(family, intent).merge('validated_variant' => code)
+        # A unique validated variant is validated progress, so clear any prior clarification
+        # metadata on a continuation (:update); a :start already begins a metadata-free flow.
+        changes = cleared_clarification(family_changes(family, intent).merge('validated_variant' => code), state_op)
         case intent[:intent]
         when 'price' then plan_price(code, changes, state_op)
         when 'stock' then plan_stock(code, changes, state_op)
@@ -309,12 +316,24 @@ module Marine
       # Variant unresolved -> stay AWAITING_VARIANT. Catalog is context-aware: only offered
       # when the customer has given nothing concrete to disambiguate AND the catalog has not
       # already been sent; any provided-but-unresolved code/attribute, ambiguous numbers, or
-      # an already-sent catalog collapses to a plain text clarify_variant.
+      # an already-sent catalog collapses to a plain text clarify_variant. Phase 3: this is a
+      # structured VARIANT clarification occurrence — the third same-state occurrence with no
+      # validated progress hands off (catalog-assisted send_catalog on occurrence 1 still
+      # delivers the native catalog once; occurrence 2 is plain clarify with no re-send).
       def await_variant(intent, flow, family, continuing, state_op)
-        attribute_names = variant_repository.attribute_names(family[:code])
-        changes = family_changes(family, intent).merge('expected_attributes' => attribute_names)
+        # Canonicalize the repository attribute list ONCE through the store's trust boundary so
+        # the customer-facing descriptor, the progression identity, and the persisted
+        # expected_attributes all use the same bounded/deduplicated shape — a pathological
+        # repository list can never make occurrence 1 and its persisted occurrence 2 differ.
+        attribute_names = ProductFlowStateStore.normalize_expected_attributes(variant_repository.attribute_names(family[:code]))
         clarify = reply_renderer.clarify_variant(attribute_names)
+        progression = clarification_progression(kind: ProductFlowStateStore::CLARIFICATION_KIND_VARIANT,
+                                                intent: intent[:intent], family: family[:code],
+                                                expected: attribute_names, flow: flow)
+        return build(:handoff, reply: clarify) if progression[:handoff]
 
+        changes = clarification_changes(family_changes(family, intent).merge('expected_attributes' => attribute_names),
+                                        ProductFlowStateStore::CLARIFICATION_KIND_VARIANT, progression[:count])
         if catalog_already_sent?(flow, continuing) || truthy(intent[:multiple_numeric_candidates]) || new_candidates?(intent)
           build(:clarify_variant, reply: clarify, operation: state_op, changes: changes)
         else
@@ -324,9 +343,21 @@ module Marine
         end
       end
 
-      def clarify_family_plan(identifier)
-        candidates = family_repository.active_candidates(query: identifier, limit: CLARIFY_FAMILY_LIMIT)
-        build(:clarify_family, reply: reply_renderer.clarify_family(candidates))
+      # Structured FAMILY clarification occurrence. Occurrences 1 and 2 record bounded
+      # clarification metadata (kind + count) so the SAME unresolved family state can be
+      # counted across turns — on a fresh conversation via :start, on an active flow via
+      # :update that PRESERVES the validated family and catalog markers (only current_intent
+      # and the clarification metadata change). The third same-state occurrence hands off.
+      def clarify_family_plan(intent, flow, identifier)
+        reply = reply_renderer.clarify_family(family_repository.active_candidates(query: identifier, limit: CLARIFY_FAMILY_LIMIT))
+        progression = clarification_progression(kind: ProductFlowStateStore::CLARIFICATION_KIND_FAMILY,
+                                                intent: intent[:intent], family: flow['validated_family'],
+                                                expected: nil, flow: flow)
+        return build(:handoff, reply: reply) if progression[:handoff]
+
+        changes = clarification_changes({ 'current_intent' => intent[:intent] },
+                                        ProductFlowStateStore::CLARIFICATION_KIND_FAMILY, progression[:count])
+        build(:clarify_family, reply: reply, operation: flow_active?(flow) ? :update : :start, changes: changes)
       end
 
       # Continuation switch detection. Classifies the DISTINCT active families evidenced by
@@ -449,6 +480,64 @@ module Marine
 
       def flow_active?(flow)
         flow['status'] == ProductFlowStateStore::STATUS_ACTIVE
+      end
+
+      # --- clarification progression (Phase 3) ------------------------------------
+
+      # Count for an unresolved structured state and whether it must now hand off. The state
+      # IDENTITY is generic — derived only from allowlisted structured state (clarification
+      # kind, current supported intent, validated family when any, and — for a variant — the
+      # repository expected attributes), NEVER raw customer text, candidate values, LLM output,
+      # prices, stock, SQL, or errors. A repeat of the SAME identity on the SAME active flow
+      # increments the count; any change (kind, intent, family, expected attrs), a fresh/expired
+      # flow, or validated progress resets to 1. The third occurrence (count past the max) hands
+      # off. Validated progress is expressed by the caller planning a resolved (non-clarify)
+      # action, which clears the metadata instead of reaching here.
+      def clarification_progression(kind:, intent:, family:, expected:, flow:)
+        repeat = same_prior_clarification?(flow, kind: kind, intent: intent, family: family, expected: expected)
+        count = repeat ? prior_clarification_count(flow) + 1 : 1
+        { count: count, handoff: count > MAX_CLARIFICATIONS }
+      end
+
+      # True only when the flow already carries a prior occurrence of the EXACT same unresolved
+      # structured state. Requires an ACTIVE flow (a fresh/expired flow can carry no prior
+      # occurrence) and a positive persisted count (a dropped/malformed count reads as none).
+      def same_prior_clarification?(flow, kind:, intent:, family:, expected:)
+        return false unless flow_active?(flow)
+        return false unless flow['clarification_kind'].to_s == kind
+        return false unless flow['current_intent'].to_s == intent.to_s
+        return false unless flow['validated_family'].to_s == family.to_s
+        if kind == ProductFlowStateStore::CLARIFICATION_KIND_VARIANT &&
+           normalized_attributes(flow['expected_attributes']) != normalized_attributes(expected)
+          return false
+        end
+
+        prior_clarification_count(flow).positive?
+      end
+
+      # The persisted clarification count is already store-sanitized to a bounded integer or
+      # absent; a non-integer here reads as zero (no prior occurrence).
+      def prior_clarification_count(flow)
+        value = flow['clarification_count']
+        value.is_a?(Integer) ? value : 0
+      end
+
+      # Canonicalize both prior (persisted) and current expected attributes through the SAME
+      # store trust boundary before comparison, so identity survives a pathological repository
+      # list: the persisted value and the freshly-canonicalized turn value share exactly one
+      # normalization (bounded, control-stripped, blank-rejected, deduplicated, capped). The
+      # result is additionally SORTED here — for identity comparison ONLY — so the SAME
+      # canonical set surfaced in a different repository order still compares equal (and never
+      # falsely resets the progression to occurrence 1), while a genuinely changed set still
+      # differs. The store's canonical persistence/descriptor order is left untouched.
+      def normalized_attributes(value)
+        ProductFlowStateStore.normalize_expected_attributes(Array(value)).sort
+      end
+
+      # Attach the bounded clarification metadata (enum kind + bounded count) to a clarify
+      # plan's state changes. Applied only in finalization by ResponseBuilderJob.
+      def clarification_changes(changes, kind, count)
+        changes.merge('clarification_kind' => kind, 'clarification_count' => count)
       end
 
       # --- builders / helpers -----------------------------------------------------
