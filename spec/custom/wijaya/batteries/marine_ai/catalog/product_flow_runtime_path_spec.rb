@@ -105,6 +105,10 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
         { ok: true, message: intent_json, error: nil }
       end
     end
+    # Phase 6 natural-wording generation uses the separate #chat channel. This path exercises
+    # the deterministic delivery, so decline wording generation (fail-closed) and let every
+    # eligible product reply fall back to its exact deterministic localized text.
+    allow(base_service).to receive(:chat).and_return({ ok: false, message: nil, error: nil })
 
     clear_enqueued_jobs
     clear_performed_jobs

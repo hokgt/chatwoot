@@ -453,6 +453,193 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       expect(conversation.messages.outgoing.last.content).to eq('legacy reply')
       expect(incoming.reload.additional_attributes).not_to have_key('wijaya_marine_ai')
     end
+
+    # --- Phase 6: fact-protected natural product wording -----------------------
+    #
+    # The deterministic localized reply stays the authoritative fallback. An eligible product
+    # reply's wording candidate is precomputed (lock-free) and delivered ONLY when both the
+    # deterministic checker and the semantic validator accept it; any rejection delivers the
+    # exact deterministic response. send_catalog/handoff/excluded descriptors are never
+    # naturalized. Here the wording service is stubbed to control accept/reject deterministically.
+    describe 'natural product wording integration' do
+      def stub_wording(result)
+        service = instance_double(Marine::Catalog::GroundedProductWordingService, call: result)
+        allow(Marine::Catalog::GroundedProductWordingService).to receive(:new).and_return(service)
+        service
+      end
+
+      it 'replaces ONLY the product text with an accepted candidate, leaving state and metadata unchanged' do
+        stub_reasoning(product_payload(
+                         action: :reply, reply: { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' },
+                         operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'parent_info' }
+                       ))
+        stub_wording('About Impeller — which specific variant would you like?')
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        reply = conversation.messages.outgoing.last
+        expect(reply.content).to eq('About Impeller — which specific variant would you like?')
+        expect(reply.additional_attributes['source_type']).to eq('marine_product')
+        expect(reply.additional_attributes['orchestration_path']).to eq('product')
+        expect(reply.attachments).to be_empty
+        expect(product_state['validated_family']).to eq('IMP')
+        expect(usage_count).to eq(1)
+        expect(claim_status).to eq('completed')
+      end
+
+      it 'delivers an accepted Tier 3 price candidate as the product text' do
+        stub_reasoning(product_payload(
+                         action: :reply,
+                         reply: { kind: :price_available, currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
+                         operation: :update, changes: { 'validated_family' => 'IMP', 'validated_variant' => 'IMP-3', 'current_intent' => 'price' }
+                       ))
+        stub_wording('That one is IDR 150000 per pcs.')
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq('That one is IDR 150000 per pcs.')
+        expect(product_state['validated_variant']).to eq('IMP-3')
+      end
+
+      it 'returns the exact deterministic localized response when wording is rejected' do
+        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available },
+                                       operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' }))
+        stub_wording(nil)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq('Good news — that item is currently in stock.')
+      end
+
+      it 'prepares wording from the ContextBuilder bounded trigger/history, exact localized fallback, and opening state' do
+        captured = {}
+        service = instance_double(Marine::Catalog::GroundedProductWordingService)
+        allow(service).to receive(:call) do |args|
+          captured.merge!(args)
+          'In stock right now.'
+        end
+        allow(Marine::Catalog::GroundedProductWordingService).to receive(:new).and_return(service)
+        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available },
+                                       operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' }))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(captured[:action]).to eq(:reply)
+        expect(captured[:descriptor][:kind]).to eq(:stock_available)
+        expect(captured[:customer_request]).to eq('price for impeller 3 inch') # the bounded trigger content
+        expect(captured[:message_history]).to eq([]) # only the trigger exists; no prior public turns
+        # the EXACT deterministic localized fallback is passed as the sole factual authority
+        expect(captured[:fallback]).to eq('Good news — that item is currently in stock.')
+        expect(captured[:opening]).to be(true) # no earlier Marine reply -> Phase 2 opening turn
+        expect(conversation.messages.outgoing.last.content).to eq('In stock right now.')
+      end
+
+      it 'delivers deterministic content with no re-localization under the finalize lock when wording generation fails' do
+        # The eligible path is already committed, so a wording-service failure retains the exact
+        # localized fallback computed lock-free; delivery uses it verbatim with NO second
+        # ReplyLocalizer call (which would be a network call under the finalize row lock).
+        localizer_calls = 0
+        allow(Marine::Catalog::ReplyLocalizer).to receive(:new).and_wrap_original do |method, **kwargs|
+          localizer_calls += 1
+          method.call(**kwargs)
+        end
+        raising = instance_double(Marine::Catalog::GroundedProductWordingService)
+        allow(raising).to receive(:call).and_raise(StandardError, 'boom')
+        allow(Marine::Catalog::GroundedProductWordingService).to receive(:new).and_return(raising)
+        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available },
+                                       operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' }))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq('Good news — that item is currently in stock.')
+        expect(localizer_calls).to eq(1) # only the single lock-free precompute; delivery did not re-localize
+        expect(claim_status).to eq('completed')
+      end
+
+      it 'falls back to deterministic English with no further network call when localization itself fails during preparation' do
+        # Localization raising before any localized fallback exists: preparation degrades to the
+        # deterministic English reply (the exact text ReplyLocalizer itself returns on failure) and
+        # never retries an LLM/network path under the finalize lock. The wording service is never
+        # even constructed (the failure precedes it).
+        call_count = 0
+        allow(Marine::Catalog::ReplyLocalizer).to receive(:new) do
+          call_count += 1
+          raise StandardError, 'boom' if call_count == 1
+
+          instance_double(Marine::Catalog::ReplyLocalizer, call: 'SHOULD NOT BE USED') # a re-localization would use this
+        end
+        expect(Marine::Catalog::GroundedProductWordingService).not_to receive(:new)
+        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available },
+                                       operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' }))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq('Good news — that item is currently in stock.')
+        expect(call_count).to eq(1) # localization attempted once (raised); never retried under the lock
+        expect(claim_status).to eq('completed')
+      end
+
+      it 'precomputes wording before the finalize staleness gate but delivers nothing when the job is stale' do
+        trigger = incoming
+        create(:message, conversation: conversation, message_type: :incoming, content: 'actually never mind')
+        baseline = conversation.messages.outgoing.count
+        service = stub_wording('In stock right now.')
+        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available },
+                                       operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' }))
+
+        described_class.perform_now(conversation, assistant, trigger.id)
+
+        expect(service).to have_received(:call) # prepared before the lock/staleness gate
+        expect(conversation.messages.outgoing.count).to eq(baseline) # stale: not delivered
+        expect(product_state).to be_nil
+      end
+
+      it 'does not localize or transform the accepted candidate a second time' do
+        localizer_calls = 0
+        allow(Marine::Catalog::ReplyLocalizer).to receive(:new).and_wrap_original do |method, **kwargs|
+          localizer_calls += 1
+          method.call(**kwargs)
+        end
+        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available },
+                                       operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' }))
+        stub_wording('In stock right now.')
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq('In stock right now.')
+        expect(localizer_calls).to eq(1) # only the single precompute localization; no re-localization at delivery
+      end
+
+      it 'never invokes product wording on a send_catalog turn' do
+        stub_reasoning(product_payload(
+                         action: :send_catalog, reply: nil, operation: :update,
+                         changes: { 'validated_family' => 'IMP', 'current_intent' => 'price', 'expected_attributes' => %w[size material] }
+                       ))
+        expect(Marine::Catalog::GroundedProductWordingService).not_to receive(:new)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq('Could you specify the size, material you need?')
+      end
+
+      it 'never invokes product wording on a product handoff turn' do
+        stub_reasoning(product_payload(action: :handoff, reply: { kind: :unsupported }))
+        allow(Marine::Circuit::HandoffService).to receive(:new).and_return(instance_double(Marine::Circuit::HandoffService, perform: nil))
+        expect(Marine::Catalog::GroundedProductWordingService).not_to receive(:new)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+      end
+
+      it 'leaves the deliberately excluded price_unavailable descriptor deterministic-only' do
+        stub_reasoning(product_payload(action: :reply, reply: { kind: :price_unavailable },
+                                       operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'price' }))
+        expect(Marine::Catalog::GroundedProductWordingService).not_to receive(:new)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq("I'm sorry, I don't have the price for that item right now.")
+      end
+    end
   end
 
   describe '#perform (legacy 2-arg path — canonical bounded context, no product flow)' do

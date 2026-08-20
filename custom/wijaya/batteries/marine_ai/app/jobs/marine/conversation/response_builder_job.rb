@@ -117,6 +117,11 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     # trigger is supplied exactly once.
     @response = Marine::Llm::AssistantChatService.new(assistant: @assistant, conversation: @conversation,
                                                       source: message).generate_response
+    # Phase 6 — precompute the deterministic localized fallback and (only if it survives BOTH
+    # the deterministic protected-fact checker and the semantic validator) a natural-wording
+    # candidate for eligible product replies, OUTSIDE the finalize row lock. Finalize still
+    # rechecks eligibility/staleness and applies state/message/claim atomically.
+    prepare_product_wording
     finalize
   rescue StandardError => e
     # A failure anywhere in reasoning/finalization (including message-create) must
@@ -274,20 +279,85 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   end
 
   # Deterministic product TEXT only — no citations, confidence, or raw catalog facts
-  # beyond the approved display fields the presenter already bounded.
+  # beyond the approved display fields the presenter already bounded. When Phase 6 committed
+  # this eligible reply to lock-free delivery (@product_wording_prepared), deliver the prepared
+  # text verbatim — it is an accepted natural-wording candidate or its exact deterministic
+  # localized fallback, already localized and validated, so it is NOT localized/transformed
+  # again and no LLM/translation call is made under the finalize lock. The explicit flag (not
+  # text truthiness) gates this so an eligible path never re-enters the localization path.
+  # Ineligible product replies retain the existing deterministic localization path.
   def create_product_reply(plan)
+    return create_product_message_with(@prepared_product_text) if @product_wording_prepared
+
     create_product_message(product_reply_text(plan))
   end
 
   def create_product_message(content)
+    create_product_message_with(localized_product_text(content))
+  end
+
+  def create_product_message_with(final_text)
     @conversation.messages.create!(
       message_type: :outgoing,
       account_id: @conversation.account_id,
       inbox_id: @conversation.inbox_id,
       sender: @assistant,
-      content: localized_product_text(content),
+      content: final_text,
       additional_attributes: { source_type: 'marine_product', orchestration_path: 'product' }
     )
+  end
+
+  # --- Phase 6: fact-protected natural product wording (precomputed, lock-free) ---------
+  #
+  # Runs after Agent::Runner returns and BEFORE finalize acquires the Conversation row lock,
+  # so no LLM/network call is made under the lock. For an eligible product reply ONLY
+  # (parent/variant info, family/variant clarification, stock and price-available outcomes —
+  # never send_catalog, handoff, or an excluded/generic descriptor), it computes the exact
+  # deterministic localized fallback and asks Marine::Catalog::GroundedProductWordingService
+  # for a natural candidate grounded ONLY on that fallback plus the Phase 2 bounded canonical
+  # trigger/history and opening/follow-up state (which drives the reused Phase 4 greeting policy).
+  #
+  # Once a plan passes deterministic eligibility it is COMMITTED to lock-free delivery: this
+  # method always sets the explicit @product_wording_prepared flag and leaves a nonblank
+  # @prepared_product_text, so finalize never localizes (an LLM/network call) under its row lock.
+  # The exact deterministic localized fallback is computed FIRST and retained, then (only if it
+  # survives BOTH gates) replaced by an accepted natural-wording candidate. A wording/context
+  # failure keeps the already-computed localized fallback. An unexpected localization failure —
+  # before any localized fallback exists — falls back to the deterministic English
+  # product_reply_text (the exact text ReplyLocalizer itself degrades to) with NO further network
+  # call. Nothing is persisted here.
+  def prepare_product_wording
+    return unless product_response?
+    return unless @trigger_message
+
+    plan = @response['product_plan']
+    descriptor = plan[:reply]
+    return unless fact_protection.eligible?(action: plan[:action], descriptor: descriptor)
+
+    @product_language = plan[:language]
+    @product_wording_prepared = true
+    fallback = localized_product_text(product_reply_text(plan))
+    @prepared_product_text = wording_candidate(plan, descriptor, fallback) || fallback
+  rescue StandardError
+    @prepared_product_text = product_reply_text(plan)
+  end
+
+  # Natural-wording candidate grounded ONLY on the already-computed localized fallback plus the
+  # Phase 2 bounded canonical trigger/history and opening/follow-up state. A wording/context
+  # failure returns nil so the caller retains the localized fallback — never re-localizing and
+  # never calling the network again.
+  def wording_candidate(plan, descriptor, fallback)
+    context = Marine::Conversation::ContextBuilder.new(conversation: @conversation, trigger_message: @trigger_message).build
+    Marine::Catalog::GroundedProductWordingService.new(account: @conversation.account).call(
+      action: plan[:action], descriptor: descriptor, fallback: fallback,
+      customer_request: context.trigger, message_history: context.history, opening: context.opening?
+    )
+  rescue StandardError
+    nil
+  end
+
+  def fact_protection
+    @fact_protection ||= Marine::Catalog::ProductFactProtectionValidator.new
   end
 
   # Rewrites a deterministic English product reply into the latest customer's language

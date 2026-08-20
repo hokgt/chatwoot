@@ -1,0 +1,242 @@
+# frozen_string_literal: true
+
+require 'rails_helper'
+
+# Phase 6 — fact-protected natural wording for a deterministic product reply. The service
+# generates an untrusted candidate grounded ONLY on the deterministic localized fallback plus
+# the Phase 2 bounded trigger/history, then delivers it ONLY when BOTH the deterministic
+# ProductFactProtectionValidator (first) AND a separate FactPreservationValidator LLM call
+# (second) accept the EXACT candidate. Any ineligibility, generation failure, or rejection
+# returns nil. The real deterministic checker is used here (not stubbed) so the
+# deterministic-before-semantic ordering is genuinely exercised.
+RSpec.describe Marine::Catalog::GroundedProductWordingService do
+  subject(:service) { described_class.new(account: nil) }
+
+  let(:descriptor) { { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' } }
+  let(:fallback) { "You're asking about Impeller. Which variant would you like?" }
+
+  def stub_generation(message:, success: true)
+    llm = instance_double(Marine::Llm::BaseService, configured?: true)
+    allow(llm).to receive(:chat).and_return({ ok: success, message: message, error: nil })
+    allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+    llm
+  end
+
+  def stub_semantic(accepted)
+    validator = instance_double(Marine::Charge::FactPreservationValidator, valid?: accepted)
+    allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(validator)
+    validator
+  end
+
+  def call(action: :reply, descriptor: self.descriptor, fallback: self.fallback, # rubocop:disable Metrics/ParameterLists
+           customer_request: 'what is impeller?', message_history: [], opening: true)
+    service.call(action: action, descriptor: descriptor, fallback: fallback,
+                 customer_request: customer_request, message_history: message_history, opening: opening)
+  end
+
+  it 'returns the candidate when generation, deterministic, and semantic gates all accept' do
+    stub_generation(message: 'About Impeller — which variant would you like?')
+    stub_semantic(true)
+
+    expect(call).to eq('About Impeller — which variant would you like?')
+  end
+
+  # Phase 4 greeting policy is REUSED exactly as the FAQ wording path: enforcement runs on the
+  # candidate BEFORE both gates, so both validators judge — and the caller delivers — the exact
+  # enforced text, and there is no second transform after validation.
+  it 'removes a follow-up opening salutation before both gates and delivers the exact enforced text' do
+    stub_generation(message: 'Hello! About Impeller — which variant would you like?')
+    validator = instance_double(Marine::Charge::FactPreservationValidator)
+    captured = {}
+    allow(validator).to receive(:valid?) do |args|
+      captured.merge!(args)
+      true
+    end
+    allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(validator)
+
+    result = call(opening: false)
+
+    # the follow-up opening salutation is removed BEFORE the deterministic + semantic gates
+    expect(captured[:candidate]).to eq('About Impeller — which variant would you like?')
+    # the delivered text is exactly the validated (enforced) text — no second transform
+    expect(result).to eq('About Impeller — which variant would you like?')
+  end
+
+  it 'fails closed without validating when a follow-up reply is only an opening greeting' do
+    stub_generation(message: 'Halo!')
+    validator = stub_semantic(true)
+
+    expect(call(opening: false)).to be_nil
+    expect(validator).not_to have_received(:valid?)
+  end
+
+  it 'normalizes a wrong-time opening greeting before both gates on an opening turn' do
+    stub_generation(message: 'Selamat sore. About Impeller — which variant would you like?')
+    validator = instance_double(Marine::Charge::FactPreservationValidator)
+    captured = {}
+    allow(validator).to receive(:valid?) do |args|
+      captured.merge!(args)
+      true
+    end
+    allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(validator)
+
+    travel_to(Time.utc(2026, 7, 20, 2, 37)) do # 09:37 WIB -> pagi
+      result = call(opening: true)
+      expect(captured[:candidate]).to eq('Selamat pagi. About Impeller — which variant would you like?')
+      expect(result).to eq('Selamat pagi. About Impeller — which variant would you like?')
+    end
+  end
+
+  it 'returns nil when the semantic validator rejects the candidate' do
+    stub_generation(message: 'About Impeller — which variant would you like?')
+    stub_semantic(false)
+
+    expect(call).to be_nil
+  end
+
+  it 'runs the deterministic checker BEFORE the semantic validator (a deterministic rejection skips the semantic call)' do
+    stub_generation(message: 'About Propeller — which variant would you like?') # changed family: deterministic reject
+    validator = stub_semantic(true)
+
+    expect(call).to be_nil
+    expect(validator).not_to have_received(:valid?)
+  end
+
+  it 'passes the exact fallback as the semantic authority and the exact candidate' do
+    stub_generation(message: 'About Impeller — which variant would you like?')
+    validator = instance_double(Marine::Charge::FactPreservationValidator)
+    captured = {}
+    allow(validator).to receive(:valid?) do |args|
+      captured.merge!(args)
+      true
+    end
+    allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(validator)
+
+    call
+    expect(captured[:approved_answer]).to eq(fallback)
+    expect(captured[:candidate]).to eq('About Impeller — which variant would you like?')
+  end
+
+  it 'never invokes an LLM for an unsupported descriptor kind' do
+    stub_semantic(true)
+    expect(Marine::Llm::BaseService).not_to receive(:new)
+
+    expect(service.call(action: :reply, descriptor: { kind: :price_unavailable }, fallback: "I'm sorry, no price.", customer_request: 'x')).to be_nil
+  end
+
+  it 'never invokes an LLM when the kind is presented under the wrong action' do
+    stub_semantic(true)
+    expect(Marine::Llm::BaseService).not_to receive(:new)
+
+    expect(call(action: :clarify_family)).to be_nil
+  end
+
+  it 'grounds generation only on the fallback plus the latest request and bounded history' do
+    llm = instance_double(Marine::Llm::BaseService, configured?: true)
+    captured = {}
+    allow(llm).to receive(:chat) do |args|
+      captured[:system] = args[:system]
+      captured[:messages] = args[:messages]
+      { ok: true, message: 'About Impeller — which variant?', error: nil }
+    end
+    allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+    stub_semantic(true)
+
+    history = [{ role: 'user', content: 'earlier question' }, { role: 'assistant', content: 'earlier answer' }]
+    call(message_history: history, customer_request: 'what is impeller?')
+
+    expect(captured[:system]).to include(fallback)
+    expect(captured[:system]).to include('ONLY source of facts')
+    contents = captured[:messages].map { |m| m[:content] || m['content'] }
+    expect(contents).to eq(['earlier question', 'earlier answer', 'what is impeller?'])
+    expect(contents.count('what is impeller?')).to eq(1)
+  end
+
+  it 'injects the reused Phase 4 greeting policy: business-time grounding when opening, no-greeting when follow-up' do
+    llm = instance_double(Marine::Llm::BaseService, configured?: true)
+    systems = []
+    allow(llm).to receive(:chat) do |args|
+      systems << args[:system]
+      { ok: true, message: 'About Impeller — which variant?', error: nil }
+    end
+    allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+    stub_semantic(true)
+
+    travel_to(Time.utc(2026, 7, 20, 2, 37)) { call(opening: true) } # 09:37 WIB -> pagi
+    call(opening: false)
+
+    expect(systems.first).to include('Selamat pagi')   # opening: authoritative business-time greeting grounding
+    expect(systems.last).to include('follow-up')        # follow-up: no-new-greeting policy
+    expect(systems.last).not_to include('Selamat pagi')
+  end
+
+  # Tier 3 price_available exercises the deterministic amount/currency/UOM protection BEFORE the
+  # semantic gate: a preserving candidate passes both and is delivered; a changed/extra price is
+  # rejected deterministically so the semantic validator is never consulted.
+  describe 'price_available (Tier 3) two-gate protection' do
+    let(:price_descriptor) { { kind: :price_available, currency: 'IDR', price_list_rate: '150000', uom: 'pcs' } }
+    let(:price_fallback) { 'The price is IDR 150000 per pcs.' }
+
+    it 'delivers a price candidate preserving the exact amount/currency/UOM after semantic validation' do
+      stub_generation(message: 'It costs IDR 150000 per pcs.')
+      validator = stub_semantic(true)
+
+      expect(call(descriptor: price_descriptor, fallback: price_fallback)).to eq('It costs IDR 150000 per pcs.')
+      expect(validator).to have_received(:valid?)
+    end
+
+    it 'rejects a changed or extra price deterministically and never reaches the semantic validator' do
+      validator = stub_semantic(true)
+
+      stub_generation(message: 'It costs IDR 15000 per pcs.') # changed amount
+      expect(call(descriptor: price_descriptor, fallback: price_fallback)).to be_nil
+
+      stub_generation(message: 'It costs IDR 150000 per pcs, with 5 in stock.') # extra number
+      expect(call(descriptor: price_descriptor, fallback: price_fallback)).to be_nil
+
+      expect(validator).not_to have_received(:valid?)
+    end
+  end
+
+  describe 'fail-closed handling (no repair, no partial use)' do
+    it 'returns nil and never validates on a blank generation' do
+      stub_generation(message: '')
+      validator = stub_semantic(true)
+      expect(call).to be_nil
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    it 'returns nil on a non-String, control-bearing, fenced, or whole-JSON candidate' do
+      validator = stub_semantic(true)
+      [{ reply: 'x' }, "About Impeller#{0.chr}", "```\nAbout Impeller\n```", '{"reply":"About Impeller"}'].each do |bad|
+        stub_generation(message: bad)
+        expect(call).to be_nil
+      end
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    it 'returns nil when generation is unconfigured, errors, or raises' do
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(instance_double(Marine::Llm::BaseService, configured?: false))
+      validator = stub_semantic(true)
+      expect(call).to be_nil
+
+      stub_generation(message: nil, success: false)
+      expect(call).to be_nil
+
+      raising = instance_double(Marine::Llm::BaseService, configured?: true)
+      allow(raising).to receive(:chat).and_raise(StandardError, 'boom')
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(raising)
+      expect(call).to be_nil
+
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    it 'returns nil when the semantic validator errors or raises' do
+      stub_generation(message: 'About Impeller — which variant would you like?')
+      raising = instance_double(Marine::Charge::FactPreservationValidator)
+      allow(raising).to receive(:valid?).and_raise(StandardError, 'boom')
+      allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(raising)
+      expect(call).to be_nil
+    end
+  end
+end
