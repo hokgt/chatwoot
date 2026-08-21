@@ -15,6 +15,27 @@ class Marine::Charge::GroundedWordingService
   # and carriage return (\r) which are legitimate in prose.
   UNSAFE_CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/
 
+  # Provider-enforced generation envelope (RubyLLM #with_schema format): a bare object carrying
+  # EXACTLY one string field, "reply". Constraining generation to structured output removes the
+  # fenced/markdown/prose/quote SHAPE variance that would otherwise trip the shape gate and drop
+  # the contextual wording — this is the structural half of the Gate F stabilization. It is a
+  # REQUEST-side control ONLY and never relaxes acceptance: the extracted reply is still untrusted
+  # and still passes the shape gate, greeting enforcement, and the SEPARATE semantic validator.
+  # A provider that ignores or cannot enforce the schema degrades to a fail-closed nil (the caller
+  # keeps its exact translated-or-original fallback) — see #reply_from_envelope. The reply itself
+  # stays a free contextual rephrase (cross-language where applicable), so this does NOT require the
+  # approved answer to appear verbatim.
+  REPLY_SCHEMA = {
+    name: 'contextual_reply',
+    strict: true,
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: %w[reply],
+      properties: { 'reply' => { type: 'string' } }
+    }
+  }.freeze
+
   GENERATION_INSTRUCTION = <<~PROMPT.strip
     Rephrase the Approved Answer below to reply to the customer in context.
     The Approved Answer is your ONLY source of facts. Preserve every material fact it states.
@@ -50,13 +71,42 @@ class Marine::Charge::GroundedWordingService
     service = Marine::Llm::BaseService.new(account: @account)
     return nil unless service.configured?
 
+    # schema: REPLY_SCHEMA asks the provider to emit a bare { "reply": <string> } envelope so the
+    # contextual wording arrives as clean structured output instead of a fenced/prose/markdown blob.
+    # temperature 0.0 is variance-reducing ONLY: it minimizes sampling variance so the rephrase is a
+    # stabler (not guaranteed byte-identical) restatement of the approved answer — it is not a
+    # determinism guarantee. The extracted reply remains untrusted and still passes the shape gate,
+    # greeting enforcement, and the separate semantic validator.
     result = service.chat(
       messages: messages_with_query(message_history, customer_request),
-      system: generation_prompt(approved_answer, opening)
+      system: generation_prompt(approved_answer, opening),
+      temperature: 0.0,
+      schema: REPLY_SCHEMA
     )
     return nil unless result[:ok] && result[:message].present?
 
-    result[:message]
+    reply_from_envelope(result[:message])
+  end
+
+  # Parse the provider's { "reply": <string> } generation envelope as an EXACT object — no fence
+  # stripping, extraction, or repair. Returns the reply body ONLY for a bare Hash whose sole key is
+  # "reply" with a String value; a wrong shape/key/type, an ambiguous duplicate key (rejected by
+  # allow_duplicate_key: false), invalid encoding, or any unparseable/passed-through text fails
+  # closed to nil so the caller keeps its exact fallback. RubyLLM already collapses top-level
+  # duplicate keys on the real structured path, so the duplicate-key guard here is a fail-closed
+  # backstop for an unparsed passthrough, not a byte-fidelity claim (the reply is plain prose, not a
+  # duplicate-key-sensitive verdict). The returned reply is still untrusted and still passes the
+  # shape gate, greeting enforcement, and the separate semantic validator.
+  def reply_from_envelope(raw)
+    return nil unless raw.is_a?(String) && raw.valid_encoding?
+
+    parsed = JSON.parse(raw, allow_duplicate_key: false)
+    return nil unless parsed.is_a?(Hash) && parsed.keys == %w[reply]
+    return nil unless parsed['reply'].is_a?(String)
+
+    parsed['reply']
+  rescue JSON::ParserError
+    nil
   end
 
   # Smallest generic output-shape gate: the generation is untrusted, so before greeting

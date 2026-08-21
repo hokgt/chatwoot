@@ -61,5 +61,81 @@ RSpec.describe Marine::Llm::BaseService do
 
       expect(result.to_s).not_to include('sk-secret')
     end
+
+    it 'does not request a schema when none is supplied' do
+      allow(chat).to receive(:with_schema)
+
+      service.chat(messages: [{ role: 'user', content: 'hi' }])
+
+      expect(chat).not_to have_received(:with_schema)
+    end
+
+    it 'leaves nil content as nil when no schema is supplied (no JSON serialization)' do
+      allow(response).to receive(:content).and_return(nil)
+
+      result = service.chat(messages: [{ role: 'user', content: 'hi' }])
+
+      expect(result[:message]).to be_nil
+    end
+
+    it 'returns string content byte-for-byte unchanged when no schema is supplied' do
+      raw = "```json\n{\"a\":1}\n```"
+      allow(response).to receive(:content).and_return(raw)
+
+      result = service.chat(messages: [{ role: 'user', content: 'hi' }])
+
+      expect(result[:message]).to eq(raw)
+    end
+
+    context 'with an enforced schema' do
+      let(:schema) { { name: 'verdict', strict: true, schema: { type: 'object' } } }
+
+      before do
+        allow(chat).to receive(:with_temperature)
+        allow(chat).to receive(:with_schema)
+      end
+
+      it 'asks the provider to enforce the schema' do
+        service.chat(messages: [{ role: 'user', content: 'hi' }], schema: schema)
+
+        expect(chat).to have_received(:with_schema).with(schema)
+      end
+
+      it 'serializes a structured hash reply back to its JSON text' do
+        allow(response).to receive(:content).and_return({ 'ok' => true, 'n' => 1 })
+
+        result = service.chat(messages: [{ role: 'user', content: 'hi' }], schema: schema)
+
+        expect(result[:message]).to eq('{"ok":true,"n":1}')
+      end
+
+      # RubyLLM parses only the top level of a structured reply; a JSON string carried as a field
+      # value is never descended into, so its bytes — duplicate keys and all — survive reserialization
+      # verbatim. FactPreservationValidator relies on exactly this to keep duplicate-key detection.
+      it 'preserves a nested JSON-string value in a structured hash reply verbatim' do
+        inner = '{"a": false, "a": true}'
+        allow(response).to receive(:content).and_return({ 'verdict' => inner })
+
+        result = service.chat(messages: [{ role: 'user', content: 'hi' }], schema: schema)
+
+        expect(JSON.parse(result[:message])['verdict']).to eq(inner)
+      end
+
+      it 'passes a string reply through verbatim (unparseable structured output is not repaired)' do
+        allow(response).to receive(:content).and_return("```json\n{}\n```")
+
+        result = service.chat(messages: [{ role: 'user', content: 'hi' }], schema: schema)
+
+        expect(result[:message]).to eq("```json\n{}\n```")
+      end
+
+      it 'fails closed to nil for an unexpected non-string, non-hash schema reply' do
+        allow(response).to receive(:content).and_return([true, true])
+
+        result = service.chat(messages: [{ role: 'user', content: 'hi' }], schema: schema)
+
+        expect(result[:message]).to be_nil
+      end
+    end
   end
 end

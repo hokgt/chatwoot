@@ -15,9 +15,16 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
   let(:descriptor) { { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' } }
   let(:fallback) { "You're asking about Impeller. Which variant would you like?" }
 
+  # The provider now enforces a bare { "reply": <string> } generation envelope and BaseService
+  # returns its JSON text; stub_generation wraps the intended reply body in that envelope so specs
+  # still express the reply the model produced while exercising the real envelope-extraction path.
+  def reply_envelope(message)
+    { reply: message }.to_json
+  end
+
   def stub_generation(message:, success: true)
     llm = instance_double(Marine::Llm::BaseService, configured?: true)
-    allow(llm).to receive(:chat).and_return({ ok: success, message: message, error: nil })
+    allow(llm).to receive(:chat).and_return({ ok: success, message: reply_envelope(message), error: nil })
     allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
     llm
   end
@@ -137,7 +144,7 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
     allow(llm).to receive(:chat) do |args|
       captured[:system] = args[:system]
       captured[:messages] = args[:messages]
-      { ok: true, message: 'About Impeller — which variant?', error: nil }
+      { ok: true, message: reply_envelope('About Impeller — which variant?'), error: nil }
     end
     allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
     stub_semantic(true)
@@ -157,7 +164,7 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
     systems = []
     allow(llm).to receive(:chat) do |args|
       systems << args[:system]
-      { ok: true, message: 'About Impeller — which variant?', error: nil }
+      { ok: true, message: reply_envelope('About Impeller — which variant?'), error: nil }
     end
     allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
     stub_semantic(true)
@@ -237,6 +244,87 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
       allow(raising).to receive(:valid?).and_raise(StandardError, 'boom')
       allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(raising)
       expect(call).to be_nil
+    end
+  end
+
+  # Gate F — product generation is requested at temperature 0.0 as a variance-reducing control
+  # (greedy decoding minimizes sampling variance so the rephrase drifts less run-to-run);
+  # temperature 0.0 is NOT a determinism guarantee. It never relaxes acceptance: the candidate stays
+  # fully untrusted and still passes the deterministic ProductFactProtectionValidator and the
+  # separate semantic validator unchanged.
+  it 'requests the generation at variance-reducing temperature 0.0' do
+    llm = instance_double(Marine::Llm::BaseService, configured?: true)
+    captured = {}
+    allow(llm).to receive(:chat) do |args|
+      captured.merge!(args)
+      { ok: true, message: reply_envelope('About Impeller — which variant would you like?'), error: nil }
+    end
+    allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+    stub_semantic(true)
+
+    call
+
+    expect(captured[:temperature]).to eq(0.0)
+  end
+
+  # Gate F structural stabilization — product generation is requested as a provider-enforced
+  # { "reply": <string> } envelope (REPLY_SCHEMA) parsed as an EXACT object with NO fence
+  # stripping/extraction/repair. Anything that is not a bare { "reply": <string> } fails closed to
+  # nil and the caller delivers its exact deterministic fallback; NEITHER the deterministic
+  # ProductFactProtectionValidator nor the semantic validator can be satisfied by a malformed
+  # envelope. The reply body stays a same-language natural rephrase — nothing here requires the
+  # fallback to appear verbatim.
+  describe 'generation envelope' do
+    def stub_raw_generation(raw)
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      allow(llm).to receive(:chat).and_return({ ok: true, message: raw, error: nil })
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      llm
+    end
+
+    it 'requests provider-enforced structured output with the strict reply envelope schema' do
+      captured = {}
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      allow(llm).to receive(:chat) do |args|
+        captured.merge!(args)
+        { ok: true, message: reply_envelope('About Impeller — which variant would you like?'), error: nil }
+      end
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      stub_semantic(true)
+
+      call
+
+      schema = captured[:schema]
+      expect(schema[:strict]).to be(true)
+      expect(schema.dig(:schema, :type)).to eq('object')
+      expect(schema.dig(:schema, :additionalProperties)).to be(false)
+      expect(schema.dig(:schema, :required)).to eq(%w[reply])
+      expect(schema.dig(:schema, :properties, 'reply')).to eq({ type: 'string' })
+    end
+
+    it 'extracts and delivers the reply body from a well-formed envelope after both gates' do
+      stub_raw_generation(reply_envelope('About Impeller — which variant would you like?'))
+      stub_semantic(true)
+
+      expect(call).to eq('About Impeller — which variant would you like?')
+    end
+
+    it 'fails closed on a malformed/wrong/extra/duplicate/passed-through envelope' do
+      validator = stub_semantic(true)
+      [
+        { reply: { nested: 'x' } }.to_json, # reply not a string
+        { note: 'x' }.to_json, # missing reply key
+        { reply: 'About Impeller — which variant?', note: 'x' }.to_json, # extra key
+        '{"reply": "first", "reply": "second"}', # duplicate reply key
+        '{"reply": "About Impeller",', # malformed JSON (no repair)
+        "```json\n#{reply_envelope('About Impeller — which variant?')}\n```", # fenced passthrough
+        '["reply"]', # wrong top-level type
+        (+"\xff\xfe").force_encoding('UTF-8') # invalid encoding
+      ].each do |raw|
+        stub_raw_generation(raw)
+        expect(call).to be_nil
+      end
+      expect(validator).not_to have_received(:valid?)
     end
   end
 end

@@ -18,7 +18,8 @@ RSpec.describe Marine::Charge::FactPreservationValidator do
     llm
   end
 
-  def verdict(all: true, added: true, contradiction: true, equivalent: true, certain: true)
+  # The five-field verdict object as JSON text (what the provider carries inside the envelope).
+  def inner_verdict(all: true, added: true, contradiction: true, equivalent: true, certain: true)
     {
       all_facts_preserved: all,
       no_unsupported_facts_added: added,
@@ -26,6 +27,29 @@ RSpec.describe Marine::Charge::FactPreservationValidator do
       meaning_equivalent: equivalent,
       certain: certain
     }.to_json
+  end
+
+  # What BaseService returns on the schema path: RubyLLM parsed the { "verdict": "<json>" } envelope
+  # to a Hash and BaseService reserialized it, so the message is the envelope JSON text with the
+  # verdict object carried verbatim as a string value.
+  def envelope(inner)
+    { verdict: inner }.to_json
+  end
+
+  def verdict(**)
+    envelope(inner_verdict(**))
+  end
+
+  # Drives the REAL Marine::Llm::BaseService (only the low-level RubyLLM chat is stubbed) so the
+  # schema path runs for real — RubyLLM's eager JSON parse of the envelope plus BaseService's
+  # reserialization — unlike stub_llm, which replaces BaseService#chat wholesale.
+  def stub_real_schema_path(provider_envelope_json)
+    allow(Marine::Llm::Config).to receive(:configured?).and_return(true)
+    # RubyLLM JSON.parse's the envelope object before handing back the message.
+    response = instance_double(RubyLLM::Message, content: JSON.parse(provider_envelope_json))
+    chat = instance_double(RubyLLM::Chat)
+    allow(chat).to receive_messages(with_instructions: nil, with_temperature: nil, with_schema: nil, add_message: nil, ask: response)
+    allow_any_instance_of(Marine::Llm::BaseService).to receive(:build_chat).and_return(chat)
   end
 
   it 'accepts a complete all-true JSON verdict' do
@@ -104,19 +128,34 @@ RSpec.describe Marine::Charge::FactPreservationValidator do
 
   it 'rejects a verdict missing a required key' do
     missing = { all_facts_preserved: true, no_unsupported_facts_added: true, no_contradiction: true, meaning_equivalent: true }
-    stub_llm(message: missing.to_json)
+    stub_llm(message: envelope(missing.to_json))
     expect(validator.valid?(approved_answer: approved, candidate: candidate)).to be(false)
   end
 
   it 'rejects a verdict with an extra key' do
-    extra = JSON.parse(verdict).merge('extra' => true)
-    stub_llm(message: extra.to_json)
+    extra = JSON.parse(inner_verdict).merge('extra' => true)
+    stub_llm(message: envelope(extra.to_json))
     expect(validator.valid?(approved_answer: approved, candidate: candidate)).to be(false)
   end
 
   it 'rejects non-boolean verdict values' do
-    non_boolean = JSON.parse(verdict).merge('all_facts_preserved' => 'yes')
-    stub_llm(message: non_boolean.to_json)
+    non_boolean = JSON.parse(inner_verdict).merge('all_facts_preserved' => 'yes')
+    stub_llm(message: envelope(non_boolean.to_json))
+    expect(validator.valid?(approved_answer: approved, candidate: candidate)).to be(false)
+  end
+
+  it 'rejects an envelope whose verdict field is a JSON object rather than a string' do
+    stub_llm(message: { verdict: JSON.parse(inner_verdict) }.to_json)
+    expect(validator.valid?(approved_answer: approved, candidate: candidate)).to be(false)
+  end
+
+  it 'rejects a bare five-field verdict not wrapped in the envelope' do
+    stub_llm(message: inner_verdict)
+    expect(validator.valid?(approved_answer: approved, candidate: candidate)).to be(false)
+  end
+
+  it 'rejects an envelope carrying an extra top-level key' do
+    stub_llm(message: { verdict: inner_verdict, note: 'x' }.to_json)
     expect(validator.valid?(approved_answer: approved, candidate: candidate)).to be(false)
   end
 
@@ -139,12 +178,13 @@ RSpec.describe Marine::Charge::FactPreservationValidator do
 
   # Finding 4 — Ruby's JSON.parse silently keeps the last value for a duplicated key, so an
   # ambiguous verdict that repeats a required key (false then true) would otherwise pass. The
-  # strict object class rejects the duplicate as malformed instead of collapsing to last-wins.
+  # duplicate lives inside the verdict string; accepted?'s allow_duplicate_key: false rejects it
+  # as malformed instead of collapsing to last-wins.
   it 'rejects a duplicated required key with conflicting values (no silent last-value win)' do
     dup = '{"all_facts_preserved": false, "all_facts_preserved": true, ' \
           '"no_unsupported_facts_added": true, "no_contradiction": true, ' \
           '"meaning_equivalent": true, "certain": true}'
-    stub_llm(message: dup)
+    stub_llm(message: envelope(dup))
     expect(validator.valid?(approved_answer: approved, candidate: candidate)).to be(false)
   end
 
@@ -155,7 +195,29 @@ RSpec.describe Marine::Charge::FactPreservationValidator do
     dup = '{"all_facts_preserved": true, "all_facts_preserved": true, ' \
           '"no_unsupported_facts_added": true, "no_contradiction": true, ' \
           '"meaning_equivalent": true, "certain": true}'
-    stub_llm(message: dup)
+    stub_llm(message: envelope(dup))
+    expect(validator.valid?(approved_answer: approved, candidate: candidate)).to be(false)
+  end
+
+  # Gate F schema-path regression — the reviewer finding: RubyLLM eagerly JSON.parse's a structured
+  # reply into a Hash (silently deduplicating keys) before BaseService reserializes it, which would
+  # let a duplicate-key verdict slip past accepted? on the schema path. These two examples exercise
+  # the ACTUAL schema path (real BaseService reserialization + real accepted?), not a stubbed
+  # BaseService#chat, proving the guarantee holds where it is actually enforced.
+  it 'accepts an all-true verdict through the real schema path (RubyLLM parse + reserialization)' do
+    stub_real_schema_path(envelope(inner_verdict))
+    expect(validator.valid?(approved_answer: approved, candidate: candidate)).to be(true)
+  end
+
+  it 'rejects duplicate keys carried through the real schema path (survives RubyLLM dedup)' do
+    dup = '{"all_facts_preserved": false, "all_facts_preserved": true, ' \
+          '"no_unsupported_facts_added": true, "no_contradiction": true, ' \
+          '"meaning_equivalent": true, "certain": true}'
+    envelope_json = envelope(dup)
+    # RubyLLM parses only the envelope; the duplicate keys live inside the verdict string it never
+    # descends into, so they reach accepted? verbatim rather than being collapsed to last-wins.
+    expect(JSON.parse(envelope_json)['verdict']).to eq(dup)
+    stub_real_schema_path(envelope_json)
     expect(validator.valid?(approved_answer: approved, candidate: candidate)).to be(false)
   end
 
@@ -165,6 +227,58 @@ RSpec.describe Marine::Charge::FactPreservationValidator do
     llm = instance_double(Marine::Llm::BaseService, configured?: true)
     allow(llm).to receive(:chat).and_raise(Timeout::Error)
     allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+    expect(validator.valid?(approved_answer: approved, candidate: candidate)).to be(false)
+  end
+
+  # Gate F — the verdict is a safety-critical decision, so it is requested at temperature 0.0 as a
+  # variance-reducing control (greedy decoding minimizes sampling variance so the judgement drifts
+  # less run-to-run); temperature 0.0 is NOT a determinism guarantee. It does not relax acceptance:
+  # the fail-closed rules above are unchanged; it only reduces the sampling variance that made an
+  # otherwise-equivalent candidate pass once and fail on a rerun.
+  it 'requests the verdict at variance-reducing temperature 0.0' do
+    llm = instance_double(Marine::Llm::BaseService, configured?: true)
+    captured = {}
+    allow(llm).to receive(:chat) do |args|
+      captured.merge!(args)
+      { ok: true, message: verdict, error: nil }
+    end
+    allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+
+    validator.valid?(approved_answer: approved, candidate: candidate)
+
+    expect(captured[:temperature]).to eq(0.0)
+  end
+
+  # Gate F root cause — the live failure was a verdict that was NOT a JSON object parseable by
+  # strict JSON.parse (fenced/prose). The structural fix is asking the provider to enforce a bare
+  # { "verdict": "<json>" } envelope via VERDICT_SCHEMA — a single string field so RubyLLM's eager
+  # parse cannot deduplicate the verdict's keys. This asserts the request carries that strict
+  # schema; acceptance itself is still decided by accepted? (proven by the fail-closed cases above).
+  it 'requests provider-enforced structured output with the strict verdict envelope schema' do
+    llm = instance_double(Marine::Llm::BaseService, configured?: true)
+    captured = {}
+    allow(llm).to receive(:chat) do |args|
+      captured.merge!(args)
+      { ok: true, message: verdict, error: nil }
+    end
+    allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+
+    validator.valid?(approved_answer: approved, candidate: candidate)
+
+    schema = captured[:schema]
+    expect(schema[:strict]).to be(true)
+    expect(schema.dig(:schema, :type)).to eq('object')
+    expect(schema.dig(:schema, :additionalProperties)).to be(false)
+    expect(schema.dig(:schema, :required)).to eq(%w[verdict])
+    expect(schema.dig(:schema, :properties).keys.map(&:to_s)).to eq(%w[verdict])
+    expect(schema.dig(:schema, :properties, 'verdict')).to eq({ type: 'string' })
+  end
+
+  # Generation and semantic validation stay separate: even when the provider enforces the schema
+  # and returns a well-formed but NOT-all-true verdict, the candidate is rejected. Structured
+  # output guarantees the shape, never the answer.
+  it 'still rejects a well-formed schema-shaped verdict that is not all-true' do
+    stub_llm(message: verdict(certain: false))
     expect(validator.valid?(approved_answer: approved, candidate: candidate)).to be(false)
   end
 end

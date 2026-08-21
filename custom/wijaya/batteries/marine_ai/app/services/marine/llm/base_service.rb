@@ -35,7 +35,18 @@ class Marine::Llm::BaseService
   # messages: array of { role:, content: } (string or symbol keys). An optional
   # system message can be supplied either inline in messages or via the system:
   # keyword; the keyword wins when both are present.
-  def chat(messages:, system: nil, model: nil, temperature: nil)
+  #
+  # schema: an optional JSON Schema hash (RubyLLM #with_schema format). When given AND
+  # the underlying RubyLLM chat supports it, the provider is asked to enforce structured
+  # output constrained to that schema (e.g. OpenAI response_format json_schema). This is
+  # opt-in: callers that omit schema: are completely unaffected. It is also fail-safe —
+  # if the installed RubyLLM cannot enforce schemas, or the provider rejects/ignores the
+  # request, the call still returns a normalized result and the caller's own parsing
+  # decides acceptance. When schema: is given the returned message is a raw String (structured
+  # output is serialized back to its JSON text) so callers keep parsing it themselves; when schema:
+  # is omitted the content is returned untouched. Note RubyLLM parses the structured reply before
+  # this serialization, so top-level duplicate keys are already collapsed — see #message_text.
+  def chat(messages:, system: nil, model: nil, temperature: nil, schema: nil)
     resolved_model = model.presence || self.model
     return not_configured_result(resolved_model) unless configured?
 
@@ -43,7 +54,7 @@ class Marine::Llm::BaseService
     system_content = system.presence || extract_system(messages)
     return no_messages_result(resolved_model) if conversation.empty?
 
-    run_chat(resolved_model, conversation, system_content, temperature)
+    run_chat(resolved_model, conversation, system_content, temperature, schema)
   rescue StandardError => e
     capture(e)
     error_result(e.message, resolved_model)
@@ -53,17 +64,18 @@ class Marine::Llm::BaseService
 
   attr_reader :account
 
-  def run_chat(resolved_model, conversation, system_content, temperature)
+  def run_chat(resolved_model, conversation, system_content, temperature, schema)
     chat = build_chat(resolved_model)
     chat.with_instructions(system_content) if system_content.present?
     chat.with_temperature(temperature) if temperature && chat.respond_to?(:with_temperature)
+    chat.with_schema(schema) if schema && chat.respond_to?(:with_schema)
 
     conversation[0...-1].each do |message|
       chat.add_message(role: message[:role].to_sym, content: message[:content])
     end
 
     response = chat.ask(conversation.last[:content])
-    success_result(response, resolved_model)
+    success_result(response, resolved_model, schema)
   end
 
   def build_chat(resolved_model)
@@ -118,8 +130,28 @@ class Marine::Llm::BaseService
     (message[:content] || message['content']).to_s
   end
 
-  def success_result(response, resolved_model)
-    { ok: true, message: response.content, error: nil, raw: response, model: resolved_model }
+  def success_result(response, resolved_model, schema)
+    { ok: true, message: message_text(response.content, schema), error: nil, raw: response, model: resolved_model }
+  end
+
+  # Non-schema callers get response.content back untouched — String verbatim, nil stays nil, any
+  # other type exactly as RubyLLM returned it — so nothing changes for callers that omit schema:.
+  # On the schema path RubyLLM has ALREADY eagerly JSON.parse'd the provider's structured reply into
+  # a Hash before this method runs; that parse silently collapses any duplicate TOP-LEVEL keys (last
+  # value wins), so the Hash — and the JSON text we reserialize it to here — is faithful to the parsed
+  # structure but is NOT a byte-for-byte copy of the provider's original output. A caller that needs
+  # duplicate-key-sensitive validation therefore cannot rely on the top level of this text; it must
+  # carry that payload as a JSON *string* value, which RubyLLM does not descend into and which survives
+  # verbatim (Marine::Charge::FactPreservationValidator does exactly this with its verdict envelope).
+  # Structured output that RubyLLM could not parse stays a String and is passed through verbatim (never
+  # repaired), so the caller's parser still sees — and rejects — it unrepaired. Any other schema-path
+  # type fails closed to nil, which the fail-closed caller treats as a rejected (non-present) message.
+  def message_text(content, schema)
+    return content unless schema
+    return content if content.is_a?(String)
+    return content.to_json if content.is_a?(Hash)
+
+    nil
   end
 
   def error_result(error, resolved_model)

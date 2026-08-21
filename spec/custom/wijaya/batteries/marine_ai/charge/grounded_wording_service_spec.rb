@@ -11,9 +11,16 @@ RSpec.describe Marine::Charge::GroundedWordingService do
   let(:service) { described_class.new(account: nil) }
   let(:approved) { 'Our office is at Jl. Mawar 1, Bandung, open 09:00 to 17:00.' }
 
+  # The provider now enforces a bare { "reply": <string> } generation envelope and BaseService
+  # returns its JSON text; stub_generation wraps the intended reply body in that envelope so specs
+  # still express the reply the model produced while exercising the real envelope-extraction path.
+  def reply_envelope(message)
+    { reply: message }.to_json
+  end
+
   def stub_generation(message:, success: true)
     llm = instance_double(Marine::Llm::BaseService, configured?: true)
-    allow(llm).to receive(:chat).and_return({ ok: success, message: message, error: nil })
+    allow(llm).to receive(:chat).and_return({ ok: success, message: reply_envelope(message), error: nil })
     allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
     llm
   end
@@ -121,7 +128,7 @@ RSpec.describe Marine::Charge::GroundedWordingService do
     allow(llm).to receive(:chat) do |args|
       captured[:system] = args[:system]
       captured[:messages] = args[:messages]
-      { ok: true, message: 'ok', error: nil }
+      { ok: true, message: reply_envelope('ok'), error: nil }
     end
     allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
     stub_validator(true)
@@ -138,28 +145,13 @@ RSpec.describe Marine::Charge::GroundedWordingService do
     expect(contents.count('di mana kantor?')).to eq(1)
   end
 
-  # Finding 2 — the generation is untrusted, so a generic output-shape gate runs BEFORE
-  # greeting enforcement and validation: non-String, invalid-encoding, NUL/control, a whole
-  # fenced block, and a whole JSON object/array are rejected (nil, validator never called),
-  # while ordinary prose that merely contains braces/punctuation is accepted and validated.
+  # Finding 2 — the reply body extracted from the generation envelope is untrusted, so the generic
+  # output-shape gate still runs on it BEFORE greeting enforcement and validation: a NUL/control,
+  # whole-fenced, or whole-JSON reply is rejected (nil, validator never called), while ordinary prose
+  # that merely contains braces/punctuation is accepted and validated. (Non-String and invalid
+  # encoding are now caught one layer earlier by envelope extraction — see 'generation envelope'.)
   describe 'output-shape gate (Finding 2)' do
-    it 'returns nil without validating when generation is a non-String' do
-      stub_generation(message: { reply: 'Kantor kami di Jl. Mawar 1.' })
-      validator = stub_validator(true)
-
-      expect(service.call(approved_answer: approved, customer_request: 'x')).to be_nil
-      expect(validator).not_to have_received(:valid?)
-    end
-
-    it 'returns nil without validating on invalid string encoding' do
-      stub_generation(message: (+"\xff\xfe").force_encoding('UTF-8'))
-      validator = stub_validator(true)
-
-      expect(service.call(approved_answer: approved, customer_request: 'x')).to be_nil
-      expect(validator).not_to have_received(:valid?)
-    end
-
-    it 'returns nil without validating on NUL/unsafe control characters' do
+    it 'returns nil without validating on NUL/unsafe control characters in the reply body' do
       stub_generation(message: "Kantor kami#{0.chr} di Jl. Mawar 1.")
       validator = stub_validator(true)
 
@@ -167,7 +159,7 @@ RSpec.describe Marine::Charge::GroundedWordingService do
       expect(validator).not_to have_received(:valid?)
     end
 
-    it 'returns nil without validating a whole fenced block' do
+    it 'returns nil without validating a whole fenced reply body' do
       stub_generation(message: "```\nKantor kami di Jl. Mawar 1.\n```")
       validator = stub_validator(true)
 
@@ -175,7 +167,7 @@ RSpec.describe Marine::Charge::GroundedWordingService do
       expect(validator).not_to have_received(:valid?)
     end
 
-    it 'returns nil without validating a whole JSON object' do
+    it 'returns nil without validating a whole JSON-object reply body' do
       stub_generation(message: '{"reply": "Kantor kami di Jl. Mawar 1."}')
       validator = stub_validator(true)
 
@@ -183,7 +175,7 @@ RSpec.describe Marine::Charge::GroundedWordingService do
       expect(validator).not_to have_received(:valid?)
     end
 
-    it 'returns nil without validating a whole JSON array' do
+    it 'returns nil without validating a whole JSON-array reply body' do
       stub_generation(message: '["Kantor kami", "Jl. Mawar 1"]')
       validator = stub_validator(true)
 
@@ -200,6 +192,113 @@ RSpec.describe Marine::Charge::GroundedWordingService do
     end
   end
 
+  # Gate F structural stabilization — generation is requested as a provider-enforced
+  # { "reply": <string> } envelope (REPLY_SCHEMA) parsed as an EXACT object with NO fence
+  # stripping/extraction/repair. Anything that is not a bare { "reply": <string> } fails closed
+  # to nil and the caller keeps its exact fallback; the semantic validator is never consulted.
+  # The reply body itself stays a free contextual rephrase, so nothing here requires the approved
+  # answer to appear verbatim.
+  describe 'generation envelope' do
+    def stub_raw_generation(raw)
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      allow(llm).to receive(:chat).and_return({ ok: true, message: raw, error: nil })
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      llm
+    end
+
+    it 'requests provider-enforced structured output with the strict reply envelope schema' do
+      captured = {}
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      allow(llm).to receive(:chat) do |args|
+        captured.merge!(args)
+        { ok: true, message: reply_envelope('Kantor kami di Jl. Mawar 1.'), error: nil }
+      end
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      stub_validator(true)
+
+      service.call(approved_answer: approved, customer_request: 'x')
+
+      schema = captured[:schema]
+      expect(schema[:strict]).to be(true)
+      expect(schema.dig(:schema, :type)).to eq('object')
+      expect(schema.dig(:schema, :additionalProperties)).to be(false)
+      expect(schema.dig(:schema, :required)).to eq(%w[reply])
+      expect(schema.dig(:schema, :properties, 'reply')).to eq({ type: 'string' })
+    end
+
+    it 'extracts and validates the reply body from a well-formed envelope' do
+      stub_raw_generation(reply_envelope('Kantor kami di Jl. Mawar 1, Bandung.'))
+      stub_validator(true)
+
+      expect(service.call(approved_answer: approved, customer_request: 'x'))
+        .to eq('Kantor kami di Jl. Mawar 1, Bandung.')
+    end
+
+    it 'returns nil without validating when the envelope reply is not a string' do
+      stub_raw_generation({ reply: { nested: 'x' } }.to_json)
+      validator = stub_validator(true)
+
+      expect(service.call(approved_answer: approved, customer_request: 'x')).to be_nil
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    it 'returns nil without validating when the envelope is missing the reply key' do
+      stub_raw_generation({ note: 'x' }.to_json)
+      validator = stub_validator(true)
+
+      expect(service.call(approved_answer: approved, customer_request: 'x')).to be_nil
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    it 'returns nil without validating when the envelope carries an extra key' do
+      stub_raw_generation({ reply: 'Kantor kami di Jl. Mawar 1.', note: 'x' }.to_json)
+      validator = stub_validator(true)
+
+      expect(service.call(approved_answer: approved, customer_request: 'x')).to be_nil
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    it 'returns nil without validating on a duplicated reply key (no silent last-value win)' do
+      stub_raw_generation('{"reply": "first", "reply": "second"}')
+      validator = stub_validator(true)
+
+      expect(service.call(approved_answer: approved, customer_request: 'x')).to be_nil
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    it 'returns nil without validating on malformed envelope JSON (no repair)' do
+      stub_raw_generation('{"reply": "Kantor kami di Jl. Mawar 1.",')
+      validator = stub_validator(true)
+
+      expect(service.call(approved_answer: approved, customer_request: 'x')).to be_nil
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    it 'returns nil without validating on a fenced/passed-through envelope (no fence stripping)' do
+      stub_raw_generation("```json\n#{reply_envelope('Kantor kami di Jl. Mawar 1.')}\n```")
+      validator = stub_validator(true)
+
+      expect(service.call(approved_answer: approved, customer_request: 'x')).to be_nil
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    it 'returns nil without validating on a wrong top-level envelope type' do
+      stub_raw_generation('["reply"]')
+      validator = stub_validator(true)
+
+      expect(service.call(approved_answer: approved, customer_request: 'x')).to be_nil
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    it 'returns nil without validating on an invalid-encoding envelope' do
+      stub_raw_generation((+"\xff\xfe").force_encoding('UTF-8'))
+      validator = stub_validator(true)
+
+      expect(service.call(approved_answer: approved, customer_request: 'x')).to be_nil
+      expect(validator).not_to have_received(:valid?)
+    end
+  end
+
   # Finding 3 — a generation Timeout::Error is a fail-closed non-delivery signal: return nil
   # and never reach the validator (BaseService timeout/retry/config is unchanged).
   it 'returns nil without validating when generation times out (Finding 3)' do
@@ -210,5 +309,24 @@ RSpec.describe Marine::Charge::GroundedWordingService do
 
     expect(service.call(approved_answer: approved, customer_request: 'x')).to be_nil
     expect(validator).not_to have_received(:valid?)
+  end
+
+  # Gate F — generation is requested at temperature 0.0 as a variance-reducing control (greedy
+  # decoding minimizes sampling variance so the rephrase drifts less run-to-run); temperature 0.0 is
+  # NOT a determinism guarantee. It never relaxes acceptance: the candidate stays fully untrusted and
+  # still passes the shape gate, greeting enforcement, and the separate semantic validator unchanged.
+  it 'requests the generation at variance-reducing temperature 0.0' do
+    llm = instance_double(Marine::Llm::BaseService, configured?: true)
+    captured = {}
+    allow(llm).to receive(:chat) do |args|
+      captured.merge!(args)
+      { ok: true, message: reply_envelope('ok'), error: nil }
+    end
+    allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+    stub_validator(true)
+
+    service.call(approved_answer: approved, customer_request: 'di mana kantor?')
+
+    expect(captured[:temperature]).to eq(0.0)
   end
 end
