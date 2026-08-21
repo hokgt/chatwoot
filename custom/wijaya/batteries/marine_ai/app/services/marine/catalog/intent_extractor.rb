@@ -14,8 +14,21 @@
 # Output contract (exactly these keys, always):
 #   product_related, intent, family_mention, explicit_child_code,
 #   attribute_candidates, requires_exact_variant, clarification_reply,
-#   family_changed, intent_changed, multiple_numeric_candidates, confidence,
-#   customer_language, reason
+#   family_changed, intent_changed, multiple_numeric_candidates, quantity_inquiry,
+#   unsupported_request, confidence, customer_language, reason
+#
+# quantity_inquiry is a bounded, untrusted boolean flag: true ONLY when the customer asks for
+# an EXACT on-hand quantity ("how many units do you have"), which the catalog does not expose.
+# A plain availability (in-stock yes/no) question keeps intent "stock" with quantity_inquiry
+# false. The orchestrator routes a quantity inquiry to a safe handoff instead of a misleading
+# boolean stock answer; it never influences family/child/catalog selection.
+#
+# unsupported_request is a bounded, untrusted, allowlisted CATEGORY (or nil) describing WHAT the
+# customer asked for when Marine cannot answer it itself — one of a fixed generic set
+# (UNSUPPORTED_REQUEST_CATEGORIES: delivery feasibility, shipping cost, warehouse/location, exact
+# quantity, or generic "other"). It is delivery-only metadata for a request-aware handoff
+# acknowledgement: it NEVER influences family/child/catalog selection, and any non-allowlisted or
+# missing value normalizes to nil so the handoff falls back to the generic factless line.
 #
 # customer_language is a bounded, allowlisted BCP-47-like code for the language of
 # the CUSTOMER'S turn, read from the SAME extraction response (no extra provider
@@ -32,6 +45,13 @@ module Marine
       SUPPORTED_PRODUCT_INTENTS = %w[price stock parent_info variant_info catalog].freeze
       INTENTS = (SUPPORTED_PRODUCT_INTENTS + %w[unsupported unknown]).freeze
       CONFIDENCE_LEVELS = %w[low medium high].freeze
+
+      # Fixed, generic allowlist for the untrusted unsupported-request CATEGORY. These are
+      # request-type NAMES only — no product, destination, price, or customer value — used solely
+      # to pick a request-aware (but still factless) handoff acknowledgement. Anything else, or a
+      # missing value, normalizes to nil (the generic factless fallback). "other" is the explicit
+      # generic bucket and is itself treated as fail-closed/generic downstream.
+      UNSUPPORTED_REQUEST_CATEGORIES = %w[delivery_feasibility shipping_cost warehouse_location exact_quantity other].freeze
 
       # Internal, allowlisted reason codes — never raw exceptions or LLM prose.
       REASONS = %w[extracted not_product llm_unconfigured llm_unavailable llm_error malformed_response].freeze
@@ -114,6 +134,8 @@ module Marine
           family_changed: family_changed?(family_mention, state),
           intent_changed: intent_changed?(intent, state),
           multiple_numeric_candidates: multiple_numeric,
+          quantity_inquiry: truthy(parsed['quantity_inquiry']),
+          unsupported_request: normalize_unsupported_request(parsed['unsupported_request']),
           confidence: normalize_confidence(parsed['confidence']),
           customer_language: normalize_language(parsed['customer_language']),
           reason: product_related ? 'extracted' : 'not_product'
@@ -126,6 +148,15 @@ module Marine
 
         code = value.strip.downcase
         code if code.match?(LANGUAGE_PATTERN)
+      end
+
+      # Untrusted unsupported-request category, folded to the fixed generic allowlist or nil.
+      # A non-String, unknown, or blank value normalizes to nil so the handoff stays generic.
+      def normalize_unsupported_request(value)
+        return nil unless value.is_a?(String)
+
+        category = value.strip.downcase
+        UNSUPPORTED_REQUEST_CATEGORIES.include?(category) ? category : nil
       end
 
       # A number is never automatically a code. Only a candidate containing at least one
@@ -266,6 +297,8 @@ module Marine
           family_changed: false,
           intent_changed: false,
           multiple_numeric_candidates: false,
+          quantity_inquiry: false,
+          unsupported_request: nil,
           confidence: 'low',
           customer_language: nil,
           reason: REASONS.include?(reason) ? reason : 'llm_error'
@@ -285,12 +318,22 @@ module Marine
         family_mention (string|null, a candidate name only); explicit_child_code (string|null, a candidate code only);
         explicit_child_code_from_context (boolean, true only when the customer is clearly giving a code the assistant just asked for);
         attribute_candidates (array of short strings); requires_exact_variant (boolean); clarification_reply (string|null, ask when ambiguous);
-        multiple_numeric_candidates (boolean); confidence ("low"/"medium"/"high");
+        multiple_numeric_candidates (boolean); quantity_inquiry (boolean); confidence ("low"/"medium"/"high");
+        unsupported_request (string|null, ONLY when the customer asks for something this catalog assistant cannot answer — one of
+        "delivery_feasibility" (can you deliver to a place), "shipping_cost" (how much is shipping/delivery), "warehouse_location"
+        (where is the warehouse / where are you located), "exact_quantity" (exactly how many units are on hand), or "other" for any
+        other unsupported ask; null when the request is a normal price/stock/variant/catalog question);
         customer_language (string|null, the language of the CUSTOMER's message as a short BCP-47 code such as "en", "id", "zh-hans"; null if unsure).
         Numbers are NOT automatically codes —
         a bare number may be a quantity, price, or size; never invent codes, families, or attributes.
-        Use "catalog" ONLY when the customer explicitly asks to see or receive the product catalog document itself for a
-        product family, rather than a specific price, stock level, or single-variant detail.
+        Use "catalog" ONLY when the customer asks to see or receive the product catalog document itself for a product family,
+        rather than a specific price, stock level, or single-variant detail. This includes a short follow-up that simply asks to
+        receive or see the catalog while a family is already in focus (use current_family_in_focus) — do not treat that as unsupported.
+        When the customer only confirms or refers back to the family already in focus without naming a new one, leave
+        family_mention null so the conversation continues with that family.
+        Set quantity_inquiry true ONLY when the customer asks for an exact on-hand quantity or how many units are available
+        (a number the assistant cannot look up); a plain "is it in stock / available?" question stays intent "stock" with
+        quantity_inquiry false.
       PROMPT
     end
   end

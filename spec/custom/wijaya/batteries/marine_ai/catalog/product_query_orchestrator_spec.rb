@@ -129,7 +129,7 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       plan = orchestrator.plan_for_intent(intent: price_intent, flow: nil)
 
       expect(plan[:action]).to eq(:reply)
-      expect(plan[:reply]).to eq(kind: :price_available, price_list_rate: '125.50', currency: 'USD', uom: 'Nos')
+      expect(plan[:reply]).to eq(kind: :price_available, variant_code: 'CHILD-1', price_list_rate: '125.50', currency: 'USD', uom: 'Nos')
       expect(plan[:state][:changes]).to include('validated_variant' => 'CHILD-1', 'current_intent' => 'price')
     end
 
@@ -350,7 +350,7 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       )
 
       expect(plan[:action]).to eq(:reply)
-      expect(plan[:reply]).to eq(kind: :price_available, price_list_rate: '125.50', currency: 'USD', uom: 'Nos')
+      expect(plan[:reply]).to eq(kind: :price_available, variant_code: 'CHILD-1', price_list_rate: '125.50', currency: 'USD', uom: 'Nos')
       expect(plan[:state][:operation]).to eq(:update)
       expect(plan[:state][:changes]).to include('current_intent' => 'price', 'validated_variant' => 'CHILD-1')
     end
@@ -654,7 +654,7 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       )
 
       expect(plan[:action]).to eq(:reply)
-      expect(plan[:reply]).to eq(kind: :price_available, price_list_rate: '125.50', currency: 'USD', uom: 'Nos')
+      expect(plan[:reply]).to eq(kind: :price_available, variant_code: 'CHILD-1', price_list_rate: '125.50', currency: 'USD', uom: 'Nos')
       expect(plan[:state][:operation]).to eq(:update)
       expect(plan[:state][:changes]['clarification_kind']).to be_nil
       expect(plan[:state][:changes]['clarification_count']).to be_nil

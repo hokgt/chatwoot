@@ -266,6 +266,11 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         instance_double(Marine::Llm::TranslateResponseService,
                         call: { ok: true, text: 'Ini katalog produk untuk Impeller.', translated: true })
       )
+      # The translation is factually faithful (family preserved, token-clean): the localizer's
+      # separate semantic validator accepts it, so it is delivered instead of falling back to English.
+      allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(
+        instance_double(Marine::Charge::FactPreservationValidator, valid?: true)
+      )
 
       described_class.perform_now(conversation, assistant, indo.id)
 
@@ -490,14 +495,16 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       it 'delivers an accepted Tier 3 price candidate as the product text' do
         stub_reasoning(product_payload(
                          action: :reply,
-                         reply: { kind: :price_available, currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
+                         reply: { kind: :price_available, variant_code: 'IMP-3', currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
                          operation: :update, changes: { 'validated_family' => 'IMP', 'validated_variant' => 'IMP-3', 'current_intent' => 'price' }
                        ))
-        stub_wording('That one is IDR 150000 per pcs.')
+        # A realistic candidate the real two-gate wording service could return: it names the
+        # protected variant code (IMP-3) and preserves the exact amount/currency/UOM.
+        stub_wording('IMP-3 is IDR 150000 per pcs.')
 
         described_class.perform_now(conversation, assistant, incoming.id)
 
-        expect(conversation.messages.outgoing.last.content).to eq('That one is IDR 150000 per pcs.')
+        expect(conversation.messages.outgoing.last.content).to eq('IMP-3 is IDR 150000 per pcs.')
         expect(product_state['validated_variant']).to eq('IMP-3')
       end
 

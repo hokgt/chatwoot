@@ -84,8 +84,11 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
   let(:provider_calls) { [] }
   let(:base_service) { instance_double(Marine::Llm::BaseService, configured?: true) }
 
-  # Deterministic translation marker (neutral synthetic string, never a language phrase map).
-  TRANSLATED_MARKER = 'LOCALIZED_REPLY'
+  # Deterministic translation marker: a neutral synthetic string (never a language phrase map)
+  # that is token-CLEAN (no numeric/currency/identifier/uppercase-code tokens) and preserves the
+  # delivered family display, so the localizer's factual-safety gate accepts it as a faithful
+  # rewrite instead of rejecting it back to English.
+  TRANSLATED_MARKER = 'Ini katalog produk untuk Coastal Alpha Series.'
 
   before do
     # Repository boundary: inject the fake family repo the orchestrator builds by default.
@@ -105,10 +108,17 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
         { ok: true, message: intent_json, error: nil }
       end
     end
-    # Phase 6 natural-wording generation uses the separate #chat channel. This path exercises
-    # the deterministic delivery, so decline wording generation (fail-closed) and let every
-    # eligible product reply fall back to its exact deterministic localized text.
-    allow(base_service).to receive(:chat).and_return({ ok: false, message: nil, error: nil })
+    # Phase 6/7 natural-wording generation AND the localizer's semantic factual-safety validator
+    # both use the separate #chat channel. This path exercises deterministic delivery, so decline
+    # wording generation (fail-closed) while letting the semantic validator ACCEPT a faithful
+    # translation (an all-true fact-preservation verdict), branching on the system prompt.
+    allow(base_service).to receive(:chat) do |**opts|
+      if opts[:system].to_s.include?('You verify whether a Candidate Reply preserves')
+        { ok: true, message: fact_preservation_verdict, error: nil }
+      else
+        { ok: false, message: nil, error: nil } # decline wording generation -> deterministic text
+      end
+    end
 
     clear_enqueued_jobs
     clear_performed_jobs
@@ -148,6 +158,14 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
 
   def translation_calls
     provider_calls.select { |call| call[:system].include?('translator') }
+  end
+
+  # An all-true fact-preservation verdict in the provider envelope the validator expects
+  # ({ "verdict": "<inner-json-string>" }), so a faithful synthetic translation is accepted.
+  def fact_preservation_verdict
+    inner = { all_facts_preserved: true, no_unsupported_facts_added: true, no_contradiction: true,
+              meaning_equivalent: true, certain: true }.to_json
+    { verdict: inner }.to_json
   end
 
   describe 'the full trigger-bound catalog turn' do

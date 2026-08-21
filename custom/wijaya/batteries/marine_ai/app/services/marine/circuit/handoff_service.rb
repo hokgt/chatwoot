@@ -10,10 +10,14 @@ class Marine::Circuit::HandoffService
     }
   end
 
-  def initialize(conversation:, assistant:, reason: nil)
+  # message: an OPTIONAL per-turn public handoff line (e.g. a context-aware, language-consistent
+  # acknowledgement of the current unsupported request). When blank, the configured/default
+  # message is used unchanged, so every non-product handoff path is unaffected.
+  def initialize(conversation:, assistant:, reason: nil, message: nil)
     @conversation = conversation
     @assistant = assistant
     @reason = reason
+    @message = message
   end
 
   # Idempotent, concurrency-safe handoff. Under the Conversation row lock (reloaded to
@@ -40,7 +44,7 @@ class Marine::Circuit::HandoffService
 
   private
 
-  attr_reader :conversation, :assistant, :reason
+  attr_reader :conversation, :assistant, :reason, :message
 
   def handoff_store
     @handoff_store ||= Marine::Circuit::HandoffStateStore.new(conversation: conversation)
@@ -67,7 +71,7 @@ class Marine::Circuit::HandoffService
       account_id: conversation.account_id,
       inbox_id: conversation.inbox_id,
       sender: assistant,
-      content: assistant.config['handoff_message'].presence || DEFAULT_MESSAGE
+      content: message.presence || assistant.config['handoff_message'].presence || DEFAULT_MESSAGE
     )
   end
 

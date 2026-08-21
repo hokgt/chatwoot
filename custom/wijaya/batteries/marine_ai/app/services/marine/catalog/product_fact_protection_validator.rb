@@ -36,14 +36,17 @@ module Marine
       # Explicit action + descriptor-kind allowlist. A kind is eligible ONLY under its single
       # supported action; :keys is the EXACT set of descriptor keys (besides the always-present
       # :kind) the deterministic template reads for that kind. Excluded kinds — handoff,
-      # unsupported, catalog, catalog_unavailable, price_conflict, stock_unavailable,
-      # price_unavailable — are ABSENT by design and can never be naturalized.
+      # unsupported, catalog_unavailable, price_conflict, stock_unavailable, price_unavailable —
+      # are ABSENT by design and can never be naturalized. :catalog is a DIRECT-catalog caption
+      # (send_catalog) whose sole protected display value is the family name-or-code the caption
+      # names; the attachment/document selection is unaffected by wording.
       CONTRACTS = {
         parent_info: { action: :reply, keys: %i[family_code family_name] },
         variant_info: { action: :reply, keys: %i[family_code variant_code] },
         stock_available: { action: :reply, keys: [] },
         stock_empty: { action: :reply, keys: [] },
-        price_available: { action: :reply, keys: %i[price_list_rate currency uom] },
+        price_available: { action: :reply, keys: %i[variant_code price_list_rate currency uom] },
+        catalog: { action: :send_catalog, keys: %i[family_code family_name] },
         clarify_family: { action: :clarify_family, keys: %i[candidates] },
         clarify_variant: { action: :clarify_variant, keys: %i[attribute_names] }
       }.freeze
@@ -130,7 +133,7 @@ module Marine
       # REJECT sentinel when a required value is missing/blank/ambiguous/nonfinite.
       def protected_values(descriptor)
         case descriptor[:kind]
-        when :parent_info then single(family_display(descriptor))
+        when :parent_info, :catalog then single(family_display(descriptor))
         when :variant_info then single(presence_string(descriptor[:variant_code]))
         when :price_available then price_values(descriptor)
         when :clarify_family then clarify_family_values(descriptor[:candidates])
@@ -149,15 +152,17 @@ module Marine
         value ? [value] : REJECT
       end
 
-      # Exact rate/currency/UOM. The rate is rendered by the template through #to_s (a join), so
-      # the protected value mirrors that; a nonfinite or non-numeric rate, or a blank currency,
-      # rejects. UOM is protected only when present (the template appends it only when present).
+      # Exact variant code + rate/currency/UOM. The rate is rendered by the template through #to_s
+      # (a join), so the protected value mirrors that; a blank variant code or currency, or a
+      # nonfinite/non-numeric rate, rejects. UOM is protected only when present (the template
+      # appends it only when present).
       def price_values(descriptor)
+        variant = presence_string(descriptor[:variant_code])
         currency = presence_string(descriptor[:currency])
         rate = descriptor[:price_list_rate]
-        return REJECT unless currency && finite_number?(rate)
+        return REJECT unless variant && currency && finite_number?(rate)
 
-        values = [currency, rate.to_s]
+        values = [variant, currency, rate.to_s]
         uom = presence_string(descriptor[:uom])
         values << uom if uom
         values

@@ -181,24 +181,24 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
   # semantic gate: a preserving candidate passes both and is delivered; a changed/extra price is
   # rejected deterministically so the semantic validator is never consulted.
   describe 'price_available (Tier 3) two-gate protection' do
-    let(:price_descriptor) { { kind: :price_available, currency: 'IDR', price_list_rate: '150000', uom: 'pcs' } }
-    let(:price_fallback) { 'The price is IDR 150000 per pcs.' }
+    let(:price_descriptor) { { kind: :price_available, variant_code: 'IMP-3', currency: 'IDR', price_list_rate: '150000', uom: 'pcs' } }
+    let(:price_fallback) { 'The price for IMP-3 is IDR 150000 per pcs.' }
 
-    it 'delivers a price candidate preserving the exact amount/currency/UOM after semantic validation' do
-      stub_generation(message: 'It costs IDR 150000 per pcs.')
+    it 'delivers a price candidate preserving the variant code, exact amount/currency/UOM after semantic validation' do
+      stub_generation(message: 'IMP-3 costs IDR 150000 per pcs.')
       validator = stub_semantic(true)
 
-      expect(call(descriptor: price_descriptor, fallback: price_fallback)).to eq('It costs IDR 150000 per pcs.')
+      expect(call(descriptor: price_descriptor, fallback: price_fallback)).to eq('IMP-3 costs IDR 150000 per pcs.')
       expect(validator).to have_received(:valid?)
     end
 
     it 'rejects a changed or extra price deterministically and never reaches the semantic validator' do
       validator = stub_semantic(true)
 
-      stub_generation(message: 'It costs IDR 15000 per pcs.') # changed amount
+      stub_generation(message: 'IMP-3 costs IDR 15000 per pcs.') # changed amount
       expect(call(descriptor: price_descriptor, fallback: price_fallback)).to be_nil
 
-      stub_generation(message: 'It costs IDR 150000 per pcs, with 5 in stock.') # extra number
+      stub_generation(message: 'IMP-3 costs IDR 150000 per pcs, with 5 in stock.') # extra number
       expect(call(descriptor: price_descriptor, fallback: price_fallback)).to be_nil
 
       expect(validator).not_to have_received(:valid?)

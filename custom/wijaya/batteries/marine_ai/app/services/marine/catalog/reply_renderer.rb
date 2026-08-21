@@ -13,7 +13,8 @@
 #   * stock descriptors carry only a binary :available / :empty / :unavailable kind —
 #     never a numeric quantity, warehouse detail, SQL, or raw error;
 #   * price descriptors carry only the three approved customer fields
-#     (price_list_rate, currency, uom) — nothing else from the row;
+#     (price_list_rate, currency, uom) plus the validated variant_code the price is
+#     FOR (so a natural reply can name the product it prices) — nothing else from the row;
 #   * every returned descriptor (and its nested arrays/hashes) is deeply frozen.
 module Marine
   module Catalog
@@ -57,10 +58,12 @@ module Marine
         descriptor(:variant_info, family_code: family[:code], variant_code: variant_code)
       end
 
-      # Exactly the three approved price fields from PriceRepository#price_for; nothing
-      # else from the tuple is copied through.
-      def price_available(price)
+      # Exactly the three approved price fields from PriceRepository#price_for, plus the
+      # validated variant code the price is FOR so a natural reply can name the product it
+      # prices; nothing else from the tuple is copied through.
+      def price_available(price, variant_code)
         descriptor(:price_available,
+                   variant_code: safe_scalar(variant_code, MAX_CODE_NAME_LENGTH),
                    price_list_rate: price[:price_list_rate],
                    currency: price[:currency],
                    uom: price[:uom])

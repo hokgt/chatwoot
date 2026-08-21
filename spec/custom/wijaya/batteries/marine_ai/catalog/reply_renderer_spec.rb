@@ -26,11 +26,11 @@ RSpec.describe Marine::Catalog::ReplyRenderer do
   end
 
   describe 'price' do
-    it 'copies through ONLY the three approved price fields' do
+    it 'copies through ONLY the three approved price fields plus the validated variant code' do
       price = { status: :available, price_list_rate: '125.50', currency: 'USD', uom: 'Nos', secret: 'x' }
 
-      expect(renderer.price_available(price)).to eq(
-        kind: :price_available, price_list_rate: '125.50', currency: 'USD', uom: 'Nos'
+      expect(renderer.price_available(price, 'CHILD-1')).to eq(
+        kind: :price_available, variant_code: 'CHILD-1', price_list_rate: '125.50', currency: 'USD', uom: 'Nos'
       )
     end
 
@@ -115,7 +115,7 @@ RSpec.describe Marine::Catalog::ReplyRenderer do
       emitted = [
         renderer.parent_info(code: 'F', name: 'N'),
         renderer.variant_info({ code: 'F', name: 'N' }, 'C'),
-        renderer.price_available(price_list_rate: '1', currency: 'USD', uom: 'Nos'),
+        renderer.price_available({ price_list_rate: '1', currency: 'USD', uom: 'Nos' }, 'C'),
         renderer.price_unavailable, renderer.price_conflict,
         renderer.stock_available, renderer.stock_empty, renderer.stock_unavailable,
         renderer.clarify_family([]), renderer.clarify_variant([]),

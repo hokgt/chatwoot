@@ -25,7 +25,8 @@ RSpec.describe Marine::Catalog::ProductFactProtectionValidator do
       expect(eligible?({ kind: :variant_info, family_code: 'IMP', variant_code: 'IMP-3' })).to be(true)
       expect(eligible?({ kind: :stock_available })).to be(true)
       expect(eligible?({ kind: :stock_empty })).to be(true)
-      expect(eligible?({ kind: :price_available, price_list_rate: '150000', currency: 'IDR', uom: 'pcs' })).to be(true)
+      expect(eligible?({ kind: :price_available, variant_code: 'IMP-3', price_list_rate: '150000', currency: 'IDR', uom: 'pcs' })).to be(true)
+      expect(eligible?({ kind: :catalog, family_code: 'IMP', family_name: 'Impeller' }, action: :send_catalog)).to be(true)
       expect(eligible?({ kind: :clarify_family, candidates: [{ code: 'IMP', name: 'Impeller' }] }, action: :clarify_family)).to be(true)
       expect(eligible?({ kind: :clarify_variant, attribute_names: %w[size] }, action: :clarify_variant)).to be(true)
     end
@@ -34,12 +35,18 @@ RSpec.describe Marine::Catalog::ProductFactProtectionValidator do
       expect(eligible?({ kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' }, action: :clarify_family)).to be(false)
       expect(eligible?({ kind: :stock_available }, action: :clarify_variant)).to be(false)
       expect(eligible?({ kind: :clarify_family, candidates: [] })).to be(false)
+      # A direct-catalog descriptor is eligible ONLY under :send_catalog, never a plain :reply.
+      expect(eligible?({ kind: :catalog, family_code: 'IMP', family_name: 'Impeller' })).to be(false)
     end
 
     it 'rejects every deliberately excluded kind' do
-      %i[price_unavailable price_conflict stock_unavailable catalog catalog_unavailable unsupported].each do |kind|
+      %i[price_unavailable price_conflict stock_unavailable catalog_unavailable unsupported].each do |kind|
         expect(eligible?({ kind: kind })).to be(false)
       end
+    end
+
+    it 'rejects a catalog descriptor missing the family display keys' do
+      expect(eligible?({ kind: :catalog, family_code: 'IMP' }, action: :send_catalog)).to be(false)
     end
 
     it 'rejects a non-hash / kindless / unknown-kind descriptor' do
@@ -76,6 +83,13 @@ RSpec.describe Marine::Catalog::ProductFactProtectionValidator do
       fallback = 'Here are the details for AB12. Would you like the price or availability?'
       expect(accepts?(descriptor, fallback, 'Details for AB12 are ready — want the price or availability?')).to be(true)
       expect(accepts?(descriptor, fallback, 'Details for AB13 are ready — want the price or availability?')).to be(false)
+    end
+
+    it 'accepts an equivalent DIRECT catalog caption preserving the family display and rejects a changed one' do
+      descriptor = { kind: :catalog, family_code: 'IMP', family_name: 'Impeller' }
+      fallback = 'Here is the product catalog for Impeller.'
+      expect(accepts?(descriptor, fallback, 'Of course — here is the Impeller catalog.', action: :send_catalog)).to be(true)
+      expect(accepts?(descriptor, fallback, 'Of course — here is the Propeller catalog.', action: :send_catalog)).to be(false)
     end
 
     it 'accepts an equivalent clarify_family candidate and rejects a dropped candidate' do
@@ -124,31 +138,35 @@ RSpec.describe Marine::Catalog::ProductFactProtectionValidator do
   end
 
   describe '#accepts? — Tier 3 price_available (exact amount/currency/UOM + token inventory)' do
-    let(:descriptor) { { kind: :price_available, price_list_rate: '150000', currency: 'IDR', uom: 'pcs' } }
-    let(:fallback) { 'The price is IDR 150000 per pcs.' }
+    let(:descriptor) { { kind: :price_available, variant_code: 'IMP-3', price_list_rate: '150000', currency: 'IDR', uom: 'pcs' } }
+    let(:fallback) { 'The price for IMP-3 is IDR 150000 per pcs.' }
 
-    it 'accepts an equivalent candidate preserving the exact amount, currency, and UOM' do
-      expect(accepts?(descriptor, fallback, 'It costs IDR 150000 per pcs.')).to be(true)
+    it 'accepts an equivalent candidate preserving the variant code, exact amount, currency, and UOM' do
+      expect(accepts?(descriptor, fallback, 'IMP-3 costs IDR 150000 per pcs.')).to be(true)
     end
 
     it 'rejects an altered decimal/grouping of the amount' do
-      expect(accepts?(descriptor, fallback, 'It costs IDR 150.000 per pcs.')).to be(false)
+      expect(accepts?(descriptor, fallback, 'IMP-3 costs IDR 150.000 per pcs.')).to be(false)
     end
 
     it 'rejects a changed number of digits in the amount' do
-      expect(accepts?(descriptor, fallback, 'It costs IDR 15000 per pcs.')).to be(false)
+      expect(accepts?(descriptor, fallback, 'IMP-3 costs IDR 15000 per pcs.')).to be(false)
     end
 
     it 'rejects an added price or quantity number' do
-      expect(accepts?(descriptor, fallback, 'It costs IDR 150000 per pcs, with 5 in stock.')).to be(false)
+      expect(accepts?(descriptor, fallback, 'IMP-3 costs IDR 150000 per pcs, with 5 in stock.')).to be(false)
     end
 
     it 'rejects a changed currency code' do
-      expect(accepts?(descriptor, fallback, 'It costs USD 150000 per pcs.')).to be(false)
+      expect(accepts?(descriptor, fallback, 'IMP-3 costs USD 150000 per pcs.')).to be(false)
     end
 
     it 'rejects a changed UOM' do
-      expect(accepts?(descriptor, fallback, 'It costs IDR 150000 per box.')).to be(false)
+      expect(accepts?(descriptor, fallback, 'IMP-3 costs IDR 150000 per box.')).to be(false)
+    end
+
+    it 'rejects a dropped or altered variant code' do
+      expect(accepts?(descriptor, fallback, 'It costs IDR 150000 per pcs.')).to be(false)
     end
 
     it 'rejects a nonfinite or non-numeric rate before any comparison' do

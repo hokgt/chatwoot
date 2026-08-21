@@ -478,6 +478,16 @@ patches:
       # descriptors are never naturalized. Precomputed lock-free by ResponseBuilderJob.
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_fact_protection_validator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/grounded_product_wording_service.rb
+      # Phase 7 — context-aware natural wording for a product HANDOFF acknowledgement. An
+      # unsupported request (warehouse location, delivery to a customer-supplied destination,
+      # shipping cost) or an exact-quantity question hands off; instead of the generic branded
+      # default line, ResponseBuilderJob precomputes (lock-free) a deterministic factless,
+      # localized acknowledgement and — only if it survives an output-shape gate, greeting
+      # enforcement, a deterministic no-new-fact-token guard, and the separate semantic
+      # FactPreservationValidator — a natural same-language rephrase grounded ONLY on that
+      # acknowledgement plus Phase 2 bounded context. Asserts no fact, so it may acknowledge the
+      # request/destination without turning it into a delivery/cost/quantity claim.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/grounded_handoff_wording_service.rb
       # Phase 6 — Native Product Catalog attachment delivery. Read-only deterministic
       # selection of the single usable primary catalog document for a validated family,
       # and a native outgoing Message + one Attachment that reuses the existing document
@@ -718,6 +728,11 @@ patches:
       # fail-closed, no facts/history logged).
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_fact_protection_validator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/grounded_product_wording_service_spec.rb
+      # Phase 7 — context-aware natural product-handoff acknowledgement service + regression
+      # coverage for quantity-inquiry routing, price/catalog grounded context, and language
+      # consistency (see marine_ai_natural_reply_regression_spec).
+      - spec/custom/wijaya/batteries/marine_ai/catalog/grounded_handoff_wording_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/conversation/marine_ai_natural_reply_regression_spec.rb
       # Phase 6 — Native Product Catalog attachment delivery specs.
       - spec/custom/wijaya/batteries/marine_ai/documents/product_catalog_selector_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/product_message_delivery_service_spec.rb

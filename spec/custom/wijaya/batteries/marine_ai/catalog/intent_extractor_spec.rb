@@ -20,7 +20,7 @@ RSpec.describe Marine::Catalog::IntentExtractor do
   CONTRACT_KEYS = %i[
     product_related intent family_mention explicit_child_code attribute_candidates
     requires_exact_variant clarification_reply family_changed intent_changed
-    multiple_numeric_candidates confidence customer_language reason
+    multiple_numeric_candidates quantity_inquiry unsupported_request confidence customer_language reason
   ].freeze
 
   def extract(text: 'hello', context: nil, state: nil)
@@ -158,6 +158,66 @@ RSpec.describe Marine::Catalog::IntentExtractor do
 
       expect(result[:multiple_numeric_candidates]).to be(false)
       expect(result[:explicit_child_code]).to eq('12.5')
+    end
+  end
+
+  describe 'quantity_inquiry mapping (bounded untrusted boolean)' do
+    it 'maps an explicit true through to the contract flag' do
+      stub_llm(message: llm_json(intent: 'stock', quantity_inquiry: true))
+
+      expect(extract(text: 'how many units do you have on hand?')[:quantity_inquiry]).to be(true)
+    end
+
+    it 'maps a common truthy string encoding to true' do
+      stub_llm(message: llm_json(intent: 'stock', quantity_inquiry: 'yes'))
+
+      expect(extract[:quantity_inquiry]).to be(true)
+    end
+
+    it 'defaults a missing quantity_inquiry to false' do
+      stub_llm(message: llm_json(intent: 'stock'))
+
+      expect(extract(text: 'is the impeller in stock?')[:quantity_inquiry]).to be(false)
+    end
+
+    it 'coerces a malformed/non-boolean quantity_inquiry to false' do
+      stub_llm(message: llm_json(intent: 'stock', quantity_inquiry: 'sure maybe'))
+
+      expect(extract[:quantity_inquiry]).to be(false)
+    end
+  end
+
+  describe 'unsupported_request category mapping (bounded generic allowlist)' do
+    Marine::Catalog::IntentExtractor::UNSUPPORTED_REQUEST_CATEGORIES.each do |category|
+      it "maps the allowlisted #{category} category through unchanged" do
+        stub_llm(message: llm_json(intent: 'unsupported', unsupported_request: category))
+
+        expect(extract[:unsupported_request]).to eq(category)
+      end
+    end
+
+    it 'normalizes case/whitespace to the allowlisted value' do
+      stub_llm(message: llm_json(intent: 'unsupported', unsupported_request: '  Delivery_Feasibility '))
+
+      expect(extract[:unsupported_request]).to eq('delivery_feasibility')
+    end
+
+    it 'defaults a missing category to nil' do
+      stub_llm(message: llm_json(intent: 'price'))
+
+      expect(extract[:unsupported_request]).to be_nil
+    end
+
+    it 'rejects an unknown/malformed category to nil (never a fabricated bucket)' do
+      stub_llm(message: llm_json(intent: 'unsupported', unsupported_request: 'wire_me_money'))
+
+      expect(extract[:unsupported_request]).to be_nil
+    end
+
+    it 'drops a type-confused non-string category to nil' do
+      stub_llm(message: '{"product_related": true, "intent": "unsupported", "unsupported_request": ["delivery_feasibility"]}')
+
+      expect(extract[:unsupported_request]).to be_nil
     end
   end
 

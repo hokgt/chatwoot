@@ -95,10 +95,11 @@ module Marine
       # family mention is missing or noisy; direct-component callers may omit it.
       def plan_for_intent(intent:, flow: nil, suppressed: false, text: nil)
         intent = symbolize(intent)
-        # Raw turn (family recovery) and bounded delivery language are captured per call
+        # Raw turn (family recovery) and bounded delivery metadata are captured per call
         # before any early return so every built plan carries consistent metadata.
         @turn_text = text.to_s
         @plan_language = normalize_language(intent[:customer_language])
+        @plan_handoff_category = normalize_unsupported_request(intent[:unsupported_request])
 
         return build(:stop) if suppressed
 
@@ -217,17 +218,38 @@ module Marine
           (decision[:continuing] ? resolve_family(decision[:identifier]) : recover_family(decision[:identifier]))
       end
 
-      # Dispatch a resolved family to the matching planner. Catalog needs no variant; a
-      # variant-required intent awaits/fulfills a child, otherwise a parent-level answer.
+      # Dispatch a resolved family to the matching planner. Catalog needs no variant; an exact
+      # on-hand quantity is not exposed and hands off safely (never a misleading boolean stock
+      # sentence); a variant-required intent awaits/fulfills a child, otherwise a parent-level
+      # answer.
       def dispatch_plan(intent, flow, family, continuing)
         state_op = continuing ? :update : :start
         return plan_catalog(intent, family, state_op) if intent[:intent] == 'catalog'
+        return plan_quantity_handoff(intent, family, state_op) if quantity_inquiry?(intent)
 
         if requires_variant?(intent)
           plan_variant(intent, flow, family, continuing, state_op)
         else
           plan_parent(intent, family, state_op)
         end
+      end
+
+      # A stock turn asking for an exact on-hand quantity: the catalog exposes only boolean
+      # availability, so answering with the in-stock/out-of-stock sentence would be misleading.
+      # Hand off with a safe, factless descriptor while PRESERVING the validated family context
+      # (family-level changes, clearing any stale variant); a later phase acknowledges the request
+      # and asks a human to confirm the exact quantity. Fires before variant resolution so the
+      # customer is never first asked to pick a variant for a number Marine cannot provide anyway.
+      def quantity_inquiry?(intent)
+        intent[:intent].to_s == 'stock' && truthy(intent[:quantity_inquiry])
+      end
+
+      def plan_quantity_handoff(intent, family, state_op)
+        # An exact-quantity ask is, by definition, the exact_quantity request category — tag it
+        # explicitly so the later handoff acknowledgement is request-aware even if the model did
+        # not separately populate unsupported_request for this stock-intent turn.
+        build(:handoff, reply: reply_renderer.unsupported, category: 'exact_quantity',
+                        operation: state_op, changes: family_level_changes(family, intent, state_op))
       end
 
       # Direct Product Catalog request. After a freshly revalidated family (explicitly named
@@ -292,7 +314,7 @@ module Marine
         price = price_repository.price_for(code)
         case price[:status]
         when :available
-          build(:reply, reply: reply_renderer.price_available(price), operation: state_op, changes: changes)
+          build(:reply, reply: reply_renderer.price_available(price, code), operation: state_op, changes: changes)
         when :conflict
           # Fail closed: a conflicting price is never guessed — hand off to a human.
           build(:handoff, reply: reply_renderer.price_conflict, operation: state_op, changes: changes)
@@ -561,6 +583,16 @@ module Marine
 
         code = value.strip.downcase
         code if code.match?(LANGUAGE_PATTERN)
+      end
+
+      # Defensive re-normalization of the (already extractor-normalized) untrusted
+      # unsupported-request category against the single-source generic allowlist, or nil. Never
+      # affects family/child/catalog resolution — it is delivery-only handoff metadata.
+      def normalize_unsupported_request(value)
+        return nil unless value.is_a?(String)
+
+        category = value.strip.downcase
+        IntentExtractor::UNSUPPORTED_REQUEST_CATEGORIES.include?(category) ? category : nil
       end
 
       def symbolize(intent)

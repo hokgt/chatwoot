@@ -122,6 +122,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     # candidate for eligible product replies, OUTSIDE the finalize row lock. Finalize still
     # rechecks eligibility/staleness and applies state/message/claim atomically.
     prepare_product_wording
+    prepare_handoff_wording
     finalize
   rescue StandardError => e
     # A failure anywhere in reasoning/finalization (including message-create) must
@@ -181,7 +182,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
     case plan[:action]
     when :handoff
-      process_handoff(product_handoff_reason(plan))
+      process_handoff(product_handoff_reason(plan), message: @handoff_message)
     when :send_catalog
       deliver_product_catalog(plan)
       increment_marine_usage
@@ -192,32 +193,46 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     complete_claim
   end
 
-  # Phase 6 — Native Product Catalog attachment delivery for a send_catalog action.
+  # Phase 6/7 — Native Product Catalog attachment delivery for a send_catalog action.
   # Runs INSIDE finalize's Conversation row lock + transaction, AFTER apply_product_state
   # has persisted the validated family, so selection reads the freshest flow. When exactly
   # one usable primary catalog exists for the validated family AND this flow has not
   # already sent a catalog, deliver ONE native attachment (reusing the existing blob) and
   # mark catalog_sent/document/message ONLY after the Message is created; otherwise fall
-  # back to the identical deterministic clarify-variant TEXT so the customer can still
-  # continue with an exact code. A create failure raises, rolling the whole finalization
-  # back (no markers, no completed claim), leaving the job retryable.
+  # back to a deterministic direct no-catalog/already-sent line or a catalog-assisted variant
+  # clarification. The customer-facing TEXT is the lock-free precomputed localized/naturalized
+  # caption/fallback when its outcome+document signature still matches, else deterministic English
+  # (#catalog_content) — so NO localization/network call is made under the lock. A create failure
+  # raises, rolling the whole finalization back (no markers, no completed claim), leaving the job
+  # retryable.
   def deliver_product_catalog(plan)
     flow = current_product_flow
     document = catalog_selection(flow['validated_family'])
+    outcome = catalog_outcome(plan, flow, document)
+    content = catalog_content(outcome, plan, flow, document)
 
-    if document && !catalog_already_sent?(flow)
-      deliver_catalog_message(plan, document)
-    elsif direct_catalog_request?(plan)
-      create_product_message(direct_catalog_fallback_text(plan, flow, document))
+    if outcome == CATALOG_DELIVER
+      deliver_catalog_message(document, content)
     else
-      create_product_reply(plan)
+      create_product_message_with(content)
     end
   end
 
-  def deliver_catalog_message(plan, document)
+  # The delivered catalog text: the precomputed localized/naturalized text ONLY when the rechecked
+  # outcome and selected document still match the lock-free snapshot's signature; otherwise the
+  # exact deterministic English fallback, computed WITHOUT any network/translation call under the
+  # finalize row lock (a signature mismatch means a race — deliver safely, never re-localize here).
+  def catalog_content(outcome, plan, flow, document)
+    prepared = @catalog_wording
+    return prepared[:text] if prepared && prepared[:signature] == catalog_signature(outcome, document)
+
+    deterministic_catalog_text(outcome, plan, flow, document)
+  end
+
+  def deliver_catalog_message(document, content)
     message = Marine::Conversation::ProductMessageDeliveryService.new(
       conversation: @conversation, assistant: @assistant,
-      document: document, content: localized_product_text(product_reply_text(plan))
+      document: document, content: content
     ).call
     mark_catalog_sent(document, message)
   end
@@ -244,6 +259,52 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
   def catalog_already_sent?(flow)
     flow['catalog_sent'] == true
+  end
+
+  # The four deterministic send_catalog outcomes, shared by the lock-free precompute and the
+  # under-lock delivery so the outcome (and its signature) is computed identically in both.
+  CATALOG_DELIVER = :deliver
+  CATALOG_ASSISTED_FALLBACK = :assisted_fallback
+  CATALOG_ALREADY_SENT = :already_sent
+  CATALOG_NO_CATALOG = :no_catalog
+
+  # Classify a send_catalog turn from (plan, current flow, selected document): deliver the native
+  # catalog when one exists and none has been sent this flow; otherwise a DIRECT request splits
+  # into already-sent vs no-catalog, and a catalog-ASSISTED turn falls back to a variant
+  # clarification. Pure over the given inputs — no side effect, no network.
+  def catalog_outcome(plan, flow, document)
+    return CATALOG_DELIVER if document && !catalog_already_sent?(flow)
+    return CATALOG_ASSISTED_FALLBACK unless direct_catalog_request?(plan)
+
+    document ? CATALOG_ALREADY_SENT : CATALOG_NO_CATALOG
+  end
+
+  # Outcome + selected-document identity: the minimal signature that decides both the branch and
+  # the deterministic text. A lock-free/under-lock mismatch means the delivery context changed
+  # (a race), so the precomputed localized text is discarded in favor of deterministic English.
+  def catalog_signature(outcome, document)
+    [outcome, document&.id]
+  end
+
+  # The exact deterministic ENGLISH text for an outcome — no localization/network. The caption
+  # (deliver / assisted fallback) is the plan's deterministic product text; the direct no-catalog
+  # and already-sent lines come from the row-derived family name only.
+  def deterministic_catalog_text(outcome, plan, flow, document)
+    case outcome
+    when CATALOG_DELIVER, CATALOG_ASSISTED_FALLBACK then product_reply_text(plan)
+    else direct_catalog_fallback_text(plan, flow, document)
+    end
+  end
+
+  # The flow the under-lock selection will read, predicted lock-free: apply_product_state runs a
+  # :start (a fresh flow, clearing catalog markers) or an :update (preserving them) BEFORE
+  # selection, so a :start is simulated as an empty flow and the validated family is taken from
+  # the plan's own state change (falling back to the current flow's family when unchanged). Only
+  # the family and catalog_sent marker matter to #catalog_outcome.
+  def predicted_catalog_flow(plan)
+    changes = plan.dig(:state, :changes) || {}
+    base = plan.dig(:state, :operation) == :start ? {} : current_product_flow
+    base.merge('validated_family' => changes['validated_family'] || base['validated_family'])
   end
 
   def apply_product_state(state)
@@ -307,39 +368,97 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     )
   end
 
-  # --- Phase 6: fact-protected natural product wording (precomputed, lock-free) ---------
+  # --- Phase 6/7: fact-protected natural product wording (precomputed, lock-free) ---------
   #
   # Runs after Agent::Runner returns and BEFORE finalize acquires the Conversation row lock,
-  # so no LLM/network call is made under the lock. For an eligible product reply ONLY
-  # (parent/variant info, family/variant clarification, stock and price-available outcomes —
-  # never send_catalog, handoff, or an excluded/generic descriptor), it computes the exact
-  # deterministic localized fallback and asks Marine::Catalog::GroundedProductWordingService
-  # for a natural candidate grounded ONLY on that fallback plus the Phase 2 bounded canonical
-  # trigger/history and opening/follow-up state (which drives the reused Phase 4 greeting policy).
-  #
-  # Once a plan passes deterministic eligibility it is COMMITTED to lock-free delivery: this
-  # method always sets the explicit @product_wording_prepared flag and leaves a nonblank
-  # @prepared_product_text, so finalize never localizes (an LLM/network call) under its row lock.
-  # The exact deterministic localized fallback is computed FIRST and retained, then (only if it
-  # survives BOTH gates) replaced by an accepted natural-wording candidate. A wording/context
-  # failure keeps the already-computed localized fallback. An unexpected localization failure —
-  # before any localized fallback exists — falls back to the deterministic English
-  # product_reply_text (the exact text ReplyLocalizer itself degrades to) with NO further network
-  # call. Nothing is persisted here.
+  # so no LLM/network call is made under the lock. It dispatches the two special product actions
+  # to their own precompute paths (send_catalog -> #prepare_catalog_wording; handoff ->
+  # #prepare_handoff_wording) and handles every other delivered product TEXT (parent/variant info,
+  # family/variant clarification, stock and price-available outcomes, and the generic/excluded
+  # replies) here: it ALWAYS computes and retains the exact deterministic localized fallback and
+  # sets the explicit @product_wording_prepared flag, so finalize never localizes under its row
+  # lock — even for a descriptor that is not naturalization-eligible. When the descriptor IS
+  # protection-eligible, the fallback is replaced by an accepted natural candidate from
+  # Marine::Catalog::GroundedProductWordingService, grounded ONLY on that localized fallback plus
+  # the Phase 2 bounded canonical trigger/history and opening/follow-up state. A wording/context
+  # failure keeps the localized fallback; an unexpected localization failure — before any localized
+  # fallback exists — falls back to the deterministic English product_reply_text (the exact text
+  # ReplyLocalizer itself degrades to) with NO further network call. Nothing is persisted here.
   def prepare_product_wording
     return unless product_response?
     return unless @trigger_message
 
     plan = @response['product_plan']
-    descriptor = plan[:reply]
-    return unless fact_protection.eligible?(action: plan[:action], descriptor: descriptor)
+    # A send_catalog caption/fallback is precomputed by its own outcome-signature path; a product
+    # handoff acknowledgement is precomputed by prepare_handoff_wording. Everything else is a
+    # delivered product TEXT: precompute its exact localized fallback here (so finalize never
+    # localizes under the row lock), naturalized only when the descriptor is protection-eligible.
+    return prepare_catalog_wording(plan) if plan[:action] == :send_catalog
+    return if plan[:action] == :handoff
 
     @product_language = plan[:language]
     @product_wording_prepared = true
-    fallback = localized_product_text(product_reply_text(plan))
-    @prepared_product_text = wording_candidate(plan, descriptor, fallback) || fallback
+    descriptor = plan[:reply]
+    fallback = localized_product_text(product_reply_text(plan), action: plan[:action], descriptor: descriptor)
+    @prepared_product_text = naturalized_product_text(plan, descriptor, fallback)
   rescue StandardError
     @prepared_product_text = product_reply_text(plan)
+  end
+
+  # An accepted natural-wording candidate when the descriptor is protection-eligible, else the
+  # exact localized fallback — the same "naturalize only if protected, keep localized otherwise"
+  # rule #catalog_caption_text applies, factored out so #prepare_product_wording stays a plain
+  # dispatch. Runs inside that method's rescue, so any wording/localization failure still degrades
+  # to the deterministic English text.
+  def naturalized_product_text(plan, descriptor, fallback)
+    return fallback unless fact_protection.eligible?(action: plan[:action], descriptor: descriptor)
+
+    wording_candidate(plan, descriptor, fallback) || fallback
+  end
+
+  # --- Phase 7: catalog caption / fallback wording (precomputed, lock-free) --------------
+  #
+  # A send_catalog turn produces one of four deterministic outcomes under the finalize lock:
+  # deliver the native catalog with a caption, an already-sent/no-catalog direct fallback, or a
+  # catalog-assisted variant clarification. Predicting the outcome from the SAME signals finalize
+  # will read (the post-state validated family + the selected document), this precomputes — OUTSIDE
+  # the lock — the localized text for that ONE predicted outcome (a DIRECT catalog caption is
+  # additionally naturalized through the fact-protected wording path), plus an outcome+document
+  # SIGNATURE. Under the lock, finalize uses the precomputed text ONLY when the rechecked outcome
+  # and document still match the signature; on any mismatch (a race — e.g. a catalog sent
+  # meanwhile) it uses the exact deterministic English fallback with NO network call. At most ONE
+  # predicted outcome is prepared, so no speculative multi-call fan-out ever runs — here or under
+  # the lock. A preparation failure leaves no snapshot, so finalize falls back to deterministic
+  # English.
+  def prepare_catalog_wording(plan)
+    @product_language = plan[:language]
+    flow = predicted_catalog_flow(plan)
+    document = catalog_selection(flow['validated_family'])
+    outcome = catalog_outcome(plan, flow, document)
+    @catalog_wording = { signature: catalog_signature(outcome, document),
+                         text: prepared_catalog_text(outcome, plan, flow, document) }
+  rescue StandardError
+    @catalog_wording = nil
+  end
+
+  # The localized (and, for a DIRECT catalog caption, naturalized) text for the predicted outcome.
+  def prepared_catalog_text(outcome, plan, flow, document)
+    english = deterministic_catalog_text(outcome, plan, flow, document)
+    return catalog_caption_text(plan, english) if outcome == CATALOG_DELIVER
+
+    localized_product_text(english)
+  end
+
+  # The delivered catalog caption: the localized deterministic caption, and — for a DIRECT catalog
+  # request (a protection-eligible :catalog descriptor) — a natural same-language rephrase grounded
+  # only on that localized caption plus Phase 2 bounded context. A catalog-ASSISTED caption (reply
+  # nil) carries no naturalizable descriptor, so it stays the localized deterministic clarification.
+  def catalog_caption_text(plan, english)
+    descriptor = plan[:reply]
+    fallback = localized_product_text(english, action: plan[:action], descriptor: descriptor)
+    return fallback unless direct_catalog_request?(plan)
+
+    wording_candidate(plan, descriptor, fallback) || fallback
   end
 
   # Natural-wording candidate grounded ONLY on the already-computed localized fallback plus the
@@ -360,13 +479,67 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     @fact_protection ||= Marine::Catalog::ProductFactProtectionValidator.new
   end
 
+  # --- Phase 7: context-aware natural product-handoff acknowledgement (precomputed, lock-free) ---
+  #
+  # A product-flow handoff (an unsupported request — warehouse location, delivery to a
+  # customer-supplied destination, shipping cost — or an exact-quantity question) must not post
+  # the generic, company-branded default handoff line. Runs AFTER Agent::Runner returns and
+  # BEFORE finalize acquires the row lock (no LLM/network call under the lock), only for a
+  # product handoff. It computes a deterministic, factless, already-localized acknowledgement and
+  # (only if it survives every gate) a natural same-language rephrase grounded ONLY on that
+  # acknowledgement plus the Phase 2 bounded canonical trigger/history and opening/follow-up
+  # state. The result is the per-turn public handoff message passed to HandoffService; a
+  # wording/context failure keeps the localized acknowledgement, and an unexpected failure keeps
+  # the plain factless English acknowledgement (never the branded default). Non-product handoffs
+  # (RAG/legacy/runner) leave @handoff_message nil and are unaffected. Asserts no fact, so it can
+  # acknowledge a customer-supplied destination without turning it into a delivery/cost claim.
+  def prepare_handoff_wording
+    return unless product_response?
+    return unless @trigger_message
+    return unless @response['product_plan'][:action] == :handoff
+
+    @product_language = @response['product_plan'][:language]
+    ack = handoff_ack_text(@response['product_plan'][:handoff_category])
+    fallback = localized_product_text(ack)
+    @handoff_message = handoff_wording_candidate(fallback) || fallback
+  rescue StandardError
+    @handoff_message = HANDOFF_ACK_TEXT
+  end
+
+  # The deterministic, factless, unbranded acknowledgement for a product handoff, selected by the
+  # bounded generic request category so the fallback is request-AWARE without asserting anything:
+  # a known category picks its generic line (it may reference "the location you mentioned" but
+  # never copies or asserts a destination, coverage, cost, or quantity), and an unknown/"other"/
+  # missing category falls closed to the fully generic line. No brand/customer/product/destination/
+  # price value is hardcoded — only the request-type semantics.
+  def handoff_ack_text(category)
+    HANDOFF_ACK_BY_CATEGORY.fetch(category, HANDOFF_ACK_TEXT)
+  end
+
+  # Natural handoff acknowledgement grounded ONLY on the already-localized factless
+  # acknowledgement plus the Phase 2 bounded canonical trigger/history and opening/follow-up
+  # state. Any wording/context failure returns nil so the caller keeps the localized fallback.
+  def handoff_wording_candidate(fallback)
+    context = Marine::Conversation::ContextBuilder.new(conversation: @conversation, trigger_message: @trigger_message).build
+    Marine::Catalog::GroundedHandoffWordingService.new(account: @conversation.account).call(
+      fallback: fallback, customer_request: context.trigger,
+      message_history: context.history, opening: context.opening?
+    )
+  rescue StandardError
+    nil
+  end
+
   # Rewrites a deterministic English product reply into the latest customer's language
   # (attachment caption or plain product text alike). It prefers the bounded language the
   # intent extractor read from the same turn (@product_language) and only falls back to
   # local CLD3 detection when that is missing/malformed. Localization is delivery-only: it
   # never changes the selected family/document or one-catalog-per-flow markers, and it
   # degrades to the original English on unknown/unconfigured/failed translation.
-  def localized_product_text(content)
+  # action/descriptor are the OPTIONAL protected product descriptor and its action: when supplied,
+  # the localizer additionally keeps the descriptor's protected display values literal in any
+  # translation. A factless text (handoff acknowledgement, direct no-catalog line) supplies neither
+  # and relies on the localizer's generic token-inventory + semantic factual-safety gates.
+  def localized_product_text(content, action: nil, descriptor: nil)
     # No trigger message (legacy path) means no customer-language signal to follow, so
     # deliver the deterministic English unchanged — the safe default.
     return content if @trigger_message.nil?
@@ -376,7 +549,9 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       trigger_text: @trigger_message.content.to_s,
       context: customer_language_context,
       provider_language: @product_language,
-      account: @conversation.account
+      account: @conversation.account,
+      action: action,
+      descriptor: descriptor
     ).call
   end
 
@@ -386,8 +561,9 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     @conversation.messages.incoming.where(private: false).order(id: :desc).limit(MAX_LANGUAGE_CONTEXT).pluck(:content)
   end
 
-  def process_handoff(reason = nil)
-    Marine::Circuit::HandoffService.new(conversation: @conversation, assistant: @assistant, reason: reason).perform
+  def process_handoff(reason = nil, message: nil)
+    Marine::Circuit::HandoffService.new(conversation: @conversation, assistant: @assistant,
+                                        reason: reason, message: message).perform
   end
 
   # --- Deterministic product text --------------------------------------------
@@ -400,6 +576,24 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   }.freeze
 
   GENERIC_PRODUCT_TEXT = 'Could you share a little more detail about the product you need?'.freeze
+
+  # Deterministic, factless, unbranded acknowledgement for a product-flow handoff — the safe
+  # localized fallback the natural-wording layer rephrases in context. It asserts nothing and
+  # names no company, so it never turns a customer-supplied destination or quantity into a claim.
+  HANDOFF_ACK_TEXT = "I'm sorry, I'm not able to confirm that for you directly. Let me bring in a colleague who can help you with this.".freeze
+
+  # Request-category-aware factless acknowledgements, keyed by the bounded generic
+  # unsupported-request category. Each states only an INABILITY to confirm the request type and a
+  # human follow-up — never an answer, a promise, or a customer/destination/price value. The
+  # delivery-feasibility line may refer to "the location you mentioned" generically but asserts no
+  # destination and no coverage. An unknown/"other"/missing category is not listed here and falls
+  # closed to the fully generic HANDOFF_ACK_TEXT.
+  HANDOFF_ACK_BY_CATEGORY = {
+    'delivery_feasibility' => "I'm sorry, I can't confirm delivery to the location you mentioned. Let me bring in a colleague to help with this.",
+    'shipping_cost' => "I'm sorry, I can't confirm the shipping cost for you directly. Let me bring in a colleague to help with this.",
+    'warehouse_location' => "I'm sorry, I can't confirm our location details for you directly. Let me bring in a colleague to help with this.",
+    'exact_quantity' => "I'm sorry, I can't confirm the exact quantity available for you directly. Let me bring in a colleague to help with this."
+  }.freeze
 
   # Renders the caption/text for a plan. A DIRECT catalog request carries a :catalog reply
   # descriptor and renders a catalog caption; a catalog-ASSISTED send_catalog (reply nil)
@@ -461,7 +655,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
   def price_available_text(descriptor)
     amount = [descriptor[:currency], descriptor[:price_list_rate]].compact.join(' ')
-    text = "The price is #{amount}"
+    subject = descriptor[:variant_code].presence
+    text = subject ? "The price for #{subject} is #{amount}" : "The price is #{amount}"
     text += " per #{descriptor[:uom]}" if descriptor[:uom].present?
     "#{text}."
   end

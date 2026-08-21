@@ -63,12 +63,12 @@ RSpec.describe 'Marine product flow cross-component regression' do
 
       plan = orchestrator.plan_for_intent(intent: price_intent, flow: nil)
 
-      expect(plan[:reply].keys).to match_array(%i[kind price_list_rate currency uom])
+      expect(plan[:reply].keys).to match_array(%i[kind variant_code price_list_rate currency uom])
       leaked = [99_999, 42, 'DROP TABLE item;--', 'W-1']
       expect(deep_values(plan)).not_to include(*leaked)
 
       text = job.send(:product_reply_text, plan)
-      expect(text).to eq('The price is USD 10.00 per ea.')
+      expect(text).to eq('The price for C-1 is USD 10.00 per ea.')
       %w[99999 42 DROP W-1].each { |secret| expect(text).not_to include(secret) }
     end
 
@@ -100,7 +100,7 @@ RSpec.describe 'Marine product flow cross-component regression' do
       when :parent_info then renderer.parent_info(code: 'FAM-1', name: 'Impeller')
       when :catalog then renderer.catalog(code: 'FAM-1', name: 'Impeller')
       when :variant_info then renderer.variant_info({ code: 'FAM-1' }, 'C-1')
-      when :price_available then renderer.price_available(price_list_rate: '10.00', currency: 'USD', uom: 'ea')
+      when :price_available then renderer.price_available({ price_list_rate: '10.00', currency: 'USD', uom: 'ea' }, 'C-1')
       when :clarify_family then renderer.clarify_family([{ code: 'FAM-1', name: 'Impeller' }])
       when :clarify_variant then renderer.clarify_variant(%w[Size])
       else renderer.public_send(kind)

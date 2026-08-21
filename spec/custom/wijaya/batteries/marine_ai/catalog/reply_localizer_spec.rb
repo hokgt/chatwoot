@@ -2,6 +2,11 @@
 
 require 'rails_helper'
 
+# ReplyLocalizer translates a deterministic English product reply into the customer's language,
+# then GATES the untrusted translation on factual safety: a deterministic generic token-inventory
+# check, the deterministic ProductFactProtectionValidator (for a supported descriptor), and a
+# separate semantic FactPreservationValidator. Any failure/uncertainty fails CLOSED to the exact
+# English source. English/unknown/unconfigured/unchanged paths never invoke a validator.
 RSpec.describe Marine::Catalog::ReplyLocalizer do
   # Generic fake reply text — never a real product name or a language-specific phrase map.
   let(:english_text) { 'Here is the product catalog for Widget Base.' }
@@ -10,66 +15,129 @@ RSpec.describe Marine::Catalog::ReplyLocalizer do
     instance_double(Marine::Llm::LanguageDetector, detect: { language: language, reliable: true, confidence: 1.0 })
   end
 
-  it 'translates the English reply into the language detected from the trigger message' do
-    allow(Marine::Llm::LanguageDetector).to receive(:new).with('mau lihat katalog').and_return(detector_for('id'))
-    translator = instance_double(Marine::Llm::TranslateResponseService, call: { ok: true, text: 'LOCALIZED', translated: true })
-    expect(Marine::Llm::TranslateResponseService).to receive(:new)
-      .with(text: english_text, target_language: 'id', source_language: 'en', account: nil).and_return(translator)
-
-    result = described_class.new(text: english_text, trigger_text: 'mau lihat katalog').call
-
-    expect(result).to eq('LOCALIZED')
-  end
-
-  it 'leaves an English (source-language) reply untouched and never calls the translator' do
-    allow(Marine::Llm::LanguageDetector).to receive(:new).with('do you have the catalog').and_return(detector_for('en'))
-    expect(Marine::Llm::TranslateResponseService).not_to receive(:new)
-
-    result = described_class.new(text: english_text, trigger_text: 'do you have the catalog').call
-
-    expect(result).to eq(english_text)
-  end
-
-  it 'falls back to a bounded customer context when the short trigger cannot be classified' do
-    allow(Marine::Llm::LanguageDetector).to receive(:new).with('iya').and_return(detector_for('unknown'))
-    allow(Marine::Llm::LanguageDetector).to receive(:new).with('boleh minta katalognya').and_return(detector_for('id'))
-    translator = instance_double(Marine::Llm::TranslateResponseService, call: { ok: true, text: 'LOCALIZED', translated: true })
-    expect(Marine::Llm::TranslateResponseService).to receive(:new)
-      .with(text: english_text, target_language: 'id', source_language: 'en', account: nil).and_return(translator)
-
-    result = described_class.new(text: english_text, trigger_text: 'iya', context: ['boleh minta katalognya']).call
-
-    expect(result).to eq('LOCALIZED')
-  end
-
-  it 'returns the original text when neither the trigger nor the context yields a language' do
-    allow(Marine::Llm::LanguageDetector).to receive(:new).with('hi').and_return(detector_for('unknown'))
-    allow(Marine::Llm::LanguageDetector).to receive(:new).with('hello').and_return(detector_for('unknown'))
-    expect(Marine::Llm::TranslateResponseService).not_to receive(:new)
-
-    result = described_class.new(text: english_text, trigger_text: 'hi', context: ['hello']).call
-
-    expect(result).to eq(english_text)
-  end
-
-  it 'degrades to the original English when the translator returns it unchanged (skip/failure)' do
-    allow(Marine::Llm::LanguageDetector).to receive(:new).and_return(detector_for('id'))
-    # TranslateResponseService never raises: on skip/failure it returns the original text back.
-    translator = instance_double(Marine::Llm::TranslateResponseService,
-                                 call: { ok: false, text: english_text, translated: false, error: 'boom' })
+  def stub_translation(text)
+    translator = instance_double(Marine::Llm::TranslateResponseService, call: { ok: true, text: text, translated: true })
     allow(Marine::Llm::TranslateResponseService).to receive(:new).and_return(translator)
-
-    result = described_class.new(text: english_text, trigger_text: 'halo').call
-
-    expect(result).to eq(english_text)
+    translator
   end
 
-  it 'returns blank text without detecting or translating' do
-    expect(Marine::Llm::LanguageDetector).not_to receive(:new)
-    expect(Marine::Llm::TranslateResponseService).not_to receive(:new)
+  # The separate semantic validator is an LLM call; stub it so the deterministic gates are what
+  # the example actually exercises. Returns the double so examples can assert it was/wasn't called.
+  def stub_semantic(accepted)
+    validator = instance_double(Marine::Charge::FactPreservationValidator, valid?: accepted)
+    allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(validator)
+    validator
+  end
 
-    result = described_class.new(text: '   ', trigger_text: 'iya').call
+  def localize(text: english_text, trigger: 'mau lihat katalog', provider_language: nil, action: nil, descriptor: nil)
+    described_class.new(text: text, trigger_text: trigger, provider_language: provider_language,
+                        action: action, descriptor: descriptor).call
+  end
 
-    expect(result).to eq('   ')
+  describe 'language selection (unchanged, never invokes a validator)' do
+    it 'leaves an English (source-language) reply untouched and never translates or validates' do
+      allow(Marine::Llm::LanguageDetector).to receive(:new).with('do you have the catalog').and_return(detector_for('en'))
+      expect(Marine::Llm::TranslateResponseService).not_to receive(:new)
+      expect(Marine::Charge::FactPreservationValidator).not_to receive(:new)
+
+      expect(localize(trigger: 'do you have the catalog')).to eq(english_text)
+    end
+
+    it 'returns the original text when neither the trigger nor context yields a language' do
+      allow(Marine::Llm::LanguageDetector).to receive(:new).with('hi').and_return(detector_for('unknown'))
+      allow(Marine::Llm::LanguageDetector).to receive(:new).with('hello').and_return(detector_for('unknown'))
+      expect(Marine::Llm::TranslateResponseService).not_to receive(:new)
+
+      result = described_class.new(text: english_text, trigger_text: 'hi', context: ['hello']).call
+      expect(result).to eq(english_text)
+    end
+
+    it 'returns blank text without detecting, translating, or validating' do
+      expect(Marine::Llm::LanguageDetector).not_to receive(:new)
+      expect(Marine::Llm::TranslateResponseService).not_to receive(:new)
+      expect(Marine::Charge::FactPreservationValidator).not_to receive(:new)
+
+      expect(localize(text: '   ')).to eq('   ')
+    end
+
+    it 'degrades to English when the translator returns it unchanged, without validating' do
+      allow(Marine::Llm::LanguageDetector).to receive(:new).and_return(detector_for('id'))
+      stub_translation(english_text) # translator degraded on skip/failure -> original English
+      expect(Marine::Charge::FactPreservationValidator).not_to receive(:new)
+
+      expect(localize(trigger: 'halo')).to eq(english_text)
+    end
+
+    it 'prefers the bounded provider language over local detection and never consults CLD3' do
+      expect(Marine::Llm::LanguageDetector).not_to receive(:new)
+      stub_translation('Ini katalog produk untuk Widget Base.')
+      stub_semantic(true)
+
+      expect(localize(provider_language: 'id')).to eq('Ini katalog produk untuk Widget Base.')
+    end
+  end
+
+  describe 'factual-safety gate over an untrusted translation' do
+    before { allow(Marine::Llm::LanguageDetector).to receive(:new).and_return(detector_for('id')) }
+
+    it 'delivers a faithful translation once every gate accepts it' do
+      stub_translation('Ini katalog produk untuk Widget Base.')
+      validator = stub_semantic(true)
+
+      expect(localize).to eq('Ini katalog produk untuk Widget Base.')
+      expect(validator).to have_received(:valid?).with(approved_answer: english_text, candidate: 'Ini katalog produk untuk Widget Base.')
+    end
+
+    it 'rejects a translation that injects a new number back to English before the semantic call' do
+      stub_translation('Ini katalog produk untuk Widget Base, 5 tersedia.')
+      validator = stub_semantic(true)
+
+      expect(localize).to eq(english_text)
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    it 'rejects a translation that changes a currency symbol or code token, back to English' do
+      priced = 'The price for IMP-3 is IDR 150000 per pcs.'
+      stub_translation('Harga untuk IMP-3 adalah USD 150000 per pcs.') # IDR -> USD
+      validator = stub_semantic(true)
+
+      expect(localize(text: priced)).to eq(priced)
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    it 'delivers a faithful price translation preserving every protected token when the descriptor gate passes' do
+      priced = 'The price for IMP-3 is IDR 150000 per pcs.'
+      descriptor = { kind: :price_available, variant_code: 'IMP-3', price_list_rate: '150000', currency: 'IDR', uom: 'pcs' }
+      stub_translation('Harga untuk IMP-3 adalah IDR 150000 per pcs.')
+      stub_semantic(true)
+
+      expect(localize(text: priced, action: :reply, descriptor: descriptor)).to eq('Harga untuk IMP-3 adalah IDR 150000 per pcs.')
+    end
+
+    it 'rejects a translation that changes a protected display value even when token inventory matches' do
+      descriptor = { kind: :catalog, family_code: 'IMP', family_name: 'Impeller' }
+      caption = 'Here is the product catalog for Impeller.'
+      stub_translation('Ini katalog produk untuk Propeller.') # family display changed; no numeric/code tokens either side
+      validator = stub_semantic(true)
+
+      expect(localize(text: caption, action: :send_catalog, descriptor: descriptor)).to eq(caption)
+      expect(validator).not_to have_received(:valid?) # deterministic descriptor gate rejects before the semantic call
+    end
+
+    it 'rejects a token-clean translation when the separate semantic validator is not certain' do
+      stub_translation('Ini katalog produk untuk Widget Base.')
+      stub_semantic(false)
+
+      expect(localize).to eq(english_text)
+    end
+
+    it 'fails closed to English when the semantic validator raises' do
+      stub_translation('Ini katalog produk untuk Widget Base.')
+      validator = instance_double(Marine::Charge::FactPreservationValidator)
+      allow(validator).to receive(:valid?).and_raise(StandardError, 'boom')
+      allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(validator)
+
+      expect(localize).to eq(english_text)
+    end
   end
 end
