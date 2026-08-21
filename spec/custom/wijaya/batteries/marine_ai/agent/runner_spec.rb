@@ -166,6 +166,13 @@ RSpec.describe Marine::Agent::Runner do
 
     before do
       allow(Marine::Catalog::ProductQueryOrchestrator).to receive(:new).and_return(orchestrator)
+      # Gate G — the runner consults deterministic retrieval before product orchestration; the
+      # assistant double has no KB, so return a no-match result (no exact-FAQ precedence) and let
+      # the product path run exactly as before.
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(
+        instance_double(Marine::Cell::KnowledgeBaseService,
+                        retrieve: Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match'))
+      )
     end
 
     it 'runs the orchestrator before RAG and returns the product plan payload' do

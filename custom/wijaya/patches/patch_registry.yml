@@ -742,6 +742,7 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/copilot/query_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/agent/scenario_selector_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/agent/runner_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/agent/faq_precedence_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/copilot/search_conversations_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/copilot/search_contacts_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/copilot_threads_controller_spec.rb

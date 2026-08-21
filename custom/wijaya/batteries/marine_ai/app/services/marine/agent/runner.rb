@@ -30,6 +30,17 @@ class Marine::Agent::Runner
   PATH_SCENARIO_RETRIEVAL = 'scenario_retrieval'.freeze
   PATH_PRODUCT = 'product'.freeze
 
+  # Gate G — fail-closed FAQ/KB precedence over product orchestration. The untrusted LLM
+  # intent extractor can wrongly classify a turn as product_related; that error must never
+  # preempt an approved answer the deterministic retrieval layer already scores as an EXACT
+  # match. EXACT is the highest-confidence tier (ConfidenceScorer::EXACT_MATCH_SCORE) — the
+  # same bar the RAG ResponseGenerator itself trusts to answer verbatim from approved content
+  # without synthesis — so only a curated, approved, exactly-matching FAQ/KB entry qualifies.
+  # Any lower-confidence, token-blended, or fallback retrieval yields to Product Flow, so weak
+  # or unmatched retrieval is never turned into a FAQ answer and genuine product requests still
+  # use Product Flow. Generic and data-driven: no question/product/language/phrase handling.
+  FAQ_PRECEDENCE_MIN_CONFIDENCE = Marine::Charge::ConfidenceScorer::EXACT_MATCH_SCORE
+
   def initialize(assistant:, conversation: nil, source: nil)
     @assistant = assistant
     @conversation = conversation
@@ -51,7 +62,7 @@ class Marine::Agent::Runner
                               source: source_label, query_present: query.present?,
                               interaction_phase: context&.phase)
 
-    product = product_payload(context)
+    product = product_payload(context, query)
     return product if product
 
     scenario = select_scenario(query)
@@ -115,9 +126,11 @@ class Marine::Agent::Runner
   # falls through to the unchanged retrieval path; any other action is returned as a product
   # payload the ResponseBuilderJob finalizes (state apply + deterministic TEXT / handoff).
   # Unexpected errors propagate to the runner's own fail-safe (handoff payload), never a
-  # fabricated product answer.
-  def product_payload(context)
+  # fabricated product answer. Gate G: an EXACT approved FAQ/KB match (#faq_precedence?) short-
+  # circuits BEFORE the orchestrator so an erroneous product classification cannot preempt it.
+  def product_payload(context, query)
     return nil unless context
+    return nil if faq_precedence?(query)
 
     plan = product_orchestrator.process(text: context.trigger, context: context.history,
                                         flow: product_flow, suppressed: false)
@@ -125,6 +138,26 @@ class Marine::Agent::Runner
 
     log_event('answer.product', action: plan[:action])
     { 'action' => 'product', 'orchestration_path' => PATH_PRODUCT, 'product_plan' => plan }
+  end
+
+  # True when an approved FAQ/KB entry EXACTLY matches this turn's query, so the turn must be
+  # answered via the unchanged retrieval path instead of product orchestration. Uses the same
+  # deterministic retrieval the ResponseGenerator uses and requires a confident (non-fallback)
+  # exact match. A blank query, an empty/low-confidence/token-blended result, or any retrieval
+  # that falls back never grants precedence (fail closed), so product routing is preserved for
+  # every genuine product request. See FAQ_PRECEDENCE_MIN_CONFIDENCE.
+  def faq_precedence?(query)
+    return false if query.blank?
+
+    result = knowledge_base.retrieve(query, limit: 1)
+    return false unless result.fallback_reason.blank? && result.confidence >= FAQ_PRECEDENCE_MIN_CONFIDENCE
+
+    log_event('faq.precedence', confidence: result.confidence, source_type: result.source_type)
+    true
+  end
+
+  def knowledge_base
+    @knowledge_base ||= Marine::Cell::KnowledgeBaseService.new(assistant: assistant)
   end
 
   def trigger_message
