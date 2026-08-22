@@ -62,6 +62,23 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(plan[:reply]).to be_nil
       expect(plan[:state]).to eq(operation: :none, changes: {})
     end
+
+    # Structural invariant (deterministic, independent of any prompt or LLM behavior): even when an
+    # active flow already carries a validated family, a validated variant, and a product intent, a
+    # turn the extractor classifies as non-product yields not_product with NO state operation. So the
+    # runtime (Runner#product_payload returns nil for :not_product; the job never calls
+    # apply_product_state for a :none op) emits no product/stock reply AND never mutates or resets the
+    # validated context — a later genuine product follow-up still resumes it through the normal
+    # continuation path. This is the deterministic guarantee that a non-substantive latest turn cannot
+    # surface stale product intent, regardless of what the RAG generation later says in prose.
+    it 'never surfaces or mutates stale product intent on a non-product turn over an active validated flow' do
+      flow = active_flow('validated_family' => 'FAM-1', 'validated_variant' => 'CHILD-1', 'current_intent' => 'stock')
+      plan = orchestrator.plan_for_intent(intent: intent(product_related: false, intent: 'unknown'), flow: flow)
+
+      expect(plan[:action]).to eq(:not_product)
+      expect(plan[:reply]).to be_nil
+      expect(plan[:state]).to eq(operation: :none, changes: {})
+    end
   end
 
   describe 'unsupported product intent' do

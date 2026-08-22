@@ -36,7 +36,7 @@ class Marine::Charge::GreetingContext
   # It also carries a topic-reset guard: the generated-RAG history includes the prior turns, so
   # on a bare greeting/pleasantry after an earlier product exchange a plain "continue naturally"
   # cue led the model to resume that earlier request (e.g. re-answering an earlier stock question
-  # in reply to "Hallo"). The guard instructs the model to answer the customer's LATEST message on
+  # in reply to a bare greeting). The guard instructs the model to answer the customer's LATEST message on
   # its own terms and not resurrect an earlier request/topic the latest message does not itself
   # raise — while still continuing genuine follow-ups. Fully generic: it names no product, phrase,
   # or language, and it never resets validated context (a later genuine follow-up may still resume
