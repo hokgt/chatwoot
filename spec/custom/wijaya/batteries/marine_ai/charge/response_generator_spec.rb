@@ -526,6 +526,36 @@ RSpec.describe Marine::Charge::ResponseGenerator do
       payload = generator.generate(additional_message: 'follow-up question', opening: false)
       expect(payload['response']).to eq(body)
     end
+
+    # Regression — greeting reviving an earlier stock request (conv-134/msg-512 defect). On a
+    # follow-up turn the RAG generation is fed the full prior product/stock history; the old
+    # policy only told the model to "Continue the conversation naturally", so a bare greeting was
+    # answered by resuming the earlier PL-6 stock topic. The follow-up interaction policy must now
+    # forbid resurrecting an earlier request/topic when the customer's latest message does not
+    # itself raise it. Generic and data-driven — no product/phrase/language handling. The system
+    # prompt is the deterministic artifact of that steering, so we assert it here (the real
+    # generate -> rag_system_prompt -> GreetingContext#interaction_prompt path).
+    it 'forbids resurrecting an earlier request/topic on a non-substantive follow-up turn' do
+      captured = capture_llm
+      stub_llm_fallback_retrieval
+      generator.generate(additional_message: 'Hallo', opening: false)
+
+      expect(captured[:system]).to include('do NOT reintroduce, resume, or re-answer an earlier request or topic')
+      expect(captured[:system]).to include("respond to the customer's latest message on its own terms")
+      # Genuine follow-ups are still continued — the guard coexists with the continuation cue.
+      expect(captured[:system]).to include('Continue the conversation naturally.')
+    end
+
+    it 'does not carry the topic-reset guard on an opening turn (no earlier topic to resurrect)' do
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do
+        captured = capture_llm
+        stub_llm_fallback_retrieval
+        generator.generate(additional_message: 'Hallo', opening: true)
+
+        expect(captured[:system]).not_to include('do NOT reintroduce, resume, or re-answer an earlier request or topic')
+        expect(captured[:system]).to include('The correct Indonesian time-of-day greeting')
+      end
+    end
   end
 
   # Finding 2 — the follow-up greeting policy can strip a greeting-only LLM reply down to

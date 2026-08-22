@@ -398,6 +398,35 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       expect(state['clarification_count']).to eq(2)
     end
 
+    # Regression (greeting after an earlier stock request — conv-134/msg-512). A greeting is
+    # correctly routed to the RAG path (not_product), so it must NOT emit a product/stock reply,
+    # and it must NOT wipe the validated product context — a genuine later product follow-up may
+    # still resume it. Proves the trigger-bound job processes the exact greeting turn while the
+    # persisted flow is preserved and no product message is created.
+    it 'preserves an active validated product flow on a greeting RAG turn and emits no product reply' do
+      conversation.update!(additional_attributes: { 'wijaya_marine_ai' => { 'product_flow_v1' => {
+                             'version' => 4, 'flow_id' => 'active', 'status' => 'active', 'expires_at' => 1.day.from_now.iso8601,
+                             'validated_family' => 'PL', 'validated_variant' => 'PL-6',
+                             'current_intent' => 'stock', 'original_intent' => 'catalog'
+                           } } })
+      greeting = create(:message, conversation: conversation, message_type: :incoming, content: 'Hallo')
+      stub_reasoning('response' => 'Ada yang bisa saya bantu?', 'action' => 'reply', 'agent_name' => 'Marine Bot',
+                     'source_type' => 'llm_rag', 'orchestration_path' => 'retrieval', 'fallback_reason' => 'no_confident_cell_match')
+
+      described_class.perform_now(conversation, assistant, greeting.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq('Ada yang bisa saya bantu?')
+      expect(reply.additional_attributes['source_type']).to eq('llm_rag')
+      expect(reply.additional_attributes['orchestration_path']).to eq('retrieval')
+      # Validated product context retained for a genuine later product follow-up (a greeting is a
+      # topic pause, not a reset of already-validated context).
+      state = product_state
+      expect(state['validated_family']).to eq('PL')
+      expect(state['validated_variant']).to eq('PL-6')
+      expect(state['version']).to eq(4)
+    end
+
     it 'creates a RAG reply with preserved metadata for a nonproduct payload' do
       stub_reasoning('response' => 'Our office is open 9-5.', 'action' => 'reply', 'agent_name' => 'Marine Bot',
                      'confidence' => 0.9, 'source_type' => 'manual', 'orchestration_path' => 'retrieval')

@@ -32,9 +32,19 @@ class Marine::Charge::GreetingContext
   # conversation, later turns are follow-ups and must not open with a fresh greeting. Generic
   # and language-neutral — it enumerates no greeting phrases; the deterministic safety net
   # (#remove_opening_greeting) reuses the same canonical opening-greeting recognition.
+  #
+  # It also carries a topic-reset guard: the generated-RAG history includes the prior turns, so
+  # on a bare greeting/pleasantry after an earlier product exchange a plain "continue naturally"
+  # cue led the model to resume that earlier request (e.g. re-answering an earlier stock question
+  # in reply to "Hallo"). The guard instructs the model to answer the customer's LATEST message on
+  # its own terms and not resurrect an earlier request/topic the latest message does not itself
+  # raise — while still continuing genuine follow-ups. Fully generic: it names no product, phrase,
+  # or language, and it never resets validated context (a later genuine follow-up may still resume
+  # it); it only steers the reply toward what the customer actually said.
   FOLLOW_UP_PROMPT = <<~PROMPT.strip
     This is a follow-up message in an ongoing conversation.
     Do NOT begin your reply with an opening greeting or salutation; you have already responded earlier in this conversation, so this is an ongoing follow-up.
+    Always respond to the customer's latest message on its own terms. If that latest message does not itself raise or continue a specific request or topic (for example a greeting, pleasantry, acknowledgement, or unrelated remark), do NOT reintroduce, resume, or re-answer an earlier request or topic on the customer's behalf; simply respond to what they actually said and offer further help.
     Continue the conversation naturally.
   PROMPT
 
