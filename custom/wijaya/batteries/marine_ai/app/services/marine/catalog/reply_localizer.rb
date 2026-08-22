@@ -7,11 +7,16 @@
 # TranslateResponseService — no per-language branches, phrase maps, or hardcoded
 # translations live here. The customer's language is preferred from `provider_language`
 # (a bounded code the intent extractor already read from the SAME customer turn, so no
-# extra provider call is made). Only when that is missing/malformed does it fall back to
-# the shared LanguageDetector over the trigger message, then a bounded slice of prior
-# customer turns when the trigger alone is too short/unknown to classify. Preferring the
-# provider code avoids trusting CLD3 as the sole authority (CLD3 misclassifies some short
-# regional texts), while the language never affects family/catalog/document selection.
+# extra provider call is made). When that is missing/malformed, it prefers the assistant's
+# configured operating language (`fallback_language`, the account's own KB/reply language)
+# before falling back to the shared LanguageDetector over the trigger message, then a bounded
+# slice of prior customer turns. This ordering matters: CLD3 confidently MISCLASSIFIES some
+# short regional turns (e.g. a brief Indonesian message detected as Hindi-Latn/Polish/Malay),
+# which would otherwise drive a wrong-language rewrite or a robotic English fall-back; anchoring
+# to the known operating language when there is no authoritative per-turn signal keeps the reply
+# in the assistant's own language instead of trusting a misclassification. CLD3 stays only as the
+# last resort for an assistant with no configured language. The language never affects
+# family/catalog/document selection.
 #
 # FACTUAL SAFETY: the English source is the SOLE factual authority; a translation is an
 # UNTRUSTED rewrite. A translated reply is delivered ONLY when it survives, in order:
@@ -56,12 +61,13 @@ module Marine
       # (trigger_text/context/provider_language), the account, and the optional protected
       # action/descriptor are separate caller-supplied inputs. Bundling them into a value object
       # would only relocate the list and hide the by-name contract each call site relies on.
-      def initialize(text:, trigger_text:, context: [], provider_language: nil, account: nil, action: nil, descriptor: nil)
+      def initialize(text:, trigger_text:, context: [], provider_language: nil, fallback_language: nil, account: nil, action: nil, descriptor: nil)
         # rubocop:enable Metrics/ParameterLists
         @text = text.to_s
         @trigger_text = trigger_text.to_s
         @context = Array(context)
         @provider_language = normalize_language(provider_language)
+        @fallback_language = normalize_language(fallback_language)
         @account = account
         @action = action
         @descriptor = descriptor
@@ -134,11 +140,15 @@ module Marine
         text.scan(ALNUM_RUN).select { |token| token.match?(/[[:alpha:]]/) && token.match?(/\d/) }.sort
       end
 
-      # Preferred signal: the provider language read from the same customer turn. Only when
-      # it is absent/malformed do we classify the trigger message locally, then fall back to
-      # bounded recent customer context when the trigger alone is unknown.
+      # Preferred signal: the provider language read from the same customer turn. When it is
+      # absent/malformed, prefer the assistant's configured operating language over local CLD3
+      # classification — a short customer turn is exactly where CLD3 confidently misclassifies,
+      # so the known operating language is the safer anchor than a per-turn guess. Only with no
+      # configured language do we classify the trigger locally, then fall back to bounded recent
+      # customer context when the trigger alone is unknown.
       def target_language
         return @provider_language if @provider_language
+        return @fallback_language if @fallback_language
 
         language = classify(@trigger_text)
         language = classify(context_text) if language == UNKNOWN

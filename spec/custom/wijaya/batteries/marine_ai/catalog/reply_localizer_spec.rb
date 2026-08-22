@@ -140,4 +140,45 @@ RSpec.describe Marine::Catalog::ReplyLocalizer do
       expect(localize).to eq(english_text)
     end
   end
+
+  # Regression — the assistant's configured operating language anchors the target when the
+  # authoritative per-turn provider language is absent, so a CLD3 misclassification of a short
+  # customer turn (e.g. a brief Indonesian message confidently detected as Hindi-Latn) can no
+  # longer drive a wrong-language rewrite (or a robotic English fall-back). Generic and
+  # data-driven: no language/phrase is hardcoded; the configured code is supplied by the caller.
+  describe 'configured-language fallback (provider language absent)' do
+    before do
+      # CLD3 confidently MISCLASSIFIES the short Indonesian trigger as Hindi-Latn.
+      allow(Marine::Llm::LanguageDetector).to receive(:new).and_return(detector_for('hi-latn'))
+    end
+
+    # Capture the target language the localizer asks the translator to render into.
+    def captured_target(**)
+      target = nil
+      translator = instance_double(Marine::Llm::TranslateResponseService, call: { ok: true, text: 'x', translated: true })
+      allow(Marine::Llm::TranslateResponseService).to receive(:new) do |args|
+        target = args[:target_language]
+        translator
+      end
+      stub_semantic(true)
+      described_class.new(text: english_text, trigger_text: 'kirim katalog', **).call
+      target
+    end
+
+    it 'targets the configured language, not the CLD3 misclassification, when the provider language is absent' do
+      expect(captured_target(provider_language: nil, fallback_language: 'id')).to eq('id')
+    end
+
+    it 'still prefers the per-turn provider language over the configured fallback' do
+      expect(captured_target(provider_language: 'de', fallback_language: 'id')).to eq('de')
+    end
+
+    it 'ignores a malformed configured language and falls through to detection' do
+      expect(captured_target(provider_language: nil, fallback_language: 'not a code')).to eq('hi-latn')
+    end
+
+    it 'trusts the CLD3 result only when no configured language exists (the pre-fix hazard)' do
+      expect(captured_target(provider_language: nil, fallback_language: nil)).to eq('hi-latn')
+    end
+  end
 end

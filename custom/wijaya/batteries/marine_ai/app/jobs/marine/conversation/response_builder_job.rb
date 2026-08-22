@@ -549,10 +549,21 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       trigger_text: @trigger_message.content.to_s,
       context: customer_language_context,
       provider_language: @product_language,
+      fallback_language: configured_reply_language,
       account: @conversation.account,
       action: action,
       descriptor: descriptor
     ).call
+  end
+
+  # The assistant's configured operating (KB/reply) language, used by the localizer as the
+  # deterministic customer-language fallback when the per-turn LLM provider language is absent —
+  # so a CLD3 misclassification of a short customer turn can never override the known operating
+  # language and deliver a wrong-language product reply. nil when unconfigured (CLD3 fallback
+  # preserved). Mirrors ResponseGenerator#knowledge_language's config read; the localizer
+  # normalizes/validates the value.
+  def configured_reply_language
+    @assistant.config.to_h['language'] if @assistant.respond_to?(:config)
   end
 
   # Bounded recent customer turns, newest first — a fallback language signal only used
