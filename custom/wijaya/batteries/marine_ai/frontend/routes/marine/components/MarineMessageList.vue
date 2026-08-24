@@ -88,6 +88,14 @@ watch(() => props.messages.length, scrollToBottom);
           </p>
         </div>
         <div
+          v-else-if="message.error"
+          class="bg-n-ruby-3 border border-n-ruby-6 rounded-lg p-3"
+        >
+          <p class="text-sm text-n-ruby-11">
+            {{ t('MARINE_AI.PLAYGROUND.ERROR') }}
+          </p>
+        </div>
+        <div
           v-else
           class="px-4 py-3 text-sm [overflow-wrap:break-word]"
           :class="getMessageStyle(message.sender)"

@@ -69,7 +69,7 @@ class Marine::Agent::Runner
     tool_slugs = resolved_tool_slugs(scenario)
 
     payload = response_generator.generate(additional_message: trigger, message_history: history,
-                                          opening: interaction_opening?(context))
+                                          opening: interaction_opening?(context, history))
     enriched = enrich(payload, scenario, tool_slugs)
 
     log_result(enriched)
@@ -98,12 +98,21 @@ class Marine::Agent::Runner
   # from the Conversation: greeting is opening ONLY until Marine has posted any earlier PUBLIC
   # reply — once any public Marine response exists, every later generation for that Conversation
   # is a follow-up, with no inactivity/status/reopen heuristic re-enabling opening. A nil
-  # conversation (playground / direct-unit) keeps the prior opening default.
-  def interaction_opening?(context)
+  # conversation (playground / direct-unit) has no Conversation to inspect, so the supplied
+  # history decides: an opening turn is one with no prior assistant reply yet. Empty history keeps
+  # the prior opening default (true), so legacy source-less callers are unaffected.
+  def interaction_opening?(context, history)
     return context.opening? if context
-    return true unless conversation
+    return !earlier_public_marine_reply? if conversation
 
-    !earlier_public_marine_reply?
+    source_less_opening?(history)
+  end
+
+  # Nil-conversation source-less phase: opening until the caller-supplied history already carries
+  # an assistant turn (the multi-turn playground preview), follow-up thereafter. No greeting is
+  # re-emitted on every turn of a running preview, matching a real conversation's follow-up gating.
+  def source_less_opening?(history)
+    Array(history).none? { |item| (item[:role] || item['role']).to_s == 'assistant' }
   end
 
   # Any public Marine reply already sent in this Conversation. Reuses the canonical

@@ -401,6 +401,41 @@ RSpec.describe Marine::Agent::Runner do
     end
   end
 
+  # Playground / direct source-less run with NO conversation to inspect: the caller-supplied
+  # message_history is the only interaction-phase signal, so the multi-turn preview grounds on the
+  # prior turns and the greeting is gated by whether an assistant turn already exists in history.
+  describe 'nil-conversation source-less run derives greeting phase from message_history' do
+    let(:runner) { described_class.new(assistant: assistant, source: 'playground') }
+
+    before { allow(generator).to receive(:generate).and_return(reply_payload) }
+
+    it 'forwards the supplied history and threads opening: true when no assistant turn exists yet' do
+      history = [{ role: 'user', content: 'first turn' }]
+
+      runner.run(additional_message: 'first turn', message_history: history)
+
+      expect(generator).to have_received(:generate).with(
+        hash_including(message_history: history, opening: true)
+      )
+    end
+
+    it 'threads opening: false once a prior assistant turn exists in the supplied history' do
+      history = [{ role: 'user', content: 'earlier' }, { role: 'assistant', content: 'earlier reply' }]
+
+      runner.run(additional_message: 'follow up', message_history: history)
+
+      expect(generator).to have_received(:generate).with(
+        hash_including(message_history: history, opening: false)
+      )
+    end
+
+    it 'keeps the legacy opening default (true) when no history is supplied' do
+      runner.run(additional_message: 'only turn')
+
+      expect(generator).to have_received(:generate).with(hash_including(opening: true))
+    end
+  end
+
   describe 'independence from Captain premium gates' do
     it 'does not reference any Captain runtime dependency in the source' do
       source = File.read(Rails.root.join('custom/wijaya/batteries/marine_ai/app/services/marine/agent/runner.rb'))

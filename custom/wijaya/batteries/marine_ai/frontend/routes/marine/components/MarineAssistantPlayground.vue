@@ -17,10 +17,27 @@ const messages = ref([]);
 const newMessage = ref('');
 const isLoading = ref(false);
 
+// Bounded prior turns sent with each request so the preview is multi-turn; the backend also
+// re-bounds/allowlists this payload. Mirrors the server-side playground history cap.
+const MAX_HISTORY_TURNS = 10;
+
 const resetConversation = () => {
   messages.value = [];
   newMessage.value = '';
+  isLoading.value = false;
 };
+
+const buildMessageHistory = () =>
+  messages.value
+    .filter(
+      m =>
+        (m.sender === 'user' || m.sender === 'assistant') &&
+        m.content &&
+        !m.handoff &&
+        !m.error
+    )
+    .slice(-MAX_HISTORY_TURNS)
+    .map(m => ({ role: m.sender, content: m.content }));
 
 // Watch for assistant ID changes and reset conversation
 watch(
@@ -35,6 +52,12 @@ watch(
 const sendMessage = async () => {
   if (!newMessage.value.trim() || isLoading.value) return;
 
+  // Snapshot prior turns before appending the new one, and capture the assistant this request
+  // belongs to so a late response after an assistant switch is discarded (no cross-assistant
+  // transcript contamination).
+  const messageHistory = buildMessageHistory();
+  const requestedAssistantId = assistantId;
+
   const userMessage = {
     content: newMessage.value,
     sender: 'user',
@@ -47,9 +70,12 @@ const sendMessage = async () => {
   try {
     isLoading.value = true;
     const { data } = await MarineAssistantAPI.playground({
-      assistantId,
+      assistantId: requestedAssistantId,
       messageContent: currentMessage,
+      messageHistory,
     });
+
+    if (requestedAssistantId !== assistantId) return;
 
     if (data.action === 'handoff') {
       messages.value.push({
@@ -69,10 +95,15 @@ const sendMessage = async () => {
       });
     }
   } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error('Error getting assistant response:', error);
+    if (requestedAssistantId !== assistantId) return;
+    messages.value.push({
+      content: '',
+      sender: 'assistant',
+      error: true,
+      timestamp: new Date().toISOString(),
+    });
   } finally {
-    isLoading.value = false;
+    if (requestedAssistantId === assistantId) isLoading.value = false;
   }
 };
 

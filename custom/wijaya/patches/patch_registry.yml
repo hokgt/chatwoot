@@ -769,6 +769,9 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/agent/scenario_selector_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/agent/runner_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/agent/faq_precedence_spec.rb
+      # Playground preview — multi-turn context forwarding, bounded/allowlisted history,
+      # authorization, and non-delivering isolation (no Conversation/Message side effects).
+      - spec/custom/wijaya/batteries/marine_ai/controllers/assistants_controller_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/copilot/search_conversations_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/copilot/search_contacts_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/copilot_threads_controller_spec.rb
@@ -776,6 +779,10 @@ patches:
       - app/javascript/dashboard/composables/spec/useCaptain.spec.js
       # Commit 1E — SOP document UI: API create workflow coverage.
       - custom/wijaya/batteries/marine_ai/frontend/api/specs/document.spec.js
+      # Playground preview UI — multi-turn history, assistant-switch isolation, late-response
+      # race discard, duplicate-submit guard, and fail-closed error state.
+      - custom/wijaya/batteries/marine_ai/frontend/api/specs/assistant.spec.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/specs/MarineAssistantPlayground.spec.js
       # Commit 1E — confidentiality serializer + extracted-helper/UI regression coverage.
       - spec/custom/wijaya/batteries/marine_ai/documents/serializer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/documents/sync_service_spec.rb

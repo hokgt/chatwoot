@@ -359,6 +359,7 @@
       "HANDOFF": "Marine would hand off to a human agent",
       "HANDOFF_HINT": "No confident knowledge base match was found for this message.",
       "HANDOFF_REASON": "Reason: {reason}",
+      "ERROR": "Something went wrong generating a response. Please try again.",
       "USER": "You",
       "ASSISTANT": "Marine AI",
       "MESSAGE_PLACEHOLDER": "Type your message...",
