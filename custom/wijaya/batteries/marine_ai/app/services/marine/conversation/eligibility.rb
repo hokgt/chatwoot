@@ -48,6 +48,17 @@ class Marine::Conversation::Eligibility
     Decision.new(eligible: true, reason: REASON_ELIGIBLE)
   end
 
+  # Canonical public human-takeover query. Answers ONLY "has a human agent taken
+  # over via a genuine public reply?" independently of the handoff marker, so
+  # lifecycle callers (e.g. Wijaya::Marine::Hooks#reset_expired_handoff) can honor
+  # takeover precedence with the exact same semantics `decision` uses — never a
+  # forked copy. Passive assignment/team routing is deliberately NOT a takeover:
+  # only a verified public human reply (a User agent OR a native-app external_echo)
+  # counts. Side-effect free; reads public Message fields only.
+  def human_takeover?
+    conversation.messages.outgoing.where(private: false).any? { |message| human_reply?(message) }
+  end
+
   private
 
   attr_reader :conversation
@@ -66,10 +77,6 @@ class Marine::Conversation::Eligibility
   # Any public outgoing message that is a genuine human reply counts as a
   # takeover. Private notes are excluded at the query; Marine assistant replies
   # fail both predicates below.
-  def human_takeover?
-    conversation.messages.outgoing.where(private: false).any? { |message| human_reply?(message) }
-  end
-
   def human_reply?(message)
     message.sender_type == 'User' || external_echo?(message)
   end

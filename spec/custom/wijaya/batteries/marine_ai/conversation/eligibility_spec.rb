@@ -151,4 +151,42 @@ RSpec.describe Marine::Conversation::Eligibility do
       expect { eligibility.decision }.not_to(change { conversation.messages.count })
     end
   end
+
+  # The public takeover query is the canonical semantics lifecycle callers (e.g. the handoff
+  # reset) reuse. It answers ONLY "has a human replied publicly?", independent of the handoff
+  # marker, and never treats passive assignment as a takeover.
+  describe '#human_takeover?' do
+    it 'is true for a public outgoing User agent reply' do
+      outgoing(sender: agent, private: false)
+
+      expect(eligibility.human_takeover?).to be(true)
+    end
+
+    it 'is true for a public external_echo native-app reply from a non-User sender' do
+      outgoing(sender: create(:contact, account: account), private: false, content_attributes: { 'external_echo' => true })
+
+      expect(eligibility.human_takeover?).to be(true)
+    end
+
+    it 'is false for a private User note, a Marine reply, or a non-true external_echo' do
+      outgoing(sender: agent, private: true)
+      outgoing(sender: create(:marine_assistant, account: account), private: false)
+      outgoing(sender: create(:contact, account: account), private: false, content_attributes: { 'external_echo' => 'false' })
+
+      expect(eligibility.human_takeover?).to be(false)
+    end
+
+    it 'is false for passive assignee/team assignment with no human reply' do
+      conversation.update!(assignee: agent, team: create(:team, account: account))
+
+      expect(eligibility.human_takeover?).to be(false)
+    end
+
+    it 'stays true even while a handoff marker is active (independent of the marker)' do
+      outgoing(sender: agent, private: false)
+      Marine::Circuit::HandoffStateStore.new(conversation: conversation.reload).activate!(message_ids: [1])
+
+      expect(eligibility.human_takeover?).to be(true)
+    end
+  end
 end

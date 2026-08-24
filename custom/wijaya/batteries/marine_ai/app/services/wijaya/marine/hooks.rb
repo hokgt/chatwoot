@@ -31,14 +31,21 @@ module Wijaya::Marine::Hooks
   # When this new inbound turn opens a FRESH window (the prior window lapsed — see
   # Marine::Circuit::HandoffWindow), clear the terminal handoff marker so the turn can start a
   # new Marine interaction. This is purely inbound-driven: window expiry alone never runs it
-  # (no message => no hook => no reset => no output), satisfying "expiry emits nothing". An
-  # explicit human takeover stays higher priority: reset only removes the handoff marker, and
-  # the downstream Eligibility/should_process checks still block on a human reply / external
-  # echo, so a handed-over conversation is never re-engaged.
+  # (no message => no hook => no reset => no output), satisfying "expiry emits nothing".
+  #
+  # Human takeover has strict precedence over window expiry: if a human agent has taken over
+  # (a public outgoing User reply OR an exact external_echo native-app reply — the SAME canonical
+  # semantics Marine::Conversation::Eligibility uses), the marker is left ACTIVE and never reset,
+  # so a handed-over conversation is never re-engaged and no ResponseBuilderJob is enqueued for it,
+  # regardless of how many inbound turns arrive after the window lapses. Checked BEFORE the window
+  # computation so takeover blocks reset independently of any channel-window policy. Passive
+  # assignment/team routing is NOT a takeover (Eligibility#human_takeover? reads only public human
+  # replies), so it never permanently blocks post-window Marine re-entry.
   def reset_expired_handoff(conversation, inbox, message)
     return unless message.incoming?
     return unless inbox.respond_to?(:marine_assistant) && inbox.marine_assistant.present?
     return unless marine_handoff_active?(conversation)
+    return if ::Marine::Conversation::Eligibility.new(conversation: conversation).human_takeover?
     return unless ::Marine::Circuit::HandoffWindow.new(conversation: conversation, message: message).expired?
 
     ::Marine::Circuit::HandoffStateStore.new(conversation: conversation).reset!
