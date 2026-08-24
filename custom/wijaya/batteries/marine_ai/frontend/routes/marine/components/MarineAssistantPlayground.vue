@@ -21,7 +21,15 @@ const isLoading = ref(false);
 // re-bounds/allowlists this payload. Mirrors the server-side playground history cap.
 const MAX_HISTORY_TURNS = 10;
 
+// Monotonic generation token that owns the current transcript/loading state. Every send bumps it
+// and captures its value; reset (manual or on assistant switch) bumps it too, invalidating any
+// in-flight request so a late success/error/finally cannot mutate the fresh state. Comparing
+// generation — not just assistantId — also catches a same-assistant reset and prevents two
+// same-assistant requests from overlapping.
+let requestGeneration = 0;
+
 const resetConversation = () => {
+  requestGeneration += 1;
   messages.value = [];
   newMessage.value = '';
   isLoading.value = false;
@@ -52,11 +60,14 @@ watch(
 const sendMessage = async () => {
   if (!newMessage.value.trim() || isLoading.value) return;
 
-  // Snapshot prior turns before appending the new one, and capture the assistant this request
-  // belongs to so a late response after an assistant switch is discarded (no cross-assistant
-  // transcript contamination).
+  // Snapshot prior turns before appending the new one, and take ownership of the current
+  // generation. A late response is discarded whenever its generation is no longer current —
+  // this covers an assistant switch (the watcher resets) and a same-assistant manual reset, and
+  // prevents two same-assistant requests from overlapping.
   const messageHistory = buildMessageHistory();
   const requestedAssistantId = assistantId;
+  requestGeneration += 1;
+  const generation = requestGeneration;
 
   const userMessage = {
     content: newMessage.value,
@@ -75,7 +86,7 @@ const sendMessage = async () => {
       messageHistory,
     });
 
-    if (requestedAssistantId !== assistantId) return;
+    if (generation !== requestGeneration) return;
 
     if (data.action === 'handoff') {
       messages.value.push({
@@ -95,7 +106,7 @@ const sendMessage = async () => {
       });
     }
   } catch (error) {
-    if (requestedAssistantId !== assistantId) return;
+    if (generation !== requestGeneration) return;
     messages.value.push({
       content: '',
       sender: 'assistant',
@@ -103,7 +114,7 @@ const sendMessage = async () => {
       timestamp: new Date().toISOString(),
     });
   } finally {
-    if (requestedAssistantId === assistantId) isLoading.value = false;
+    if (generation === requestGeneration) isLoading.value = false;
   }
 };
 

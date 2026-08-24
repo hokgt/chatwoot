@@ -108,5 +108,39 @@ RSpec.describe 'Api::V1::Accounts::Marine::Assistants', type: :request do
         end.to not_change(Conversation, :count).and not_change(Message, :count)
       end
     end
+
+    # The context above stubs the whole chat service; this one runs the REAL source-less path
+    # (AssistantChatService -> Marine::Agent::Runner, conversation: nil) with only the LLM/retrieval
+    # boundary faked — the same stub surface the runner unit spec uses — to prove the preview stays
+    # source-less: no Conversation/Message is created, no assignment/handoff marker is set (there is
+    # no conversation to mark), and the real conversation delivery job is never enqueued.
+    context 'without delivery (real service, only the retrieval boundary stubbed)' do
+      let(:generator) { instance_double(Marine::Charge::ResponseGenerator) }
+      let(:selector) { instance_double(Marine::Agent::ScenarioSelector) }
+
+      before do
+        allow(Marine::Llm::AssistantChatService).to receive(:new).and_call_original
+        allow(Marine::Charge::ResponseGenerator).to receive(:new).and_return(generator)
+        allow(generator).to receive(:generate).and_return(
+          'response' => 'A grounded answer', 'action' => 'reply', 'agent_name' => assistant.name,
+          'confidence' => 0.9, 'source_type' => 'manual'
+        )
+        allow(Marine::Agent::ScenarioSelector).to receive(:new).and_return(selector)
+        allow(selector).to receive(:select).and_return(nil)
+      end
+
+      it 'returns a grounded reply and delivers nothing' do
+        expect do
+          post "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}/playground",
+               params: { assistant: { message_content: 'where is my order',
+                                      message_history: [{ role: 'user', content: 'hi' }] } },
+               headers: admin.create_new_auth_token, as: :json
+        end.to not_change(Conversation, :count).and not_change(Message, :count)
+
+        expect(response).to have_http_status(:success)
+        expect(json_response).to include(response: 'A grounded answer', action: 'reply')
+        expect(enqueued_jobs.map { |job| job[:job] }).not_to include(Marine::Conversation::ResponseBuilderJob)
+      end
+    end
   end
 end

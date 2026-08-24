@@ -159,6 +159,90 @@ describe('MarineAssistantPlayground', () => {
     await flushPromises();
   });
 
+  it('discards a late success that resolves after a manual reset', async () => {
+    const first = deferred();
+    playgroundSpy.mockReturnValueOnce(first.promise);
+    const wrapper = mountPlayground();
+
+    await send(wrapper, 'hello');
+    // Manual reset (same assistant) while the request is still in flight.
+    wrapper.vm.resetConversation();
+    // The stale response now arrives — it must not repopulate the cleared transcript.
+    first.resolve({ data: { action: 'reply', response: 'stale answer' } });
+    await flushPromises();
+
+    expect(wrapper.vm.messages).toEqual([]);
+    expect(wrapper.vm.isLoading).toBe(false);
+  });
+
+  it('discards a late error that rejects after a manual reset', async () => {
+    const first = deferred();
+    playgroundSpy.mockReturnValueOnce(first.promise);
+    const wrapper = mountPlayground();
+
+    await send(wrapper, 'hello');
+    wrapper.vm.resetConversation();
+    first.reject(new Error('boom'));
+    await flushPromises();
+
+    // No error turn appended onto the fresh transcript.
+    expect(wrapper.vm.messages).toEqual([]);
+    expect(wrapper.vm.isLoading).toBe(false);
+  });
+
+  it('lets only the new request own the transcript and loading after reset, regardless of order', async () => {
+    const first = deferred();
+    const second = deferred();
+    playgroundSpy.mockReturnValueOnce(first.promise);
+    const wrapper = mountPlayground();
+
+    await send(wrapper, 'hello');
+    // Manual reset while the first request is in flight, then start a fresh request.
+    wrapper.vm.resetConversation();
+    playgroundSpy.mockReturnValueOnce(second.promise);
+    await send(wrapper, 'world');
+
+    // The old request resolves first: it must not touch the fresh transcript or loading state.
+    first.resolve({ data: { action: 'reply', response: 'stale answer' } });
+    await flushPromises();
+    expect(wrapper.vm.messages).toEqual([
+      expect.objectContaining({ sender: 'user', content: 'world' }),
+    ]);
+    expect(wrapper.vm.isLoading).toBe(true);
+
+    // Only the new request populates the transcript and clears its own loading state.
+    second.resolve({ data: { action: 'reply', response: 'fresh answer' } });
+    await flushPromises();
+    expect(wrapper.vm.messages).toEqual([
+      expect.objectContaining({ sender: 'user', content: 'world' }),
+      expect.objectContaining({ sender: 'assistant', content: 'fresh answer' }),
+    ]);
+    expect(wrapper.vm.isLoading).toBe(false);
+  });
+
+  it('does not let the old request clear loading when the new one resolves first', async () => {
+    const first = deferred();
+    const second = deferred();
+    playgroundSpy.mockReturnValueOnce(first.promise);
+    const wrapper = mountPlayground();
+
+    await send(wrapper, 'hello');
+    wrapper.vm.resetConversation();
+    playgroundSpy.mockReturnValueOnce(second.promise);
+    await send(wrapper, 'world');
+
+    // New request resolves first and owns the loading state.
+    second.resolve({ data: { action: 'reply', response: 'fresh answer' } });
+    await flushPromises();
+    expect(wrapper.vm.isLoading).toBe(false);
+    const transcriptAfterNew = [...wrapper.vm.messages];
+
+    // The stale first request now resolves: it must not append or mutate anything.
+    first.resolve({ data: { action: 'reply', response: 'stale answer' } });
+    await flushPromises();
+    expect(wrapper.vm.messages).toEqual(transcriptAfterNew);
+  });
+
   it('shows an error turn when the request fails', async () => {
     playgroundSpy.mockRejectedValue(new Error('boom'));
     const wrapper = mountPlayground();
