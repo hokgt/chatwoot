@@ -1,3 +1,5 @@
+require 'timeout'
+
 class Api::V1::Accounts::Marine::AssistantsController < Api::V1::Accounts::BaseController
   # Playground transcript is an untrusted client payload, so it is bounded/allowlisted server-side
   # before it ever reaches the runner: only user/assistant roles, the newest turns, each truncated.
@@ -6,6 +8,22 @@ class Api::V1::Accounts::Marine::AssistantsController < Api::V1::Accounts::BaseC
   PLAYGROUND_MAX_HISTORY_TURNS = 10
   PLAYGROUND_MAX_TURN_CHARS = 500
   PLAYGROUND_HISTORY_ROLES = %w[user assistant].freeze
+
+  # Wall-clock ceiling for the synchronous playground preview. The preview can make several
+  # sequential provider calls (translate -> RAG -> contextual wording -> translate), each bounded
+  # only by Marine::Llm::BaseService::REQUEST_TIMEOUT (30s) and RubyLLM retries, so the total can
+  # outrun the 15s Rack::Timeout service deadline and surface as an unhandled 500. This deadline
+  # fires first (12s < 15s, leaving margin for the sanitized render) so a slow/hung provider fails
+  # closed as a controlled 504 instead. It is deliberately scoped to this controller action: the
+  # shared Sidekiq ResponseBuilderJob path (same AssistantChatService, no Rack deadline) is untouched.
+  PLAYGROUND_REQUEST_DEADLINE = 12
+
+  # Raised by Timeout.timeout below when the deadline elapses. It intentionally subclasses Exception
+  # rather than StandardError: the deadline must unwind PAST the `rescue StandardError` guards inside
+  # BaseService/ResponseGenerator/Agent::Runner (which would otherwise swallow it and let the pipeline
+  # begin the NEXT provider call, defeating the wall-clock), exactly as Rack::Timeout's own exception
+  # does. It is caught explicitly by class in #playground, never leaks to a generic handler.
+  PlaygroundDeadlineError = Class.new(Exception) # rubocop:disable Lint/InheritException
 
   before_action :current_account
   before_action -> { check_authorization(Marine::Assistant) }
@@ -36,8 +54,15 @@ class Api::V1::Accounts::Marine::AssistantsController < Api::V1::Accounts::BaseC
 
   def playground
     service = Marine::Llm::AssistantChatService.new(assistant: @assistant, source: 'playground')
-    render json: service.generate_response(additional_message: playground_params[:message_content],
-                                           message_history: playground_message_history)
+    payload = Timeout.timeout(PLAYGROUND_REQUEST_DEADLINE, PlaygroundDeadlineError) do
+      service.generate_response(additional_message: playground_params[:message_content],
+                                message_history: playground_message_history)
+    end
+    render json: payload
+  rescue PlaygroundDeadlineError
+    Rails.logger.warn("[Marine::Playground] provider deadline exceeded after #{PLAYGROUND_REQUEST_DEADLINE}s " \
+                      "account_id=#{Current.account&.id} assistant_id=#{@assistant&.id}")
+    render json: { error: 'playground_timeout' }, status: :gateway_timeout
   end
 
   private

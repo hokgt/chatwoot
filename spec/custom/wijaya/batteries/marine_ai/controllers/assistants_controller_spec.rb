@@ -142,5 +142,64 @@ RSpec.describe 'Api::V1::Accounts::Marine::Assistants', type: :request do
         expect(enqueued_jobs.map { |job| job[:job] }).not_to include(Marine::Conversation::ResponseBuilderJob)
       end
     end
+
+    # A slow/hung provider must fail closed BEFORE Rack::Timeout's 15s deadline turns the request
+    # into an unhandled 500. The controller wraps generation in a 12s wall-clock deadline; these
+    # exercise that boundary deterministically (no real sleeping) by simulating the deadline firing
+    # and by asserting the deadline is wired below the Rack ceiling.
+    context 'when the provider exceeds the playground deadline' do
+      let(:deadline_error) { Api::V1::Accounts::Marine::AssistantsController::PlaygroundDeadlineError }
+
+      it 'returns a sanitized 504 with no exception leakage, no persistence, and no delivery job' do
+        allow(chat_service).to receive(:generate_response).and_raise(deadline_error)
+
+        expect do
+          post "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}/playground",
+               params: { assistant: { message_content: 'hello' } },
+               headers: admin.create_new_auth_token, as: :json
+        end.to not_change(Conversation, :count).and not_change(Message, :count)
+
+        expect(response).to have_http_status(:gateway_timeout)
+        expect(json_response).to eq(error: 'playground_timeout')
+        expect(chat_service).to have_received(:generate_response)
+        expect(enqueued_jobs.map { |job| job[:job] }).not_to include(Marine::Conversation::ResponseBuilderJob)
+      end
+
+      it 'bounds generation with a wall-clock deadline safely below Rack::Timeout (15s)' do
+        deadline = Api::V1::Accounts::Marine::AssistantsController::PLAYGROUND_REQUEST_DEADLINE
+        expect(deadline).to be < 15
+        expect(Timeout).to receive(:timeout).with(deadline, deadline_error).and_call_original
+
+        post "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}/playground",
+             params: { assistant: { message_content: 'hello' } },
+             headers: admin.create_new_auth_token, as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(json_response).to include(response: 'A grounded answer', action: 'reply')
+      end
+
+      # Regression guard for the load-bearing property: PlaygroundDeadlineError subclasses Exception
+      # (not StandardError) precisely so a deadline that fires mid-pipeline unwinds PAST
+      # Agent::Runner#run's `rescue StandardError` rather than degrading to a 200 handoff payload.
+      # Runs the REAL AssistantChatService -> Runner with only the generation boundary stubbed to
+      # raise the deadline; a 504 (not a 200 handoff) proves the error escaped that rescue. This
+      # fails closed if the class is ever changed to StandardError or the runner rescue broadened.
+      it 'propagates through Agent::Runner rescue StandardError to a 504, not a 200 handoff' do
+        allow(Marine::Llm::AssistantChatService).to receive(:new).and_call_original
+        generator = instance_double(Marine::Charge::ResponseGenerator)
+        selector = instance_double(Marine::Agent::ScenarioSelector)
+        allow(Marine::Charge::ResponseGenerator).to receive(:new).and_return(generator)
+        allow(Marine::Agent::ScenarioSelector).to receive(:new).and_return(selector)
+        allow(selector).to receive(:select).and_return(nil)
+        allow(generator).to receive(:generate).and_raise(deadline_error)
+
+        post "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}/playground",
+             params: { assistant: { message_content: 'hello' } },
+             headers: admin.create_new_auth_token, as: :json
+
+        expect(response).to have_http_status(:gateway_timeout)
+        expect(json_response).to eq(error: 'playground_timeout')
+      end
+    end
   end
 end
