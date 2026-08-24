@@ -57,7 +57,9 @@ RSpec.describe Wijaya::Marine::Hooks do
   describe '.claim_message_templates!' do
     let(:assistant) { double('assistant') }
     let(:messages) { double('messages') }
-    let(:inbox) { double('inbox', marine_assistant: assistant) }
+    # channel_type is read by the handoff-window check via the core MessageWindowService; a
+    # windowless channel makes the window blank so an active marker stays terminal here.
+    let(:inbox) { double('inbox', marine_assistant: assistant, channel_type: 'Channel::WebWidget') }
     let(:conversation) do
       double('conversation', resolved?: false, snoozed?: false, messages: messages, inbox: inbox,
                              account: double('account'), additional_attributes: {})
@@ -132,6 +134,70 @@ RSpec.describe Wijaya::Marine::Hooks do
       )
 
       expect(described_class.should_process_marine_response?(conversation, inbox, message)).to be(false)
+    end
+  end
+
+  # Real-record lifecycle regression for the handoff window. Reproduces Conversation 102
+  # (a WhatsApp/24h conversation handed off with NO human takeover, then permanently silent
+  # even after the window lapsed) generically — no hardcoded Conversation 102 timestamps.
+  describe '.claim_message_templates! handoff window lifecycle (WhatsApp 24h)' do
+    let(:channel) { create(:channel_whatsapp, sync_templates: false, validate_provider_config: false) }
+    let(:inbox) { channel.inbox }
+    let(:account) { inbox.account }
+    let(:assistant) { create(:marine_assistant, account: account) }
+    let(:conversation) { create(:conversation, account: account, inbox: inbox).reload }
+    let(:contact) { create(:contact, account: account) }
+    let(:anchor) { Time.zone.parse('2026-08-21T08:00:00Z') }
+
+    def incoming_at(time)
+      create(:message, conversation: conversation, account: account, inbox: inbox,
+                       message_type: :incoming, sender: contact, created_at: time)
+    end
+
+    def marker_active?
+      Marine::Circuit::HandoffStateStore.new(conversation: conversation.reload).active?
+    end
+
+    # Marine-linked inbox, a prior inbound turn (window anchor), and an already-active marker.
+    before do
+      MarineInbox.create!(inbox: inbox, marine_assistant: assistant)
+      @prior = incoming_at(anchor)
+      Marine::Circuit::HandoffStateStore.new(conversation: conversation).activate!(message_ids: [])
+    end
+
+    it 'stays silent for a later inbound still inside the active window and keeps the marker' do
+      message = incoming_at(anchor + 23.hours)
+      expect(Marine::Conversation::ResponseBuilderJob).not_to receive(:perform_later)
+
+      described_class.claim_message_templates!(conversation: conversation, inbox: inbox, message: message)
+
+      expect(marker_active?).to be(true)
+    end
+
+    it 'clears the marker and schedules a fresh response for the first inbound after the window lapses' do
+      message = incoming_at(anchor + 50.hours)
+      expect(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later).with(conversation, assistant, message.id)
+
+      described_class.claim_message_templates!(conversation: conversation, inbox: inbox, message: message)
+
+      expect(marker_active?).to be(false)
+    end
+
+    it 'keeps an explicit human takeover blocking after the window lapses (no reset, no schedule)' do
+      create(:message, conversation: conversation, account: account, inbox: inbox,
+                       message_type: :outgoing, private: false, sender: create(:user, account: account, role: :agent))
+      message = incoming_at(anchor + 50.hours)
+      expect(Marine::Conversation::ResponseBuilderJob).not_to receive(:perform_later)
+
+      expect(described_class.claim_message_templates!(conversation: conversation, inbox: inbox, message: message)).to be(false)
+    end
+
+    it 'creates no message or outbound content while clearing the lapsed marker' do
+      message = incoming_at(anchor + 50.hours)
+      allow(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later)
+
+      expect { described_class.claim_message_templates!(conversation: conversation, inbox: inbox, message: message) }
+        .not_to(change { conversation.reload.messages.outgoing.count })
     end
   end
 end

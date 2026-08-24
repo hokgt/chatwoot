@@ -442,9 +442,17 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/conversation/context_builder.rb
       # Handoff idempotency — battery-owned handoff lifecycle marker (wijaya_marine_ai.
       # handoff_v1). Makes Marine::Circuit::HandoffService idempotent/concurrency-safe and
-      # feeds Eligibility's terminal active_handoff reason so a handed-off conversation
-      # stays silent for the lifetime of the Conversation record.
+      # feeds Eligibility's terminal active_handoff reason so a handed-off conversation stays
+      # silent for the applicable channel messaging window. The marker is cleared (reset!)
+      # only when a new inbound turn opens a fresh window (see handoff_window.rb) so a handoff
+      # never blocks Marine forever; a timer never clears it, so window expiry emits nothing.
       - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/handoff_state_store.rb
+      # Handoff lifecycle window — channel-aware evaluation of whether the messaging window
+      # that governed an active handoff has lapsed by the time a new inbound turn arrived.
+      # Reuses core Conversations::MessageWindowService for the authoritative channel duration
+      # (no duplicated Meta timing); fails closed (no window policy / no prior inbound => not
+      # expired). Pure read; drives Wijaya::Marine::Hooks#reset_expired_handoff.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/handoff_window.rb
       # Phase 4 — Product Decision and State Machine Orchestrator. Integration domain
       # layer BEFORE any runtime side effect: combines untrusted Phase 2 intent, the
       # deterministic Phase 1 repositories, the Phase 3 canonical flow snapshot, and
@@ -716,6 +724,9 @@ patches:
       # Handoff idempotency — HandoffStateStore marker + service idempotency/rollback specs.
       - spec/custom/wijaya/batteries/marine_ai/circuit/handoff_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/circuit/handoff_service_spec.rb
+      # Handoff lifecycle window — channel-aware boundary expiry + inbound-driven re-engagement
+      # (fresh window clears the marker; within-window stays silent; expiry emits nothing).
+      - spec/custom/wijaya/batteries/marine_ai/circuit/handoff_window_spec.rb
       # Phase 4 — Product Decision and State Machine Orchestrator specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/variant_resolver_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/reply_renderer_spec.rb

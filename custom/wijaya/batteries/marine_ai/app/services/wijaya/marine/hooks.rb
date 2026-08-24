@@ -19,11 +19,29 @@ module Wijaya::Marine::Hooks
   end
 
   def after_message_template_trigger(conversation:, inbox:, message:)
+    reset_expired_handoff(conversation, inbox, message)
     return unless should_process_marine_response?(conversation, inbox, message)
 
     schedule_marine_response(conversation, message)
   rescue StandardError => e
     ChatwootExceptionTracker.new(e, account: conversation.account).capture_exception
+  end
+
+  # A handoff keeps Marine silent only for the applicable ACTIVE channel messaging window.
+  # When this new inbound turn opens a FRESH window (the prior window lapsed — see
+  # Marine::Circuit::HandoffWindow), clear the terminal handoff marker so the turn can start a
+  # new Marine interaction. This is purely inbound-driven: window expiry alone never runs it
+  # (no message => no hook => no reset => no output), satisfying "expiry emits nothing". An
+  # explicit human takeover stays higher priority: reset only removes the handoff marker, and
+  # the downstream Eligibility/should_process checks still block on a human reply / external
+  # echo, so a handed-over conversation is never re-engaged.
+  def reset_expired_handoff(conversation, inbox, message)
+    return unless message.incoming?
+    return unless inbox.respond_to?(:marine_assistant) && inbox.marine_assistant.present?
+    return unless marine_handoff_active?(conversation)
+    return unless ::Marine::Circuit::HandoffWindow.new(conversation: conversation, message: message).expired?
+
+    ::Marine::Circuit::HandoffStateStore.new(conversation: conversation).reset!
   end
 
   # Linked Marine assistant id for an inbox, or nil when Marine is not linked.
@@ -64,8 +82,10 @@ module Wijaya::Marine::Hooks
     return false unless message.incoming?
     return false unless inbox.respond_to?(:marine_assistant) && inbox.marine_assistant.present?
     return false if conversation.resolved? || conversation.snoozed?
-    # Once Marine has announced a circuit handoff it stays silent for the lifetime of
-    # this Conversation record — never enqueue another response, even on later turns.
+    # While a circuit handoff is active Marine stays silent — never enqueue another response.
+    # The marker is cleared upstream (reset_expired_handoff) once a new inbound turn opens a
+    # fresh channel messaging window, so by the time we get here an active marker means the
+    # applicable window has NOT lapsed yet.
     return false if marine_handoff_active?(conversation)
 
     # Marine handles until a human agent replies.  WhatsApp conversations

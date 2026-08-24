@@ -5,9 +5,10 @@
 #
 # A conversation is INELIGIBLE (terminal) when:
 #   * it is resolved or snoozed, or
-#   * Marine has already announced a circuit handoff (an active handoff marker), which
-#     stays active for the lifetime of the Conversation record so Marine never re-engages
-#     a handed-off conversation, or
+#   * Marine has already announced a circuit handoff (an active handoff marker), which stays
+#     active for the applicable channel messaging window so Marine stays silent during it; the
+#     marker is cleared upstream (Wijaya::Marine::Hooks) only when a new inbound turn opens a
+#     fresh window, after which this reads eligible again unless a human has taken over, or
 #   * a human has taken over — i.e. there is a public (non-private) OUTGOING
 #     message that is either sent by a User agent, or is an external_echo (a reply
 #     the human sent from the native app: WhatsApp Business, Instagram, etc.).
@@ -55,8 +56,9 @@ class Marine::Conversation::Eligibility
     Decision.new(eligible: false, reason: reason)
   end
 
-  # An active circuit-handoff marker is terminal: once Marine has announced handoff it
-  # never re-engages this Conversation record, regardless of later resolve/reopen.
+  # An active circuit-handoff marker is terminal while it is present: Marine stays silent for
+  # the applicable channel messaging window. The marker is cleared only upstream (by a fresh
+  # inbound turn past the window), so this read simply reflects its current presence.
   def active_handoff?
     Marine::Circuit::HandoffStateStore.new(conversation: conversation).active?
   end

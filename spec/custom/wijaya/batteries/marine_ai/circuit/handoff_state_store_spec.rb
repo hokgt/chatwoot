@@ -111,4 +111,46 @@ RSpec.describe Marine::Circuit::HandoffStateStore do
       expect(marker['message_ids']).to eq([1, 2])
     end
   end
+
+  describe '#reset!' do
+    it 'clears an active marker so the store reads inactive again' do
+      store.activate!(message_ids: [7])
+      expect(store.active?).to be(true)
+
+      store.reset!
+
+      expect(conversation.reload.additional_attributes.dig('wijaya_marine_ai', 'handoff_v1')).to be_nil
+      expect(described_class.new(conversation: conversation.reload).active?).to be(false)
+    end
+
+    it 'also clears a present-but-malformed (fail-closed active) marker' do
+      conversation.update!(additional_attributes: { 'wijaya_marine_ai' => { 'handoff_v1' => 'garbage' } })
+
+      store.reset!
+
+      feature = conversation.reload.additional_attributes.fetch('wijaya_marine_ai')
+      expect(feature.key?('handoff_v1')).to be(false)
+    end
+
+    it 'preserves unrelated top-level keys and sibling Marine namespaces' do
+      conversation.update!(additional_attributes: {
+                             'referer' => 'https://example.com',
+                             'wijaya_marine_ai' => { 'product_flow_v1' => { 'flow_id' => 'x' },
+                                                     'handoff_v1' => { 'version' => 1, 'status' => 'active',
+                                                                       'announced_at' => '2026-01-01T00:00:00Z', 'message_ids' => [] } }
+                           })
+
+      store.reset!
+
+      attributes = conversation.reload.additional_attributes
+      expect(attributes['referer']).to eq('https://example.com')
+      expect(attributes['wijaya_marine_ai']['product_flow_v1']).to eq('flow_id' => 'x')
+      expect(attributes['wijaya_marine_ai'].key?('handoff_v1')).to be(false)
+    end
+
+    it 'is an idempotent no-op when no marker is present (creates no message)' do
+      expect { store.reset! }.not_to(change { conversation.reload.messages.count })
+      expect(store.active?).to be(false)
+    end
+  end
 end

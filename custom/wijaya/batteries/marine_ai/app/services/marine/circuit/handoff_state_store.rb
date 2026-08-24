@@ -9,9 +9,11 @@
 #   * Only lifecycle metadata persists — status, version, an announced_at timestamp,
 #     and the ids of the messages the handoff created. No raw customer text, raw error,
 #     secret, or business fact is ever stored. Anything outside FIELDS is dropped.
-#   * Once announced, the marker is active for the lifetime of the Conversation record.
-#     There is no expiry and no reset: resolving or reopening the same Conversation must
-#     NOT clear it, so Marine never re-engages a handed-off conversation.
+#   * Once announced, the marker stays active for the whole applicable channel messaging
+#     window. Resolving or reopening the same Conversation does NOT clear it. It is cleared
+#     ONLY by #reset!, and only when a new inbound customer turn arrives after that window
+#     has lapsed with no human takeover (see Marine::Circuit::HandoffWindow and
+#     Wijaya::Marine::Hooks) — never by a timer, so window expiry alone emits nothing.
 #   * The mutation runs under a Conversation row lock that reloads the latest
 #     additional_attributes first, preserving every UNRELATED top-level key and every
 #     SIBLING under wijaya_marine_ai (e.g. product_flow_v1); only handoff_v1 is written.
@@ -71,6 +73,25 @@ class Marine::Circuit::HandoffStateStore
       end
 
       persist!(fresh_marker(message_ids))
+    end
+  end
+
+  # Clear the handoff marker so a new customer turn can start a fresh Marine interaction once
+  # the applicable channel messaging window has lapsed. Removes ONLY the handoff_v1 key under
+  # the Conversation row lock, preserving every unrelated top-level key and every Marine
+  # sibling (e.g. product_flow_v1). Idempotent: a no-op when the key is absent. Never creates
+  # a message or any outbound content — it is a pure lifecycle reset, invoked only by an
+  # inbound turn (Wijaya::Marine::Hooks), so window expiry by itself can never trigger it.
+  def reset!
+    conversation.with_lock do
+      next unless marker_present?
+
+      attributes = deep_dup_attributes
+      feature = attributes[FEATURE_KEY]
+      feature = feature.is_a?(Hash) ? feature.dup : {}
+      feature.delete(HANDOFF_KEY)
+      attributes[FEATURE_KEY] = feature
+      conversation.update!(additional_attributes: attributes)
     end
   end
 

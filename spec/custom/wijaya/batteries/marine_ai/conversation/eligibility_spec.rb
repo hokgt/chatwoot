@@ -112,6 +112,25 @@ RSpec.describe Marine::Conversation::Eligibility do
       expect(decision.eligible?).to be(false)
       expect(decision.reason).to eq('active_handoff')
     end
+
+    it 'is eligible again once the marker is cleared (a fresh window re-engagement)' do
+      activate_handoff!
+      Marine::Circuit::HandoffStateStore.new(conversation: conversation.reload).reset!
+
+      decision = eligibility.decision
+      expect(decision.eligible?).to be(true)
+      expect(decision.reason).to eq('eligible')
+    end
+
+    it 'still blocks on a human takeover even after the marker is cleared (takeover precedence)' do
+      outgoing(sender: agent, private: false)
+      activate_handoff!
+      Marine::Circuit::HandoffStateStore.new(conversation: conversation.reload).reset!
+
+      decision = eligibility.decision
+      expect(decision.eligible?).to be(false)
+      expect(decision.reason).to eq('human_takeover')
+    end
   end
 
   describe 'eligible conversation' do
