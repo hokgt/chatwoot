@@ -33,7 +33,7 @@ services:
   # (no-new-privileges, all caps dropped, pids/mem/tmpfs caps); rails and normal sidekiq
   # stay behaviorally unchanged. Uses the same image tag as base via CHATWOOT_IMAGE.
   marine_sop_worker:
-    image: ${CHATWOOT_IMAGE:-chatwoot-wijaya:devbot-86f9c070f-sop}
+    image: ${CHATWOOT_IMAGE:-chatwoot-wijaya:devbot-76350d43c-sop}
     env_file: .env
     depends_on:
       - postgres
