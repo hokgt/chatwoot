@@ -58,7 +58,12 @@ module Marine
       # of these is raw customer text or a fact — the identity never depends on the volatile
       # per-turn current_intent.
       CLARIFICATION_FIELDS = %w[clarification_kind clarification_count clarification_family_codes].freeze
-      FIELDS = (%w[version status expires_at expected_attributes] +
+      # Bounded, allowlisted multi-intent field: the supported-intent SET a single turn requested (at
+      # most price+stock), persisted so a clarification can later fulfill the still-valid pair. It is
+      # normalized to the supported-intent allowlist in canonical order and dropped when empty, so a
+      # forged/oversized value never widens what the flow will fulfill and it never carries raw text.
+      REQUESTED_INTENTS_FIELD = 'requested_intents'.freeze
+      FIELDS = (%W[version status expires_at expected_attributes #{REQUESTED_INTENTS_FIELD}] +
                 STRING_FIELDS + INTEGER_FIELDS + BOOLEAN_FIELDS + CLARIFICATION_FIELDS).freeze
       # version and flow_id are owned by the store; callers may set everything else.
       CALLER_FIELDS = (FIELDS - %w[version flow_id]).freeze
@@ -342,7 +347,18 @@ module Marine
         (STRING_FIELDS - %w[flow_id]).each { |k| fields[k] = bounded_string(source[k], MAX_STRING_LENGTH) }
         INTEGER_FIELDS.each { |k| fields[k] = bounded_integer(source[k]) }
         BOOLEAN_FIELDS.each { |k| fields[k] = boolean(source[k]) if source.key?(k) }
+        fields[REQUESTED_INTENTS_FIELD] = requested_intents(source[REQUESTED_INTENTS_FIELD]).presence
         fields.merge(clarification_metadata(source)).compact
+      end
+
+      # A persisted requested-intent set is canonicalized through the same bounded normalization as
+      # expected_attributes (control-stripped, blank-rejected, deduplicated, capped) and then filtered
+      # to the supported-intent allowlist in canonical order; an empty/absent/all-unsupported value
+      # reads as [] (dropped by compact via .presence), so the field only persists a genuine supported
+      # set and a forged/unknown entry can never widen it.
+      def requested_intents(value)
+        normalized = self.class.normalize_expected_attributes(value).map(&:downcase)
+        IntentExtractor::SUPPORTED_PRODUCT_INTENTS.select { |intent| normalized.include?(intent) }
       end
 
       # The bounded clarification-progression metadata, each field strictly validated (enum /

@@ -66,6 +66,14 @@ module Marine
       MAX_ATTRIBUTES = 16
       MAX_ATTRIBUTE_LENGTH = 80
 
+      # A single turn may carry an ordered, bounded SET of supported intents (e.g. price AND stock).
+      # requested_intents is that set — normalized, deduped, allowlisted to SUPPORTED_PRODUCT_INTENTS,
+      # and rendered in a CANONICAL order (SUPPORTED_PRODUCT_INTENTS order) so it is deterministic and
+      # independent of the LLM's ordering. The scalar `intent` stays the primary intent for backwards
+      # compatibility; requested_intents is additive. When the model emits no explicit set, it falls
+      # back to the single supported scalar intent (or empty for a non-product/unknown turn).
+      MAX_REQUESTED_INTENTS = 4
+
       # Bounded, allowlisted shape for the untrusted customer-language code: a 2–3 letter
       # primary subtag with an optional single subtag (e.g. "id", "en", "zh-hans", "pt-br").
       # Anything else normalizes to nil. This is a FORMAT allowlist, not a language list —
@@ -126,6 +134,7 @@ module Marine
         {
           product_related: product_related,
           intent: intent,
+          requested_intents: normalize_requested_intents(parsed['intents'], intent),
           family_mention: family_mention,
           explicit_child_code: resolve_child_code(parsed, state, multiple_numeric),
           attribute_candidates: bounded_array(parsed['attribute_candidates']),
@@ -189,6 +198,24 @@ module Marine
 
         # Any other recognized-but-unsupported product intent, or an unknown string.
         intent.empty? ? 'unknown' : 'unsupported'
+      end
+
+      # Fold the untrusted per-turn intent SET into a bounded, deduped, allowlisted, canonically
+      # ordered list. Only SUPPORTED_PRODUCT_INTENTS survive; a missing/empty set falls back to the
+      # supported scalar intent (so single-intent turns keep a consistent one-element set) and to []
+      # for a non-product/unknown/unsupported turn. Canonical order = SUPPORTED_PRODUCT_INTENTS order,
+      # so price+stock and stock+price fold to the identical set independent of LLM ordering.
+      def normalize_requested_intents(value, scalar_intent)
+        raw = value.is_a?(Array) ? value.filter_map { |item| supported_requested_entry(item) } : []
+        raw = [scalar_intent] if raw.empty? && SUPPORTED_PRODUCT_INTENTS.include?(scalar_intent)
+        SUPPORTED_PRODUCT_INTENTS.select { |intent| raw.include?(intent) }.first(MAX_REQUESTED_INTENTS)
+      end
+
+      def supported_requested_entry(value)
+        return nil unless value.is_a?(String)
+
+        code = value.strip.downcase
+        code if SUPPORTED_PRODUCT_INTENTS.include?(code)
       end
 
       def normalize_confidence(value)
@@ -289,6 +316,7 @@ module Marine
         {
           product_related: false,
           intent: 'unknown',
+          requested_intents: [],
           family_mention: nil,
           explicit_child_code: nil,
           attribute_candidates: [],
@@ -315,6 +343,8 @@ module Marine
         You classify a customer's product intent for a marine parts catalog assistant. You only UNDERSTAND intent;
         you never look anything up, price, or confirm it. Respond with a single JSON object and nothing else, with these keys:
         product_related (boolean); intent (one of "price", "stock", "parent_info", "variant_info", "catalog", "unsupported");
+        intents (array of the supported intents the SAME turn asks for, e.g. ["price","stock"] when the customer asks for both
+        the price and whether it is in stock; use a single-element array for a single ask; omit or leave empty when unsure);
         family_mention (string|null, a candidate name only); explicit_child_code (string|null, a candidate code only);
         explicit_child_code_from_context (boolean, true only when the customer is clearly giving a code the assistant just asked for);
         attribute_candidates (array of short strings); requires_exact_variant (boolean); clarification_reply (string|null, ask when ambiguous);

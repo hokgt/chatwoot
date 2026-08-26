@@ -42,6 +42,16 @@ module Marine
       VARIANT_REQUIRED_INTENTS = %w[price stock variant_info].freeze
       SUPPORTED_INTENTS = (VARIANT_REQUIRED_INTENTS + %w[parent_info catalog]).freeze
 
+      # The only supported COMBINABLE pair for a single turn: price AND stock. Both are supported,
+      # repository-grounded, variant-required intents, so one turn asking for both is fulfilled with a
+      # single composite reply (assembled from the existing price/stock descriptors) rather than
+      # dropping either outcome. Any other multi-intent combination falls back to the primary intent.
+      COMBINABLE_PAIR = %w[price stock].freeze
+
+      # Defensive per-turn bound on the requested-intent set at this trust boundary (the extractor
+      # already bounds/dedupes/allowlists it; a persisted/forged flow value is re-normalized here).
+      MAX_REQUESTED_INTENTS = 4
+
       # Bounded safe family-candidate list surfaced with a clarify_family.
       CLARIFY_FAMILY_LIMIT = 10
 
@@ -108,6 +118,12 @@ module Marine
         flow = string_keyed(flow)
 
         return build(:not_product) unless truthy(intent[:product_related])
+
+        # Effective supported-intent SET for this turn, computed from the untrusted extraction BEFORE
+        # retain_flow_intent rewrites the scalar intent: the turn's own stated set wins, and a bare
+        # follow-up that states nothing inherits any bounded pending pair from the active flow (so a
+        # clarification later fulfills the still-valid pair; a genuinely new stated intent replaces it).
+        @requested_intents = effective_requested_intents(intent, flow)
 
         intent = retain_flow_intent(intent, flow)
         return build(:handoff, reply: reply_renderer.unsupported) unless SUPPORTED_INTENTS.include?(intent[:intent].to_s)
@@ -242,8 +258,14 @@ module Marine
       # (family-level changes, clearing any stale variant); a later phase acknowledges the request
       # and asks a human to confirm the exact quantity. Fires before variant resolution so the
       # customer is never first asked to pick a variant for a number Marine cannot provide anyway.
+      # An exact on-hand quantity is never exposed. This fires for a single stock turn AND for a
+      # supported pair that also asks for an exact count (stock is among the requested intents): the
+      # whole turn hands off safely — the existing exact-quantity precedence is preserved rather than
+      # partially exposing a price/availability answer for a request Marine cannot fully satisfy.
       def quantity_inquiry?(intent)
-        intent[:intent].to_s == 'stock' && truthy(intent[:quantity_inquiry])
+        return false unless truthy(intent[:quantity_inquiry])
+
+        intent[:intent].to_s == 'stock' || @requested_intents.include?('stock')
       end
 
       def plan_quantity_handoff(intent, family, state_op)
@@ -305,6 +327,10 @@ module Marine
         # A unique validated variant is validated progress, so clear any prior clarification
         # metadata on a continuation (:update); a :start already begins a metadata-free flow.
         changes = cleared_clarification(family_changes(family, intent).merge('validated_variant' => code), state_op)
+        # A supported price+stock pair for the SAME validated variant fulfills BOTH in one composite
+        # reply; otherwise the single primary intent decides the descriptor.
+        return plan_composite(code, changes, state_op) if combinable_pair?
+
         case intent[:intent]
         when 'price' then plan_price(code, changes, state_op)
         when 'stock' then plan_stock(code, changes, state_op)
@@ -312,29 +338,49 @@ module Marine
         end
       end
 
+      # Assemble ONE composite reply from the existing per-leg descriptors, in canonical order
+      # (price then stock). A conflicting price still fails closed to a single handoff — a possibly
+      # wrong price is never partially exposed; an unavailable stock repository raises
+      # CatalogUnavailableError from #stock_descriptor and is caught by plan_for_intent (safe handoff).
+      def plan_composite(code, changes, state_op)
+        parts = COMBINABLE_PAIR.map { |leg| leg == 'price' ? price_descriptor(code) : stock_descriptor(code) }
+        return build(:handoff, reply: reply_renderer.price_conflict, operation: state_op, changes: changes) if parts.include?(:conflict)
+
+        build(:reply, reply: reply_renderer.composite(parts), operation: state_op, changes: changes)
+      end
+
       def plan_price(code, changes, state_op)
-        price = price_repository.price_for(code)
-        case price[:status]
-        when :available
-          build(:reply, reply: reply_renderer.price_available(price, code), operation: state_op, changes: changes)
-        when :conflict
-          # Fail closed: a conflicting price is never guessed — hand off to a human.
-          build(:handoff, reply: reply_renderer.price_conflict, operation: state_op, changes: changes)
-        else
-          build(:reply, reply: reply_renderer.price_unavailable, operation: state_op, changes: changes)
-        end
+        descriptor = price_descriptor(code)
+        # Fail closed: a conflicting price is never guessed — hand off to a human.
+        return build(:handoff, reply: reply_renderer.price_conflict, operation: state_op, changes: changes) if descriptor == :conflict
+
+        build(:reply, reply: descriptor, operation: state_op, changes: changes)
       end
 
       def plan_stock(code, changes, state_op)
-        # :available / :empty only; an unexpected status raises CatalogUnavailableError,
-        # caught by plan_for_intent and turned into a safe handoff (never a false empty).
-        reply =
-          case stock_repository.status_for(code)
-          when :available then reply_renderer.stock_available
-          when :empty then reply_renderer.stock_empty
-          else raise Marine::Catalog::Errors::CatalogUnavailableError
-          end
-        build(:reply, reply: reply, operation: state_op, changes: changes)
+        build(:reply, reply: stock_descriptor(code), operation: state_op, changes: changes)
+      end
+
+      # The price descriptor for a validated child, or the :conflict signal (a conflicting price is
+      # never rendered — the caller hands off). Read-only; only the three approved fields survive.
+      def price_descriptor(code)
+        price = price_repository.price_for(code)
+        case price[:status]
+        when :available then reply_renderer.price_available(price, code)
+        when :conflict then :conflict
+        else reply_renderer.price_unavailable
+        end
+      end
+
+      # The binary stock-availability descriptor for a validated child. :available / :empty only; an
+      # unexpected status raises CatalogUnavailableError, caught by plan_for_intent and turned into a
+      # safe handoff (never a false empty). Never a quantity — the repository collapses all bins first.
+      def stock_descriptor(code)
+        case stock_repository.status_for(code)
+        when :available then reply_renderer.stock_available
+        when :empty then reply_renderer.stock_empty
+        else raise Marine::Catalog::Errors::CatalogUnavailableError
+        end
       end
 
       # Variant unresolved -> stay AWAITING_VARIANT. Catalog is context-aware: only offered
@@ -355,7 +401,7 @@ module Marine
                                                 family: family[:code], expected: attribute_names, flow: flow)
         return build(:handoff, reply: clarify) if progression[:handoff]
 
-        changes = clarification_changes(family_changes(family, intent).merge('expected_attributes' => attribute_names),
+        changes = clarification_changes(family_changes(family, intent).merge('expected_attributes' => attribute_names).merge(pending_pair_changes),
                                         ProductFlowStateStore::CLARIFICATION_KIND_VARIANT, progression[:count])
         if catalog_already_sent?(flow, continuing) || truthy(intent[:multiple_numeric_candidates]) || new_candidates?(intent)
           build(:clarify_variant, reply: clarify, operation: state_op, changes: changes)
@@ -380,8 +426,8 @@ module Marine
                                                 family: flow['validated_family'], family_codes: family_codes, flow: flow)
         return build(:handoff, reply: reply) if progression[:handoff]
 
-        changes = clarification_changes({ 'current_intent' => intent[:intent], 'clarification_family_codes' => family_codes },
-                                        ProductFlowStateStore::CLARIFICATION_KIND_FAMILY, progression[:count])
+        base = { 'current_intent' => intent[:intent], 'clarification_family_codes' => family_codes }.merge(pending_pair_changes)
+        changes = clarification_changes(base, ProductFlowStateStore::CLARIFICATION_KIND_FAMILY, progression[:count])
         build(:clarify_family, reply: reply, operation: flow_active?(flow) ? :update : :start, changes: changes)
       end
 
@@ -574,6 +620,50 @@ module Marine
 
       def new_candidates?(intent)
         intent[:explicit_child_code].to_s.strip.present? || Array(intent[:attribute_candidates]).any? { |v| v.to_s.strip.present? }
+      end
+
+      # --- multi-intent (requested-intent set) ------------------------------------
+
+      # True when the turn's effective supported set carries BOTH price and stock — the one supported
+      # combinable pair — so the fulfillment renders a single composite reply.
+      def combinable_pair?
+        COMBINABLE_PAIR.all? { |intent| @requested_intents.include?(intent) }
+      end
+
+      # The effective supported-intent SET for this turn. The turn's OWN stated set wins (latest
+      # intent replaces stale pending intents); a bare follow-up that states no supported intent
+      # inherits a bounded pending pair persisted on the active flow, so a clarification can later
+      # fulfill the still-valid pair. Everything is re-normalized (allowlisted, deduped, canonical,
+      # bounded) at this trust boundary, so a forged/oversized persisted value can never widen it.
+      def effective_requested_intents(intent, flow)
+        stated = normalize_requested(intent[:requested_intents], intent[:intent])
+        return stated if stated.present?
+
+        retained_pending_pair(flow)
+      end
+
+      # A bounded pending pair carried on the active flow (only a genuine 2-element supported pair is
+      # inherited; a single persisted intent or a non-active flow inherits nothing).
+      def retained_pending_pair(flow)
+        pair = normalize_requested(flow['requested_intents'], nil)
+        flow_active?(flow) && pair.length >= 2 ? pair : []
+      end
+
+      # Fold an untrusted intent list (+ optional scalar fallback) into the bounded, deduped,
+      # allowlisted, canonically ordered supported set. A missing/empty list falls back to the
+      # supported scalar; an unsupported/unknown scalar yields []. Canonical order = SUPPORTED order.
+      def normalize_requested(raw, scalar)
+        list = Array(raw).filter_map { |item| item.to_s.strip.downcase.presence }
+        list = [scalar.to_s.strip.downcase] if list.empty? && scalar
+        supported = IntentExtractor::SUPPORTED_PRODUCT_INTENTS
+        supported.select { |intent| list.include?(intent) }.first(MAX_REQUESTED_INTENTS)
+      end
+
+      # The bounded requested-intent pair to PERSIST on a clarify plan, so a later bare follow-up can
+      # fulfill the still-valid pair. Only a genuine 2-element pair is persisted; a single intent is
+      # already captured by current_intent, so nothing extra is written.
+      def pending_pair_changes
+        @requested_intents.length >= 2 ? { 'requested_intents' => @requested_intents } : {}
       end
 
       def catalog_already_sent?(flow, continuing)

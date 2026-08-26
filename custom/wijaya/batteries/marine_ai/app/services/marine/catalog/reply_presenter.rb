@@ -48,11 +48,26 @@ module Marine
       # descriptor kind to a fixed or field-interpolated, fact-safe template.
       def reply_text(plan)
         descriptor = plan[:reply] || {}
+        return composite_text(descriptor) if descriptor[:kind] == :composite
+
         dynamic = dynamic_product_text(descriptor)
         return dynamic if dynamic
         return clarify_variant_text(Array(plan.dig(:state, :changes, 'expected_attributes'))) if plan[:action] == :send_catalog
 
         STATIC_PRODUCT_TEXT[descriptor[:kind]] || GENERIC_PRODUCT_TEXT
+      end
+
+      # One customer-facing reply for a supported multi-intent turn: each child descriptor's exact
+      # deterministic sentence, in the composite's canonical order, joined into a single message — so
+      # both authorized outcomes are delivered once, with no duplicated fact and no second delivery.
+      def composite_text(descriptor)
+        Array(descriptor[:parts]).filter_map { |part| single_descriptor_text(part) if part.is_a?(Hash) }.join(' ')
+      end
+
+      # The deterministic sentence for ONE child descriptor (the same mapping reply_text applies to a
+      # standalone reply, excluding the plan-level send_catalog branch a composite part never uses).
+      def single_descriptor_text(descriptor)
+        dynamic_product_text(descriptor) || STATIC_PRODUCT_TEXT[descriptor[:kind]] || GENERIC_PRODUCT_TEXT
       end
 
       # True when the plan carries a DIRECT catalog descriptor (Phase 4 #plan_catalog), as

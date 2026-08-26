@@ -48,8 +48,19 @@ module Marine
         price_available: { action: :reply, keys: %i[variant_code price_list_rate currency uom] },
         catalog: { action: :send_catalog, keys: %i[family_code family_name] },
         clarify_family: { action: :clarify_family, keys: %i[candidates] },
-        clarify_variant: { action: :clarify_variant, keys: %i[attribute_names] }
+        clarify_variant: { action: :clarify_variant, keys: %i[attribute_names] },
+        # A multi-intent composite reply: a :reply carrying an ordered list of child descriptors. Its
+        # protected values are the UNION of its parts' protected values, and the same generic token
+        # inventories still guard the whole text — so a naturalized price+stock reply keeps every price
+        # fact literal while the binary availability meaning is left to the separate semantic validator.
+        composite: { action: :reply, keys: %i[parts] }
       }.freeze
+
+      # The only descriptor kinds a composite part may carry for the composite to be NATURALIZABLE:
+      # the already-naturalizable, fact-bearing/binary reply kinds. A part of any other kind (e.g.
+      # price_unavailable, a clarification) makes the composite ineligible, so wording is skipped and
+      # the exact deterministic localized fallback is delivered instead.
+      COMPOSITE_PART_KINDS = %i[price_available stock_available stock_empty].freeze
 
       # A distinct in-band sentinel (never a value): "this descriptor is malformed/ambiguous,
       # reject". Kept private so it can never be confused with a legitimate empty value list.
@@ -131,7 +142,7 @@ module Marine
       # Protected display values derived ONLY from allowlisted descriptor fields, matching what
       # the deterministic template renders. Returns an Array of strings (possibly empty), or the
       # REJECT sentinel when a required value is missing/blank/ambiguous/nonfinite.
-      def protected_values(descriptor)
+      def protected_values(descriptor) # rubocop:disable Metrics/CyclomaticComplexity -- a flat per-kind dispatch
         case descriptor[:kind]
         when :parent_info, :catalog then single(family_display(descriptor))
         when :variant_info then single(presence_string(descriptor[:variant_code]))
@@ -139,8 +150,30 @@ module Marine
         when :clarify_family then clarify_family_values(descriptor[:candidates])
         when :clarify_variant then value_list(descriptor[:attribute_names])
         when :stock_available, :stock_empty then []
+        when :composite then composite_values(descriptor[:parts])
         else REJECT
         end
+      end
+
+      # The union of every part's protected display values. A composite is eligible ONLY when it has
+      # at least two parts, each a well-shaped descriptor of a naturalizable part kind whose own
+      # protected values resolve; any malformed/ineligible part rejects the whole composite (wording
+      # skipped, exact fallback delivered). Duplicate protected values across parts reject (ambiguous).
+      def composite_values(parts)
+        return REJECT unless parts.is_a?(Array) && parts.length >= 2
+
+        collected = parts.flat_map { |part| composite_part_values(part) }
+        return REJECT if collected.include?(REJECT)
+        return REJECT if collected.uniq.length != collected.length
+
+        collected
+      end
+
+      def composite_part_values(part)
+        return REJECT unless part.is_a?(Hash) && COMPOSITE_PART_KINDS.include?(part[:kind])
+
+        values = protected_values(part)
+        values == REJECT ? REJECT : values
       end
 
       # Family display is name-or-code exactly as the parent-info template renders it.

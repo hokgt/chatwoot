@@ -18,7 +18,7 @@ RSpec.describe Marine::Catalog::IntentExtractor do
 
   # The exact, complete set of contract keys — the result must never drift from it.
   CONTRACT_KEYS = %i[
-    product_related intent family_mention explicit_child_code attribute_candidates
+    product_related intent requested_intents family_mention explicit_child_code attribute_candidates
     requires_exact_variant clarification_reply family_changed intent_changed
     multiple_numeric_candidates quantity_inquiry unsupported_request confidence customer_language reason
   ].freeze
@@ -350,6 +350,58 @@ RSpec.describe Marine::Catalog::IntentExtractor do
       stub_llm(message: '{"product_related": true, "intent": "price", "family_mention": "Bilge\nPump"}')
 
       expect(extract[:family_mention]).to eq('Bilge Pump')
+    end
+  end
+
+  describe 'requested_intents (multi-intent trust boundary)' do
+    it 'defaults requested_intents to the single supported scalar intent when no array is emitted' do
+      stub_llm(message: '{"product_related": true, "intent": "price"}')
+
+      expect(extract[:requested_intents]).to eq(%w[price])
+    end
+
+    it 'normalizes a same-turn price+stock array to the canonical, deduped, bounded set' do
+      stub_llm(message: '{"product_related": true, "intent": "price", "intents": ["stock", "price"]}')
+
+      # Canonical order is deterministic (price before stock) regardless of LLM ordering.
+      expect(extract[:requested_intents]).to eq(%w[price stock])
+    end
+
+    it 'produces the SAME canonical set for stock+price as for price+stock' do
+      stub_llm(message: '{"product_related": true, "intent": "stock", "intents": ["price", "stock"]}')
+
+      expect(extract[:requested_intents]).to eq(%w[price stock])
+    end
+
+    it 'dedupes repeated labels' do
+      stub_llm(message: '{"product_related": true, "intent": "price", "intents": ["price", "price", "stock", "stock"]}')
+
+      expect(extract[:requested_intents]).to eq(%w[price stock])
+    end
+
+    it 'drops unknown / unsupported entries and keeps only the supported product intents' do
+      stub_llm(message: '{"product_related": true, "intent": "price", "intents": ["price", "please_wire_funds", "stock", 42, null]}')
+
+      expect(extract[:requested_intents]).to eq(%w[price stock])
+    end
+
+    it 'bounds an oversized intents array' do
+      stub_llm(message: llm_json(intent: 'price', intents: Array.new(50) { 'price' } + Array.new(50) { 'stock' }))
+
+      expect(extract[:requested_intents].length).to be <= 4
+      expect(extract[:requested_intents]).to eq(%w[price stock])
+    end
+
+    it 'is empty for a non-product / unknown turn' do
+      stub_llm(message: '{"product_related": false}')
+
+      expect(extract[:requested_intents]).to eq([])
+    end
+
+    it 'is empty on a failed extraction (unknown result)' do
+      allow(base_service).to receive(:configured?).and_return(false)
+
+      expect(extract[:requested_intents]).to eq([])
     end
   end
 

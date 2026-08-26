@@ -27,6 +27,7 @@ module Marine
         stock_available stock_empty stock_unavailable
         clarify_family clarify_variant
         catalog catalog_unavailable unsupported
+        composite
       ].freeze
 
       # Defensive display ceilings — the upstream repositories already bound their
@@ -79,6 +80,14 @@ module Marine
 
       def catalog_unavailable = descriptor(:catalog_unavailable)
       def unsupported = descriptor(:unsupported)
+
+      # A composite reply for a supported multi-intent turn (e.g. price AND stock): an ordered,
+      # bounded list of already-built child descriptors. It introduces NO new facts — each part is a
+      # frozen descriptor this renderer already produced — so a composite carries only what its parts
+      # carry (and never a raw quantity or an unapproved price field). Deeply frozen like every other.
+      def composite(parts)
+        descriptor(:composite, parts: Array(parts).first(MAX_CANDIDATES))
+      end
 
       # Safe family clarification carrying bounded repository candidates ({ code:, name: }).
       # A candidate with a blank/malformed (non-scalar) code is dropped entirely.

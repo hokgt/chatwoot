@@ -695,6 +695,8 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/charge/grounded_wording_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/charge/fact_preservation_validator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/response_builder_job_spec.rb
+      # D6 — full trigger-bound job-path proof: one inbound price+stock turn -> one composite message.
+      - spec/custom/wijaya/batteries/marine_ai/conversation/product_multi_intent_job_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/copilot/reply_suggestion_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/copilot/summary_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/copilot/rewrite_service_spec.rb
@@ -745,6 +747,9 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/catalog/variant_resolver_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/reply_renderer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_query_orchestrator_spec.rb
+      # D6 — supported multi-intent (price+stock) composite reply: extractor set, orchestrator
+      # composite/precedence/persistence, renderer/presenter, fact-protection, signed round-trip.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_multi_intent_spec.rb
       # Shared deterministic product-text presenter spec.
       - spec/custom/wijaya/batteries/marine_ai/catalog/reply_presenter_spec.rb
       # Source-less Playground catalog preview spec (read-only, non-delivering, fail-safe).
