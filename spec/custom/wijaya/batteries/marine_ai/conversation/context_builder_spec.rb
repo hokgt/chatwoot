@@ -172,7 +172,84 @@ RSpec.describe Marine::Conversation::ContextBuilder do
       conversation.update!(status: :open)
       trigger = add(:incoming, at: base + 90.days, content: 'much later customer turn')
 
+      # Web widget has NO messaging-window policy, so the new-interaction window (D1) never engages
+      # here — this is the fail-closed, window-agnostic path and stays follow_up despite the gap.
       expect(build(trigger).phase).to eq(:follow_up)
+    end
+  end
+
+  # D1 — new native messaging window awareness. On a channel WITH an authoritative messaging
+  # window (WhatsApp 24h), a trigger that opens a FRESH window is an opening/new interaction and
+  # excludes ALL pre-window history (an aged unresolved topic can never be revived); a within-window
+  # turn retains full context and its existing phase. Duration comes from the authoritative
+  # Conversations::MessageWindowService, reused exactly as Marine::Circuit::HandoffWindow does.
+  describe 'new native messaging window (D1)' do
+    # WhatsApp inbox => authoritative 24h messaging window.
+    let(:wa_channel) { create(:channel_whatsapp, sync_templates: false, validate_provider_config: false) }
+    let(:wa_inbox) { wa_channel.inbox }
+    let(:wa_account) { wa_inbox.account }
+    let(:wa_conversation) { create(:conversation, account: wa_account, inbox: wa_inbox) }
+    let(:wa_marine) { create(:marine_assistant, account: wa_account) }
+    let(:wa_contact) { create(:contact, account: wa_account) }
+    let(:win_base) { Time.zone.parse('2026-08-21T08:00:00Z') }
+
+    def wadd(type, at:, content: 'sample text', hidden: false, sender: nil)
+      create(:message, conversation: wa_conversation, account: wa_account, inbox: wa_inbox,
+                       message_type: type, content: content, private: hidden,
+                       sender: sender || (type == :incoming ? wa_contact : nil), created_at: at)
+    end
+
+    def wbuild(trigger)
+      described_class.new(conversation: wa_conversation, trigger_message: trigger).build
+    end
+
+    it 'classifies a fresh-window trigger as opening and excludes ALL pre-window history (aged topic not revived)' do
+      wadd(:incoming, at: win_base, content: 'how much is shipping to my port?') # aged unresolved topic
+      wadd(:outgoing, at: win_base + 1.minute, sender: wa_marine, content: 'earlier marine reply')
+      trigger = wadd(:incoming, at: win_base + 24.hours, content: 'hi') # opens a fresh 24h window
+
+      result = wbuild(trigger)
+      expect(result.phase).to eq(:opening)
+      expect(result).to be_opening
+      expect(result.history).to eq([])
+      expect(result.trigger).to eq('hi')
+    end
+
+    it 'retains full context and stays follow_up for a within-window genuine follow-up' do
+      wadd(:incoming, at: win_base, content: 'do you have impellers?')
+      wadd(:outgoing, at: win_base + 1.minute, sender: wa_marine, content: 'earlier marine reply')
+      trigger = wadd(:incoming, at: win_base + 1.hour, content: 'what about the price?') # same window
+
+      result = wbuild(trigger)
+      expect(result.phase).to eq(:follow_up)
+      expect(result.history.map { |h| h[:content] }).to eq(['do you have impellers?', 'earlier marine reply'])
+    end
+
+    it 'treats exactly the window boundary as a fresh window (mirrors the native strict-< open test)' do
+      wadd(:incoming, at: win_base, content: 'aged topic')
+      trigger = wadd(:incoming, at: win_base + 24.hours, content: 'hi')
+
+      result = wbuild(trigger)
+      expect(result.phase).to eq(:opening)
+      expect(result.history).to eq([])
+    end
+
+    it 'stays within-window one second before the boundary (retains history, not a new interaction)' do
+      wadd(:incoming, at: win_base, content: 'aged topic')
+      trigger = wadd(:incoming, at: win_base + 24.hours - 1.second, content: 'still same window')
+
+      expect(wbuild(trigger).history.map { |h| h[:content] }).to eq(['aged topic'])
+    end
+
+    it 'fails closed (no new window) when there is no prior inbound to anchor on' do
+      wadd(:outgoing, at: win_base, sender: wa_marine, content: 'proactive marine note')
+      trigger = wadd(:incoming, at: win_base + 90.days, content: 'first customer turn')
+
+      result = wbuild(trigger)
+      # No prior INBOUND anchor -> window-agnostic behavior: an earlier public Marine reply exists,
+      # so this is a follow-up and the prior outgoing is retained (never excluded as "pre-window").
+      expect(result.phase).to eq(:follow_up)
+      expect(result.history.map { |h| h[:content] }).to eq(['proactive marine note'])
     end
   end
 end

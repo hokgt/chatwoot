@@ -11,6 +11,15 @@
 # later use. Phase 2 only EXPOSES the phase; it never changes greetings, prompts, wording,
 # FAQ/product output, or any behavior based on it.
 #
+# New-interaction (native messaging window) awareness: when the current trigger OPENS a fresh
+# native messaging window relative to the immediately prior public inbound — measured with the
+# authoritative, channel-specific Conversations::MessageWindowService duration, exactly as
+# Marine::Circuit::HandoffWindow does — the turn is classified as opening AND all pre-window
+# history is excluded, so an aged unresolved topic from a lapsed interaction can never be
+# supplied/revived by a downstream generation path. It NEVER touches persisted product-flow
+# state (that has its own expiry). Channels with no window policy or a lookup failure fail CLOSED
+# to the window-agnostic behavior above.
+#
 # Eligibility for history (all required):
 #   * same Conversation, strictly BEFORE the trigger (by created_at, then id);
 #   * public only (private notes excluded);
@@ -66,7 +75,14 @@ class Marine::Conversation::ContextBuilder
 
   # Eligible prior turns, newest MAX_HISTORY_MESSAGES first, returned chronological and
   # per-message truncated. Excludes the trigger by id and everything at/after its position.
+  #
+  # When the trigger OPENS a fresh native messaging window (see #new_interaction_window?), every
+  # earlier turn belongs to a prior, lapsed interaction, so no pre-window history is supplied — an
+  # aged unresolved topic can never be revived by generation. A channel with no window policy, no
+  # anchor, or a lookup failure falls closed to the full bounded history below.
   def history
+    return [] if new_interaction_window?
+
     prior_messages.reverse.map do |message|
       { role: role_for(message), content: bounded(message.content, MAX_HISTORY_MESSAGE_CHARS) }
     end
@@ -88,12 +104,61 @@ class Marine::Conversation::ContextBuilder
     bounded(trigger_message.content, MAX_TRIGGER_CHARS)
   end
 
-  # Opening until Marine has posted at least one PUBLIC reply earlier in this Conversation;
-  # follow-up thereafter. Human replies (sender_type 'User'), private Marine notes, and any
-  # Marine reply at/after the trigger are excluded, so none of them turns opening into
-  # follow-up.
+  # A fresh native messaging window is always an opening/new interaction, regardless of any
+  # earlier Marine reply in the now-lapsed prior window. Otherwise: opening until Marine has
+  # posted at least one PUBLIC reply earlier in this Conversation; follow-up thereafter. Human
+  # replies (sender_type 'User'), private Marine notes, and any Marine reply at/after the trigger
+  # are excluded, so none of them turns opening into follow-up.
   def phase
+    return PHASE_OPENING if new_interaction_window?
+
     earlier_marine_reply? ? PHASE_FOLLOW_UP : PHASE_OPENING
+  end
+
+  # A new native messaging window: the current incoming trigger arrived at/after the channel
+  # messaging window elapsed since the immediately prior public inbound turn, so — exactly as the
+  # channel itself anchors windows on inbound turns — the trigger OPENS a fresh interaction.
+  # Chatwoot owns the authoritative, channel-specific window duration in
+  # Conversations::MessageWindowService (WhatsApp/Twilio-WA 24h, Meta 24h/7d, TikTok 48h, API by
+  # config; nil for web widget/email, etc.); this REUSES that duration rather than duplicating any
+  # timing rule, mirroring Marine::Circuit::HandoffWindow. Fails CLOSED to the existing
+  # (window-agnostic) behavior when the trigger is not a customer inbound, no window policy applies
+  # (duration blank), there is no prior inbound to anchor on, or the lookup raises.
+  def new_interaction_window?
+    return @new_interaction_window if defined?(@new_interaction_window)
+
+    @new_interaction_window = compute_new_interaction_window
+  end
+
+  def compute_new_interaction_window
+    return false unless trigger_message.respond_to?(:incoming?) && trigger_message.incoming?
+
+    window = messaging_window
+    return false if window.blank?
+
+    prior = previous_public_inbound
+    return false if prior.nil?
+
+    trigger_message.created_at >= prior.created_at + window
+  rescue StandardError
+    false
+  end
+
+  # The authoritative channel window DURATION, message-independent (channel_type + config only),
+  # so reusing it delegates all channel timing to core. Private method; a future core rename
+  # degrades to nil here (fail closed -> existing behavior) rather than mis-detecting a new window.
+  def messaging_window
+    Conversations::MessageWindowService.new(conversation).send(:messaging_window)
+  rescue StandardError
+    nil
+  end
+
+  # The latest public inbound turn strictly before the trigger — the anchor the channel would use
+  # for the previous window (the SAME anchor as Marine::Circuit::HandoffWindow).
+  def previous_public_inbound
+    conversation.messages.incoming.where(private: false)
+                .where('id < ?', trigger_message.id)
+                .reorder(created_at: :desc, id: :desc).first
   end
 
   def earlier_marine_reply?
