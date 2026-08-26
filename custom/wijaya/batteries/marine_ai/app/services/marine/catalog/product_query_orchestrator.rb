@@ -52,10 +52,12 @@ module Marine
 
       # Data-driven family recovery bounds. When the extracted mention is missing or noisy
       # and does not resolve, bounded normalized word tokens from the mention and the raw
-      # turn are matched against the active family rows. A token must be at least
-      # MIN_TOKEN_LENGTH chars; at most MAX_RECOVERY_TOKENS distinct tokens are considered;
-      # and at most RECOVERY_FAMILY_LIMIT active rows are scanned (the repository clamps to
-      # its own MAX_LIMIT regardless). No stopword/language/alias list is used.
+      # turn are SCORED against the active family rows (see #family_evidence_score) so the
+      # most-specific family — the one whose code/name the customer actually typed — wins over
+      # a family that a lone generic request word incidentally collides with. A token must be
+      # at least MIN_TOKEN_LENGTH chars; at most MAX_RECOVERY_TOKENS ordered tokens are
+      # considered; and at most RECOVERY_FAMILY_LIMIT active rows are scanned (the repository
+      # clamps to its own MAX_LIMIT regardless). No stopword/language/alias list is used.
       MIN_TOKEN_LENGTH = 2
       MAX_RECOVERY_TOKENS = 24
       RECOVERY_FAMILY_LIMIT = 50
@@ -371,7 +373,7 @@ module Marine
       # and catalog markers (only current_intent and the clarification metadata change). The third
       # same-slot occurrence hands off; a genuinely different candidate set resets to occurrence 1.
       def clarify_family_plan(intent, flow, identifier)
-        candidates = family_repository.active_candidates(query: identifier, limit: CLARIFY_FAMILY_LIMIT)
+        candidates = clarify_family_candidates(identifier)
         reply = reply_renderer.clarify_family(candidates)
         family_codes = candidate_family_codes(candidates)
         progression = clarification_progression(kind: ProductFlowStateStore::CLARIFICATION_KIND_FAMILY,
@@ -381,6 +383,18 @@ module Marine
         changes = clarification_changes({ 'current_intent' => intent[:intent], 'clarification_family_codes' => family_codes },
                                         ProductFlowStateStore::CLARIFICATION_KIND_FAMILY, progression[:count])
         build(:clarify_family, reply: reply, operation: flow_active?(flow) ? :update : :start, changes: changes)
+      end
+
+      # Bounded clarification candidates for the ACTUAL ambiguity. Prefer the repository's
+      # case-insensitive candidate search on the settled identifier; when that yields nothing
+      # (a noisy/poor identifier an ILIKE cannot match) fall back to the raw-turn evidence the
+      # recovery scorer already surfaced, so a repository-identifiable ambiguity never degrades
+      # to an empty, generic family prompt. Read-only.
+      def clarify_family_candidates(identifier)
+        candidates = family_repository.active_candidates(query: identifier, limit: CLARIFY_FAMILY_LIMIT)
+        return candidates if candidates.present?
+
+        matched_families(identifier).first(CLARIFY_FAMILY_LIMIT)
       end
 
       # The bounded, canonical candidate-family-code SET that gives a FAMILY clarification its
@@ -414,54 +428,112 @@ module Marine
         family_repository.resolve_exact(identifier) || unique_active_family(identifier)
       end
 
-      # Data-driven recovery for a missing/noisy mention. Draws bounded, normalized word
-      # tokens from BOTH the extracted mention and the raw customer turn, then keeps only
-      # the active family rows evidenced by the turn — a row-derived code token, or ANY
-      # single row-derived name token (so a partial mention of a multi-word family, e.g.
-      # one word of its name, still recovers). Promotes a family ONLY when the evidence
-      # converges on exactly one distinct active row; zero, several, or conflicting matches
-      # (two families sharing the partial token/fragment) return nil so the caller
-      # clarifies. No stopword/language/alias list — a token that matches nothing simply
-      # contributes nothing, and any ambiguity fails closed. Read-only repository access.
+      # Data-driven recovery for a missing/noisy mention. Scores the active family rows
+      # against the mention + raw turn (see #matched_families / #family_evidence_score) and
+      # promotes a family ONLY when a SINGLE family holds the top score. A genuine tie at the
+      # top (competing equally-specific families) or no evidence at all returns nil so the
+      # caller clarifies — a family is never guessed between real ambiguities. No stopword/
+      # language/alias list — specificity is derived only from the active rows themselves.
       def recover_family(identifier)
         matches = matched_families(identifier)
         matches.first if matches.length == 1
       end
 
-      # Distinct active families evidenced by bounded whole-token matching over the extracted
-      # mention AND the raw turn, deduplicated by code (empty when no bounded token is
-      # present). Shared by #recover_family and #raw_turn_switch_family. Read-only repository
-      # access bounded by RECOVERY_FAMILY_LIMIT (the repository clamps to its own MAX_LIMIT).
+      # The active families sharing the single best evidence score over the extracted mention
+      # AND the raw turn, deduplicated by code (empty when the turn carries no bounded family
+      # evidence). Shared by #recover_family and #raw_turn_switch_family: a unique top scorer
+      # is a confident recovery/switch, a top-score tie is real ambiguity the callers fail
+      # closed on, and the tied rows are the actual candidates a clarification surfaces.
+      #
+      # Scoring deliberately does NOT weight every raw-turn token equally (that let a generic
+      # request word which happens to be one word of an UNRELATED family name manufacture a
+      # false second match): each active family is scored by #family_evidence_score and only
+      # the families sharing the maximal score survive. Read-only repository access bounded by
+      # RECOVERY_FAMILY_LIMIT (the repository clamps to its own MAX_LIMIT).
       def matched_families(identifier)
-        tokens = recovery_tokens(identifier)
-        return [] if tokens.empty?
+        sequence = recovery_sequence(identifier)
+        return [] if sequence.empty?
 
-        family_repository.active_candidates(limit: RECOVERY_FAMILY_LIMIT)
-                         .select { |family| family_named_by?(family, tokens) }
-                         .uniq { |family| family[:code] }
+        top_scored_families(score_active_families(sequence))
       end
 
-      # Bounded, deduplicated, lowercased word tokens drawn from the extracted mention and
-      # the raw turn text.
-      def recovery_tokens(identifier)
-        [identifier, @turn_text].compact.join(' ').downcase
-                                .scan(RECOVERY_TOKEN_PATTERN).uniq.first(MAX_RECOVERY_TOKENS).to_set
+      # Each active family paired with its evidence score over the ordered turn tokens, keeping
+      # only the families the turn actually evidences (a nonzero span).
+      def score_active_families(sequence)
+        tokens = sequence.to_set
+        families = family_repository.active_candidates(limit: RECOVERY_FAMILY_LIMIT).uniq { |family| family[:code] }
+        frequency = family_token_frequency(families)
+
+        families.filter_map do |family|
+          score = family_evidence_score(family, sequence, tokens, frequency)
+          [family, score] unless score.first.zero?
+        end
       end
 
-      # A family is evidenced by the turn when its row-derived code appears as a whole
-      # token, or when ANY single word token of its row-derived name is present as a whole
-      # token. Matching is whole-token equality (never a substring in the middle of a
-      # word), so a partial natural-language mention of a multi-word family — a single one
-      # of its name words, or a contiguous run of them — is enough to evidence it. This is
-      # deliberately permissive: when two families are both evidenced (they share the
-      # partial token/fragment) #recover_family sees more than one distinct row and fails
-      # closed to clarify rather than guessing between them.
-      def family_named_by?(family, tokens)
+      # The families sharing the single maximal evidence score (one row => confident recovery,
+      # several => real ambiguity the callers fail closed on).
+      def top_scored_families(scored)
+        return [] if scored.empty?
+
+        best = scored.map { |(_, score)| score }.max
+        scored.select { |(_, score)| score == best }.map(&:first)
+      end
+
+      # Ordered, bounded, lowercased word tokens drawn from the extracted mention and the raw
+      # turn text — order preserved so #contiguous_span can measure phrase contiguity; the
+      # callers derive the deduplicated set from it.
+      def recovery_sequence(identifier)
+        [identifier, @turn_text].compact.join(' ').downcase.scan(RECOVERY_TOKEN_PATTERN).first(MAX_RECOVERY_TOKENS)
+      end
+
+      # Deterministic evidence score for one active family as a comparable [span, specificity]
+      # tuple (higher wins; an exactly equal tuple ties and fails closed to clarify):
+      #   * span — the LONGEST run of CONSECUTIVE turn tokens that all belong to this family's
+      #     identity (its row-derived code/name tokens). A customer who typed a contiguous chunk
+      #     of ONE family's name outscores a family evidenced only by an isolated generic word
+      #     that incidentally collides with one of its name words — closing the false-ambiguity
+      #     defect without any stopword/language/phrase list.
+      #   * specificity — the sum of 1/corpus-frequency (exact Rational) over this family's
+      #     identity tokens present in the turn, where corpus frequency is how many ACTIVE
+      #     families share the token. A token unique to one family contributes 1; a token shared
+      #     by N families contributes 1/N, so a lone shared token can never break a tie (every
+      #     sharer scores it identically) and only a token UNIQUE across active identities lets
+      #     its family win. Data-driven from the active rows; read-only.
+      def family_evidence_score(family, sequence, tokens, frequency)
+        identity = identity_tokens(family)
+        [contiguous_span(identity, sequence), identity_specificity(identity, tokens, frequency)]
+      end
+
+      # Longest run of consecutive turn tokens all belonging to the family identity set.
+      def contiguous_span(identity, sequence)
+        best = current = 0
+        sequence.each do |token|
+          current = identity.include?(token) ? current + 1 : 0
+          best = current if current > best
+        end
+        best
+      end
+
+      # Sum of 1/corpus-frequency (exact Rational so equally specific families compare
+      # bit-identically and tie) over the family identity tokens present in the turn.
+      def identity_specificity(identity, tokens, frequency)
+        identity.sum(Rational(0)) { |token| tokens.include?(token) ? Rational(1, frequency[token]) : Rational(0) }
+      end
+
+      # Corpus frequency: how many DISTINCT active families each identity token appears in.
+      def family_token_frequency(families)
+        families.each_with_object(Hash.new(0)) do |family, frequency|
+          identity_tokens(family).each { |token| frequency[token] += 1 }
+        end
+      end
+
+      # A family's bounded identity token set: its row-derived name word tokens plus, when
+      # present, its whole row-derived code as a single token.
+      def identity_tokens(family)
+        tokens = family[:name].to_s.downcase.scan(RECOVERY_TOKEN_PATTERN)
         code = family[:code].to_s.strip.downcase
-        return true if code.present? && tokens.include?(code)
-
-        name_tokens = family[:name].to_s.downcase.scan(RECOVERY_TOKEN_PATTERN)
-        name_tokens.any? { |token| tokens.include?(token) }
+        tokens << code if code.present?
+        tokens.to_set
       end
 
       # LIMIT 2 lets a unique active family be told apart from an ambiguous one without

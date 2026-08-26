@@ -324,7 +324,9 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
 
         reply = conversation.messages.reload.outgoing.last
         expect(reply.attachments).to be_empty
-        expect(reply.content).to eq('Could you tell me which product you are interested in?')
+        # D4/contract-6: the clarification surfaces the ACTUAL ambiguity (both "Coastal"
+        # families) rather than degrading to the empty generic prompt, and still never a catalog.
+        expect(reply.content).to eq('Could you let me know which product you mean? For example: Coastal Alpha Series, Coastal Bravo Line.')
         # Ambiguity must not corrupt the pre-existing flow.
         expect(product_state['validated_family']).to eq('FAM-OLD')
         expect(product_state['catalog_document_id']).to eq(111)
@@ -571,6 +573,139 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
       expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-CAT', family_name: 'Coastal Alpha Series')
       expect(plan[:state][:operation]).to eq(:start)
       expect(plan[:state][:changes]).to include('validated_family' => 'FAM-CAT', 'current_intent' => 'catalog')
+    end
+
+    # D4 — catalog-family recovery/resolution remediation. The PROVEN defect: a natural first
+    # catalog request whose valid family name is buried among generic request words failed with
+    # a generic family clarification, because raw-turn recovery weighted EVERY turn token equally
+    # and a generic word that happened to be one word of an UNRELATED active family name
+    # manufactured a false second match. Recovery now SCORES families by the most-specific
+    # evidence (contiguity of the typed name + corpus-frequency specificity of its tokens) so the
+    # family the customer actually named wins, while genuine ties still fail closed. Synthetic
+    # families only; no real product/customer text. Each RED example fails on the old any-token
+    # matching (it clarified) and passes now.
+    describe 'family recovery scoring (contract D4)' do
+      def catalog_extract(overrides = {})
+        allow(extractor).to receive(:extract).and_return(
+          { product_related: true, intent: 'catalog', family_mention: 'product catalog', family_changed: false }.merge(overrides)
+        )
+      end
+
+      context 'when a valid multi-word family is buried in a noisy request whose generic word collides with another family' do
+        # "catalog" (a generic request word) is also a word of FAM-NOISE's name; old matching
+        # counted it as a second match and clarified. Contiguity of "Coastal Alpha" now wins.
+        let(:family_rows) do
+          [{ code: 'FAM-CAT', name: 'Coastal Alpha Series' },
+           { code: 'FAM-NOISE', name: 'Marine Catalog Set' },
+           { code: 'FAM-X', name: 'Reef Charlie Range' }]
+        end
+
+        it 'recovers the family the customer named instead of a generic clarification (RED on old any-token matching)' do
+          catalog_extract
+          plan = orchestrator.process(text: 'Please send the Coastal Alpha catalog now', context: [], flow: nil)
+
+          expect(plan[:action]).to eq(:send_catalog)
+          expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-CAT', family_name: 'Coastal Alpha Series')
+          expect(plan[:state][:operation]).to eq(:start)
+        end
+
+        it 'still recovers when the extractor mention is blank and the full family name is only in the turn' do
+          catalog_extract(family_mention: nil)
+          plan = orchestrator.process(text: 'Do you carry the Coastal Alpha Series catalog', context: [], flow: nil)
+
+          expect(plan[:action]).to eq(:send_catalog)
+          expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-CAT', family_name: 'Coastal Alpha Series')
+        end
+      end
+
+      context 'with colliding sibling families sharing a common word' do
+        # Both siblings share "Coastal"/"Series"; only the distinguishing word "Alpha" was typed.
+        let(:family_rows) do
+          [{ code: 'FAM-A', name: 'Coastal Alpha Series' },
+           { code: 'FAM-B', name: 'Coastal Bravo Series' },
+           { code: 'FAM-X', name: 'Reef Charlie Range' }]
+        end
+
+        it 'resolves the sibling distinguished by its unique word (RED: old counted the shared word as a second match)' do
+          catalog_extract
+          plan = orchestrator.process(text: 'Please send the Coastal Alpha catalog now', context: [], flow: nil)
+
+          expect(plan[:action]).to eq(:send_catalog)
+          expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-A', family_name: 'Coastal Alpha Series')
+        end
+
+        it 'fails closed to clarify when only the SHARED word is typed, surfacing both siblings (contract 5/6)' do
+          catalog_extract
+          plan = orchestrator.process(text: 'Please send the Coastal catalog now', context: [], flow: nil)
+
+          expect(plan[:action]).to eq(:clarify_family)
+          expect(plan[:reply][:candidates].map { |candidate| candidate[:code] }).to contain_exactly('FAM-A', 'FAM-B')
+        end
+      end
+
+      context 'when a token unique across active identities competes with a merely-shared token' do
+        # "Alpha" is unique to FAM-U; "Harbor" is shared by two families, so it is inherently
+        # ambiguous. The unique token is the most-specific evidence and resolves its family.
+        let(:family_rows) do
+          [{ code: 'FAM-U', name: 'Coastal Alpha Series' },
+           { code: 'FAM-S1', name: 'Harbor Bravo Line' },
+           { code: 'FAM-S2', name: 'Harbor Delta Line' }]
+        end
+
+        it 'resolves the uniquely-named family over families evidenced only by a shared token (RED)' do
+          catalog_extract
+          plan = orchestrator.process(text: 'Please send Alpha or Harbor now', context: [], flow: nil)
+
+          expect(plan[:action]).to eq(:send_catalog)
+          expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-U', family_name: 'Coastal Alpha Series')
+        end
+      end
+
+      context 'with precedence and fail-closed guards (characterization)' do
+        let(:family_rows) do
+          [{ code: 'FAM-CAT', name: 'Coastal Alpha Series' },
+           { code: 'FAM-NOISE', name: 'Marine Catalog Set' },
+           { code: 'FAM-X', name: 'Reef Charlie Range' }]
+        end
+
+        it 'lets an exact family CODE mention win over any raw-turn evidence (never tokenized)' do
+          catalog_extract(family_mention: 'FAM-CAT')
+          plan = orchestrator.process(text: 'Please send the Marine Catalog Set now', context: [], flow: nil)
+
+          expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-CAT', family_name: 'Coastal Alpha Series')
+        end
+
+        it 'lets an exact family NAME mention win over any raw-turn evidence' do
+          catalog_extract(family_mention: 'Coastal Alpha Series')
+          plan = orchestrator.process(text: 'Please send the Marine Catalog Set now', context: [], flow: nil)
+
+          expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-CAT', family_name: 'Coastal Alpha Series')
+        end
+
+        it 'clarifies safely when neither the mention nor the turn carries any family evidence' do
+          catalog_extract(family_mention: nil)
+          plan = orchestrator.process(text: 'Please send the document now', context: [], flow: nil)
+
+          expect(plan[:action]).to eq(:clarify_family)
+        end
+
+        it 'fails closed to a handoff when the repository is unavailable during raw-turn recovery' do
+          raising = instance_double(Marine::Catalog::ProductFamilyRepository)
+          allow(raising).to receive(:resolve_exact).and_return(nil)
+          allow(raising).to receive(:active_candidates) do |query: nil, **|
+            raise Marine::Catalog::Errors::CatalogUnavailableError if query.nil?
+
+            []
+          end
+          orch = described_class.new(repositories: { family: raising }, intent_extractor: extractor)
+          catalog_extract
+
+          plan = orch.process(text: 'Please send the Coastal Alpha catalog now', context: [], flow: nil)
+
+          expect(plan[:action]).to eq(:handoff)
+          expect(plan[:reply]).to eq(kind: :catalog_unavailable)
+        end
+      end
     end
   end
 
