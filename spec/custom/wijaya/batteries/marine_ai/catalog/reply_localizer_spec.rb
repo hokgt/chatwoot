@@ -21,6 +21,19 @@ RSpec.describe Marine::Catalog::ReplyLocalizer do
     translator
   end
 
+  # D7: the localizer passes the MASKED text (immutable facts replaced by opaque placeholders) to
+  # the translator. This stub operates on THAT masked text, rephrasing prose via `transform` while
+  # leaving the placeholders verbatim — exactly what a faithful translator does. Corruption tests
+  # use `transform` to drop, duplicate, inject, or malform a placeholder or fact.
+  def stub_masking_translation(&block)
+    allow(Marine::Llm::TranslateResponseService).to receive(:new) do |**kwargs|
+      # This receive-block runs LATER (when the localizer translates), so `yield`/anonymous block
+      # would be out of scope; the captured named block must be called explicitly.
+      instance_double(Marine::Llm::TranslateResponseService,
+                      call: { ok: true, text: block.call(kwargs[:text]), translated: true }) # rubocop:disable Performance/RedundantBlockCall
+    end
+  end
+
   # The separate semantic validator is an LLM call; stub it so the deterministic gates are what
   # the example actually exercises. Returns the double so examples can assert it was/wasn't called.
   def stub_semantic(accepted)
@@ -105,23 +118,14 @@ RSpec.describe Marine::Catalog::ReplyLocalizer do
       expect(validator).not_to have_received(:valid?)
     end
 
-    it 'delivers a faithful price translation preserving every protected token when the descriptor gate passes' do
+    it 'delivers a faithful price translation with every immutable fact restored byte-exact' do
       priced = 'The price for IMP-3 is IDR 150000 per pcs.'
       descriptor = { kind: :price_available, variant_code: 'IMP-3', price_list_rate: '150000', currency: 'IDR', uom: 'pcs' }
-      stub_translation('Harga untuk IMP-3 adalah IDR 150000 per pcs.')
+      # The translator only ever sees placeholders for the facts; it rephrases prose and they are restored.
+      stub_masking_translation { |masked| masked.gsub('The price for', 'Harga untuk').gsub(' is ', ' adalah ') }
       stub_semantic(true)
 
       expect(localize(text: priced, action: :reply, descriptor: descriptor)).to eq('Harga untuk IMP-3 adalah IDR 150000 per pcs.')
-    end
-
-    it 'rejects a translation that changes a protected display value even when token inventory matches' do
-      descriptor = { kind: :catalog, family_code: 'IMP', family_name: 'Impeller' }
-      caption = 'Here is the product catalog for Impeller.'
-      stub_translation('Ini katalog produk untuk Propeller.') # family display changed; no numeric/code tokens either side
-      validator = stub_semantic(true)
-
-      expect(localize(text: caption, action: :send_catalog, descriptor: descriptor)).to eq(caption)
-      expect(validator).not_to have_received(:valid?) # deterministic descriptor gate rejects before the semantic call
     end
 
     it 'rejects a token-clean translation when the separate semantic validator is not certain' do
@@ -179,6 +183,123 @@ RSpec.describe Marine::Catalog::ReplyLocalizer do
 
     it 'trusts the CLD3 result only when no configured language exists (the pre-fix hazard)' do
       expect(captured_target(provider_language: nil, fallback_language: nil)).to eq('hi-latn')
+    end
+  end
+
+  # D7 — configured-language consistency with placeholder-protected facts. Immutable facts (codes,
+  # currency, amount, UOM) are masked before the untrusted translation and restored byte-exact; a
+  # human-facing display label MAY translate (semantic-governed). Any placeholder inventory
+  # violation, injected fact, or semantic rejection fails CLOSED to English. Localizing into 'id'
+  # here stands in for any non-English configured language — no language/phrase is hardcoded.
+  describe 'D7 — configured-language consistency with exact fact preservation' do
+    before { allow(Marine::Llm::LanguageDetector).to receive(:new).and_return(detector_for('id')) }
+
+    let(:token_re) { Marine::Catalog::FactPlaceholderMask::TOKEN }
+    let(:price_text) { 'The price for IMP-3 is IDR 150000 per pcs.' }
+    let(:price_descriptor) { { kind: :price_available, variant_code: 'IMP-3', price_list_rate: '150000', currency: 'IDR', uom: 'pcs' } }
+
+    def localize_price(&)
+      stub_masking_translation(&)
+      localize(text: price_text, action: :reply, descriptor: price_descriptor)
+    end
+
+    it 'accepts a translated family display label when the semantic validator confirms equivalence' do
+      caption = 'Here is the product catalog for Impeller.'
+      descriptor = { kind: :catalog, family_code: 'IMP', family_name: 'Impeller' }
+      stub_masking_translation { |masked| masked.gsub('Here is the product catalog for Impeller.', 'Ini katalog produk untuk Baling-baling.') }
+      stub_semantic(true)
+
+      expect(localize(text: caption, action: :send_catalog, descriptor: descriptor)).to eq('Ini katalog produk untuk Baling-baling.')
+    end
+
+    it 'rejects a translated display label the semantic validator does not certify (not equivalent)' do
+      caption = 'Here is the product catalog for Impeller.'
+      descriptor = { kind: :catalog, family_code: 'IMP', family_name: 'Impeller' }
+      stub_masking_translation { |masked| masked.gsub('Here is the product catalog for Impeller.', 'Ini katalog produk untuk Propeller.') }
+      stub_semantic(false)
+
+      expect(localize(text: caption, action: :send_catalog, descriptor: descriptor)).to eq(caption)
+    end
+
+    it 'restores a mutated immutable fact by failing closed (a placeholder replaced by a literal is dropped)' do
+      validator = stub_semantic(true)
+      # The translator rewrites a fact placeholder to a literal changed currency; that placeholder is now missing.
+      expect(localize_price { |masked| masked.sub(token_re, 'USD') }).to eq(price_text)
+      expect(validator).not_to have_received(:valid?) # restoration fails closed before the semantic call
+    end
+
+    it 'rejects a DROPPED placeholder' do
+      stub_semantic(true)
+      expect(localize_price { |masked| masked.sub(token_re, '') }).to eq(price_text)
+    end
+
+    it 'rejects a DUPLICATED placeholder' do
+      stub_semantic(true)
+      expect(localize_price { |masked| "#{masked} #{masked[token_re]}" }).to eq(price_text)
+    end
+
+    it 'rejects an UNKNOWN placeholder id never produced by the mask' do
+      stub_semantic(true)
+      unknown = "#{Marine::Catalog::FactPlaceholderMask::OPEN}ZZ#{Marine::Catalog::FactPlaceholderMask::CLOSE}"
+      expect(localize_price { |masked| masked + unknown }).to eq(price_text)
+    end
+
+    it 'rejects MALFORMED sentinel residue' do
+      stub_semantic(true)
+      expect(localize_price { |masked| masked + Marine::Catalog::FactPlaceholderMask::OPEN }).to eq(price_text)
+    end
+
+    it 'rejects an injected number in the translated prose even with every placeholder intact' do
+      validator = stub_semantic(true)
+      expect(localize_price { |masked| "#{masked.gsub('The price for', 'Harga untuk')} (5)" }).to eq(price_text)
+      expect(validator).not_to have_received(:valid?) # deterministic token inventory rejects before the semantic call
+    end
+
+    it 'preserves BOTH facts of a composite price+stock reply in one localized message' do
+      composite_text = 'The price for IMP-3 is IDR 150000 per pcs. Good news — that item is currently in stock.'
+      descriptor = { kind: :composite,
+                     parts: [price_descriptor, { kind: :stock_available }] }
+      stub_masking_translation do |masked|
+        # Replace the whole stock sentence first, so the later ' is ' substitution only touches price prose.
+        masked.gsub('Good news — that item is currently in stock.', 'Kabar baik — barang tersedia.')
+              .gsub('The price for', 'Harga untuk').gsub(' is ', ' adalah ')
+      end
+      stub_semantic(true)
+
+      expect(localize(text: composite_text, action: :reply, descriptor: descriptor))
+        .to eq('Harga untuk IMP-3 adalah IDR 150000 per pcs. Kabar baik — barang tersedia.')
+    end
+
+    it 'delivers a stock reply in the configured language carrying no quantity' do
+      stock_text = 'Good news — that item is currently in stock.'
+      stub_masking_translation { |masked| masked.gsub(stock_text, 'Kabar baik — barang tersedia.') }
+      stub_semantic(true)
+
+      expect(localize(text: stock_text, action: :reply, descriptor: { kind: :stock_available })).to eq('Kabar baik — barang tersedia.')
+    end
+
+    it 'rejects a stock translation that injects a quantity number, back to English' do
+      stock_text = 'Good news — that item is currently in stock.'
+      stub_masking_translation { |masked| masked.gsub(stock_text, 'Kabar baik — 5 barang tersedia.') }
+      stub_semantic(true)
+
+      expect(localize(text: stock_text, action: :reply, descriptor: { kind: :stock_available })).to eq(stock_text)
+    end
+
+    it 'never translates or validates an English (source-language) product reply' do
+      allow(Marine::Llm::LanguageDetector).to receive(:new).and_return(detector_for('en'))
+      expect(Marine::Llm::TranslateResponseService).not_to receive(:new)
+      expect(Marine::Charge::FactPreservationValidator).not_to receive(:new)
+
+      expect(localize(text: price_text, action: :reply, descriptor: price_descriptor)).to eq(price_text)
+    end
+
+    it 'fails closed to English when the semantic validator raises on a fact-clean translation' do
+      validator = instance_double(Marine::Charge::FactPreservationValidator)
+      allow(validator).to receive(:valid?).and_raise(StandardError, 'boom')
+      allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(validator)
+
+      expect(localize_price { |masked| masked.gsub('The price for', 'Harga untuk') }).to eq(price_text)
     end
   end
 end

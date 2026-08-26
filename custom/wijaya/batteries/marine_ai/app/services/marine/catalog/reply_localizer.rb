@@ -19,17 +19,24 @@
 # family/catalog/document selection.
 #
 # FACTUAL SAFETY: the English source is the SOLE factual authority; a translation is an
-# UNTRUSTED rewrite. A translated reply is delivered ONLY when it survives, in order:
-#   1. a deterministic generic token-inventory check — the translation must carry the SAME
+# UNTRUSTED rewrite. Before the untrusted step runs, the deterministic Marine::Catalog::
+# FactPlaceholderMask replaces every IMMUTABLE fact value in the English source (family/variant
+# code, currency, UOM, price amount, composite-part facts) with an opaque placeholder, so the
+# translator only ever rephrases prose and the human-facing DISPLAY LABEL (family/candidate name,
+# attribute names) — never an identifier or amount. A translated reply is delivered ONLY when it
+# survives, in order:
+#   1. strict placeholder inventory/restoration — the translation must carry the EXACT same
+#      placeholder multiset (no dropped/duplicated/unknown/malformed marker), and each is restored
+#      to its byte-exact original value, so a mistranslation can never change a code, price,
+#      currency, or unit;
+#   2. a deterministic generic token-inventory check over the restored text — it must carry the SAME
 #      multiset of numeric, currency-symbol, identifier-like (letter+digit), and uppercase-code
-#      tokens as the English source, so a mistranslation cannot add/remove/change a price,
-#      number, currency, unit figure, or product/family/code;
-#   2. for a supported product descriptor, the deterministic ProductFactProtectionValidator
-#      (action + descriptor), so protected display values stay literal; and
+#      tokens as the English source, so nothing new (an injected number/currency/code) survives in
+#      the translated prose or label; and
 #   3. the SEPARATE semantic Marine::Charge::FactPreservationValidator, proving the translation
-#      is fact-equivalent to the English source (no changed stock outcome, delivery
-#      availability/cost, warehouse/location, or other unsupported assertion the token check
-#      cannot see).
+#      is fact-equivalent to the English source (a translated display label is accepted here ONLY
+#      when semantically equivalent; no changed stock outcome, delivery availability/cost,
+#      warehouse/location, or other unsupported assertion the token check cannot see).
 # Any failure/uncertainty at any gate fails CLOSED to the exact English source. English,
 # unknown-target, unconfigured-translator, and unchanged-translation paths are unchanged: they
 # return the original English WITHOUT invoking any validator or extra provider call. Only the
@@ -53,9 +60,11 @@ module Marine
       ALNUM_RUN = /[[:alnum:]]+/
       UPPERCASE_CODE = /[A-Z]{2,}/
 
-      # action/descriptor are OPTIONAL: when a supported product descriptor + its action are
-      # supplied, the deterministic ProductFactProtectionValidator additionally keeps its
-      # protected display values literal in the translation. They never influence selection.
+      # action/descriptor are OPTIONAL: when a supported product descriptor is supplied, the
+      # FactPlaceholderMask masks its immutable fact values before translation and restores them
+      # after, so those facts stay byte-exact while the display label may translate. `action` is
+      # retained as part of the stable delivery-boundary keyword API (callers thread it uniformly);
+      # the descriptor alone drives masking. They never influence selection.
       # rubocop:disable Metrics/ParameterLists -- these are an explicit keyword API at the
       # battery's delivery boundary: the text plus its independent language signals
       # (trigger_text/context/provider_language), the account, and the optional protected
@@ -79,46 +88,49 @@ module Marine
         target = target_language
         return @text if target == UNKNOWN || target == SOURCE_LANGUAGE
 
-        translated = translate(target)
-        # A degraded/unchanged translation is the English source verbatim — nothing to validate,
-        # so no validator or extra provider call runs.
-        return @text if translated == @text
-
-        fact_preserved?(translated) ? translated : @text
+        localize_to(target)
       end
 
       private
 
-      # TranslateResponseService already degrades safely (skip on same/unknown/unconfigured,
-      # original text on failure) and always returns a JSON-safe hash carrying a usable
-      # :text, so a blank/missing result can only fall back to the original English.
-      def translate(target)
-        Marine::Llm::TranslateResponseService.new(
-          text: @text, target_language: target, source_language: SOURCE_LANGUAGE, account: @account
-        ).call[:text].presence || @text
+      # Mask immutable facts, translate the masked source, restore byte-exact, and validate — failing
+      # closed to the exact English source at any step (unmaskable source, degraded/unchanged
+      # translation, placeholder inventory violation, or a rejected factual gate).
+      def localize_to(target)
+        masked = mask.mask(@text)
+        return @text if masked.nil?
+
+        translated = translate(masked, target)
+        # A degraded/unchanged translation is the masked source verbatim — nothing to validate.
+        return @text if translated == masked
+
+        restored = mask.restore(translated)
+        # A dropped/duplicated/unknown/malformed placeholder rejects; an identical restoration is the
+        # English source, so nothing to validate either way.
+        return @text if restored.nil? || restored == @text
+
+        fact_preserved?(restored) ? restored : @text
       end
 
-      # Fail-closed factual gate over an untrusted translation: deterministic token inventory,
-      # then (for a supported descriptor) the deterministic protected-value validator, then the
-      # separate semantic validator. Any error/uncertainty rejects (deliver English).
-      def fact_preserved?(translated)
-        return false unless token_inventory_match?(@text, translated)
-        return false unless descriptor_values_preserved?(translated)
+      # TranslateResponseService already degrades safely (skip on same/unknown/unconfigured,
+      # original text on failure) and always returns a JSON-safe hash carrying a usable :text, so a
+      # blank/missing result can only fall back to the (masked) source it was given.
+      def translate(source, target)
+        Marine::Llm::TranslateResponseService.new(
+          text: source, target_language: target, source_language: SOURCE_LANGUAGE, account: @account
+        ).call[:text].presence || source
+      end
 
-        fact_validator.valid?(approved_answer: @text, candidate: translated)
+      # Fail-closed factual gate over the restored translation: deterministic token inventory (the
+      # immutable facts are already byte-exact from placeholder restoration, so this catches an
+      # injected number/currency/code in the translated prose or label), then the separate semantic
+      # validator. Any error/uncertainty rejects (deliver English).
+      def fact_preserved?(restored)
+        return false unless token_inventory_match?(@text, restored)
+
+        fact_validator.valid?(approved_answer: @text, candidate: restored)
       rescue StandardError
         false
-      end
-
-      # For a supported product descriptor, the protected display values (family/variant code or
-      # name, exact price fields) must stay literal in the translation. A non-descriptor text
-      # (handoff acknowledgement, static template) or an ineligible descriptor skips this gate and
-      # relies on the token-inventory + semantic checks.
-      def descriptor_values_preserved?(translated)
-        return true if @descriptor.nil?
-        return true unless fact_protection.eligible?(action: @action, descriptor: @descriptor)
-
-        fact_protection.accepts?(action: @action, descriptor: @descriptor, fallback: @text, candidate: translated)
       end
 
       # Identical (order-independent, count-sensitive) inventories of every generic token class,
@@ -173,7 +185,7 @@ module Marine
         @context.join("\n")
       end
 
-      def fact_protection = @fact_protection ||= Marine::Catalog::ProductFactProtectionValidator.new
+      def mask = @mask ||= Marine::Catalog::FactPlaceholderMask.new(descriptor: @descriptor)
 
       def fact_validator = @fact_validator ||= Marine::Charge::FactPreservationValidator.new(account: @account)
     end

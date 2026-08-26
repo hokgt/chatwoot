@@ -315,6 +315,39 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       expect(conversation.messages.outgoing.last.content).to eq(original)
     end
 
+    # D7 — configured-language consistency with exact fact preservation on the real shared path.
+    # A non-English product reply localizes through the SAME ReplyLocalizer + FactPlaceholderMask,
+    # so immutable facts (variant code, currency, amount, UOM) stay byte-exact while the prose
+    # follows the customer's language. The translator only ever sees the masked text (facts replaced
+    # by opaque placeholders); no outbound network runs and exactly one message is delivered.
+    it 'delivers a product price reply in the configured language with every fact byte-exact (masked, no LLM output trusted)' do
+      msg = create(:message, conversation: conversation, message_type: :incoming, content: 'berapa harga IMP-3')
+      payload = product_payload(
+        action: :reply,
+        reply: { kind: :price_available, variant_code: 'IMP-3', currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
+        operation: :update,
+        changes: { 'validated_family' => 'IMP', 'validated_variant' => 'IMP-3', 'current_intent' => 'price' }
+      )
+      payload['product_plan'][:language] = 'id' # per-turn provider language -> deterministic target
+      stub_reasoning(payload)
+      # Masking-aware translator: rephrases prose, leaves the opaque fact placeholders verbatim.
+      allow(Marine::Llm::TranslateResponseService).to receive(:new) do |**kwargs|
+        localized = kwargs[:text].gsub('The price for', 'Harga untuk').gsub(' is ', ' adalah ')
+        instance_double(Marine::Llm::TranslateResponseService, call: { ok: true, text: localized, translated: true })
+      end
+      allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(
+        instance_double(Marine::Charge::FactPreservationValidator, valid?: true)
+      )
+
+      described_class.perform_now(conversation, assistant, msg.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq('Harga untuk IMP-3 adalah IDR 150000 per pcs.')
+      expect(reply.content).to include('IMP-3', 'IDR', '150000', 'pcs') # immutable facts restored byte-exact
+      expect(reply.attachments).to be_empty
+      expect(conversation.messages.outgoing.count).to eq(1)
+    end
+
     it 'rolls back flow state and leaves the claim retryable when catalog delivery fails' do
       usable_catalog
       stub_reasoning(send_catalog_payload)

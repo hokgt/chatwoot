@@ -485,6 +485,13 @@ patches:
       # raises and degrades to the original English on unknown/unconfigured/failed
       # translation; never alters family/document selection or one-catalog-per-flow markers.
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_localizer.rb
+      # D7 — generic opaque placeholder masking of a product reply's IMMUTABLE fact values (family/
+      # variant code, currency, UOM, price amount, composite-part facts) before the untrusted
+      # localization/naturalization LLM sees the text, with byte-exact restoration and strict
+      # fail-closed placeholder inventory validation afterwards. Display-label fields (family/candidate
+      # name, attribute names) are deliberately left translatable (semantic-governed). Used by
+      # ReplyLocalizer so configured-language delivery no longer requires a display label literally.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/fact_placeholder_mask.rb
       # Cohesive plan-envelope helper mixed into the orchestrator: builds the frozen
       # action/state-change plan payloads and deep-freezes them (no repository/provider/
       # state access), keeping the orchestrator on decision/state-machine logic.
@@ -758,6 +765,9 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/catalog/playground_state_token_spec.rb
       # Delivery-only product-reply localizer spec.
       - spec/custom/wijaya/batteries/marine_ai/catalog/reply_localizer_spec.rb
+      # D7 — FactPlaceholderMask spec: immutable-fact masking/exact restoration, display labels left
+      # translatable, and fail-closed rejection of dropped/duplicated/unknown/malformed placeholders.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/fact_placeholder_mask_spec.rb
       # Phase 6 — fact-protected natural product wording: deterministic protected-fact checker
       # (action/kind matrix, protected-value + token-inventory rejection, price/stock outcome,
       # malformed shapes) and the two-gate wording service (deterministic-before-semantic,
