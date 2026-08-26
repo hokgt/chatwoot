@@ -96,6 +96,14 @@ RSpec.describe Marine::Catalog::ProductFlowStateStore do
       expect(flow['status']).to eq('completed')
     end
 
+    it 'normalizes and bounds the clarification_family_codes set, dropping it when empty' do
+      flow = store.start!(clarification_family_codes: ['FAM-A', 'FAM-A', 'FAM- B', '', 123])
+      expect(flow['clarification_family_codes']).to eq(['FAM-A', 'FAM- B', '123'])
+
+      cleared = store.update!(clarification_family_codes: [])
+      expect(cleared).not_to have_key('clarification_family_codes')
+    end
+
     it 'coerces an unknown status back to active' do
       expect(store.start!(status: 'haxx')['status']).to eq('active')
     end

@@ -51,10 +51,13 @@ module Marine
       STRING_FIELDS = %w[flow_id original_intent current_intent validated_family validated_variant].freeze
       INTEGER_FIELDS = %w[origin_message_id last_relevant_message_id catalog_document_id catalog_message_id].freeze
       BOOLEAN_FIELDS = %w[catalog_sent].freeze
-      # Bounded clarification metadata, validated/normalized separately (enum + range) so it
-      # reuses current_intent/validated_family/expected_attributes for identity rather than
-      # duplicating raw signature fields.
-      CLARIFICATION_FIELDS = %w[clarification_kind clarification_count].freeze
+      # Bounded clarification metadata, validated/normalized separately (enum + range + bounded
+      # code set). clarification_kind/count track the occurrence; clarification_family_codes is the
+      # bounded, normalized candidate-family-code SET that gives a FAMILY clarification its durable
+      # slot identity (a variant clarification reuses validated_family + expected_attributes). None
+      # of these is raw customer text or a fact — the identity never depends on the volatile
+      # per-turn current_intent.
+      CLARIFICATION_FIELDS = %w[clarification_kind clarification_count clarification_family_codes].freeze
       FIELDS = (%w[version status expires_at expected_attributes] +
                 STRING_FIELDS + INTEGER_FIELDS + BOOLEAN_FIELDS + CLARIFICATION_FIELDS).freeze
       # version and flow_id are owned by the store; callers may set everything else.
@@ -339,9 +342,17 @@ module Marine
         (STRING_FIELDS - %w[flow_id]).each { |k| fields[k] = bounded_string(source[k], MAX_STRING_LENGTH) }
         INTEGER_FIELDS.each { |k| fields[k] = bounded_integer(source[k]) }
         BOOLEAN_FIELDS.each { |k| fields[k] = boolean(source[k]) if source.key?(k) }
-        fields['clarification_kind'] = clarification_kind(source['clarification_kind'])
-        fields['clarification_count'] = clarification_count(source['clarification_count'])
-        fields.compact
+        fields.merge(clarification_metadata(source)).compact
+      end
+
+      # The bounded clarification-progression metadata, each field strictly validated (enum /
+      # range / bounded code set) so a forged/malformed value reads as nil and drops on compact.
+      def clarification_metadata(source)
+        {
+          'clarification_kind' => clarification_kind(source['clarification_kind']),
+          'clarification_count' => clarification_count(source['clarification_count']),
+          'clarification_family_codes' => clarification_family_codes(source['clarification_family_codes'])
+        }
       end
 
       # A persisted clarification kind is trusted only when it is one of the enum values;
@@ -355,6 +366,14 @@ module Marine
       def clarification_count(value)
         parsed = bounded_integer(value)
         parsed if parsed && parsed >= 1 && parsed <= MAX_CLARIFICATION_COUNT
+      end
+
+      # A persisted candidate-family-code set is canonicalized through the same bounded
+      # normalization as expected_attributes (control-stripped, blank-rejected, deduplicated,
+      # capped); an empty/absent/non-array value reads as nil (dropped by compact), so the field
+      # only persists on a genuine FAMILY clarification and never pollutes an unrelated flow.
+      def clarification_family_codes(value)
+        self.class.normalize_expected_attributes(value).presence
       end
 
       # A persisted status is valid only when it is one of the allowlisted values.

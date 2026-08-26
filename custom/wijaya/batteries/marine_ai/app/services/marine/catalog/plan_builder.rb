@@ -27,12 +27,13 @@ module Marine
       end
 
       # A RESOLVED plan represents validated progress, so on a continuation (:update) it clears
-      # any prior clarification-progression metadata (Phase 3): the nils are compacted away by
-      # #update! sanitization. A fresh :start flow carries no such metadata, so it is untouched.
+      # any prior clarification-progression metadata (Phase 3): kind, count, and the candidate-
+      # family-code slot set. The nils are compacted away by #update! sanitization. A fresh :start
+      # flow carries no such metadata, so it is untouched.
       def cleared_clarification(changes, state_op)
         return changes unless state_op == :update
 
-        changes.merge('clarification_kind' => nil, 'clarification_count' => nil)
+        changes.merge('clarification_kind' => nil, 'clarification_count' => nil, 'clarification_family_codes' => nil)
       end
 
       # The optional :language key is bounded delivery metadata (the customer-language

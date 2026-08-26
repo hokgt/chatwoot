@@ -350,8 +350,7 @@ module Marine
         attribute_names = ProductFlowStateStore.normalize_expected_attributes(variant_repository.attribute_names(family[:code]))
         clarify = reply_renderer.clarify_variant(attribute_names)
         progression = clarification_progression(kind: ProductFlowStateStore::CLARIFICATION_KIND_VARIANT,
-                                                intent: intent[:intent], family: family[:code],
-                                                expected: attribute_names, flow: flow)
+                                                family: family[:code], expected: attribute_names, flow: flow)
         return build(:handoff, reply: clarify) if progression[:handoff]
 
         changes = clarification_changes(family_changes(family, intent).merge('expected_attributes' => attribute_names),
@@ -366,20 +365,29 @@ module Marine
       end
 
       # Structured FAMILY clarification occurrence. Occurrences 1 and 2 record bounded
-      # clarification metadata (kind + count) so the SAME unresolved family state can be
-      # counted across turns — on a fresh conversation via :start, on an active flow via
-      # :update that PRESERVES the validated family and catalog markers (only current_intent
-      # and the clarification metadata change). The third same-state occurrence hands off.
+      # clarification metadata (kind + count + the candidate-family-code set that defines the
+      # slot) so the SAME unresolved family state can be counted across turns — on a fresh
+      # conversation via :start, on an active flow via :update that PRESERVES the validated family
+      # and catalog markers (only current_intent and the clarification metadata change). The third
+      # same-slot occurrence hands off; a genuinely different candidate set resets to occurrence 1.
       def clarify_family_plan(intent, flow, identifier)
-        reply = reply_renderer.clarify_family(family_repository.active_candidates(query: identifier, limit: CLARIFY_FAMILY_LIMIT))
+        candidates = family_repository.active_candidates(query: identifier, limit: CLARIFY_FAMILY_LIMIT)
+        reply = reply_renderer.clarify_family(candidates)
+        family_codes = candidate_family_codes(candidates)
         progression = clarification_progression(kind: ProductFlowStateStore::CLARIFICATION_KIND_FAMILY,
-                                                intent: intent[:intent], family: flow['validated_family'],
-                                                expected: nil, flow: flow)
+                                                family: flow['validated_family'], family_codes: family_codes, flow: flow)
         return build(:handoff, reply: reply) if progression[:handoff]
 
-        changes = clarification_changes({ 'current_intent' => intent[:intent] },
+        changes = clarification_changes({ 'current_intent' => intent[:intent], 'clarification_family_codes' => family_codes },
                                         ProductFlowStateStore::CLARIFICATION_KIND_FAMILY, progression[:count])
         build(:clarify_family, reply: reply, operation: flow_active?(flow) ? :update : :start, changes: changes)
+      end
+
+      # The bounded, canonical candidate-family-code SET that gives a FAMILY clarification its
+      # durable slot identity — the same codes surfaced in the clarify_family reply, normalized
+      # through the store's trust boundary so it round-trips identically with the persisted field.
+      def candidate_family_codes(candidates)
+        ProductFlowStateStore.normalize_expected_attributes(candidates.pluck(:code))
       end
 
       # Continuation switch detection. Classifies the DISTINCT active families evidenced by
@@ -507,34 +515,49 @@ module Marine
       # --- clarification progression (Phase 3) ------------------------------------
 
       # Count for an unresolved structured state and whether it must now hand off. The state
-      # IDENTITY is generic — derived only from allowlisted structured state (clarification
-      # kind, current supported intent, validated family when any, and — for a variant — the
-      # repository expected attributes), NEVER raw customer text, candidate values, LLM output,
-      # prices, stock, SQL, or errors. A repeat of the SAME identity on the SAME active flow
-      # increments the count; any change (kind, intent, family, expected attrs), a fresh/expired
-      # flow, or validated progress resets to 1. The third occurrence (count past the max) hands
-      # off. Validated progress is expressed by the caller planning a resolved (non-clarify)
-      # action, which clears the metadata instead of reaching here.
-      def clarification_progression(kind:, intent:, family:, expected:, flow:)
-        repeat = same_prior_clarification?(flow, kind: kind, intent: intent, family: family, expected: expected)
+      # IDENTITY is the DURABLE unresolved slot — derived only from allowlisted structured state
+      # (clarification kind, validated family when any, and the bounded candidate set the slot is
+      # blocked on: the repository expected attributes for a VARIANT, the candidate family codes
+      # for a FAMILY). It NEVER depends on the volatile per-turn current_intent, nor on raw
+      # customer text, candidate values, LLM output, prices, stock, SQL, or errors. A repeat of the
+      # SAME slot on the SAME active flow increments the count; a changed kind/family/candidate
+      # set, a fresh/expired flow, or validated progress resets to 1. The third occurrence (count
+      # past the max) hands off. Validated progress is expressed by the caller planning a resolved
+      # (non-clarify) action, which clears the metadata instead of reaching here.
+      def clarification_progression(kind:, family:, flow:, expected: nil, family_codes: nil)
+        repeat = same_prior_clarification?(flow, kind: kind, family: family, expected: expected, family_codes: family_codes)
         count = repeat ? prior_clarification_count(flow) + 1 : 1
         { count: count, handoff: count > MAX_CLARIFICATIONS }
       end
 
       # True only when the flow already carries a prior occurrence of the EXACT same unresolved
-      # structured state. Requires an ACTIVE flow (a fresh/expired flow can carry no prior
-      # occurrence) and a positive persisted count (a dropped/malformed count reads as none).
-      def same_prior_clarification?(flow, kind:, intent:, family:, expected:)
+      # slot. Requires an ACTIVE flow (a fresh/expired flow can carry no prior occurrence) and a
+      # positive persisted count (a dropped/malformed count reads as none).
+      def same_prior_clarification?(flow, kind:, family:, expected:, family_codes:)
         return false unless flow_active?(flow)
         return false unless flow['clarification_kind'].to_s == kind
-        return false unless flow['current_intent'].to_s == intent.to_s
         return false unless flow['validated_family'].to_s == family.to_s
-        if kind == ProductFlowStateStore::CLARIFICATION_KIND_VARIANT &&
-           normalized_attributes(flow['expected_attributes']) != normalized_attributes(expected)
-          return false
-        end
+        return false unless same_unresolved_slot?(flow, kind, expected, family_codes)
 
         prior_clarification_count(flow).positive?
+      end
+
+      # The durable candidate SET the slot is blocked on, compared per kind: a VARIANT occurrence
+      # is the SAME while the repository expected-attribute set matches; a FAMILY occurrence is the
+      # SAME while the bounded candidate-family-code set matches. Both compare canonical sorted sets
+      # so a different repository order never falsely resets the count. current_intent is
+      # deliberately NOT consulted: a valid terse/rephrased clarification the extractor relabels
+      # with a different supported intent is still the SAME unresolved slot and must keep advancing
+      # toward the occurrence-3 handoff.
+      def same_unresolved_slot?(flow, kind, expected, family_codes)
+        case kind
+        when ProductFlowStateStore::CLARIFICATION_KIND_VARIANT
+          normalized_identity_set(flow['expected_attributes']) == normalized_identity_set(expected)
+        when ProductFlowStateStore::CLARIFICATION_KIND_FAMILY
+          normalized_identity_set(flow['clarification_family_codes']) == normalized_identity_set(family_codes)
+        else
+          true
+        end
       end
 
       # The persisted clarification count is already store-sanitized to a bounded integer or
@@ -544,15 +567,15 @@ module Marine
         value.is_a?(Integer) ? value : 0
       end
 
-      # Canonicalize both prior (persisted) and current expected attributes through the SAME
-      # store trust boundary before comparison, so identity survives a pathological repository
-      # list: the persisted value and the freshly-canonicalized turn value share exactly one
-      # normalization (bounded, control-stripped, blank-rejected, deduplicated, capped). The
-      # result is additionally SORTED here — for identity comparison ONLY — so the SAME
-      # canonical set surfaced in a different repository order still compares equal (and never
-      # falsely resets the progression to occurrence 1), while a genuinely changed set still
-      # differs. The store's canonical persistence/descriptor order is left untouched.
-      def normalized_attributes(value)
+      # Canonicalize a bounded identity set (expected attributes OR candidate family codes) through
+      # the SAME store trust boundary before comparison, so identity survives a pathological
+      # repository list: the persisted value and the freshly-canonicalized turn value share exactly
+      # one normalization (bounded, control-stripped, blank-rejected, deduplicated, capped). The
+      # result is additionally SORTED here — for identity comparison ONLY — so the SAME canonical
+      # set surfaced in a different repository order still compares equal (and never falsely resets
+      # the progression to occurrence 1), while a genuinely changed set still differs. The store's
+      # canonical persistence/descriptor order is left untouched.
+      def normalized_identity_set(value)
         ProductFlowStateStore.normalize_expected_attributes(Array(value)).sort
       end
 

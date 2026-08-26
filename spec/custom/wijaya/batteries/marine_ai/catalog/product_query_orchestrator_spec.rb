@@ -502,8 +502,9 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
     end
   end
 
-  # Phase 3 — structured clarification progression. Identity is generic (kind + supported
-  # intent + validated family + expected attributes), NEVER raw text/candidate values.
+  # Phase 3 / D5 — structured clarification progression. Identity is the DURABLE unresolved slot
+  # (kind + validated family + the bounded candidate-family-code set), NEVER the volatile per-turn
+  # current_intent, raw text, or candidate values.
   describe 'family clarification progression' do
     before do
       allow(family_repository).to receive(:resolve_exact).and_return(nil)
@@ -513,20 +514,23 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       )
     end
 
+    # A prior family-clarification flow persists the candidate-code SET the slot is blocked on
+    # (matching the stubbed active_candidates above), so a later same-slot turn increments it.
     def family_clarify_flow(count, overrides = {})
       {
         'version' => 2, 'flow_id' => 'flow-1', 'status' => 'active', 'expires_at' => '2999-01-01T00:00:00Z',
         'expected_attributes' => [], 'current_intent' => 'price', 'clarification_kind' => 'family',
-        'clarification_count' => count
+        'clarification_count' => count, 'clarification_family_codes' => %w[FAM-A FAM-B]
       }.merge(overrides)
     end
 
-    it 'opens occurrence 1 on a fresh conversation (:start, count 1)' do
+    it 'opens occurrence 1 on a fresh conversation (:start, count 1) and records the candidate-code set' do
       plan = orchestrator.plan_for_intent(intent: intent(intent: 'price', family_mention: 'Zzz'), flow: nil)
 
       expect(plan[:action]).to eq(:clarify_family)
       expect(plan[:state][:operation]).to eq(:start)
-      expect(plan[:state][:changes]).to include('clarification_kind' => 'family', 'clarification_count' => 1, 'current_intent' => 'price')
+      expect(plan[:state][:changes]).to include('clarification_kind' => 'family', 'clarification_count' => 1,
+                                                'current_intent' => 'price', 'clarification_family_codes' => %w[FAM-A FAM-B])
     end
 
     it 'increments the SAME unresolved family state to occurrence 2 (:update, count 2)' do
@@ -544,11 +548,44 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(plan[:reply][:kind]).to eq(:clarify_family)
     end
 
-    it 'resets the progression to 1 when the supported intent switches' do
-      plan = orchestrator.plan_for_intent(intent: intent(intent: 'stock', family_mention: 'Zzz'), flow: family_clarify_flow(2))
+    # D5 — the PROVEN defect: a valid terse/rephrased clarification the extractor relabels with a
+    # different supported intent, over the SAME unresolved candidate family set, must keep
+    # advancing (never reset), so the occurrence-3 handoff still fires.
+    it 'increments the SAME unresolved family slot despite a current_intent label switch (occurrence 1 -> 2)' do
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'stock', family_mention: 'Zzz'), flow: family_clarify_flow(1))
 
       expect(plan[:action]).to eq(:clarify_family)
-      expect(plan[:state][:changes]).to include('clarification_count' => 1, 'current_intent' => 'stock')
+      expect(plan[:state][:operation]).to eq(:update)
+      expect(plan[:state][:changes]).to include('clarification_count' => 2, 'current_intent' => 'stock')
+    end
+
+    it 'hands off on occurrence 3 of the same family slot even when the current_intent label switched' do
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'stock', family_mention: 'Zzz'), flow: family_clarify_flow(2))
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply][:kind]).to eq(:clarify_family)
+    end
+
+    it 'is insensitive to candidate-family-code ORDER (same set, different order still increments)' do
+      allow(family_repository).to receive(:active_candidates).and_return(
+        [{ code: 'FAM-B', name: 'Alpha Two' }, { code: 'FAM-A', name: 'Alpha One' }]
+      )
+
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'price', family_mention: 'Zzz'), flow: family_clarify_flow(1))
+
+      expect(plan[:action]).to eq(:clarify_family)
+      expect(plan[:state][:changes]).to include('clarification_count' => 2)
+    end
+
+    it 'resets the progression to 1 when the candidate family SET genuinely changes (a different unresolved slot)' do
+      allow(family_repository).to receive(:active_candidates).and_return(
+        [{ code: 'FAM-C', name: 'Gamma' }, { code: 'FAM-D', name: 'Delta' }]
+      )
+
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'price', family_mention: 'Zzz'), flow: family_clarify_flow(2))
+
+      expect(plan[:action]).to eq(:clarify_family)
+      expect(plan[:state][:changes]).to include('clarification_count' => 1, 'clarification_family_codes' => %w[FAM-C FAM-D])
     end
 
     it 'preserves the validated family and catalog markers on an ambiguity over an active family (metadata-only update)' do
@@ -652,6 +689,17 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
                                           flow: variant_flow(1))
 
       expect(plan[:action]).to eq(:clarify_variant)
+      expect(plan[:state][:changes]).to include('clarification_count' => 2)
+    end
+
+    # D5 — the same defect on the VARIANT slot: a relabelled supported intent (price -> stock) over
+    # the SAME validated family + expected attributes is the SAME unresolved slot and must advance.
+    it 'increments the SAME unresolved variant slot despite a current_intent label switch (occurrence 1 -> 2)' do
+      plan = orchestrator.plan_for_intent(intent: unresolved_variant_intent(intent: 'stock'),
+                                          flow: variant_flow(1, 'current_intent' => 'price'))
+
+      expect(plan[:action]).to eq(:clarify_variant)
+      expect(plan[:state][:operation]).to eq(:update)
       expect(plan[:state][:changes]).to include('clarification_count' => 2)
     end
 
