@@ -67,7 +67,7 @@ RSpec.describe 'Marine product flow cross-component regression' do
       leaked = [99_999, 42, 'DROP TABLE item;--', 'W-1']
       expect(deep_values(plan)).not_to include(*leaked)
 
-      text = job.send(:product_reply_text, plan)
+      text = job.send(:presenter).reply_text(plan)
       expect(text).to eq('The price for C-1 is USD 10.00 per ea.')
       %w[99999 42 DROP W-1].each { |secret| expect(text).not_to include(secret) }
     end
@@ -110,7 +110,7 @@ RSpec.describe 'Marine product flow cross-component regression' do
     it 'maps every ReplyRenderer::KINDS descriptor to a non-empty deterministic string' do
       covered = Marine::Catalog::ReplyRenderer::KINDS.map do |kind|
         plan = { action: :reply, reply: descriptor_for(kind), state: { operation: :none, changes: {} } }
-        text = job.send(:product_reply_text, plan)
+        text = job.send(:presenter).reply_text(plan)
 
         expect(text).to be_a(String)
         expect(text).not_to be_empty
@@ -124,7 +124,7 @@ RSpec.describe 'Marine product flow cross-component regression' do
     it 'renders a safe generic prompt (never nil) for an unknown descriptor kind' do
       plan = { action: :reply, reply: { kind: :something_unexpected }, state: { operation: :none, changes: {} } }
 
-      expect(job.send(:product_reply_text, plan)).to eq('Could you share a little more detail about the product you need?')
+      expect(job.send(:presenter).reply_text(plan)).to eq('Could you share a little more detail about the product you need?')
     end
   end
 

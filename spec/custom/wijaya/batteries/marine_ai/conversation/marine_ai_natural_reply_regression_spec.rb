@@ -152,7 +152,7 @@ RSpec.describe 'Marine natural reply regression' do
 
     # Category -> its deterministic English acknowledgement (the exact production constant), so the
     # test asserts against real production copy rather than re-hardcoding wording here.
-    ack_for = Marine::Conversation::ResponseBuilderJob::HANDOFF_ACK_BY_CATEGORY
+    ack_for = Marine::Catalog::ReplyPresenter::HANDOFF_ACK_BY_CATEGORY
 
     ack_for.each do |category, english_ack|
       it "acknowledges the #{category} request with its category-specific unbranded line on model failure (EN)" do
@@ -162,7 +162,7 @@ RSpec.describe 'Marine natural reply regression' do
         Marine::Conversation::ResponseBuilderJob.perform_now(conversation, assistant, incoming.id)
 
         expect(public_reply.content).to eq(english_ack)
-        expect(public_reply.content).not_to eq(Marine::Conversation::ResponseBuilderJob::HANDOFF_ACK_TEXT)
+        expect(public_reply.content).not_to eq(Marine::Catalog::ReplyPresenter::HANDOFF_ACK_TEXT)
         expect(public_reply.content).not_to eq(Marine::Circuit::HandoffService::DEFAULT_MESSAGE)
       end
     end
@@ -182,11 +182,11 @@ RSpec.describe 'Marine natural reply regression' do
 
       Marine::Conversation::ResponseBuilderJob.perform_now(conversation, assistant, incoming.id)
 
-      expect(public_reply.content).to eq(Marine::Conversation::ResponseBuilderJob::HANDOFF_ACK_TEXT)
+      expect(public_reply.content).to eq(Marine::Catalog::ReplyPresenter::HANDOFF_ACK_TEXT)
     end
 
     it 'hardcodes no brand/customer/product/destination/price value in any deterministic acknowledgement' do
-      lines = ack_for.values + [Marine::Conversation::ResponseBuilderJob::HANDOFF_ACK_TEXT]
+      lines = ack_for.values + [Marine::Catalog::ReplyPresenter::HANDOFF_ACK_TEXT]
       lines.each do |line|
         expect(line).not_to match(/\d/)                 # no quantity/price/coverage figure
         expect(line).not_to match(/\p{Sc}/)             # no currency symbol
@@ -213,7 +213,7 @@ RSpec.describe 'Marine natural reply regression' do
 
       Marine::Conversation::ResponseBuilderJob.perform_now(conversation, assistant, incoming.id)
 
-      expect(public_reply.content).to eq(Marine::Conversation::ResponseBuilderJob::HANDOFF_ACK_TEXT)
+      expect(public_reply.content).to eq(Marine::Catalog::ReplyPresenter::HANDOFF_ACK_TEXT)
       expect(public_reply.content).not_to eq(Marine::Circuit::HandoffService::DEFAULT_MESSAGE)
     end
 

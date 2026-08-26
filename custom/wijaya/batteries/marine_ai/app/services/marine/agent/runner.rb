@@ -62,8 +62,11 @@ class Marine::Agent::Runner
                               source: source_label, query_present: query.present?,
                               interaction_phase: context&.phase)
 
-    product = product_payload(context, query)
-    return product if product
+    # Product orchestration BEFORE RAG: the trigger-bound conversation path (product_payload) or,
+    # for a source-less run with no conversation, the read-only Playground catalog preview. Both
+    # return nil to fall through to the unchanged retrieval path.
+    orchestrated = product_payload(context, query) || playground_preview(query, history)
+    return orchestrated if orchestrated
 
     scenario = select_scenario(query)
     tool_slugs = resolved_tool_slugs(scenario)
@@ -189,6 +192,24 @@ class Marine::Agent::Runner
 
   def product_account
     conversation&.account || (assistant.account if assistant.respond_to?(:account))
+  end
+
+  # Source-less Playground catalog preview. Runs ONLY when there is NO conversation (the
+  # Playground / direct source-less caller — never the conversation-bound job paths, which own
+  # their own product orchestration and must stay unchanged) and a product account is available.
+  # It previews the SAME deterministic product orchestration a real turn uses, so a valid catalog
+  # request is grounded in the catalog instead of falling through to RAG as "unavailable". Fully
+  # read-only: no persistence, delivery, or side effects. Returns nil (fall through to the
+  # unchanged RAG path) for a non-product turn, a blank query, or any failure.
+  def playground_preview(query, history)
+    return nil unless conversation.nil?
+    return nil if query.blank?
+
+    account = product_account
+    return nil if account.nil?
+
+    Marine::Catalog::PlaygroundPreview.new(assistant: assistant, account: account)
+                                      .call(query: query, history: history)
   end
 
   def response_generator

@@ -464,6 +464,15 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/variant_resolver.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_renderer.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_query_orchestrator.rb
+      # Pure, side-effect-free presenter for the deterministic English product/catalog TEXT
+      # (extracted from ResponseBuilderJob). The single source of truth for that wording, shared
+      # by the trigger-bound job and the source-less PlaygroundPreview so the two never drift.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_presenter.rb
+      # Source-less Product Catalog PREVIEW for the Assistant Playground: runs the SAME
+      # deterministic orchestrator with an empty flow snapshot + bounded history, renders via
+      # ReplyPresenter, localizes via ReplyLocalizer. Read-only, non-delivering, no persistence;
+      # returns nil to fall through to RAG for a non-product turn or any failure.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/playground_preview.rb
       # Delivery-only localizer for customer-facing product/catalog text: detects the
       # latest customer's language (shared LanguageDetector, trigger message first, bounded
       # context fallback) and rewrites the deterministic English reply via the shared
@@ -731,6 +740,10 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/catalog/variant_resolver_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/reply_renderer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_query_orchestrator_spec.rb
+      # Shared deterministic product-text presenter spec.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/reply_presenter_spec.rb
+      # Source-less Playground catalog preview spec (read-only, non-delivering, fail-safe).
+      - spec/custom/wijaya/batteries/marine_ai/catalog/playground_preview_spec.rb
       # Delivery-only product-reply localizer spec.
       - spec/custom/wijaya/batteries/marine_ai/catalog/reply_localizer_spec.rb
       # Phase 6 — fact-protected natural product wording: deterministic protected-fact checker

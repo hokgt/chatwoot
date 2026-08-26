@@ -274,7 +274,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # clarification. Pure over the given inputs — no side effect, no network.
   def catalog_outcome(plan, flow, document)
     return CATALOG_DELIVER if document && !catalog_already_sent?(flow)
-    return CATALOG_ASSISTED_FALLBACK unless direct_catalog_request?(plan)
+    return CATALOG_ASSISTED_FALLBACK unless presenter.direct_catalog_request?(plan)
 
     document ? CATALOG_ALREADY_SENT : CATALOG_NO_CATALOG
   end
@@ -291,8 +291,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # and already-sent lines come from the row-derived family name only.
   def deterministic_catalog_text(outcome, plan, flow, document)
     case outcome
-    when CATALOG_DELIVER, CATALOG_ASSISTED_FALLBACK then product_reply_text(plan)
-    else direct_catalog_fallback_text(plan, flow, document)
+    when CATALOG_DELIVER, CATALOG_ASSISTED_FALLBACK then presenter.reply_text(plan)
+    else presenter.direct_catalog_fallback_text(plan[:reply] || {}, already_sent: document && catalog_already_sent?(flow))
     end
   end
 
@@ -350,7 +350,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   def create_product_reply(plan)
     return create_product_message_with(@prepared_product_text) if @product_wording_prepared
 
-    create_product_message(product_reply_text(plan))
+    create_product_message(presenter.reply_text(plan))
   end
 
   def create_product_message(content)
@@ -382,7 +382,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # Marine::Catalog::GroundedProductWordingService, grounded ONLY on that localized fallback plus
   # the Phase 2 bounded canonical trigger/history and opening/follow-up state. A wording/context
   # failure keeps the localized fallback; an unexpected localization failure — before any localized
-  # fallback exists — falls back to the deterministic English product_reply_text (the exact text
+  # fallback exists — falls back to the deterministic English presenter.reply_text (the exact text
   # ReplyLocalizer itself degrades to) with NO further network call. Nothing is persisted here.
   def prepare_product_wording
     return unless product_response?
@@ -399,10 +399,10 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     @product_language = plan[:language]
     @product_wording_prepared = true
     descriptor = plan[:reply]
-    fallback = localized_product_text(product_reply_text(plan), action: plan[:action], descriptor: descriptor)
+    fallback = localized_product_text(presenter.reply_text(plan), action: plan[:action], descriptor: descriptor)
     @prepared_product_text = naturalized_product_text(plan, descriptor, fallback)
   rescue StandardError
-    @prepared_product_text = product_reply_text(plan)
+    @prepared_product_text = presenter.reply_text(plan)
   end
 
   # An accepted natural-wording candidate when the descriptor is protection-eligible, else the
@@ -456,7 +456,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   def catalog_caption_text(plan, english)
     descriptor = plan[:reply]
     fallback = localized_product_text(english, action: plan[:action], descriptor: descriptor)
-    return fallback unless direct_catalog_request?(plan)
+    return fallback unless presenter.direct_catalog_request?(plan)
 
     wording_candidate(plan, descriptor, fallback) || fallback
   end
@@ -499,21 +499,11 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     return unless @response['product_plan'][:action] == :handoff
 
     @product_language = @response['product_plan'][:language]
-    ack = handoff_ack_text(@response['product_plan'][:handoff_category])
+    ack = presenter.handoff_ack_text(@response['product_plan'][:handoff_category])
     fallback = localized_product_text(ack)
     @handoff_message = handoff_wording_candidate(fallback) || fallback
   rescue StandardError
-    @handoff_message = HANDOFF_ACK_TEXT
-  end
-
-  # The deterministic, factless, unbranded acknowledgement for a product handoff, selected by the
-  # bounded generic request category so the fallback is request-AWARE without asserting anything:
-  # a known category picks its generic line (it may reference "the location you mentioned" but
-  # never copies or asserts a destination, coverage, cost, or quantity), and an unknown/"other"/
-  # missing category falls closed to the fully generic line. No brand/customer/product/destination/
-  # price value is hardcoded — only the request-type semantics.
-  def handoff_ack_text(category)
-    HANDOFF_ACK_BY_CATEGORY.fetch(category, HANDOFF_ACK_TEXT)
+    @handoff_message = Marine::Catalog::ReplyPresenter::HANDOFF_ACK_TEXT
   end
 
   # Natural handoff acknowledgement grounded ONLY on the already-localized factless
@@ -579,111 +569,11 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
   # --- Deterministic product text --------------------------------------------
 
-  # Fixed, fact-safe templates for descriptor kinds that carry no interpolated field.
-  STATIC_PRODUCT_TEXT = {
-    price_unavailable: "I'm sorry, I don't have the price for that item right now.",
-    stock_available: 'Good news — that item is currently in stock.',
-    stock_empty: "I'm sorry, that item is currently out of stock."
-  }.freeze
-
-  GENERIC_PRODUCT_TEXT = 'Could you share a little more detail about the product you need?'.freeze
-
-  # Deterministic, factless, unbranded acknowledgement for a product-flow handoff — the safe
-  # localized fallback the natural-wording layer rephrases in context. It asserts nothing and
-  # names no company, so it never turns a customer-supplied destination or quantity into a claim.
-  HANDOFF_ACK_TEXT = "I'm sorry, I'm not able to confirm that for you directly. Let me bring in a colleague who can help you with this.".freeze
-
-  # Request-category-aware factless acknowledgements, keyed by the bounded generic
-  # unsupported-request category. Each states only an INABILITY to confirm the request type and a
-  # human follow-up — never an answer, a promise, or a customer/destination/price value. The
-  # delivery-feasibility line may refer to "the location you mentioned" generically but asserts no
-  # destination and no coverage. An unknown/"other"/missing category is not listed here and falls
-  # closed to the fully generic HANDOFF_ACK_TEXT.
-  HANDOFF_ACK_BY_CATEGORY = {
-    'delivery_feasibility' => "I'm sorry, I can't confirm delivery to the location you mentioned. Let me bring in a colleague to help with this.",
-    'shipping_cost' => "I'm sorry, I can't confirm the shipping cost for you directly. Let me bring in a colleague to help with this.",
-    'warehouse_location' => "I'm sorry, I can't confirm our location details for you directly. Let me bring in a colleague to help with this.",
-    'exact_quantity' => "I'm sorry, I can't confirm the exact quantity available for you directly. Let me bring in a colleague to help with this."
-  }.freeze
-
-  # Renders the caption/text for a plan. A DIRECT catalog request carries a :catalog reply
-  # descriptor and renders a catalog caption; a catalog-ASSISTED send_catalog (reply nil)
-  # renders the deterministic variant clarification, used both as its no-usable-catalog text
-  # fallback and as the caption accompanying the native catalog attachment (Phase 6) so the
-  # customer can continue with an exact code; every other product reply maps its frozen
-  # descriptor kind to a fixed or field-interpolated, fact-safe template.
-  def product_reply_text(plan)
-    descriptor = plan[:reply] || {}
-    dynamic = dynamic_product_text(descriptor)
-    return dynamic if dynamic
-    return clarify_variant_text(Array(plan.dig(:state, :changes, 'expected_attributes'))) if plan[:action] == :send_catalog
-
-    STATIC_PRODUCT_TEXT[descriptor[:kind]] || GENERIC_PRODUCT_TEXT
-  end
-
-  def dynamic_product_text(descriptor)
-    case descriptor[:kind]
-    when :parent_info then parent_info_text(descriptor)
-    when :variant_info then "Here are the details for #{descriptor[:variant_code]}. Would you like the price or availability?"
-    when :price_available then price_available_text(descriptor)
-    when :clarify_family then clarify_family_text(descriptor[:candidates])
-    when :clarify_variant then clarify_variant_text(descriptor[:attribute_names])
-    when :catalog then catalog_ready_text(descriptor)
-    end
-  end
-
-  # True when the plan carries a DIRECT catalog descriptor (Phase 4 #plan_catalog), as
-  # opposed to a catalog-assisted variant clarification (reply nil). Only a direct request
-  # gets a catalog caption and a no-catalog fallback that never asks for a variant.
-  def direct_catalog_request?(plan)
-    plan.dig(:reply, :kind) == :catalog
-  end
-
-  def catalog_ready_text(descriptor)
-    "Here is the product catalog for #{catalog_family_name(descriptor)}."
-  end
-
-  # No usable catalog for a DIRECT request: never ask for a variant (there is nothing to
-  # disambiguate). If one was already sent this flow, say so; otherwise state none is
-  # available. Both are deterministic and reference only the row-derived family name.
-  def direct_catalog_fallback_text(plan, flow, document)
-    name = catalog_family_name(plan[:reply] || {})
-    if document && catalog_already_sent?(flow)
-      "I've already shared the #{name} catalog with you above."
-    else
-      "I'm sorry, I don't have a catalog available for #{name} right now."
-    end
-  end
-
-  def catalog_family_name(descriptor)
-    descriptor[:family_name].presence || descriptor[:family_code] || 'that product'
-  end
-
-  def parent_info_text(descriptor)
-    name = descriptor[:family_name].presence || descriptor[:family_code]
-    "You're asking about #{name}. Which specific variant would you like to know about?"
-  end
-
-  def price_available_text(descriptor)
-    amount = [descriptor[:currency], descriptor[:price_list_rate]].compact.join(' ')
-    subject = descriptor[:variant_code].presence
-    text = subject ? "The price for #{subject} is #{amount}" : "The price is #{amount}"
-    text += " per #{descriptor[:uom]}" if descriptor[:uom].present?
-    "#{text}."
-  end
-
-  def clarify_family_text(candidates)
-    names = Array(candidates).filter_map { |candidate| candidate[:name].presence || candidate[:code] }
-    return 'Could you tell me which product you are interested in?' if names.empty?
-
-    "Could you let me know which product you mean? For example: #{names.join(', ')}."
-  end
-
-  def clarify_variant_text(attribute_names)
-    names = Array(attribute_names).reject(&:blank?)
-    return 'Could you specify which variant you are interested in?' if names.empty?
-
-    "Could you specify the #{names.join(', ')} you need?"
+  # Shared, pure presenter for the deterministic English product text. Extracted so the
+  # trigger-bound job and the source-less Marine::Catalog::PlaygroundPreview render the exact
+  # same wording from one source of truth (no drift, no duplicated business text).
+  def presenter
+    @presenter ||= Marine::Catalog::ReplyPresenter.new
   end
 
   # Safe, allowlisted-symbol-derived reason for the private handoff note.

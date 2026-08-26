@@ -436,6 +436,55 @@ RSpec.describe Marine::Agent::Runner do
     end
   end
 
+  # Source-less Playground catalog preview: a run with NO conversation but a product account
+  # previews the SAME product orchestration a real turn uses, so a valid catalog request is
+  # grounded in the catalog BEFORE the RAG path (which would otherwise answer "unavailable").
+  describe 'source-less Playground catalog preview' do
+    let(:account) { instance_double(Account) }
+    let(:assistant) { double('assistant', id: 1, name: 'Marine Bot', account: account) }
+    let(:runner) { described_class.new(assistant: assistant, source: 'playground') }
+    let(:preview) { instance_double(Marine::Catalog::PlaygroundPreview) }
+
+    before { allow(Marine::Catalog::PlaygroundPreview).to receive(:new).and_return(preview) }
+
+    it 'returns the preview payload and skips RAG for a product/catalog turn' do
+      payload = { 'response' => 'Here is the product catalog for Baby Doll.', 'action' => 'reply',
+                  'source_type' => 'marine_product', 'orchestration_path' => 'product' }
+      allow(preview).to receive(:call).and_return(payload)
+      allow(generator).to receive(:generate).and_return(reply_payload)
+
+      result = runner.run(additional_message: 'ada katalog baby doll ?', message_history: [])
+
+      expect(result).to eq(payload)
+      expect(Marine::Catalog::PlaygroundPreview).to have_received(:new).with(assistant: assistant, account: account)
+      expect(preview).to have_received(:call).with(query: 'ada katalog baby doll ?', history: [])
+      expect(generator).not_to have_received(:generate)
+    end
+
+    it 'falls through to the unchanged RAG path when the preview declines (non-product)' do
+      allow(preview).to receive(:call).and_return(nil)
+      allow(generator).to receive(:generate).and_return(reply_payload)
+
+      result = runner.run(additional_message: 'selamat pagi', message_history: [])
+
+      expect(result).to include('orchestration_path' => 'retrieval')
+      expect(generator).to have_received(:generate)
+    end
+  end
+
+  describe 'source-less run with no product account never previews' do
+    let(:runner) { described_class.new(assistant: assistant, source: 'playground') }
+
+    it 'skips the preview entirely (assistant has no account) and uses RAG' do
+      allow(generator).to receive(:generate).and_return(reply_payload)
+      expect(Marine::Catalog::PlaygroundPreview).not_to receive(:new)
+
+      runner.run(additional_message: 'ada katalog baby doll ?')
+
+      expect(generator).to have_received(:generate)
+    end
+  end
+
   describe 'independence from Captain premium gates' do
     it 'does not reference any Captain runtime dependency in the source' do
       source = File.read(Rails.root.join('custom/wijaya/batteries/marine_ai/app/services/marine/agent/runner.rb'))
