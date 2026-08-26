@@ -99,6 +99,26 @@ RSpec.describe Marine::Catalog::ReplyPresenter do
     end
   end
 
+  describe 'Playground catalog preview lines (never claim a file was delivered)' do
+    it 'states the catalog is available and would be shared, for a first preview' do
+      expect(presenter.catalog_preview_available_text({ family_code: 'BD', family_name: 'Baby Doll' }))
+        .to eq('The Baby Doll catalog is available and would be shared with the customer in a full conversation.')
+    end
+
+    it 'states the preview is already shown (NOT "already shared a file") on a repeat' do
+      text = presenter.catalog_preview_already_shown_text({ family_code: 'BD', family_name: 'Baby Doll' })
+      expect(text).to eq(
+        'The Baby Doll catalog preview is already shown above; the file would be shared in a full conversation.'
+      )
+      expect(text).not_to include('already shared')
+    end
+
+    it 'falls back to a generic family label when no name/code is present' do
+      expect(presenter.catalog_preview_already_shown_text({}))
+        .to eq('The that product catalog preview is already shown above; the file would be shared in a full conversation.')
+    end
+  end
+
   describe '#handoff_ack_text' do
     it 'returns the category-aware factless line for a known category' do
       expect(presenter.handoff_ack_text('exact_quantity'))

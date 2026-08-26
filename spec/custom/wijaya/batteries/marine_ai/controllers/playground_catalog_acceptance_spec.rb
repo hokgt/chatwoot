@@ -85,7 +85,9 @@ RSpec.describe 'Marine Playground four-turn catalog acceptance', type: :request 
   # Synthetic per-turn intent fixtures. Prior turns accumulate in the prompt as history, so branches
   # are checked MOST-RECENT-turn first (each marker is unique to that turn's current message).
   def intent_for(prompt)
-    if prompt.include?('babydoll tidak ada') # continuation naming no resolvable family
+    if prompt.include?('huruf b') # product+catalog but a deliberately AMBIGUOUS family mention ('b' -> BD & BS)
+      { product_related: true, intent: 'catalog', family_mention: 'b', customer_language: 'en' }.to_json
+    elsif prompt.include?('babydoll tidak ada') # continuation naming no resolvable family
       { product_related: true, intent: 'catalog', family_mention: nil, customer_language: 'en' }.to_json
     elsif prompt.include?('katalog kain baby doll')
       { product_related: true, intent: 'catalog', family_mention: 'kain baby doll', customer_language: 'en' }.to_json
@@ -132,11 +134,15 @@ RSpec.describe 'Marine Playground four-turn catalog acceptance', type: :request 
     token = t3['state_token']
     history += [{ 'role' => 'user', 'content' => 'ada katalog kain baby doll ?' }, { 'role' => 'assistant', 'content' => t3['response'] }]
 
-    # Turn 4 — "babydoll tidak ada ?": continues the BD flow; the catalog was already shared, so the
-    # honest already-shared line — catalog-grounded, never "unavailable".
+    # Turn 4 — "babydoll tidak ada ?": continues the BD flow; the preview card was already shown, so
+    # the TRUTHFUL preview-already-shown line (never "already shared a file" — the preview delivered
+    # none) — catalog-grounded, never "unavailable".
     t4 = turn('babydoll tidak ada ?', history: history, state_token: token)
-    expect(t4['response']).to eq("I've already shared the Baby Doll catalog with you above.")
-    expect(t4['response']).not_to match(/unavailable/i)
+    expect(t4['response']).to eq(
+      'The Baby Doll catalog preview is already shown above; the file would be shared in a full conversation.'
+    )
+    expect(t4['response']).not_to match(/unavailable|already shared/i)
+    expect(t4).not_to have_key('catalog_preview')
 
     # Zero persistent side effects across the whole flow.
     expect(Conversation.count).to eq(conversations)
@@ -149,12 +155,16 @@ RSpec.describe 'Marine Playground four-turn catalog acceptance', type: :request 
 
     expect(result['catalog_preview']).to include('family_name' => 'Baby Doll')
     expect(result['state_token']).to be_present
-    # Following turn on the same family reads the marker and reports already-shared, not a re-offer.
+    # Following turn on the same family reads the marker and reports the preview as already shown
+    # (never a re-offer, never a second card, never claiming a file was delivered).
     follow = turn('babydoll tidak ada ?',
                   history: [{ 'role' => 'user', 'content' => 'ada katalog kain baby doll ?' },
                             { 'role' => 'assistant', 'content' => result['response'] }],
                   state_token: result['state_token'])
-    expect(follow['response']).to eq("I've already shared the Baby Doll catalog with you above.")
+    expect(follow['response']).to eq(
+      'The Baby Doll catalog preview is already shown above; the file would be shared in a full conversation.'
+    )
+    expect(follow).not_to have_key('catalog_preview')
   end
 
   it 'ignores a tampered state token and fails closed to a fresh flow' do
@@ -162,5 +172,69 @@ RSpec.describe 'Marine Playground four-turn catalog acceptance', type: :request 
 
     # A tampered token is discarded (fresh flow), so the direct catalog request still grounds truthfully.
     expect(result['catalog_preview']).to include('family_name' => 'Baby Doll')
+  end
+
+  # Repeated SAME unresolved family clarification, progressed ONLY through the signed state token, must
+  # reach occurrence 3 and fail closed to the safe factless handoff preview — never loop or "unavailable".
+  it 'progresses a repeated unresolved clarification to a safe handoff on the third occurrence via signed state' do
+    # Occurrence 1 — fresh flow opens the family clarification (truthful, never "unavailable").
+    t1 = turn('huruf b satu', history: [], state_token: nil)
+    expect(t1['response']).to match(/which product you mean/i)
+    expect(t1['state_token']).to be_present
+
+    # Occurrence 2 — the SAME unresolved state, carried by the token, still clarifies.
+    t2 = turn('huruf b dua', history: [], state_token: t1['state_token'])
+    expect(t2['response']).to match(/which product you mean/i)
+    expect(t2['state_token']).to be_present
+
+    # Occurrence 3 — the third same-state occurrence hands off to the safe, factless acknowledgement.
+    t3 = turn('huruf b tiga', history: [], state_token: t2['state_token'])
+    expect(t3['response']).to eq(Marine::Catalog::ReplyPresenter::HANDOFF_ACK_TEXT)
+    expect(t3['response']).not_to match(/unavailable/i)
+    expect(t3).not_to have_key('catalog_preview')
+  end
+
+  # A KNOWN catalog outage surfaced by the REAL orchestrator's repository-failure rescue (a repository
+  # raises a CatalogError inside ProductQueryOrchestrator#plan_for_intent) must fail CLOSED to the safe
+  # factless preview — never fall through to RAG (which has no catalog knowledge and would fabricate).
+  it 'fails closed to the safe factless preview on a real orchestrator/repository catalog outage (never RAG)' do
+    outage_repo = instance_double(Marine::Catalog::ProductFamilyRepository)
+    allow(outage_repo).to receive(:resolve_exact).and_raise(Marine::Catalog::Errors::CatalogUnavailableError)
+    allow(outage_repo).to receive(:active_candidates).and_raise(Marine::Catalog::Errors::CatalogUnavailableError)
+    allow(Marine::Catalog::ProductFamilyRepository).to receive(:new).and_return(outage_repo)
+
+    result = turn('ada katalog kain baby doll ?', history: [], state_token: nil)
+
+    expect(result['response']).to eq(Marine::Catalog::ReplyPresenter::HANDOFF_ACK_TEXT)
+    expect(result['source_type']).to eq('marine_product')
+    expect(result).not_to have_key('catalog_preview')
+    # Never RAG: the greeting-only RAG generator must not have answered this product turn.
+    expect(generator).not_to have_received(:generate)
+  end
+
+  # A non-product turn BETWEEN product turns preserves the SAME valid signed state token verbatim, so the
+  # ephemeral flow (validated family + catalog-sent marker) survives the RAG turn and the next product
+  # turn still recognizes the preview as already shown.
+  it 'preserves the same valid signed state token across a non-product RAG turn between product turns' do
+    # Product turn — direct catalog request marks catalog_sent in the signed token.
+    t1 = turn('ada katalog kain baby doll ?', history: [], state_token: nil)
+    expect(t1['catalog_preview']).to include('family_name' => 'Baby Doll')
+    product_token = t1['state_token']
+    expect(product_token).to be_present
+
+    # Non-product turn — greeting falls through to RAG, which echoes the SAME token unchanged.
+    t2 = turn('selamat pagi', history: [], state_token: product_token)
+    expect(t2['response']).to eq('Hello! How can I help you today?')
+    expect(t2['state_token']).to eq(product_token)
+
+    # Next product turn on the preserved token still sees the flow: preview already shown, no new card.
+    t3 = turn('babydoll tidak ada ?',
+              history: [{ 'role' => 'user', 'content' => 'ada katalog kain baby doll ?' },
+                        { 'role' => 'assistant', 'content' => t1['response'] }],
+              state_token: t2['state_token'])
+    expect(t3['response']).to eq(
+      'The Baby Doll catalog preview is already shown above; the file would be shared in a full conversation.'
+    )
+    expect(t3).not_to have_key('catalog_preview')
   end
 end

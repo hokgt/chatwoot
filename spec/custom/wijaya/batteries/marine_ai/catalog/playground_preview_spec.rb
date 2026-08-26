@@ -93,8 +93,10 @@ RSpec.describe Marine::Catalog::PlaygroundPreview do
       expect(payload).not_to have_key('catalog_preview')
     end
 
-    it 'previews the already-shared line when the prior signed snapshot already sent this flow' do
-      # A continuation of the SAME family (operation :update) preserves the catalog_sent marker.
+    it 'previews the TRUTHFUL preview-already-shown line (never claims a file was shared) on a repeat' do
+      # A continuation of the SAME family (operation :update) preserves the catalog_sent marker. The
+      # preview never delivered a file, so the repeat must NOT say "I've already shared the catalog"
+      # (the real-delivery wording) — only that the preview is already shown above.
       allow(orchestrator).to receive(:process).and_return(
         plan(action: :send_catalog, operation: :update, reply: renderer.catalog(code: 'BD', name: 'Baby Doll'))
       )
@@ -106,7 +108,10 @@ RSpec.describe Marine::Catalog::PlaygroundPreview do
 
       payload = preview.call(query: 'ada katalog baby doll ?', history: [], state_token: 'prior')
 
-      expect(payload['response']).to eq("I've already shared the Baby Doll catalog with you above.")
+      expect(payload['response']).to eq(
+        'The Baby Doll catalog preview is already shown above; the file would be shared in a full conversation.'
+      )
+      expect(payload['response']).not_to include('already shared')
       expect(payload).not_to have_key('catalog_preview')
     end
   end

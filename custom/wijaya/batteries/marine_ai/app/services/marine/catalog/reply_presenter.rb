@@ -85,6 +85,16 @@ module Marine
         "The #{catalog_family_name(descriptor)} catalog is available and would be shared with the customer in a full conversation."
       end
 
+      # Playground-only TRUTHFUL line for a REPEATED direct catalog request whose preview card was
+      # already shown earlier this flow. The source-less preview never delivered a file — it only
+      # rendered a read-only metadata card — so it must NEVER claim "I've already shared the catalog
+      # with you above" (the real-delivery #direct_catalog_fallback_text wording, correct only when a
+      # native attachment was actually sent). It states only that the preview is already shown and
+      # that the file would be shared in a full conversation, naming solely the row-derived family.
+      def catalog_preview_already_shown_text(descriptor)
+        "The #{catalog_family_name(descriptor)} catalog preview is already shown above; the file would be shared in a full conversation."
+      end
+
       # The deterministic, factless, unbranded acknowledgement for a product handoff, selected by the
       # bounded generic request category so the fallback is request-AWARE without asserting anything.
       def handoff_ack_text(category)

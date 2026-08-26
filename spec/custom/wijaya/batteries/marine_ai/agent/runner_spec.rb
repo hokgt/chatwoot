@@ -512,6 +512,119 @@ RSpec.describe Marine::Agent::Runner do
     end
   end
 
+  # A Playground turn that falls through to RAG/FAQ/non-product carries no fresh state_token, so
+  # the browser would clear the signed flow. The runner re-verifies the incoming token and echoes
+  # the SAME valid signed string verbatim (no re-encode, no TTL extension) so the ephemeral flow
+  # survives a non-product turn — while a tampered/expired/foreign token is never echoed.
+  describe 'Playground ephemeral state preservation across RAG/FAQ/non-product turns' do
+    let(:account) { instance_double(Account, id: 55) }
+    let(:assistant) { double('assistant', id: 1, name: 'Marine Bot', account: account) }
+    let(:preview) { instance_double(Marine::Catalog::PlaygroundPreview) }
+    let(:snapshot) do
+      { 'version' => 1, 'flow_id' => 'f', 'status' => 'active',
+        'expires_at' => 1.hour.from_now.iso8601, 'validated_family' => 'BD' }
+    end
+    let(:valid_token) { Marine::Catalog::PlaygroundStateToken.new(account: account, assistant: assistant).encode(snapshot) }
+
+    def playground_runner(token)
+      described_class.new(assistant: assistant, source: 'playground', state_token: token)
+    end
+
+    before do
+      allow(Marine::Catalog::PlaygroundPreview).to receive(:new).and_return(preview)
+      allow(preview).to receive(:call).and_return(nil) # non-product: preview declines, falls to RAG
+      allow(generator).to receive(:generate).and_return(reply_payload)
+    end
+
+    it 'echoes the SAME valid signed token unchanged on a non-product RAG reply' do
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(
+        instance_double(Marine::Cell::KnowledgeBaseService,
+                        retrieve: Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match'))
+      )
+
+      result = playground_runner(valid_token).run(additional_message: 'selamat pagi', message_history: [])
+
+      expect(result['orchestration_path']).to eq('retrieval')
+      expect(result['state_token']).to eq(valid_token)
+    end
+
+    it 'echoes the SAME valid signed token on an EXACT approved FAQ reply (Gate G fall-through)' do
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(
+        instance_double(Marine::Cell::KnowledgeBaseService,
+                        retrieve: Marine::Cell::RetrievalResult.new(
+                          responses: [], confidence: Marine::Charge::ConfidenceScorer::EXACT_MATCH_SCORE, fallback_reason: nil
+                        ))
+      )
+      allow(generator).to receive(:generate).and_return(reply_payload('response' => 'FAQ answer'))
+
+      result = playground_runner(valid_token).run(additional_message: 'jam buka?', message_history: [])
+
+      expect(Marine::Catalog::PlaygroundPreview).not_to have_received(:new)
+      expect(result['state_token']).to eq(valid_token)
+    end
+
+    it 'never echoes a tampered token' do
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(
+        instance_double(Marine::Cell::KnowledgeBaseService,
+                        retrieve: Marine::Cell::RetrievalResult.empty(fallback_reason: 'x'))
+      )
+
+      result = playground_runner("#{valid_token}tampered").run(additional_message: 'selamat pagi', message_history: [])
+
+      expect(result).not_to have_key('state_token')
+    end
+
+    it 'never echoes an expired token' do
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(
+        instance_double(Marine::Cell::KnowledgeBaseService,
+                        retrieve: Marine::Cell::RetrievalResult.empty(fallback_reason: 'x'))
+      )
+      token = valid_token
+
+      result = travel_to((Marine::Catalog::PlaygroundStateToken::TTL_SECONDS + 60).seconds.from_now) do
+        playground_runner(token).run(additional_message: 'selamat pagi', message_history: [])
+      end
+
+      expect(result).not_to have_key('state_token')
+    end
+
+    it 'never echoes a foreign token minted for a different assistant/account scope' do
+      foreign_account = instance_double(Account, id: 999)
+      foreign_assistant = double('assistant', id: 42, name: 'Other', account: foreign_account)
+      foreign_token = Marine::Catalog::PlaygroundStateToken.new(account: foreign_account, assistant: foreign_assistant).encode(snapshot)
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(
+        instance_double(Marine::Cell::KnowledgeBaseService,
+                        retrieve: Marine::Cell::RetrievalResult.empty(fallback_reason: 'x'))
+      )
+
+      result = playground_runner(foreign_token).run(additional_message: 'selamat pagi', message_history: [])
+
+      expect(result).not_to have_key('state_token')
+    end
+
+    it 'echoes no token when the browser cleared it on reset/switch (nil token)' do
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(
+        instance_double(Marine::Cell::KnowledgeBaseService,
+                        retrieve: Marine::Cell::RetrievalResult.empty(fallback_reason: 'x'))
+      )
+
+      result = playground_runner(nil).run(additional_message: 'selamat pagi', message_history: [])
+
+      expect(result).not_to have_key('state_token')
+    end
+
+    it 'does not echo a token for a non-Playground caller even when a valid token is present' do
+      conversation_account = account
+      db_assistant = double('assistant', id: 1, name: 'Marine Bot', account: conversation_account)
+      runner = described_class.new(assistant: db_assistant, source: nil, state_token: valid_token)
+      allow(generator).to receive(:generate).and_return(reply_payload)
+
+      result = runner.run(additional_message: 'where is my order')
+
+      expect(result).not_to have_key('state_token')
+    end
+  end
+
   describe 'source-less run gating' do
     it 'never previews for a non-playground source-less caller even with a product account (source gate)' do
       account = instance_double(Account)

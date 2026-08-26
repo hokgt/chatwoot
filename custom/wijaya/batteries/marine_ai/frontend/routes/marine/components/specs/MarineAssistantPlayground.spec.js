@@ -112,6 +112,49 @@ describe('MarineAssistantPlayground', () => {
     );
   });
 
+  it('preserves the same signed token across a non-product turn that echoes it back', async () => {
+    // Product turn mints the signed flow.
+    playgroundSpy.mockResolvedValue({
+      data: {
+        action: 'reply',
+        response: 'catalog preview',
+        state_token: 'signed-1',
+      },
+    });
+    const wrapper = mountPlayground();
+    await send(wrapper, 'ada katalog baby doll ?');
+    await flushPromises();
+
+    // Non-product RAG turn: the backend echoes the SAME token unchanged, so the browser keeps it.
+    playgroundSpy.mockResolvedValue({
+      data: {
+        action: 'reply',
+        response: 'general answer',
+        state_token: 'signed-1',
+      },
+    });
+    await send(wrapper, 'unrelated question');
+    await flushPromises();
+
+    // The next product turn still carries the preserved signed flow.
+    playgroundSpy.mockResolvedValue({
+      data: {
+        action: 'reply',
+        response: 'already previewed',
+        state_token: 'signed-1',
+      },
+    });
+    await send(wrapper, 'babydoll tidak ada ?');
+    await flushPromises();
+
+    expect(playgroundSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        messageContent: 'babydoll tidak ada ?',
+        stateToken: 'signed-1',
+      })
+    );
+  });
+
   it('clears the state token on a manual reset so the next request starts a fresh flow', async () => {
     playgroundSpy.mockResolvedValue({
       data: { action: 'reply', response: 'first', state_token: 'signed-1' },

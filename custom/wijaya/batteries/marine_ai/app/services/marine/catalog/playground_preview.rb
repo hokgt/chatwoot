@@ -129,20 +129,26 @@ module Marine
       # DIRECT catalog request: when a usable primary catalog exists for the validated family and
       # none has been previewed this flow, render the TRUTHFUL "would be shared" line, attach a
       # read-only metadata card, and mark catalog_sent in the returned snapshot (the exact
-      # one-catalog-per-flow marker the real delivery sets) so a follow-up is "already shared" — not
-      # a re-offer. Otherwise the honest already-sent / no-catalog line. A catalog-ASSISTED
-      # send_catalog (reply nil) renders its deterministic variant clarification, no card.
+      # one-catalog-per-flow marker the real delivery sets) so a follow-up is recognized as already
+      # previewed — not a re-offer, and never a second card. A REPEATED request whose card was
+      # already shown gets the Playground-truthful "preview already shown" line (NOT the real path's
+      # "already shared the catalog" wording — the preview delivered no file); a request with no
+      # usable catalog gets the honest no-catalog line. A catalog-ASSISTED send_catalog (reply nil)
+      # renders its deterministic variant clarification, no card.
       def render_send_catalog(plan, snapshot)
         return [presenter.reply_text(plan), nil, snapshot] unless presenter.direct_catalog_request?(plan)
 
+        descriptor = plan[:reply] || {}
         document = catalog_document(plan.dig(:reply, :family_code))
         already_sent = catalog_already_sent?(snapshot)
-        if document && !already_sent
+        if document && already_sent
+          [presenter.catalog_preview_already_shown_text(descriptor), nil, snapshot]
+        elsif document
           card = catalog_metadata(plan, document)
           next_snapshot = store.apply_snapshot(snapshot, operation: :update, changes: catalog_sent_changes(document))
-          [presenter.catalog_preview_available_text(plan[:reply] || {}), card, next_snapshot]
+          [presenter.catalog_preview_available_text(descriptor), card, next_snapshot]
         else
-          [presenter.direct_catalog_fallback_text(plan[:reply] || {}, already_sent: document && already_sent), nil, snapshot]
+          [presenter.direct_catalog_fallback_text(descriptor, already_sent: false), nil, snapshot]
         end
       end
 

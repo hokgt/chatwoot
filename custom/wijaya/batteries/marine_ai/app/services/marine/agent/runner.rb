@@ -21,6 +21,9 @@
 #
 # Fully Marine-owned: no Captain runtime classes, hub checks, pricing plans, or
 # premium feature flags.
+# rubocop:disable Metrics/ClassLength -- a single cohesive top-level orchestration boundary:
+# product/playground pre-RAG routing, Gate G FAQ precedence, ephemeral Playground state
+# preservation, greeting phasing, and the always-safe fallback belong to one entry point.
 class Marine::Agent::Runner
   LOG_PREFIX = '[Marine::Agent::Runner]'.freeze
   RUNNER_ERROR_REASON = 'runner_error'.freeze
@@ -76,7 +79,7 @@ class Marine::Agent::Runner
 
     payload = response_generator.generate(additional_message: trigger, message_history: history,
                                           opening: interaction_opening?(context, history))
-    enriched = enrich(payload, scenario, tool_slugs)
+    enriched = preserve_playground_state(enrich(payload, scenario, tool_slugs))
 
     log_result(enriched)
     enriched
@@ -221,6 +224,34 @@ class Marine::Agent::Runner
                                       .call(query: query, history: history, state_token: state_token)
   end
 
+  # Preserve the ephemeral product-flow state across a Playground turn that fell through to
+  # RAG/FAQ/non-product. Those payloads carry no state_token, so the browser would clear the signed
+  # flow (`data.state_token ?? null`) even though the real ProductFlowStateStore stays active across
+  # such a turn (no mutation ran). Runs ONLY for an explicit Playground run (source == 'playground'
+  # AND no conversation); every conversation-bound caller is untouched. The incoming token is
+  # re-verified and the ORIGINAL signed string is echoed verbatim (no re-encode -> no TTL extension,
+  # no raw flow accepted). A blank/tampered/expired/foreign token is never echoed (fail closed).
+  def preserve_playground_state(payload)
+    return payload unless source == PLAYGROUND_SOURCE && conversation.nil?
+    return payload unless valid_playground_state_token?
+
+    payload.merge('state_token' => state_token)
+  end
+
+  # True only when the client token verifies (signature/scope/expiry) and re-normalizes to a usable
+  # in-memory flow — the same trust boundary PlaygroundPreview applies. Never accepts raw flow/raises.
+  def valid_playground_state_token?
+    return false if state_token.blank?
+
+    account = product_account
+    return false if account.nil?
+
+    decoded = Marine::Catalog::PlaygroundStateToken.new(account: account, assistant: assistant).decode(state_token)
+    Marine::Catalog::ProductFlowStateStore.new(conversation: nil).normalize_snapshot(decoded).present?
+  rescue StandardError
+    false
+  end
+
   def response_generator
     @response_generator ||= Marine::Charge::ResponseGenerator.new(
       assistant: assistant,
@@ -321,3 +352,4 @@ class Marine::Agent::Runner
     source
   end
 end
+# rubocop:enable Metrics/ClassLength
