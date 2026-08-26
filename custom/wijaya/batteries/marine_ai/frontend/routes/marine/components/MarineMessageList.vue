@@ -38,6 +38,15 @@ const getMessageStyle = sender =>
     ? 'bg-n-solid-blue text-n-slate-12 rounded-br-sm rounded-bl-xl rounded-t-xl'
     : 'bg-n-solid-iris text-n-slate-12 rounded-bl-sm rounded-br-xl rounded-t-xl';
 
+// Human-readable, read-only file size for the catalog preview card. Bytes are already an
+// allowlisted, nonsecret document metadatum; this only formats, it never links to the blob.
+const formatFileSize = bytes => {
+  if (typeof bytes !== 'number' || bytes < 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
 const scrollToBottom = async () => {
   await nextTick();
   if (messageContainer.value) {
@@ -95,12 +104,42 @@ watch(() => props.messages.length, scrollToBottom);
             {{ t('MARINE_AI.PLAYGROUND.ERROR') }}
           </p>
         </div>
-        <div
-          v-else
-          class="px-4 py-3 text-sm [overflow-wrap:break-word]"
-          :class="getMessageStyle(message.sender)"
-        >
-          <div v-html="formatMessage(message.content)" />
+        <div v-else class="flex flex-col gap-2 max-w-full min-w-0">
+          <div
+            class="px-4 py-3 text-sm [overflow-wrap:break-word]"
+            :class="getMessageStyle(message.sender)"
+          >
+            <div v-html="formatMessage(message.content)" />
+          </div>
+          <!-- Read-only, NON-downloadable catalog preview card: only allowlisted, nonsecret
+               document metadata (family, filename, MIME, size). Deliberately renders NO link,
+               button, or download action — the source-less preview never delivers a file. -->
+          <div
+            v-if="message.catalogPreview"
+            data-testid="catalog-preview-card"
+            class="rounded-lg border border-n-weak bg-n-background p-3"
+          >
+            <div class="flex items-center gap-2">
+              <span class="i-lucide-file-text text-n-slate-11 shrink-0" />
+              <p class="text-sm font-medium text-n-slate-12 truncate">
+                {{ message.catalogPreview.family_name }}
+              </p>
+            </div>
+            <p class="mt-1 text-xs text-n-slate-11 truncate">
+              {{ message.catalogPreview.filename }}
+            </p>
+            <p class="text-xs text-n-slate-10">
+              {{
+                t('MARINE_AI.PLAYGROUND.CATALOG_PREVIEW.FILE_META', {
+                  type: message.catalogPreview.content_type,
+                  size: formatFileSize(message.catalogPreview.byte_size),
+                })
+              }}
+            </p>
+            <p class="mt-2 text-xs italic text-n-slate-10">
+              {{ t('MARINE_AI.PLAYGROUND.CATALOG_PREVIEW.READ_ONLY_HINT') }}
+            </p>
+          </div>
         </div>
       </div>
     </div>

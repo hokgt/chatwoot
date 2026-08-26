@@ -130,6 +130,45 @@ module Marine
         parsed.present? && parsed <= now
       end
 
+      # --- In-memory (NON-PERSISTING) snapshot transforms -----------------------------
+      #
+      # The source-less Playground preview carries product-flow state in an opaque signed token
+      # instead of a persisted Conversation, so it needs the EXACT allowlisting, bounding, and
+      # lifecycle semantics of the persisted #current / #current_for_planning / #start! / #update!
+      # path WITHOUT any row lock or DB write. These pure methods reuse fresh_flow / allowlist /
+      # seed_intent / sanitize / expiry so a preview and a real conversation normalize and
+      # transition identical state. A store used ONLY for these may be built with conversation: nil.
+
+      # Fold an untrusted snapshot into the strict bounded contract (identical read-validation to
+      # #current), or nil when it is not a usable flow. Nothing outside FIELDS survives.
+      def normalize_snapshot(flow)
+        sanitize(flow)
+      end
+
+      # Read-only EFFECTIVE planning snapshot (the in-memory twin of #current_for_planning): an
+      # ACTIVE flow whose expiry has elapsed reads as 'expired' WITHOUT mutating anything, so the
+      # orchestrator never reuses an expired flow's validated family/variant/catalog markers.
+      def snapshot_for_planning(flow)
+        flow = normalize_snapshot(flow)
+        return flow if flow.nil?
+        return flow.merge('status' => STATUS_EXPIRED) if flow['status'] == STATUS_ACTIVE && expired?(flow)
+
+        flow
+      end
+
+      # Apply a deterministic orchestrator state operation to an in-memory snapshot and return the
+      # next normalized snapshot — the non-persisting twin of #start! / #update!. :start begins a
+      # fresh flow (clearing every prior variant/attribute/catalog marker); :update bumps the
+      # version and merges allowlisted changes (original_intent immutable); :none returns the
+      # normalized prior snapshot unchanged.
+      def apply_snapshot(existing, operation:, changes: {})
+        case operation
+        when :start then sanitize(fresh_flow.merge(seed_intent(allowlist(changes))))
+        when :update then update_snapshot(normalize_snapshot(existing), allowlist(changes))
+        else normalize_snapshot(existing)
+        end
+      end
+
       # Begin a brand-new flow: version 1, a fresh flow_id, an expiry, status
       # active. Replaces any prior (valid, malformed, or expired) product_flow_v1
       # while preserving every sibling.
@@ -190,6 +229,19 @@ module Marine
           next_flow = yield(existing)
           next_flow.nil? ? nil : persist!(sanitize(next_flow))
         end
+      end
+
+      # In-memory :update twin used by #apply_snapshot: bump the version and merge already-
+      # allowlisted changes onto an existing normalized snapshot (original_intent immutable), or
+      # seed a fresh flow when there is none — exactly #update!'s block minus the lock/persist.
+      def update_snapshot(existing, changes)
+        next_flow =
+          if existing
+            existing.merge(changes.except('original_intent')).merge('version' => existing['version'].to_i + 1)
+          else
+            fresh_flow.merge(seed_intent(changes))
+          end
+        sanitize(next_flow)
       end
 
       def persist!(flow)

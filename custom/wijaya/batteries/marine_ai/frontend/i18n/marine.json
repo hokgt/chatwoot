@@ -364,7 +364,11 @@
       "ASSISTANT": "Marine AI",
       "MESSAGE_PLACEHOLDER": "Type your message...",
       "HEADER": "Playground",
-      "RESET": "Reset conversation"
+      "RESET": "Reset conversation",
+      "CATALOG_PREVIEW": {
+        "FILE_META": "{type} · {size}",
+        "READ_ONLY_HINT": "Preview only — the catalog file would be sent in a real conversation."
+      }
     },
     "INBOXES": {
       "TITLE": "Inboxes",

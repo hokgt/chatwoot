@@ -9,18 +9,27 @@
 # catalog behavior.
 #
 # It is strictly READ-ONLY and NON-DELIVERING:
-#   * an EMPTY flow snapshot is used (no ProductFlowStateStore, no persisted state) — the preview
-#     is stateless per turn; the bounded multi-turn HISTORY still feeds intent extraction as
-#     context, exactly like a real turn;
-#   * a send_catalog turn is previewed with a caption or an honest no-catalog line decided by the
-#     read-only ProductCatalogSelector — it NEVER creates or delivers a native catalog attachment;
+#   * multi-turn product state (validated family/variant, clarification kind+count, catalog-already-
+#     sent) is carried in an opaque SIGNED, account/assistant-scoped, expiring token
+#     (Marine::Catalog::PlaygroundStateToken) round-tripped through the browser — NEVER persisted to
+#     any DB/Redis/session. The prior token is verified, the plan's deterministic state operation is
+#     applied to an IN-MEMORY ProductFlowStateStore snapshot (reusing the exact allowlisting and
+#     lifecycle semantics), and the next signed snapshot is returned. A tampered/expired/foreign
+#     token fails closed to a fresh flow;
+#   * a DIRECT catalog request whose primary catalog exists is previewed with a TRUTHFUL "would be
+#     shared" line plus a read-only, allowlisted metadata card (family, safe filename, MIME, byte
+#     size) — it NEVER creates or delivers a native catalog attachment and exposes no blob/download
+#     URL;
 #   * a product handoff shows the factless, request-aware acknowledgement (the exact message a
 #     customer would see) WITHOUT any assignment/handoff mutation;
-#   * no Conversation, Message, Attachment, job, ERP call, or state write ever happens here.
+#   * a KNOWN catalog outage fails CLOSED to the safe handoff acknowledgement — it NEVER falls
+#     through to RAG (which has no catalog knowledge and would fabricate an answer);
+#   * no Conversation, Message, Attachment, job, ERP call, or persisted state write ever happens.
 #
 # It returns a reply payload shaped like the RAG reply the Playground controller already renders
-# (`response`/`action`/`agent_name`), or nil to fall through to the unchanged RAG path for a
-# non-product turn, a blank query, or any failure (fail-safe: no worse than the prior behavior).
+# (`response`/`action`/`agent_name`), enriched with an optional read-only `catalog_preview` card and
+# the next `state_token`; or nil to fall through to the unchanged RAG path for a non-product turn, a
+# blank query, or an unexpected (non-catalog) failure (fail-safe: no worse than the prior behavior).
 module Marine
   module Catalog
     class PlaygroundPreview
@@ -28,26 +37,38 @@ module Marine
       SOURCE_TYPE = 'marine_product'.freeze
       ORCHESTRATION_PATH = 'product'.freeze
 
+      # Defense-in-depth history bounds, mirroring the controller's allowlist and the canonical
+      # ContextBuilder window: the transcript is untrusted client input, so it is re-bounded here
+      # even though the controller already bounded it (a direct-unit caller may not have).
+      MAX_HISTORY_TURNS = 10
+      MAX_TURN_CHARS = 500
+      HISTORY_ROLES = %w[user assistant].freeze
+
       def initialize(assistant:, account:)
         @assistant = assistant
         @account = account
       end
 
-      def call(query:, history: [])
+      def call(query:, history: [], state_token: nil)
         return nil if query.blank?
 
-        plan = orchestrator.process(text: query.to_s, context: Array(history), flow: {}, suppressed: false)
+        bounded = bounded_history(history)
+        prior = decode_state(state_token)
+        plan = orchestrator.process(text: query.to_s, context: bounded,
+                                    flow: store.snapshot_for_planning(prior) || {}, suppressed: false)
         return nil if plan[:action] == :not_product
 
         log_event('preview.plan', action: plan[:action], language: plan[:language])
-        payload = build_payload(plan, query, history)
+        payload = build_payload(plan, query, bounded, prior)
         log_event('preview.reply', action: plan[:action])
         payload
       rescue Marine::Catalog::Errors::CatalogError => e
-        # Catalog unreachable/unconfigured: a source-less preview cannot faithfully answer a
-        # product turn, so fall through to RAG rather than fabricating a catalog fact.
+        # KNOWN catalog outage. The orchestrator already fails closed to a safe factless handoff
+        # plan, so this fires only when catalog reasoning raises outside it (e.g. the read-only
+        # document selection). It must NEVER fall through to RAG (that would let general RAG
+        # fabricate a catalog answer): render the safe fail-closed handoff acknowledgement instead.
         log_event('preview.catalog_error', error_class: e.class.name)
-        nil
+        catalog_unavailable_payload(query, bounded, decode_state(state_token))
       rescue StandardError => e
         capture(e)
         log_event('preview.error', error_class: e.class.name)
@@ -58,64 +79,145 @@ module Marine
 
       attr_reader :assistant, :account
 
-      def build_payload(plan, query, history)
-        english = deterministic_text(plan)
-        reply_payload(localize(english, plan, query, history))
+      # Untrusted transcript re-bounded/allowlisted: only user/assistant roles, blank content
+      # dropped, each turn truncated, newest turns kept (oldest-to-newest order preserved).
+      def bounded_history(history)
+        Array(history).filter_map do |turn|
+          role = (turn[:role] || turn['role']).to_s
+          content = (turn[:content] || turn['content']).to_s.strip
+          next if content.blank? || HISTORY_ROLES.exclude?(role)
+
+          { role: role, content: content[0, MAX_TURN_CHARS] }
+        end.last(MAX_HISTORY_TURNS)
       end
 
-      # Deterministic English text for the plan, reusing the shared presenter so the wording is
-      # identical to a real conversation. A send_catalog turn is previewed WITHOUT delivering an
-      # attachment (caption vs honest no-catalog line); a product handoff shows the factless,
-      # request-aware acknowledgement; every other action renders its deterministic reply text.
-      def deterministic_text(plan)
+      # Verify the client-supplied token and re-normalize its snapshot through the store's trust
+      # boundary. A blank/tampered/expired/foreign token yields nil (a fresh flow) — fail closed.
+      def decode_state(token)
+        return nil if token.blank?
+
+        store.normalize_snapshot(state_token.decode(token))
+      end
+
+      def build_payload(plan, query, history, prior)
+        snapshot = apply_state(plan, prior)
+        english, catalog_card, next_snapshot = render(plan, snapshot)
+        text = localize(english: english, protection: localization_protection(plan),
+                        language: plan[:language], query: query, history: history)
+        reply_payload(text, next_state: next_snapshot, catalog: catalog_card)
+      end
+
+      # Apply the plan's deterministic state operation to the prior IN-MEMORY snapshot — the exact
+      # ProductFlowStateStore start!/update! semantics, minus any persistence.
+      def apply_state(plan, prior)
+        state = plan[:state] || {}
+        store.apply_snapshot(prior, operation: state[:operation] || :none, changes: state[:changes] || {})
+      end
+
+      # Deterministic English text + optional read-only catalog card + the next snapshot for the
+      # plan, reusing the shared presenter so the wording is identical to a real conversation. A
+      # send_catalog turn is previewed WITHOUT delivering an attachment; a product handoff shows the
+      # factless, request-aware acknowledgement; every other action renders its deterministic reply.
+      def render(plan, snapshot)
         case plan[:action]
-        when :send_catalog then catalog_preview_text(plan)
-        when :handoff then presenter.handoff_ack_text(plan[:handoff_category])
-        else presenter.reply_text(plan)
+        when :send_catalog then render_send_catalog(plan, snapshot)
+        when :handoff then [presenter.handoff_ack_text(plan[:handoff_category]), nil, snapshot]
+        else [presenter.reply_text(plan), nil, snapshot]
         end
       end
 
-      # DIRECT catalog request: preview the caption when a usable primary catalog exists for the
-      # validated family, else the honest no-catalog line (never "already sent" — the preview holds
-      # no persisted flow). A catalog-ASSISTED send_catalog (reply nil) renders its deterministic
-      # variant clarification via the presenter.
-      def catalog_preview_text(plan)
-        return presenter.reply_text(plan) unless presenter.direct_catalog_request?(plan)
-        return presenter.reply_text(plan) if catalog_document(plan.dig(:reply, :family_code))
+      # DIRECT catalog request: when a usable primary catalog exists for the validated family and
+      # none has been previewed this flow, render the TRUTHFUL "would be shared" line, attach a
+      # read-only metadata card, and mark catalog_sent in the returned snapshot (the exact
+      # one-catalog-per-flow marker the real delivery sets) so a follow-up is "already shared" — not
+      # a re-offer. Otherwise the honest already-sent / no-catalog line. A catalog-ASSISTED
+      # send_catalog (reply nil) renders its deterministic variant clarification, no card.
+      def render_send_catalog(plan, snapshot)
+        return [presenter.reply_text(plan), nil, snapshot] unless presenter.direct_catalog_request?(plan)
 
-        presenter.direct_catalog_fallback_text(plan[:reply] || {}, already_sent: false)
+        document = catalog_document(plan.dig(:reply, :family_code))
+        already_sent = catalog_already_sent?(snapshot)
+        if document && !already_sent
+          card = catalog_metadata(plan, document)
+          next_snapshot = store.apply_snapshot(snapshot, operation: :update, changes: catalog_sent_changes(document))
+          [presenter.catalog_preview_available_text(plan[:reply] || {}), card, next_snapshot]
+        else
+          [presenter.direct_catalog_fallback_text(plan[:reply] || {}, already_sent: document && already_sent), nil, snapshot]
+        end
       end
 
+      # Read-only, allowlisted catalog metadata for the preview card — family display plus the safe
+      # file metadata the canonical document serializer already authorizes (filename, MIME, byte
+      # size). No blob key, no download/delivery URL, no content.
+      def catalog_metadata(plan, document)
+        file = Marine::Documents::Serializer.file_metadata(document)
+        return nil if file.nil?
+
+        {
+          'family_name' => presenter.catalog_family_name(plan[:reply] || {}),
+          'filename' => file['filename'],
+          'content_type' => file['content_type'],
+          'byte_size' => file['byte_size']
+        }
+      end
+
+      # The one-catalog-per-flow marker the real delivery records after creating the Message; here
+      # there is no Message, so only the flow-level markers are set on the in-memory snapshot.
+      def catalog_sent_changes(document)
+        { 'catalog_sent' => true, 'catalog_document_id' => document.id }
+      end
+
+      def catalog_already_sent?(snapshot)
+        snapshot.is_a?(Hash) && snapshot['catalog_sent'] == true
+      end
+
+      # Read-only primary-catalog selection. A catalog repository/storage failure must fail CLOSED,
+      # never fall through to RAG as a fabricated answer: surface it as the canonical
+      # catalog-unavailable error so #call renders the safe handoff acknowledgement.
       def catalog_document(family_code)
         Marine::Documents::ProductCatalogSelector.new(
           account: account, assistant: assistant, family_code: family_code
         ).call
+      rescue Marine::Catalog::Errors::CatalogError
+        raise
+      rescue StandardError => e
+        log_event('preview.catalog_lookup_error', error_class: e.class.name)
+        raise Marine::Catalog::Errors::CatalogUnavailableError
+      end
+
+      # Fail-closed catalog-unavailable preview: the safe, factless handoff acknowledgement (never a
+      # fabricated catalog answer, never a fall-through to RAG). Carries the prior state forward
+      # unchanged (no state operation happened).
+      def catalog_unavailable_payload(query, history, prior)
+        text = localize(english: presenter.handoff_ack_text(nil), protection: [nil, nil],
+                        language: nil, query: query, history: history)
+        reply_payload(text, next_state: prior)
+      end
+
+      # The handoff acknowledgement is factless (not a descriptor's text), so it localizes with no
+      # protected descriptor — exactly as the conversation path does. Every other action carries its
+      # descriptor so protected display values (family/variant/price) stay literal in translation.
+      def localization_protection(plan)
+        return [nil, nil] if plan[:action] == :handoff
+
+        [plan[:action], plan[:reply]]
       end
 
       # Delivery-only localization to the customer's language via the canonical ReplyLocalizer
       # (source-less: no conversation needed). It fails closed to English internally, and never
       # changes the catalog DECISION — only the wording follows the customer's latest turn.
-      def localize(english, plan, query, history)
-        action, descriptor = localization_protection(plan)
+      def localize(english:, protection:, language:, query:, history:)
+        action, descriptor = protection
         Marine::Catalog::ReplyLocalizer.new(
           text: english,
           trigger_text: query.to_s,
           context: history_contents(history),
-          provider_language: plan[:language],
+          provider_language: language,
           fallback_language: configured_reply_language,
           account: account,
           action: action,
           descriptor: descriptor
         ).call
-      end
-
-      # The handoff acknowledgement is factless (not the descriptor's text), so it localizes with
-      # no protected descriptor — exactly as the conversation path does. Every other action carries
-      # its descriptor so protected display values (family/variant/price) stay literal in translation.
-      def localization_protection(plan)
-        return [nil, nil] if plan[:action] == :handoff
-
-        [plan[:action], plan[:reply]]
       end
 
       # Bounded prior turn contents (newest first) — a fallback language signal only, mirroring the
@@ -128,14 +230,16 @@ module Marine
         assistant.config.to_h['language'] if assistant.respond_to?(:config)
       end
 
-      def reply_payload(text)
+      def reply_payload(text, next_state: nil, catalog: nil)
         {
           'response' => text,
           'action' => 'reply',
           'agent_name' => (assistant.name if assistant.respond_to?(:name)),
           'source_type' => SOURCE_TYPE,
-          'orchestration_path' => ORCHESTRATION_PATH
-        }
+          'orchestration_path' => ORCHESTRATION_PATH,
+          'state_token' => state_token.encode(next_state),
+          'catalog_preview' => catalog
+        }.compact
       end
 
       def orchestrator
@@ -148,13 +252,24 @@ module Marine
         @presenter ||= Marine::Catalog::ReplyPresenter.new
       end
 
+      # A conversation-less store used ONLY for its pure in-memory snapshot transforms
+      # (normalize/plan/apply) — never a persisted mutation, so the preview writes no state.
+      def store
+        @store ||= Marine::Catalog::ProductFlowStateStore.new(conversation: nil)
+      end
+
+      def state_token
+        @state_token ||= Marine::Catalog::PlaygroundStateToken.new(account: account, assistant: assistant)
+      end
+
       def capture(error)
         return if account.nil?
 
         ChatwootExceptionTracker.new(error, account: account).capture_exception
       end
 
-      # Structured, secret-free single-line logging — only action and a bounded language code.
+      # Structured, secret-free single-line logging — only action and a bounded language code; never
+      # the token or any state.
       def log_event(event, **fields)
         parts = fields.compact.map { |key, value| "#{key}=#{value}" }.join(' ')
         Rails.logger.info("#{LOG_PREFIX} event=#{event} #{parts}".strip)

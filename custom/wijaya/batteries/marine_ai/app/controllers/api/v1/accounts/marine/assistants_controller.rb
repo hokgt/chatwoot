@@ -53,7 +53,8 @@ class Api::V1::Accounts::Marine::AssistantsController < Api::V1::Accounts::BaseC
   end
 
   def playground
-    service = Marine::Llm::AssistantChatService.new(assistant: @assistant, source: 'playground')
+    service = Marine::Llm::AssistantChatService.new(assistant: @assistant, source: 'playground',
+                                                    state_token: playground_params[:state_token].presence)
     payload = Timeout.timeout(PLAYGROUND_REQUEST_DEADLINE, PlaygroundDeadlineError) do
       service.generate_response(additional_message: playground_params[:message_content],
                                 message_history: playground_message_history)
@@ -79,7 +80,7 @@ class Api::V1::Accounts::Marine::AssistantsController < Api::V1::Accounts::BaseC
   end
 
   def playground_params
-    params.require(:assistant).permit(:message_content, message_history: [:role, :content])
+    params.require(:assistant).permit(:message_content, :state_token, message_history: [:role, :content])
   end
 
   # Sanitized, bounded prior turns for the multi-turn playground preview. Untrusted input, so

@@ -473,6 +473,11 @@ patches:
       # ReplyPresenter, localizes via ReplyLocalizer. Read-only, non-delivering, no persistence;
       # returns nil to fall through to RAG for a non-product turn or any failure.
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/playground_preview.rb
+      # Opaque, signed, expiring, account/assistant-scoped TRANSPORT for the source-less Playground's
+      # ephemeral product-flow state (MessageVerifier off secret_key_base). Round-tripped through the
+      # browser and verified server-side; carries only the ProductFlowStateStore-normalized/allowlisted
+      # planning snapshot, never persisted to any DB/Redis/session. Tamper/expiry/foreign-scope fail closed.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/playground_state_token.rb
       # Delivery-only localizer for customer-facing product/catalog text: detects the
       # latest customer's language (shared LanguageDetector, trigger message first, bounded
       # context fallback) and rewrites the deterministic English reply via the shared
@@ -744,6 +749,8 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/catalog/reply_presenter_spec.rb
       # Source-less Playground catalog preview spec (read-only, non-delivering, fail-safe).
       - spec/custom/wijaya/batteries/marine_ai/catalog/playground_preview_spec.rb
+      # Signed ephemeral Playground state-token spec: round-trip, tamper/expiry/foreign-scope fail-closed.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/playground_state_token_spec.rb
       # Delivery-only product-reply localizer spec.
       - spec/custom/wijaya/batteries/marine_ai/catalog/reply_localizer_spec.rb
       # Phase 6 — fact-protected natural product wording: deterministic protected-fact checker
@@ -785,6 +792,9 @@ patches:
       # Playground preview — multi-turn context forwarding, bounded/allowlisted history,
       # authorization, and non-delivering isolation (no Conversation/Message side effects).
       - spec/custom/wijaya/batteries/marine_ai/controllers/assistants_controller_spec.rb
+      # Four-turn Playground catalog acceptance: signed state token round-trip, catalog-grounded
+      # (card / already-shared / truthful clarify) never RAG "unavailable", tamper fail-closed, no side effects.
+      - spec/custom/wijaya/batteries/marine_ai/controllers/playground_catalog_acceptance_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/copilot/search_conversations_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/copilot/search_contacts_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/copilot_threads_controller_spec.rb
@@ -796,6 +806,8 @@ patches:
       # race discard, duplicate-submit guard, and fail-closed error state.
       - custom/wijaya/batteries/marine_ai/frontend/api/specs/assistant.spec.js
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/specs/MarineAssistantPlayground.spec.js
+      # Read-only, non-downloadable catalog preview card render (allowlisted metadata, no link/button).
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/specs/MarineMessageList.spec.js
       # Commit 1E — confidentiality serializer + extracted-helper/UI regression coverage.
       - spec/custom/wijaya/batteries/marine_ai/documents/serializer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/documents/sync_service_spec.rb

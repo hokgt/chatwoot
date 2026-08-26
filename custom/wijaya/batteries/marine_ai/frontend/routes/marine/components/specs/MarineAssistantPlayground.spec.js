@@ -57,6 +57,7 @@ describe('MarineAssistantPlayground', () => {
       assistantId: 1,
       messageContent: 'hello',
       messageHistory: [],
+      stateToken: null,
     });
     expect(wrapper.vm.messages).toEqual([
       expect.objectContaining({ sender: 'user', content: 'hello' }),
@@ -85,7 +86,121 @@ describe('MarineAssistantPlayground', () => {
         { role: 'user', content: 'first' },
         { role: 'assistant', content: 'first reply' },
       ],
+      stateToken: null,
     });
+  });
+
+  it('echoes the signed state token from a response on the next request', async () => {
+    playgroundSpy.mockResolvedValue({
+      data: { action: 'reply', response: 'first', state_token: 'signed-1' },
+    });
+    const wrapper = mountPlayground();
+    await send(wrapper, 'first');
+    await flushPromises();
+
+    playgroundSpy.mockResolvedValue({
+      data: { action: 'reply', response: 'second', state_token: 'signed-2' },
+    });
+    await send(wrapper, 'second');
+    await flushPromises();
+
+    expect(playgroundSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        messageContent: 'second',
+        stateToken: 'signed-1',
+      })
+    );
+  });
+
+  it('clears the state token on a manual reset so the next request starts a fresh flow', async () => {
+    playgroundSpy.mockResolvedValue({
+      data: { action: 'reply', response: 'first', state_token: 'signed-1' },
+    });
+    const wrapper = mountPlayground();
+    await send(wrapper, 'first');
+    await flushPromises();
+
+    wrapper.vm.resetConversation();
+    playgroundSpy.mockResolvedValue({
+      data: { action: 'reply', response: 'fresh' },
+    });
+    await send(wrapper, 'again');
+    await flushPromises();
+
+    expect(playgroundSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ messageContent: 'again', stateToken: null })
+    );
+  });
+
+  it('clears the state token on assistant switch', async () => {
+    playgroundSpy.mockResolvedValue({
+      data: { action: 'reply', response: 'first', state_token: 'signed-1' },
+    });
+    const wrapper = mountPlayground(1);
+    await send(wrapper, 'first');
+    await flushPromises();
+
+    await wrapper.setProps({ assistantId: 2 });
+    playgroundSpy.mockResolvedValue({
+      data: { action: 'reply', response: 'fresh' },
+    });
+    await send(wrapper, 'again');
+    await flushPromises();
+
+    expect(playgroundSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ assistantId: 2, stateToken: null })
+    );
+  });
+
+  it('does not let a stale response repopulate the state token after a reset', async () => {
+    const first = deferred();
+    playgroundSpy.mockReturnValueOnce(first.promise);
+    const wrapper = mountPlayground();
+
+    await send(wrapper, 'hello');
+    wrapper.vm.resetConversation();
+    first.resolve({
+      data: { action: 'reply', response: 'stale', state_token: 'stale-token' },
+    });
+    await flushPromises();
+
+    playgroundSpy.mockResolvedValue({
+      data: { action: 'reply', response: 'fresh' },
+    });
+    await send(wrapper, 'world');
+    await flushPromises();
+    // The stale token was discarded; the fresh request started from null.
+    expect(playgroundSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ messageContent: 'world', stateToken: null })
+    );
+  });
+
+  it('attaches a catalog preview card payload to the assistant message', async () => {
+    playgroundSpy.mockResolvedValue({
+      data: {
+        action: 'reply',
+        response: 'The Baby Doll catalog is available.',
+        catalog_preview: {
+          family_name: 'Baby Doll',
+          filename: 'catalog.pdf',
+          content_type: 'application/pdf',
+          byte_size: 2048,
+        },
+      },
+    });
+    const wrapper = mountPlayground();
+    await send(wrapper, 'ada katalog baby doll ?');
+    await flushPromises();
+
+    expect(wrapper.vm.messages[1]).toEqual(
+      expect.objectContaining({
+        sender: 'assistant',
+        catalogPreview: expect.objectContaining({
+          family_name: 'Baby Doll',
+          filename: 'catalog.pdf',
+        }),
+      })
+    );
   });
 
   it('renders a handoff turn without content and excludes it from later history', async () => {

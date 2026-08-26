@@ -41,10 +41,13 @@ class Marine::Agent::Runner
   # use Product Flow. Generic and data-driven: no question/product/language/phrase handling.
   FAQ_PRECEDENCE_MIN_CONFIDENCE = Marine::Charge::ConfidenceScorer::EXACT_MATCH_SCORE
 
-  def initialize(assistant:, conversation: nil, source: nil)
+  PLAYGROUND_SOURCE = 'playground'.freeze
+
+  def initialize(assistant:, conversation: nil, source: nil, state_token: nil)
     @assistant = assistant
     @conversation = conversation
     @source = source
+    @state_token = state_token
   end
 
   # A trigger-bound run derives its prior history and separately bounded current trigger from
@@ -83,7 +86,7 @@ class Marine::Agent::Runner
 
   private
 
-  attr_reader :assistant, :conversation, :source
+  attr_reader :assistant, :conversation, :source, :state_token
 
   # Canonical bounded prior history + separately bounded current trigger + interaction phase
   # for a trigger-bound turn; nil when there is no incoming trigger message (legacy / direct
@@ -194,22 +197,28 @@ class Marine::Agent::Runner
     conversation&.account || (assistant.account if assistant.respond_to?(:account))
   end
 
-  # Source-less Playground catalog preview. Runs ONLY when there is NO conversation (the
-  # Playground / direct source-less caller — never the conversation-bound job paths, which own
-  # their own product orchestration and must stay unchanged) and a product account is available.
-  # It previews the SAME deterministic product orchestration a real turn uses, so a valid catalog
-  # request is grounded in the catalog instead of falling through to RAG as "unavailable". Fully
-  # read-only: no persistence, delivery, or side effects. Returns nil (fall through to the
-  # unchanged RAG path) for a non-product turn, a blank query, or any failure.
+  # Source-less Playground catalog preview. Runs ONLY for an explicit Playground run (source ==
+  # 'playground' AND no conversation) — never the conversation-bound job paths (which own their own
+  # product orchestration) and never an incidental source-less direct caller. It previews the SAME
+  # deterministic product orchestration a real turn uses, so a valid catalog request is grounded in
+  # the catalog instead of falling through to RAG as "unavailable". Fully read-only: no persistence,
+  # delivery, or side effects. Returns nil (fall through to the unchanged RAG path) for a non-product
+  # turn, a blank query, or any failure.
+  #
+  # Gate G applies here exactly as on the conversation path: an EXACT approved FAQ/KB match
+  # (#faq_precedence?) short-circuits BEFORE the catalog preview, so an erroneous product
+  # classification cannot preempt a curated approved answer in the Playground either — the turn
+  # falls through to RAG, which returns the FAQ.
   def playground_preview(query, history)
-    return nil unless conversation.nil?
+    return nil unless source == PLAYGROUND_SOURCE && conversation.nil?
     return nil if query.blank?
+    return nil if faq_precedence?(query)
 
     account = product_account
     return nil if account.nil?
 
     Marine::Catalog::PlaygroundPreview.new(assistant: assistant, account: account)
-                                      .call(query: query, history: history)
+                                      .call(query: query, history: history, state_token: state_token)
   end
 
   def response_generator

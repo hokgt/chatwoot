@@ -75,6 +75,16 @@ module Marine
         end
       end
 
+      # Playground-only TRUTHFUL preview line for a DIRECT catalog request whose primary catalog
+      # exists. A real conversation delivers the native attachment with the #catalog_ready_text
+      # caption; the source-less preview CANNOT deliver a file, so it must never claim "Here is the
+      # catalog". It states only that the catalog is available and would be shared in a real
+      # conversation, and names solely the row-derived family — the accompanying read-only metadata
+      # card carries the safe file details.
+      def catalog_preview_available_text(descriptor)
+        "The #{catalog_family_name(descriptor)} catalog is available and would be shared with the customer in a full conversation."
+      end
+
       # The deterministic, factless, unbranded acknowledgement for a product handoff, selected by the
       # bounded generic request category so the fallback is request-AWARE without asserting anything.
       def handoff_ack_text(category)

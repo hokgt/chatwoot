@@ -49,5 +49,25 @@ describe('#MarineAssistantAPI', () => {
         { assistant: { message_content: 'hello', message_history: [] } }
       );
     });
+
+    it('posts the ephemeral signed state token when provided', () => {
+      marineAssistantAPI.playground({
+        assistantId: 7,
+        messageContent: 'again',
+        messageHistory: [],
+        stateToken: 'signed-1',
+      });
+
+      expect(axiosMock.post).toHaveBeenCalledWith(
+        `${marineAssistantAPI.url}/7/playground`,
+        {
+          assistant: {
+            message_content: 'again',
+            message_history: [],
+            state_token: 'signed-1',
+          },
+        }
+      );
+    });
   });
 });

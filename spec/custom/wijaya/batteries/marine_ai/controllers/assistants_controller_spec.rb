@@ -99,6 +99,26 @@ RSpec.describe 'Api::V1::Accounts::Marine::Assistants', type: :request do
       end
     end
 
+    context 'with an ephemeral signed state token' do
+      it 'forwards the client-supplied state token to the source-less chat service' do
+        post "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}/playground",
+             params: { assistant: { message_content: 'hello', state_token: 'signed-prior' } },
+             headers: admin.create_new_auth_token, as: :json
+
+        expect(Marine::Llm::AssistantChatService).to have_received(:new)
+          .with(hash_including(source: 'playground', state_token: 'signed-prior'))
+      end
+
+      it 'passes nil (a fresh flow) when no token is supplied' do
+        post "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}/playground",
+             params: { assistant: { message_content: 'hello' } },
+             headers: admin.create_new_auth_token, as: :json
+
+        expect(Marine::Llm::AssistantChatService).to have_received(:new)
+          .with(hash_including(source: 'playground', state_token: nil))
+      end
+    end
+
     context 'without delivery (playground is a non-delivering preview)' do
       it 'creates no Conversation and no Message' do
         expect do

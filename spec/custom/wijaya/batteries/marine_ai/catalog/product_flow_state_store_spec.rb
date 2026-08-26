@@ -466,6 +466,76 @@ RSpec.describe Marine::Catalog::ProductFlowStateStore do
     end
   end
 
+  # In-memory (NON-PERSISTING) snapshot transforms used by the source-less Playground preview. They
+  # reuse the exact allowlisting/bounding/lifecycle semantics of the persisted path with NO
+  # Conversation, lock, or DB write, so a preview and a real conversation normalize/transition state
+  # identically.
+  describe 'in-memory snapshot transforms (no conversation / no persistence)' do
+    subject(:mem) { described_class.new(conversation: nil, clock: clock, id_generator: id_generator) }
+
+    describe '#apply_snapshot :start' do
+      it 'begins a fresh version-1 flow with allowlisted changes and drops unknown keys' do
+        snap = mem.apply_snapshot(nil, operation: :start,
+                                       changes: { 'current_intent' => 'catalog', 'validated_family' => 'BD', 'evil' => 'x' })
+
+        expect(snap).to include('version' => 1, 'status' => 'active', 'flow_id' => 'flow-fixed-id',
+                                'current_intent' => 'catalog', 'original_intent' => 'catalog', 'validated_family' => 'BD')
+        expect(snap).not_to have_key('evil')
+      end
+    end
+
+    describe '#apply_snapshot :update' do
+      let(:existing) do
+        mem.apply_snapshot(nil, operation: :start, changes: { 'current_intent' => 'catalog', 'validated_family' => 'BD' })
+      end
+
+      it 'bumps the version, merges allowlisted changes, and keeps original_intent immutable' do
+        snap = mem.apply_snapshot(existing, operation: :update,
+                                            changes: { 'current_intent' => 'price', 'original_intent' => 'hack', 'catalog_sent' => true })
+
+        expect(snap).to include('version' => 2, 'current_intent' => 'price', 'original_intent' => 'catalog',
+                                'validated_family' => 'BD', 'catalog_sent' => true)
+      end
+
+      it 'seeds a fresh flow when there is no prior snapshot' do
+        snap = mem.apply_snapshot(nil, operation: :update, changes: { 'current_intent' => 'catalog' })
+        expect(snap).to include('version' => 1, 'current_intent' => 'catalog')
+      end
+    end
+
+    describe '#apply_snapshot :none' do
+      it 'returns the normalized prior snapshot unchanged' do
+        existing = mem.apply_snapshot(nil, operation: :start, changes: { 'current_intent' => 'catalog' })
+        expect(mem.apply_snapshot(existing, operation: :none)).to eq(existing)
+      end
+    end
+
+    describe '#snapshot_for_planning' do
+      it 'presents an ACTIVE but elapsed flow as expired without mutating it' do
+        active = mem.apply_snapshot(nil, operation: :start, changes: { 'current_intent' => 'catalog' })
+        advance(described_class::DEFAULT_TTL + 1)
+
+        expect(mem.snapshot_for_planning(active)['status']).to eq('expired')
+        expect(active['status']).to eq('active')
+      end
+
+      it 'returns nil for a malformed snapshot' do
+        expect(mem.snapshot_for_planning({ 'garbage' => true })).to be_nil
+        expect(mem.snapshot_for_planning(nil)).to be_nil
+      end
+    end
+
+    describe '#normalize_snapshot' do
+      it 'drops keys outside the allowlist and returns nil for a non-hash' do
+        normalized = mem.normalize_snapshot('version' => 1, 'flow_id' => 'f', 'status' => 'active',
+                                            'expires_at' => clock_state[:now].iso8601, 'validated_family' => 'BD', 'secret' => 'x')
+        expect(normalized).to include('validated_family' => 'BD')
+        expect(normalized).not_to have_key('secret')
+        expect(mem.normalize_snapshot('nope')).to be_nil
+      end
+    end
+  end
+
   describe 'under lock: reloads the latest persisted state' do
     it 'does not clobber a concurrent writer and preserves keys it never saw' do
       store.start!(current_intent: 'price') # version 1 persisted

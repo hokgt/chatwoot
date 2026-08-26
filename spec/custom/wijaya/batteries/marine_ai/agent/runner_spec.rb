@@ -407,7 +407,14 @@ RSpec.describe Marine::Agent::Runner do
   describe 'nil-conversation source-less run derives greeting phase from message_history' do
     let(:runner) { described_class.new(assistant: assistant, source: 'playground') }
 
-    before { allow(generator).to receive(:generate).and_return(reply_payload) }
+    before do
+      allow(generator).to receive(:generate).and_return(reply_payload)
+      # Gate G on the playground path retrieves; no exact FAQ match here, so it falls through.
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(
+        instance_double(Marine::Cell::KnowledgeBaseService,
+                        retrieve: Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match'))
+      )
+    end
 
     it 'forwards the supplied history and threads opening: true when no assistant turn exists yet' do
       history = [{ role: 'user', content: 'first turn' }]
@@ -445,11 +452,18 @@ RSpec.describe Marine::Agent::Runner do
     let(:runner) { described_class.new(assistant: assistant, source: 'playground') }
     let(:preview) { instance_double(Marine::Catalog::PlaygroundPreview) }
 
-    before { allow(Marine::Catalog::PlaygroundPreview).to receive(:new).and_return(preview) }
+    before do
+      allow(Marine::Catalog::PlaygroundPreview).to receive(:new).and_return(preview)
+      # No exact approved FAQ, so Gate G lets the turn reach the catalog preview.
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(
+        instance_double(Marine::Cell::KnowledgeBaseService,
+                        retrieve: Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match'))
+      )
+    end
 
     it 'returns the preview payload and skips RAG for a product/catalog turn' do
-      payload = { 'response' => 'Here is the product catalog for Baby Doll.', 'action' => 'reply',
-                  'source_type' => 'marine_product', 'orchestration_path' => 'product' }
+      payload = { 'response' => 'The Baby Doll catalog is available and would be shared with the customer in a full conversation.',
+                  'action' => 'reply', 'source_type' => 'marine_product', 'orchestration_path' => 'product' }
       allow(preview).to receive(:call).and_return(payload)
       allow(generator).to receive(:generate).and_return(reply_payload)
 
@@ -457,8 +471,17 @@ RSpec.describe Marine::Agent::Runner do
 
       expect(result).to eq(payload)
       expect(Marine::Catalog::PlaygroundPreview).to have_received(:new).with(assistant: assistant, account: account)
-      expect(preview).to have_received(:call).with(query: 'ada katalog baby doll ?', history: [])
+      expect(preview).to have_received(:call).with(query: 'ada katalog baby doll ?', history: [], state_token: nil)
       expect(generator).not_to have_received(:generate)
+    end
+
+    it 'forwards the ephemeral signed state token to the preview' do
+      runner = described_class.new(assistant: assistant, source: 'playground', state_token: 'signed-prior')
+      allow(preview).to receive(:call).and_return('response' => 'ok', 'action' => 'reply')
+
+      runner.run(additional_message: 'ada katalog baby doll ?', message_history: [])
+
+      expect(preview).to have_received(:call).with(hash_including(state_token: 'signed-prior'))
     end
 
     it 'falls through to the unchanged RAG path when the preview declines (non-product)' do
@@ -470,12 +493,44 @@ RSpec.describe Marine::Agent::Runner do
       expect(result).to include('orchestration_path' => 'retrieval')
       expect(generator).to have_received(:generate)
     end
+
+    it 'bypasses the catalog preview when an EXACT approved FAQ matches (Gate G on the playground path)' do
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(
+        instance_double(Marine::Cell::KnowledgeBaseService,
+                        retrieve: Marine::Cell::RetrievalResult.new(
+                          responses: [], confidence: Marine::Charge::ConfidenceScorer::EXACT_MATCH_SCORE,
+                          fallback_reason: nil
+                        ))
+      )
+      allow(generator).to receive(:generate).and_return(reply_payload('response' => 'FAQ answer'))
+
+      result = runner.run(additional_message: 'ada katalog baby doll ?', message_history: [])
+
+      expect(Marine::Catalog::PlaygroundPreview).not_to have_received(:new)
+      expect(result).to include('orchestration_path' => 'retrieval')
+      expect(generator).to have_received(:generate)
+    end
   end
 
-  describe 'source-less run with no product account never previews' do
-    let(:runner) { described_class.new(assistant: assistant, source: 'playground') }
+  describe 'source-less run gating' do
+    it 'never previews for a non-playground source-less caller even with a product account (source gate)' do
+      account = instance_double(Account)
+      assistant = double('assistant', id: 1, name: 'Marine Bot', account: account)
+      runner = described_class.new(assistant: assistant, source: nil)
+      allow(generator).to receive(:generate).and_return(reply_payload)
+      expect(Marine::Catalog::PlaygroundPreview).not_to receive(:new)
 
-    it 'skips the preview entirely (assistant has no account) and uses RAG' do
+      runner.run(additional_message: 'ada katalog baby doll ?')
+
+      expect(generator).to have_received(:generate)
+    end
+
+    it 'skips the preview entirely when the assistant has no product account and uses RAG' do
+      runner = described_class.new(assistant: assistant, source: 'playground')
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(
+        instance_double(Marine::Cell::KnowledgeBaseService,
+                        retrieve: Marine::Cell::RetrievalResult.empty(fallback_reason: 'x'))
+      )
       allow(generator).to receive(:generate).and_return(reply_payload)
       expect(Marine::Catalog::PlaygroundPreview).not_to receive(:new)
 

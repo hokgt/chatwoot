@@ -17,6 +17,12 @@ const messages = ref([]);
 const newMessage = ref('');
 const isLoading = ref(false);
 
+// Opaque signed ephemeral product-flow state for the source-less preview. It lives ONLY in this
+// browser-memory ref — never persisted — and is echoed on each request so the preview is
+// deterministically multi-turn. It is cleared on reset/assistant switch, and only ever updated by a
+// response that still owns the current generation, so a late/stale result cannot repopulate it.
+const stateToken = ref(null);
+
 // Bounded prior turns sent with each request so the preview is multi-turn; the backend also
 // re-bounds/allowlists this payload. Mirrors the server-side playground history cap.
 const MAX_HISTORY_TURNS = 10;
@@ -33,6 +39,7 @@ const resetConversation = () => {
   messages.value = [];
   newMessage.value = '';
   isLoading.value = false;
+  stateToken.value = null;
 };
 
 const buildMessageHistory = () =>
@@ -84,9 +91,14 @@ const sendMessage = async () => {
       assistantId: requestedAssistantId,
       messageContent: currentMessage,
       messageHistory,
+      stateToken: stateToken.value,
     });
 
     if (generation !== requestGeneration) return;
+
+    // Only a response that still owns the current generation may advance the ephemeral state token,
+    // so a late/stale result cannot repopulate state after a reset or assistant switch.
+    stateToken.value = data.state_token ?? null;
 
     if (data.action === 'handoff') {
       messages.value.push({
@@ -102,6 +114,7 @@ const sendMessage = async () => {
         content: data.response,
         sender: 'assistant',
         agentName: data.agent_name,
+        catalogPreview: data.catalog_preview ?? null,
         timestamp: new Date().toISOString(),
       });
     }
