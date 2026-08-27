@@ -2,7 +2,7 @@ services:
   # Core image tag is shared via CHATWOOT_IMAGE so optional Battery overlays (e.g. the
   # Marine SOP worker) can reference the exact same build without duplicating the tag.
   base: &base
-    image: ${CHATWOOT_IMAGE:-chatwoot-wijaya:devbot-720805fe7-sop}
+    image: ${CHATWOOT_IMAGE:-chatwoot-wijaya:devbot-003496da2-sop}
     env_file: .env ## Change this file for customized env variables
     volumes:
       - storage_data:/app/storage
