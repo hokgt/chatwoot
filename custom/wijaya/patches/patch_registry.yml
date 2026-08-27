@@ -179,6 +179,7 @@ patches:
       - spec/custom/wijaya/meta_ads_team_routing/routing_rule_spec.rb
       - spec/custom/wijaya/meta_ads_team_routing/routing_service_spec.rb
       - spec/custom/wijaya/meta_ads_team_routing/team_routing_dispatch_spec.rb
+      - spec/custom/wijaya/meta_ads_team_routing/online_team_assignment_spec.rb
 
 
   - id: erp_lead_sidebar

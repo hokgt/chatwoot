@@ -118,6 +118,7 @@ require_file custom/wijaya/batteries/meta_ads_team_routing/frontend/i18n/wijayaM
 require_file custom/wijaya/batteries/meta_ads_team_routing/frontend/sidebar/metaAdsRoutingSidebarItem.js
 require_file custom/wijaya/batteries/meta_ads_team_routing/loader.rb
 require_file spec/custom/wijaya/meta_ads_team_routing/team_routing_dispatch_spec.rb
+require_file spec/custom/wijaya/meta_ads_team_routing/online_team_assignment_spec.rb
 
 for file in \
   app/services/whatsapp/incoming_message_base_service.rb \
