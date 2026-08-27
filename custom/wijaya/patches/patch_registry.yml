@@ -793,6 +793,10 @@ patches:
       # (data-driven family recovery) -> state store -> selector/delivery -> localizer,
       # with only the provider/CLD3/outbound-job boundaries stubbed.
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_runtime_path_spec.rb
+      # Conversation 102 regression: family recovery over a realistic catalog corpus — a noisy
+      # mention of a family beyond the first-page item_code prefix resolves, and a generic
+      # catalog request no longer dumps an arbitrary whole-catalog slice as clarify examples.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/family_recovery_corpus_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/documents_controller_spec.rb
       - spec/factories/marine/document.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/custom_tools_controller_spec.rb

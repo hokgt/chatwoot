@@ -66,8 +66,12 @@ module Marine
       # most-specific family — the one whose code/name the customer actually typed — wins over
       # a family that a lone generic request word incidentally collides with. A token must be
       # at least MIN_TOKEN_LENGTH chars; at most MAX_RECOVERY_TOKENS ordered tokens are
-      # considered; and at most RECOVERY_FAMILY_LIMIT active rows are scanned (the repository
-      # clamps to its own MAX_LIMIT regardless). No stopword/language/alias list is used.
+      # considered; and the scored candidate pool is the deduped UNION of the repository's
+      # case-insensitive search over each token (see #recovery_candidate_families), each
+      # search bounded by RECOVERY_FAMILY_LIMIT (the repository clamps to its own MAX_LIMIT).
+      # The pool is thus derived from what the turn actually mentions rather than an arbitrary
+      # item_code-ordered prefix, so a family is reachable regardless of its item_code
+      # position. No stopword/language/alias list is used.
       MIN_TOKEN_LENGTH = 2
       MAX_RECOVERY_TOKENS = 24
       RECOVERY_FAMILY_LIMIT = 50
@@ -437,10 +441,22 @@ module Marine
       # recovery scorer already surfaced, so a repository-identifiable ambiguity never degrades
       # to an empty, generic family prompt. Read-only.
       def clarify_family_candidates(identifier)
-        candidates = family_repository.active_candidates(query: identifier, limit: CLARIFY_FAMILY_LIMIT)
+        candidates = selective_family_candidates(identifier)
         return candidates if candidates.present?
 
         matched_families(identifier).first(CLARIFY_FAMILY_LIMIT)
+      end
+
+      # The repository's direct candidate search, but ONLY for a genuinely selective (non-blank)
+      # identifier. The repository treats a blank query as "no filter" and would return an
+      # arbitrary item_code-ordered slice of the ENTIRE catalog — unrelated families surfaced as
+      # if they were relevant examples. A blank identifier therefore yields nothing here so the
+      # caller falls back to bounded raw-turn evidence (relevant candidates, or a generic,
+      # example-free clarification when the turn names no family at all).
+      def selective_family_candidates(identifier)
+        return [] if identifier.to_s.strip.empty?
+
+        family_repository.active_candidates(query: identifier, limit: CLARIFY_FAMILY_LIMIT)
       end
 
       # The bounded, canonical candidate-family-code SET that gives a FAMILY clarification its
@@ -507,13 +523,24 @@ module Marine
       # only the families the turn actually evidences (a nonzero span).
       def score_active_families(sequence)
         tokens = sequence.to_set
-        families = family_repository.active_candidates(limit: RECOVERY_FAMILY_LIMIT).uniq { |family| family[:code] }
+        families = recovery_candidate_families(tokens)
         frequency = family_token_frequency(families)
 
         families.filter_map do |family|
           score = family_evidence_score(family, sequence, tokens, frequency)
           [family, score] unless score.first.zero?
         end
+      end
+
+      # The active families the turn could plausibly evidence: the deduped union of the
+      # repository's bounded, case-insensitive candidate search over EACH distinct turn token.
+      # Every active family whose row-derived code/name contains a token the customer typed is
+      # fetched regardless of its position in item_code order, so recovery no longer silently
+      # ignores families outside an arbitrary item_code-ordered prefix. Read-only; bounded by
+      # the token count (<= MAX_RECOVERY_TOKENS) times the repository's own per-search limit.
+      def recovery_candidate_families(tokens)
+        tokens.flat_map { |token| family_repository.active_candidates(query: token, limit: RECOVERY_FAMILY_LIMIT) }
+              .uniq { |family| family[:code] }
       end
 
       # The families sharing the single maximal evidence score (one row => confident recovery,

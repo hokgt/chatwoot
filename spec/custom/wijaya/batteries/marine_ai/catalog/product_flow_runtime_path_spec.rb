@@ -692,11 +692,10 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
         it 'fails closed to a handoff when the repository is unavailable during raw-turn recovery' do
           raising = instance_double(Marine::Catalog::ProductFamilyRepository)
           allow(raising).to receive(:resolve_exact).and_return(nil)
-          allow(raising).to receive(:active_candidates) do |query: nil, **|
-            raise Marine::Catalog::Errors::CatalogUnavailableError if query.nil?
-
-            []
-          end
+          # The catalog DB is unavailable: every bounded candidate read fails closed. Recovery now
+          # probes the repository per raw-turn token, so the unavailability surfaces there and must
+          # still propagate to a safe handoff rather than a fabricated resolution or a bare clarify.
+          allow(raising).to receive(:active_candidates).and_raise(Marine::Catalog::Errors::CatalogUnavailableError)
           orch = described_class.new(repositories: { family: raising }, intent_extractor: extractor)
           catalog_extract
 
