@@ -5,9 +5,11 @@ require Rails.root.join('custom/wijaya/batteries/meta_ads_team_routing/routing_s
 require Rails.root.join('custom/wijaya/batteries/meta_ads_team_routing/routing_rule')
 require Rails.root.join('custom/wijaya/batteries/automatic_assignment_activity/system_assignment')
 
-# Acceptance for the automatic-assignment activity battery: native auto-assignment must
-# persist exactly one "Assigned to <Agent> by the System" timeline activity, while manual
-# assignment keeps its human actor and a no-eligible-agent routing leaves no false badge.
+# Acceptance for the automatic-assignment activity battery: every auto-assignment path
+# must persist exactly one "Assigned to <Agent> by the System" timeline activity — the
+# actor-less legacy paths (A/B) and Assignment V2 (Path C), which sets its own policy
+# actor that the battery must OVERRIDE — while manual assignment keeps its human actor
+# and a no-eligible-agent routing leaves no false badge.
 #
 # The activity content is read off the enqueued Conversations::ActivityMessageJob rather
 # than executed, so no example performs the message create (which would fetch contact
@@ -131,6 +133,34 @@ RSpec.describe 'Automatic assignment activity (acceptance)', type: :model do
     end
   end
 
+  describe 'Assignment V2 bulk assignment (Path C, self-set policy actor)' do
+    let!(:agent) { create(:user, account: account, role: :agent) }
+    let(:online_ids) { [agent.id.to_s] }
+    let(:rate_limiter) do
+      instance_double(AutoAssignment::RateLimiter, within_limit?: true).tap do |limiter|
+        allow(limiter).to receive(:track_assignment)
+      end
+    end
+
+    before do
+      create(:inbox_member, inbox: inbox, user: agent)
+      # V2 is a feature flag on the account; flip it on the inbox instance the service uses.
+      allow(inbox).to receive(:auto_assignment_v2_enabled?).and_return(true)
+      # Rate limiter reads/writes Redis; stub the boundary like the round-robin selector.
+      allow(AutoAssignment::RateLimiter).to receive(:new).and_return(rate_limiter)
+    end
+
+    it 'overrides the self-set policy actor with exactly one "Assigned to <Agent> by the System"' do
+      conversation = create(:conversation, account: account, inbox: inbox, contact: contact,
+                                           contact_inbox: contact_inbox, assignee: nil, status: :open)
+      # Creation only coalesces a job (enqueue_for_inbox stubbed), so run the real V2 service.
+      AutoAssignment::AssignmentService.new(inbox: inbox).perform_bulk_assignment
+
+      expect(conversation.reload.assignee).to eq(agent)
+      expect(assignment_activities).to contain_exactly("Assigned to #{agent.name} by the System")
+    end
+  end
+
   describe 'Wijaya::Batteries::AutomaticAssignmentActivity::SystemAssignment guards' do
     subject(:system_assignment) { Wijaya::Batteries::AutomaticAssignmentActivity::SystemAssignment }
 
@@ -165,6 +195,27 @@ RSpec.describe 'Automatic assignment activity (acceptance)', type: :model do
       it 'consumes the mark so a later change on the same instance is not relabeled' do
         expect(system_assignment.actor_for(conversation, nil)).to eq('the System')
         expect(system_assignment.actor_for(conversation, nil)).to be_nil
+      end
+    end
+
+    context 'when marked :v2 (Assignment V2 claim seam) with a self-set policy actor' do
+      before do
+        system_assignment.mark_v2(conversation)
+        allow(conversation).to receive_messages(saved_change_to_assignee_id?: true, assignee_id: 42)
+      end
+
+      it 'overrides the auto-assignment policy actor with "the System"' do
+        Current.executed_by = Object.new
+        expect(system_assignment.actor_for(conversation, nil)).to eq('the System')
+      ensure
+        Current.executed_by = nil
+      end
+
+      it 'still defers to a human actor when a Current.user name is present' do
+        Current.executed_by = Object.new
+        expect(system_assignment.actor_for(conversation, 'Jane Agent')).to be_nil
+      ensure
+        Current.executed_by = nil
       end
     end
   end

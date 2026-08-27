@@ -141,6 +141,7 @@ require_file spec/custom/wijaya/automatic_assignment_activity/system_assignment_
 
 for file in \
   app/services/auto_assignment/agent_assignment_service.rb \
+  app/services/auto_assignment/assignment_service.rb \
   app/models/concerns/assignment_handler.rb \
   config/locales/en.yml; do
   require_marker "$file" "WIJAYA_CUSTOM_START automatic_assignment_activity"

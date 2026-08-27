@@ -186,32 +186,42 @@ patches:
     name: Automatic Assignment Activity Badge
     battery: custom/wijaya/batteries/automatic_assignment_activity
     description: >
-      Records a timeline activity ("Assigned to <Agent> by the System") for NATIVE
-      automatic assignment, which upstream drops because it sets no actor: the assignee
-      activity is only written when a Current.user or Current.executed_by is present, so
-      both actor-less native paths — AssignmentHandler#ensure_assignee_is_from_team
-      (before_save team routing, e.g. Meta Ads Ad->Team) and AutoAssignmentHandler
-      (after_save legacy inbox round-robin) — produced no badge. Both funnel through
-      AutoAssignment::AgentAssignmentService#find_assignee, where a single fail-open
-      dispatch stamps the exact Conversation instance carrying the assignment callbacks.
-      At activity-creation time AssignmentHandler#process_assignment_activities asks the
-      battery for the actor; the battery returns the localized "the System" label only
-      when the mark is present AND no human (Current.user) and no more-specific automation
-      actor (Current.executed_by) owns the change, then core records the single assignee
+      Records a timeline activity ("Assigned to <Agent> by the System") for ALL native
+      automatic assignment. Legacy auto-assignment sets no actor at all, so upstream drops
+      the badge (the assignee activity is only written when a Current.user or
+      Current.executed_by is present): both actor-less legacy paths —
+      AssignmentHandler#ensure_assignee_is_from_team (before_save team routing, e.g. Meta
+      Ads Ad->Team) and AutoAssignmentHandler (after_save legacy inbox round-robin) —
+      funnel through AutoAssignment::AgentAssignmentService#find_assignee, where a single
+      fail-open dispatch stamps the exact Conversation instance carrying the assignment
+      callbacks with a :native mark. Assignment V2
+      (AutoAssignment::AssignmentService#claim_and_assign, run from the bulk job) instead
+      sets Current.executed_by to the inbox's own assignment policy/inbox, so upstream DOES
+      write a badge but reading "... by Default Policy" / "... by Automation System via
+      <policy>"; a second fail-open dispatch stamps the claimed row with a :v2 mark so the
+      actor is OVERRIDDEN with "the System". At activity-creation time
+      AssignmentHandler#process_assignment_activities asks the battery for the actor; it
+      returns the localized "the System" label when a mark is present AND no human
+      (Current.user) owns the change — for a :native mark it also defers to any real
+      automation actor (Current.executed_by), while a :v2 mark deliberately overrides the
+      policy actor the V2 service set for itself — then core records the single assignee
       activity (skipping the team branch, so a routed conversation gets exactly one badge).
-      Manual/API assignment keeps its human actor; automation keeps its policy actor; a
-      team routed with no eligible agent leaves assignee nil and writes no false badge.
-      Generic (not channel-specific), so it also covers Meta Ads routed conversations.
-      The mark is a per-instance ivar consumed once on read, so no thread-global leak and
-      no duplicate badge from before-save/after-save recursion. Reuses the native activity
-      message + Activity.vue rendering, so there is no frontend change. The i18n label
-      lives under auto_assignment.system_actor in config/locales/en.yml (marker-scoped).
+      Manual/API assignment keeps its human actor; automation outside the auto-assignment
+      seams keeps its policy actor; a team routed with no eligible agent (or a lost V2 row
+      claim) leaves assignee nil and writes no false badge. Generic (not channel-specific),
+      so it also covers Meta Ads routed conversations. The mark is a per-instance ivar
+      consumed once on read, so no thread-global leak and no duplicate badge from
+      before-save/after-save recursion. Reuses the native activity message + Activity.vue
+      rendering, so there is no frontend change. The i18n label lives under
+      auto_assignment.system_actor in config/locales/en.yml (marker-scoped).
     custom_files:
       - custom/wijaya/batteries/automatic_assignment_activity/system_assignment.rb
       - custom/wijaya/batteries/automatic_assignment_activity/hooks.rb
       - custom/wijaya/batteries/automatic_assignment_activity/loader.rb
     core_hook_touchpoints:
       - app/services/auto_assignment/agent_assignment_service.rb
+      # Assignment V2 claim/update seam; :v2 mark overrides the self-set policy actor.
+      - app/services/auto_assignment/assignment_service.rb
       - app/models/concerns/assignment_handler.rb
       # i18n actor label ("the System"); additive locale key inside a marker block.
       - config/locales/en.yml

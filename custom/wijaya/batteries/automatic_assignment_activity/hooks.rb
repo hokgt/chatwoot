@@ -3,15 +3,19 @@
 require_relative 'system_assignment'
 
 # Thin hook surface for the automatic-assignment activity battery, resolved by the
-# generic core dispatcher (Wijaya::Batteries::Core::Hooks). Two seams:
+# generic core dispatcher (Wijaya::Batteries::Core::Hooks). Three seams:
 #
-#   mark_system_assignment(conversation:)      called from the native AutoAssignment
+#   mark_system_assignment(conversation:)      called from the legacy AutoAssignment
 #                                              service when it picks an agent, to tag
 #                                              the assignment as system-performed.
+#   mark_v2_system_assignment(conversation:)   called from AssignmentService (V2 bulk
+#                                              job) at the claim/update seam, to tag the
+#                                              claimed row so its self-set policy actor
+#                                              is overridden with "the System".
 #   system_assignment_actor(conversation:, user_name:)  called at activity-creation
 #                                              time; returns the "the System" actor
-#                                              label for a tagged, actor-less
-#                                              auto-assignment, else nil (native).
+#                                              label for a tagged auto-assignment, else
+#                                              nil (native).
 #
 # Nested (not compact `module Wijaya::Batteries::AutomaticAssignmentActivity::Hooks`)
 # so the unqualified `SystemAssignment` reference resolves lexically and the file is
@@ -25,6 +29,10 @@ module Wijaya
 
         def mark_system_assignment(conversation:)
           SystemAssignment.mark(conversation)
+        end
+
+        def mark_v2_system_assignment(conversation:)
+          SystemAssignment.mark_v2(conversation)
         end
 
         def system_assignment_actor(conversation:, user_name:)

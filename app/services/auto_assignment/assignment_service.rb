@@ -97,6 +97,19 @@ class AutoAssignment::AssignmentService
                     .first
       next false unless locked
 
+      # WIJAYA_CUSTOM_START automatic_assignment_activity
+      # V2 auto-assignment sets Current.executed_by to its own assignment policy/inbox,
+      # so the native assignee badge would read "... by <Policy>". Tag the exact row we
+      # claim (the same instance whose after_commit fires the activity) so the handler
+      # attributes it to "the System". Marked only after a successful claim and with a
+      # present agent, so a lost row race or empty selection writes no false badge.
+      if defined?(Wijaya::Batteries::Core::Hooks)
+        Wijaya::Batteries::Core::Hooks.dispatch(
+          :automatic_assignment_activity, :mark_v2_system_assignment,
+          default: nil, conversation: locked
+        )
+      end
+      # WIJAYA_CUSTOM_END automatic_assignment_activity
       locked.update!(assignee: agent)
       true
     end
