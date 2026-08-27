@@ -125,4 +125,46 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator, 'family recovery over 
       expect(plan[:reply][:candidates]).to be_empty
     end
   end
+
+  describe 'a generic request whose ordinary word coincidentally matches ONE family (exact transcript shape, Failure 3)' do
+    # The exact reported runtime shape the sanitized Failure-2 phrase missed: the extractor
+    # supplies NO family mention, and the generic utterance happens to contain an everyday word
+    # ("everyday") that is ALSO the distinctive word of exactly one family's name. That single
+    # coincidental token used to score as a unique top match and auto-select the family from a
+    # request that named nothing. Trusting the extractor's blank mention, the turn must fail
+    # closed to a generic, example-free clarification — never a catalog, never that family.
+    let(:family_repository) do
+      FaithfulFamilyRepository.new(fillers + [{ code: 'EV', name: 'Everyday Series' }])
+    end
+
+    it 'never selects the coincidental family and clarifies without examples' do
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'catalog', family_mention: nil),
+        flow: nil, text: 'do you sell anything for everyday use'
+      )
+
+      expect(plan[:action]).to eq(:clarify_family)
+      expect(plan[:reply][:candidates]).to be_empty
+    end
+  end
+
+  describe 'an explicit multi-word family mention still resolves (contiguous identity)' do
+    # Requirement 1/5: when the extractor DOES supply the family reference — the full multi-word
+    # name plus a trailing generic word — exact resolution misses (the trailing word defeats an
+    # ILIKE-contains match) but the contiguous identity in the MENTION is discriminative enough
+    # to recover the family. (Prefix-position independence is proven by the ZZ example above.)
+    let(:family_repository) do
+      FaithfulFamilyRepository.new(fillers + [{ code: 'EV', name: 'Everyday Series' }])
+    end
+
+    it 'recovers the uniquely named family and sends its catalog' do
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'catalog', family_mention: 'everyday series catalog'),
+        flow: nil, text: 'please send the everyday series catalog'
+      )
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'EV', family_name: 'Everyday Series')
+    end
+  end
 end

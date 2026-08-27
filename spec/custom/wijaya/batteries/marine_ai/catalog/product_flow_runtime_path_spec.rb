@@ -257,17 +257,18 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
       expect(usage_count).to eq(2)
     end
 
-    context 'when the provider returns a BLANK family mention on an active different-family flow' do
-      # The real continuation bug: with family_mention nil the extractor's family_changed? is
-      # false, so the orchestrator would silently reuse the stale active family (FAM-OLD, which
-      # has no catalog). Only the raw turn's partial token ("Alpha") names a DIFFERENT active
-      # family — it must be treated as a genuine switch.
+    context 'when the provider returns an EXPLICIT DIFFERENT family mention on an active flow' do
+      # A genuine switch is carried by the extractor's mention, not by raw-turn mining: the
+      # customer explicitly names a DIFFERENT active family (Coastal Alpha Series) while the stale
+      # active flow still holds FAM-OLD. That nonblank mention resolves and switches the flow. (A
+      # BLANK mention instead safely CONTINUES the active family — never a raw-turn switch — which
+      # is proven at the unit level; end-to-end here we exercise the surviving explicit-switch path.)
       let(:intent_json) do
         { product_related: true, intent: 'catalog',
-          family_mention: nil, customer_language: customer_language }.to_json
+          family_mention: 'Coastal Alpha Series', customer_language: customer_language }.to_json
       end
 
-      it 'treats the unique raw-turn family as a switch: fresh flow, one native catalog, stale markers replaced, localized' do
+      it 'switches to the explicitly named family: fresh flow, one native catalog, stale markers replaced, localized' do
         document = usable_catalog('FAM-CAT')
         seed_stale_flow!
         stub_cld3('jv')
@@ -469,18 +470,46 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
         'catalog_sent' => true }
     end
 
-    it 'switches to a unique DIFFERENT active family named only by the raw turn (:start)' do
+    it 'safely continues and revalidates the active family (:update, no switch) when a blank mention leaves only a DIFFERENT raw-turn family' do
       allow(extractor).to receive(:extract).and_return(
         product_related: true, intent: 'catalog', family_mention: nil,
         customer_language: 'id', family_changed: false
       )
 
+      # Corrected contract: the extractor supplied NO family reference; only the raw turn's "Alpha"
+      # token names a DIFFERENT active family. A blank mention is the trusted "no family named"
+      # signal (identical mid-flow and on a fresh flow), so the untrusted raw turn must NOT switch
+      # away from the validated family — the flow safely continues and revalidates FAM-OLD (:update),
+      # never abandoning it for FAM-CAT. Nonblank explicit switches are still honoured (below).
       plan = orchestrator.process(text: 'Please send Alpha catalog now', context: [], flow: continuation_flow('FAM-OLD'))
 
       expect(plan[:action]).to eq(:send_catalog)
-      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-CAT', family_name: 'Coastal Alpha Series')
-      expect(plan[:state][:operation]).to eq(:start)
-      expect(plan[:state][:changes]).to include('validated_family' => 'FAM-CAT', 'current_intent' => 'catalog')
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-OLD', family_name: 'Harbor Bravo Line')
+      expect(plan[:state][:operation]).to eq(:update)
+    end
+
+    context 'when a blank mention on an active flow leaves only an ORDINARY word matching one family name token' do
+      # Regression for the reported runtime shape at the mid-flow boundary: an active flow, the
+      # extractor supplies NO family mention, and the generic utterance merely contains an everyday
+      # word ("everyday") that also happens to be the distinctive token of ONE active family. That
+      # lone coincidental token must not switch the flow — the blank mention fails closed to safe
+      # continuation, so the active family is revalidated unchanged rather than abandoned.
+      let(:family_rows) do
+        [{ code: 'FAM-OLD', name: 'Harbor Bravo Line' },
+         { code: 'FAM-EV', name: 'Everyday Series' }]
+      end
+
+      it 'never switches to the coincidental family and continues/revalidates the active family (:update)' do
+        allow(extractor).to receive(:extract).and_return(
+          product_related: true, intent: 'catalog', family_mention: nil, family_changed: false
+        )
+
+        plan = orchestrator.process(text: 'do you sell anything for everyday use', context: [], flow: continuation_flow('FAM-OLD'))
+
+        expect(plan[:action]).to eq(:send_catalog)
+        expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-OLD', family_name: 'Harbor Bravo Line')
+        expect(plan[:state][:operation]).to eq(:update)
+      end
     end
 
     it 'continues and revalidates the active family when the raw turn carries no family evidence (:update)' do
@@ -495,18 +524,20 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
       expect(plan[:state][:operation]).to eq(:update)
     end
 
-    it 'fails closed to clarify_family (metadata-only update, no switch) when the raw turn is ambiguous on an active flow' do
+    it 'safely continues and revalidates the active family (:update, no switch) when a blank mention leaves an ambiguous raw turn' do
       allow(extractor).to receive(:extract).and_return(
         product_related: true, intent: 'catalog', family_mention: nil, family_changed: false
       )
 
+      # Corrected contract: a blank mention is trusted mid-flow exactly as on a fresh turn, so the
+      # untrusted raw turn is NEVER mined — not even for ambiguity. The customer named no family,
+      # so the active flow safely continues and revalidates FAM-OLD (:update), never clarifying and
+      # never switching. Genuine ambiguity fails closed only when the extractor DID supply a mention.
       plan = orchestrator.process(text: 'Please send Alpha and Bravo now', context: [], flow: continuation_flow('FAM-OLD'))
 
-      expect(plan[:action]).to eq(:clarify_family)
-      # Phase 3: preserve the validated family / catalog markers; only bump clarification metadata.
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-OLD', family_name: 'Harbor Bravo Line')
       expect(plan[:state][:operation]).to eq(:update)
-      expect(plan[:state][:changes]).to include('clarification_kind' => 'family', 'clarification_count' => 1)
-      expect(plan[:state][:changes]).not_to have_key('validated_family')
     end
 
     it 'keeps the active family (:update) when the extracted mention resolves to it, ignoring an incidental raw token for another family' do
@@ -609,12 +640,17 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
           expect(plan[:state][:operation]).to eq(:start)
         end
 
-        it 'still recovers when the extractor mention is blank and the full family name is only in the turn' do
+        it 'fails closed to a generic clarification when the extractor supplies NO family mention, even if a name appears in the turn' do
+          # Corrected contract: the extractor's family_mention is the trusted family-identification
+          # signal. When it is blank the untrusted raw turn must not auto-resolve a family — otherwise
+          # an ordinary word coincidentally equal to a family name token selects a catalog from a
+          # request that named nothing (the reported runtime shape). A genuinely named family is carried by the
+          # mention (see the sibling example above); a blank mention fails closed, example-free.
           catalog_extract(family_mention: nil)
           plan = orchestrator.process(text: 'Do you carry the Coastal Alpha Series catalog', context: [], flow: nil)
 
-          expect(plan[:action]).to eq(:send_catalog)
-          expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-CAT', family_name: 'Coastal Alpha Series')
+          expect(plan[:action]).to eq(:clarify_family)
+          expect(plan[:reply][:candidates]).to be_empty
         end
       end
 

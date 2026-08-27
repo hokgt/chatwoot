@@ -440,7 +440,14 @@ module Marine
       # (a noisy/poor identifier an ILIKE cannot match) fall back to the raw-turn evidence the
       # recovery scorer already surfaced, so a repository-identifiable ambiguity never degrades
       # to an empty, generic family prompt. Read-only.
+      #
+      # A BLANK identifier (the extractor flagged no family reference) surfaces NO examples: the
+      # raw turn is untrusted here, so mining it would offer a family coincidentally matched by an
+      # ordinary word as if it were a relevant example. A generic request therefore fails closed to
+      # an example-free clarification (never an arbitrary catalog slice or a lone coincidental row).
       def clarify_family_candidates(identifier)
+        return [] if identifier.to_s.strip.empty?
+
         candidates = selective_family_candidates(identifier)
         return candidates if candidates.present?
 
@@ -466,14 +473,26 @@ module Marine
         ProductFlowStateStore.normalize_expected_attributes(candidates.pluck(:code))
       end
 
-      # Continuation switch detection. Classifies the DISTINCT active families evidenced by
-      # bounded whole-token raw-turn matching relative to the flow's validated family:
+      # Continuation switch detection for a NOISY-but-present mention. Classifies the DISTINCT
+      # active families evidenced by bounded whole-token raw-turn matching relative to the flow's
+      # validated family:
       #   * exactly one active row that DIFFERS from the flow family -> that row (a genuine
       #     switch the caller applies with a fresh :start flow);
       #   * two or more distinct rows -> :ambiguous (the caller fails closed to clarify);
       #   * none, or a single row that IS the active family -> nil (continue/revalidate).
       # Same bounded token/whole-token matching and repository read-only access as recovery.
+      #
+      # A BLANK mention means the extractor flagged NO family reference for this turn: symmetric
+      # with #recover_family on a fresh turn, the untrusted raw turn must not switch away from the
+      # validated family, or an ordinary word coincidentally equal to one family's name token would
+      # abandon the active catalog for a request that named nothing (the reported runtime shape).
+      # Returning nil here is safe continuation — the caller keeps and revalidates the existing
+      # active family — never a switch or handoff. The extractor's mention is the only structural
+      # signal distinguishing a named family from an extractor miss, so it is trusted identically
+      # mid-flow and on a fresh flow.
       def raw_turn_switch_family(intent, flow)
+        return nil if intent[:family_mention].to_s.strip.empty?
+
         matches = matched_families(intent[:family_mention])
         return nil if matches.empty?
         return :ambiguous if matches.length > 1
@@ -490,13 +509,22 @@ module Marine
         family_repository.resolve_exact(identifier) || unique_active_family(identifier)
       end
 
-      # Data-driven recovery for a missing/noisy mention. Scores the active family rows
+      # Data-driven recovery for a NOISY-but-present mention. Scores the active family rows
       # against the mention + raw turn (see #matched_families / #family_evidence_score) and
       # promotes a family ONLY when a SINGLE family holds the top score. A genuine tie at the
       # top (competing equally-specific families) or no evidence at all returns nil so the
       # caller clarifies — a family is never guessed between real ambiguities. No stopword/
       # language/alias list — specificity is derived only from the active rows themselves.
+      #
+      # A BLANK identifier means the extractor flagged NO family reference for this turn: the raw
+      # turn alone must not auto-resolve a family, or an ordinary word that coincidentally equals
+      # one family's name token would select a catalog from a request that named nothing
+      # (the reported runtime shape). The extractor's mention is the trusted family-identification signal;
+      # with none, this fresh turn fails closed to a generic clarification rather than mining the
+      # untrusted turn text.
       def recover_family(identifier)
+        return nil if identifier.to_s.strip.empty?
+
         matches = matched_families(identifier)
         matches.first if matches.length == 1
       end
