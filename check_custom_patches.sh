@@ -133,6 +133,21 @@ for file in \
 done
 
 
+# automatic_assignment_activity
+require_file custom/wijaya/batteries/automatic_assignment_activity/system_assignment.rb
+require_file custom/wijaya/batteries/automatic_assignment_activity/hooks.rb
+require_file custom/wijaya/batteries/automatic_assignment_activity/loader.rb
+require_file spec/custom/wijaya/automatic_assignment_activity/system_assignment_activity_spec.rb
+
+for file in \
+  app/services/auto_assignment/agent_assignment_service.rb \
+  app/models/concerns/assignment_handler.rb \
+  config/locales/en.yml; do
+  require_marker "$file" "WIJAYA_CUSTOM_START automatic_assignment_activity"
+  require_marker "$file" "WIJAYA_CUSTOM_END automatic_assignment_activity"
+done
+
+
 # erp_lead_sidebar
 require_file custom/wijaya/batteries/erp_lead_sidebar/config.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/lead_draft.rb

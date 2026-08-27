@@ -30,7 +30,8 @@ module Wijaya
         FEATURE_HOOK_MODULES = {
           meta_ads_team_routing: 'Wijaya::Batteries::MetaAdsTeamRouting::Hooks',
           marine_ai: 'Wijaya::Marine::Hooks',
-          development_version: 'Wijaya::Batteries::DevelopmentVersion::Hooks'
+          development_version: 'Wijaya::Batteries::DevelopmentVersion::Hooks',
+          automatic_assignment_activity: 'Wijaya::Batteries::AutomaticAssignmentActivity::Hooks'
         }.freeze
 
         module_function

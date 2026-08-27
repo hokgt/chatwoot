@@ -5,7 +5,20 @@ class AutoAssignment::AgentAssignmentService
   pattr_initialize [:conversation!, :allowed_agent_ids!]
 
   def find_assignee
-    round_robin_manage_service.available_agent(allowed_agent_ids: allowed_online_agent_ids)
+    assignee = round_robin_manage_service.available_agent(allowed_agent_ids: allowed_online_agent_ids)
+    # WIJAYA_CUSTOM_START automatic_assignment_activity
+    # Both native auto-assignment paths (team before_save + legacy inbox after_save)
+    # reach an agent through here with no Current.user/executed_by actor set. Tag the
+    # conversation so the after_commit activity handler can attribute the resulting
+    # badge to "the System" instead of silently dropping it.
+    if assignee && defined?(Wijaya::Batteries::Core::Hooks)
+      Wijaya::Batteries::Core::Hooks.dispatch(
+        :automatic_assignment_activity, :mark_system_assignment,
+        default: nil, conversation: conversation
+      )
+    end
+    # WIJAYA_CUSTOM_END automatic_assignment_activity
+    assignee
   end
 
   def perform

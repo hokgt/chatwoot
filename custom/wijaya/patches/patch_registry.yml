@@ -182,6 +182,47 @@ patches:
       - spec/custom/wijaya/meta_ads_team_routing/online_team_assignment_spec.rb
 
 
+  - id: automatic_assignment_activity
+    name: Automatic Assignment Activity Badge
+    battery: custom/wijaya/batteries/automatic_assignment_activity
+    description: >
+      Records a timeline activity ("Assigned to <Agent> by the System") for NATIVE
+      automatic assignment, which upstream drops because it sets no actor: the assignee
+      activity is only written when a Current.user or Current.executed_by is present, so
+      both actor-less native paths — AssignmentHandler#ensure_assignee_is_from_team
+      (before_save team routing, e.g. Meta Ads Ad->Team) and AutoAssignmentHandler
+      (after_save legacy inbox round-robin) — produced no badge. Both funnel through
+      AutoAssignment::AgentAssignmentService#find_assignee, where a single fail-open
+      dispatch stamps the exact Conversation instance carrying the assignment callbacks.
+      At activity-creation time AssignmentHandler#process_assignment_activities asks the
+      battery for the actor; the battery returns the localized "the System" label only
+      when the mark is present AND no human (Current.user) and no more-specific automation
+      actor (Current.executed_by) owns the change, then core records the single assignee
+      activity (skipping the team branch, so a routed conversation gets exactly one badge).
+      Manual/API assignment keeps its human actor; automation keeps its policy actor; a
+      team routed with no eligible agent leaves assignee nil and writes no false badge.
+      Generic (not channel-specific), so it also covers Meta Ads routed conversations.
+      The mark is a per-instance ivar consumed once on read, so no thread-global leak and
+      no duplicate badge from before-save/after-save recursion. Reuses the native activity
+      message + Activity.vue rendering, so there is no frontend change. The i18n label
+      lives under auto_assignment.system_actor in config/locales/en.yml (marker-scoped).
+    custom_files:
+      - custom/wijaya/batteries/automatic_assignment_activity/system_assignment.rb
+      - custom/wijaya/batteries/automatic_assignment_activity/hooks.rb
+      - custom/wijaya/batteries/automatic_assignment_activity/loader.rb
+    core_hook_touchpoints:
+      - app/services/auto_assignment/agent_assignment_service.rb
+      - app/models/concerns/assignment_handler.rb
+      # i18n actor label ("the System"); additive locale key inside a marker block.
+      - config/locales/en.yml
+    loader_touchpoints:
+      # Feature loader self-registers with the generic core loader; the core hook
+      # dispatcher map (core/hooks.rb) resolves the battery's Hooks module by name.
+      - custom/wijaya/batteries/automatic_assignment_activity/loader.rb
+    tests:
+      - spec/custom/wijaya/automatic_assignment_activity/system_assignment_activity_spec.rb
+
+
   - id: erp_lead_sidebar
     name: ERPNext Lead Sidebar Form
     battery: custom/wijaya/batteries/erp_lead_sidebar
