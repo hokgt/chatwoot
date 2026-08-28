@@ -416,5 +416,63 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
       expect(call(descriptor: in_stock_descriptor, fallback: in_stock_fallback)).to be_nil
       expect(validator).not_to have_received(:valid?)
     end
+
+    # Live-acceptance fix: the semantic judge applied the general rubric with no notion that a binary
+    # stock reply's ONLY material fact is one boolean, so it over-rejected benign same-direction
+    # rephrasings and returned nil. The fix threads a binary-stock fact-focus into the semantic
+    # validator for the two pure stock kinds ONLY; every other path keeps the unscoped rubric (nil).
+    # Delivery/flip/quantity behaviour through the two gates is already covered above.
+    describe 'stock-only semantic fact-focus guidance' do
+      def captured_fact_focus(descriptor:, fallback:, message:)
+        stub_generation(message: message)
+        validator = instance_double(Marine::Charge::FactPreservationValidator)
+        captured = {}
+        allow(validator).to receive(:valid?) do |args|
+          captured.merge!(args)
+          true
+        end
+        allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(validator)
+        call(descriptor: descriptor, fallback: fallback)
+        captured
+      end
+
+      it 'sends binary-stock fact-focus for a stock_available reply' do
+        focus = captured_fact_focus(descriptor: in_stock_descriptor, fallback: in_stock_fallback,
+                                    message: 'Yes, we have that one right now.')[:fact_focus]
+        expect(focus).to match(/binary/i).and match(/in stock|out of stock/i)
+      end
+
+      it 'sends binary-stock fact-focus for a stock_empty reply' do
+        focus = captured_fact_focus(descriptor: out_of_stock_descriptor, fallback: out_of_stock_fallback,
+                                    message: "Unfortunately that one's sold out at the moment — sorry about that.")[:fact_focus]
+        expect(focus).to be_present
+      end
+
+      it 'keeps the unscoped rubric (nil fact-focus) for a non-stock product reply' do
+        captured = captured_fact_focus(descriptor: descriptor, fallback: fallback,
+                                       message: 'About Impeller — which variant would you like?')
+        expect(captured).to have_key(:fact_focus)
+        expect(captured[:fact_focus]).to be_nil
+      end
+
+      it 'keeps the unscoped rubric (nil fact-focus) for a price reply' do
+        captured = captured_fact_focus(
+          descriptor: { kind: :price_available, variant_code: 'IMP-3', currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
+          fallback: 'The price for IMP-3 is IDR 150000 per pcs.', message: 'IMP-3 costs IDR 150000 per pcs.'
+        )
+        expect(captured[:fact_focus]).to be_nil
+      end
+
+      # Contract of the guidance itself: a generic unnamed referential noun (item/variant/one), and a
+      # phrase tying the subject to the current question ("the item you asked about") — true by
+      # construction since the service answers the customer's own request — are both reference wording,
+      # not an added fact, while a specific name/model/code stays a reject.
+      it 'allows a generic referential noun and current-question framing but still rejects a specific name/model/code' do
+        guidance = described_class::STOCK_FACT_FOCUS
+        expect(guidance).to match(/generic/i).and match(/adds NO fact|carries no fact/i)
+        expect(guidance).to match(/you asked about|you mean/i).and match(/true by construction/i)
+        expect(guidance).to match(/specific product name/i).and match(/\bmodel\b/i).and match(/\bcode\b/i)
+      end
+    end
   end
 end

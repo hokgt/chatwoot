@@ -281,4 +281,40 @@ RSpec.describe Marine::Charge::FactPreservationValidator do
     stub_llm(message: verdict(certain: false))
     expect(validator.valid?(approved_answer: approved, candidate: candidate)).to be(false)
   end
+
+  # Optional caller-supplied fact-focus: a REQUEST-side clarification of what the material fact is,
+  # appended to the base rubric so the judge stops counting benign same-meaning rephrasings as
+  # added/unequal facts. It never relaxes acceptance, and a blank/absent focus leaves the prompt
+  # byte-identical to the base rubric (the FAQ/handoff/localizer path).
+  describe 'optional fact-focus guidance' do
+    def capture_system(**valid_args)
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      captured = {}
+      allow(llm).to receive(:chat) do |args|
+        captured.merge!(args)
+        { ok: true, message: verdict, error: nil }
+      end
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      validator.valid?(approved_answer: approved, candidate: candidate, **valid_args)
+      captured[:system]
+    end
+
+    it 'appends nonblank guidance after the full base rubric' do
+      system = capture_system(fact_focus: 'MATERIALITY: only the binary stock state is a fact.')
+
+      expect(system).to include(described_class::SYSTEM_PROMPT)
+      expect(system).to include('MATERIALITY: only the binary stock state is a fact.')
+    end
+
+    it 'leaves the prompt byte-identical to the base rubric for absent or blank guidance' do
+      expect(capture_system).to eq(described_class::SYSTEM_PROMPT)
+      expect(capture_system(fact_focus: '   ')).to eq(described_class::SYSTEM_PROMPT)
+    end
+
+    it 'never relaxes acceptance: a not-all-true verdict still fails closed even with guidance' do
+      stub_llm(message: verdict(added: false))
+      expect(validator.valid?(approved_answer: approved, candidate: candidate,
+                              fact_focus: 'only the binary stock state is a fact')).to be(false)
+    end
+  end
 end

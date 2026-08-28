@@ -60,7 +60,14 @@ class Marine::Charge::FactPreservationValidator
 
   # Returns true ONLY when the LLM returns a complete all-true verdict; false on every
   # failure or uncertainty. Never raises, never logs the approved answer or candidate.
-  def valid?(approved_answer:, candidate:)
+  #
+  # fact_focus: an OPTIONAL caller-supplied clarification of what the material fact IS for this
+  # particular answer (e.g. a binary stock-availability reply's sole fact is one in/out boolean).
+  # It is appended to SYSTEM_PROMPT so the judge anchors materiality and stops counting benign
+  # same-meaning rephrasings as added/unequal facts. It NEVER relaxes acceptance: the five
+  # fail-closed booleans and the strict envelope parse below are unchanged, and a blank/absent
+  # focus leaves the prompt byte-identical to the base rubric (the FAQ/handoff/localizer path).
+  def valid?(approved_answer:, candidate:, fact_focus: nil)
     service = Marine::Llm::BaseService.new(account: @account)
     return false unless service.configured?
 
@@ -73,7 +80,7 @@ class Marine::Charge::FactPreservationValidator
     # still rejected.
     result = service.chat(
       messages: [{ role: 'user', content: user_prompt(approved_answer, candidate) }],
-      system: SYSTEM_PROMPT,
+      system: system_prompt(fact_focus),
       temperature: 0.0,
       schema: VERDICT_SCHEMA
     )
@@ -85,6 +92,14 @@ class Marine::Charge::FactPreservationValidator
   end
 
   private
+
+  # The base rubric, plus the caller's optional materiality clarification when present. A
+  # blank/absent focus returns the base rubric unchanged (no new fact, no relaxed rule).
+  def system_prompt(fact_focus)
+    return SYSTEM_PROMPT if fact_focus.blank?
+
+    "#{SYSTEM_PROMPT}\n\n#{fact_focus.strip}"
+  end
 
   def accepted?(raw)
     # `raw` is the { "verdict": "<json>" } envelope. RubyLLM has already parsed (and, at the

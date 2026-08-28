@@ -49,6 +49,29 @@ module Marine
         }
       }.freeze
 
+      # The two pure binary-availability reply kinds. For these — and ONLY these — the semantic
+      # judge is given STOCK_FACT_FOCUS so it anchors materiality on the single in/out boolean. A
+      # price+stock :composite is deliberately excluded: it also carries a literal price fact, so it
+      # keeps the unscoped rubric (its price is still token-protected deterministically).
+      STOCK_KINDS = %i[stock_available stock_empty].freeze
+
+      # Narrowly scoped semantic-judgement guidance for a pure stock-availability reply. It clarifies
+      # WHAT the material fact is so the general rubric stops rejecting benign same-direction
+      # rephrasings (relative-time words, pronouns, generic referential nouns, and referential framing
+      # tied to the current question) as added/unequal facts — the exact live-acceptance failure —
+      # WITHOUT relaxing the flip / uncertainty / extra-fact rejections, and in particular still
+      # rejecting any SPECIFIC product name, model, or code the Approved Answer does not state. Because
+      # this service always answers the customer's OWN latest request, a phrase like "the item you
+      # asked about" is true by construction and adds no product fact; the concrete numeric/code facts
+      # remain guarded by the deterministic ProductFactProtectionValidator that runs first. It names no
+      # language, phrase list, product, or company, and passes no raw customer text.
+      STOCK_FACT_FOCUS = <<~PROMPT.strip
+        For THIS answer the only material fact is a single binary stock-availability outcome — either in stock or out of stock.
+        Any Candidate Reply that states the SAME availability outcome preserves that fact and is meaning-equivalent, whatever its wording, sentence shape, or pronouns, and however it phrases the time ("still", "right now", "currently", "at the moment") — these are conversational phrasing, not added facts.
+        You are judging a reply that is ALWAYS answering the customer's own latest question, so any phrase describing the reply's subject as the thing the customer asked about, mentioned, means, or is asking for — "the item you asked about", "the variant you mentioned", "the one you mean", or the equivalent in any language — is true by construction and adds NO fact about what was requested; never count it as an added, changed, or unequal fact. Likewise the generic word chosen for that subject — "item", "product", "variant", "unit", "one", or the equivalent in any language — is referential wording only: it carries no fact, need not match the word the Approved Answer used, and, with no specific name, number, code, or attribute attached, names nothing more specific than "the thing being discussed" (the bare word "variant" included). Judge ONLY the availability outcome and whether some OTHER concrete claim was added.
+        Reject if the candidate reverses the availability outcome, makes it uncertain or conditional when the Approved Answer is definite, or introduces any concrete new claim the Approved Answer does not state — a specific product name, model, or code, a quantity, a warehouse or location, a price, or a delivery or lead time.
+      PROMPT
+
       GENERATION_INSTRUCTION = <<~PROMPT.strip
         Rephrase the Product Reply below to answer the customer naturally, warmly, and conversationally in the same language and context.
         The Product Reply is your ONLY source of facts. Keep every product name, code, number, price, currency, and unit it contains exactly and unchanged.
@@ -81,7 +104,7 @@ module Marine
         # Deterministic protected-value/token gate BEFORE the semantic call — a deterministic
         # rejection prevents the semantic LLM call entirely.
         return nil unless fact_protection.accepts?(action: action, descriptor: descriptor, fallback: fallback, candidate: enforced)
-        return nil unless validator.valid?(approved_answer: fallback, candidate: enforced)
+        return nil unless validator.valid?(approved_answer: fallback, candidate: enforced, fact_focus: fact_focus_for(descriptor))
 
         enforced
       rescue StandardError
@@ -175,6 +198,13 @@ module Marine
         return history if last_content.to_s == customer_request.to_s
 
         history + [{ role: 'user', content: customer_request.to_s }]
+      end
+
+      # The binary-stock materiality guidance for a pure stock reply, else nil (unscoped rubric) —
+      # the narrow scope that keeps every other product/FAQ semantic judgement unchanged. The
+      # descriptor is already an eligibility-checked Hash by the time this runs.
+      def fact_focus_for(descriptor)
+        STOCK_FACT_FOCUS if STOCK_KINDS.include?(descriptor[:kind])
       end
 
       def fact_protection = @fact_protection ||= Marine::Catalog::ProductFactProtectionValidator.new
