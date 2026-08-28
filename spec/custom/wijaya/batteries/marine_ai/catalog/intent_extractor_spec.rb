@@ -10,8 +10,8 @@ RSpec.describe Marine::Catalog::IntentExtractor do
 
   # Every example stubs the LLM: no live model, DB, or repository is ever touched.
   def stub_llm(message:, success: true)
-    allow(base_service).to receive(:complete) do |prompt:, system: nil|
-      captured_prompts << { prompt: prompt, system: system }
+    allow(base_service).to receive(:complete) do |prompt:, system: nil, **options|
+      captured_prompts << { prompt: prompt, system: system, options: options }
       { ok: success, message: message, error: success ? nil : 'boom' }
     end
   end
@@ -184,6 +184,92 @@ RSpec.describe Marine::Catalog::IntentExtractor do
       stub_llm(message: llm_json(intent: 'stock', quantity_inquiry: 'sure maybe'))
 
       expect(extract[:quantity_inquiry]).to be(false)
+    end
+  end
+
+  describe 'deterministic classification' do
+    it 'requests the provider at temperature 0 so a borderline answer-shape does not flip between runs' do
+      stub_llm(message: llm_json(intent: 'stock'))
+
+      extract
+
+      expect(captured_prompts.last[:options]).to include(temperature: 0)
+    end
+  end
+
+  describe 'stock answer-shape → exact-quantity derivation (structured answer shape)' do
+    it 'normalizes an exact_count answer shape to quantity_inquiry true even when the boolean is absent' do
+      stub_llm(message: llm_json(intent: 'stock', stock_answer_shape: 'exact_count'))
+
+      expect(extract(text: 'how many units are on hand?')[:quantity_inquiry]).to be(true)
+    end
+
+    it 'tags unsupported_request exact_quantity for an exact_count answer shape' do
+      stub_llm(message: llm_json(intent: 'stock', stock_answer_shape: 'exact_count'))
+
+      expect(extract[:unsupported_request]).to eq('exact_quantity')
+    end
+
+    it 'keeps a plain availability answer shape binary (quantity_inquiry false, category nil)' do
+      stub_llm(message: llm_json(intent: 'stock', stock_answer_shape: 'availability'))
+
+      result = extract(text: 'is it available?')
+      expect(result[:quantity_inquiry]).to be(false)
+      expect(result[:unsupported_request]).to be_nil
+    end
+
+    it 'normalizes case/whitespace on the answer shape before matching the allowlist' do
+      stub_llm(message: llm_json(intent: 'stock', stock_answer_shape: '  Exact_Count '))
+
+      expect(extract[:quantity_inquiry]).to be(true)
+    end
+
+    it 'treats a missing answer shape as no exact-count signal (defaults to false)' do
+      stub_llm(message: llm_json(intent: 'stock'))
+
+      expect(extract(text: 'is the impeller in stock?')[:quantity_inquiry]).to be(false)
+    end
+
+    it 'treats an unknown/malformed answer shape as no exact-count signal (fail closed to false)' do
+      stub_llm(message: llm_json(intent: 'stock', stock_answer_shape: 'give_me_everything'))
+
+      result = extract
+      expect(result[:quantity_inquiry]).to be(false)
+      expect(result[:unsupported_request]).to be_nil
+    end
+
+    it 'drops a type-confused non-string answer shape (no exact-count signal)' do
+      stub_llm(message: '{"product_related": true, "intent": "stock", "stock_answer_shape": ["exact_count"]}')
+
+      expect(extract[:quantity_inquiry]).to be(false)
+    end
+
+    it 'preserves legacy quantity_inquiry:true compatibility (no answer shape supplied)' do
+      stub_llm(message: llm_json(intent: 'stock', quantity_inquiry: true))
+
+      result = extract(text: 'how many do you have?')
+      expect(result[:quantity_inquiry]).to be(true)
+      expect(result[:unsupported_request]).to eq('exact_quantity')
+    end
+
+    it 'lets the exact_count answer shape win when the boolean conflicts (says false)' do
+      stub_llm(message: llm_json(intent: 'stock', quantity_inquiry: false, stock_answer_shape: 'exact_count'))
+
+      expect(extract[:quantity_inquiry]).to be(true)
+    end
+
+    it 'never lets an availability answer shape override a legacy quantity_inquiry true' do
+      stub_llm(message: llm_json(intent: 'stock', quantity_inquiry: true, stock_answer_shape: 'availability'))
+
+      result = extract
+      expect(result[:quantity_inquiry]).to be(true)
+      expect(result[:unsupported_request]).to eq('exact_quantity')
+    end
+
+    it 'lets a quantity inquiry override a conflicting provider-supplied unsupported_request category' do
+      stub_llm(message: llm_json(intent: 'stock', stock_answer_shape: 'exact_count', unsupported_request: 'shipping_cost'))
+
+      expect(extract[:unsupported_request]).to eq('exact_quantity')
     end
   end
 

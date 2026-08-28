@@ -53,6 +53,16 @@ module Marine
       # generic bucket and is itself treated as fail-closed/generic downstream.
       UNSUPPORTED_REQUEST_CATEGORIES = %w[delivery_feasibility shipping_cost warehouse_location exact_quantity other].freeze
 
+      # Fixed, allowlisted SHAPE of answer a stock question expects, classified by the provider from
+      # the customer's own words: "exact_count" when the customer asks HOW MANY units / a specific
+      # number on hand (a figure the catalog does not expose), "availability" for a plain in-stock
+      # yes/no. This closed count-vs-availability vocabulary — never a language, phrase, or raw-text
+      # list — lets the provider make ONE discrete decision instead of inferring the abstract
+      # quantity_inquiry boolean alone; an exact_count shape normalizes quantity_inquiry to true.
+      # Anything else, or a missing value, contributes no exact-count signal (the legacy boolean still
+      # applies), so a plain availability ask stays binary.
+      STOCK_ANSWER_SHAPES = %w[exact_count availability].freeze
+
       # Internal, allowlisted reason codes — never raw exceptions or LLM prose.
       REASONS = %w[extracted not_product llm_unconfigured llm_unavailable llm_error malformed_response].freeze
 
@@ -93,7 +103,11 @@ module Marine
       def extract(text:, context: nil, state: nil)
         return unknown_result('llm_unconfigured') unless base_service.configured?
 
-        result = base_service.complete(prompt: user_prompt(text, context, state), system: SYSTEM_PROMPT)
+        # Classification is deterministic: temperature 0 removes sampling jitter so a borderline
+        # answer-shape (e.g. a mixed "how many … available" ask) resolves to the model's single most
+        # likely category rather than flipping between runs. It is a control, not the fix — the
+        # structured answer-shape contract is what makes that most-likely category correct.
+        result = base_service.complete(prompt: user_prompt(text, context, state), system: SYSTEM_PROMPT, temperature: 0)
         return unknown_result('llm_unavailable') unless result[:ok]
 
         parsed = parser.parse(result[:message])
@@ -129,8 +143,9 @@ module Marine
         build_result(parsed, state, product_related, intent, multiple_numeric)
       end
 
-      def build_result(parsed, state, product_related, intent, multiple_numeric)
+      def build_result(parsed, state, product_related, intent, multiple_numeric) # rubocop:disable Metrics/MethodLength
         family_mention = bounded_string(parsed['family_mention'], MAX_CODE_LENGTH)
+        quantity_inquiry = quantity_inquiry?(parsed)
         {
           product_related: product_related,
           intent: intent,
@@ -143,8 +158,8 @@ module Marine
           family_changed: family_changed?(family_mention, state),
           intent_changed: intent_changed?(intent, state),
           multiple_numeric_candidates: multiple_numeric,
-          quantity_inquiry: truthy(parsed['quantity_inquiry']),
-          unsupported_request: normalize_unsupported_request(parsed['unsupported_request']),
+          quantity_inquiry: quantity_inquiry,
+          unsupported_request: normalize_unsupported_request(parsed['unsupported_request'], quantity_inquiry),
           confidence: normalize_confidence(parsed['confidence']),
           customer_language: normalize_language(parsed['customer_language']),
           reason: product_related ? 'extracted' : 'not_product'
@@ -159,9 +174,32 @@ module Marine
         code if code.match?(LANGUAGE_PATTERN)
       end
 
-      # Untrusted unsupported-request category, folded to the fixed generic allowlist or nil.
-      # A non-String, unknown, or blank value normalizes to nil so the handoff stays generic.
-      def normalize_unsupported_request(value)
+      # The customer is asking for an exact on-hand quantity when EITHER the provider tags the stock
+      # ANSWER SHAPE as an exact numeric count OR it emits the legacy quantity_inquiry boolean. The two
+      # signals are OR-ed: the structured answer-shape lets a provider that recognizes a "how many" ask
+      # route it even when it leaves the abstract boolean false, while a legacy true is never overridden
+      # by an "availability" shape. Structured provider fields only — never the raw customer text.
+      def quantity_inquiry?(parsed)
+        truthy(parsed['quantity_inquiry']) || stock_answer_shape(parsed) == 'exact_count'
+      end
+
+      # Untrusted stock answer-shape, folded to the fixed allowlist or nil. A non-String, unknown, or
+      # blank value contributes no exact-count signal.
+      def stock_answer_shape(parsed)
+        value = parsed['stock_answer_shape']
+        return nil unless value.is_a?(String)
+
+        shape = value.strip.downcase
+        STOCK_ANSWER_SHAPES.include?(shape) ? shape : nil
+      end
+
+      # Untrusted unsupported-request category, folded to the fixed generic allowlist or nil. An exact
+      # on-hand quantity ask IS, by definition, the exact_quantity category, so a turn normalized to a
+      # quantity inquiry is tagged exact_quantity even when the provider populated no separate
+      # unsupported_request — keeping the later handoff acknowledgement request-aware. Otherwise a
+      # non-String, unknown, or blank value normalizes to nil so the handoff stays generic.
+      def normalize_unsupported_request(value, quantity_inquiry)
+        return 'exact_quantity' if quantity_inquiry
         return nil unless value.is_a?(String)
 
         category = value.strip.downcase
@@ -348,7 +386,11 @@ module Marine
         family_mention (string|null, a candidate name only); explicit_child_code (string|null, a candidate code only);
         explicit_child_code_from_context (boolean, true only when the customer is clearly giving a code the assistant just asked for);
         attribute_candidates (array of short strings); requires_exact_variant (boolean); clarification_reply (string|null, ask when ambiguous);
-        multiple_numeric_candidates (boolean); quantity_inquiry (boolean); confidence ("low"/"medium"/"high");
+        multiple_numeric_candidates (boolean); quantity_inquiry (boolean);
+        stock_answer_shape (string|null, for a stock/availability question ONLY: "exact_count" when the customer asks HOW MANY
+        units are on hand or otherwise wants a specific NUMBER of units, "availability" when they only ask whether it is in stock
+        (a yes/no answer); null when the turn is not asking about stock at all);
+        confidence ("low"/"medium"/"high");
         unsupported_request (string|null, ONLY when the customer asks for something this catalog assistant cannot answer — one of
         "delivery_feasibility" (can you deliver to a place), "shipping_cost" (how much is shipping/delivery), "warehouse_location"
         (where is the warehouse / where are you located), "exact_quantity" (exactly how many units are on hand), or "other" for any
@@ -361,9 +403,11 @@ module Marine
         receive or see the catalog while a family is already in focus (use current_family_in_focus) — do not treat that as unsupported.
         When the customer only confirms or refers back to the family already in focus without naming a new one, leave
         family_mention null so the conversation continues with that family.
-        Set quantity_inquiry true ONLY when the customer asks for an exact on-hand quantity or how many units are available
-        (a number the assistant cannot look up); a plain "is it in stock / available?" question stays intent "stock" with
-        quantity_inquiry false.
+        For any stock question, decide stock_answer_shape from the ANSWER the customer expects: a request for a NUMBER of units
+        on hand ("how many", "how much stock") is "exact_count"; a plain in-stock / available yes-or-no is "availability". Judge
+        this from the meaning of the customer's own words in whatever language they use, not from surface keywords.
+        Set quantity_inquiry true whenever stock_answer_shape is "exact_count" — an exact on-hand count is a number the assistant
+        cannot look up; a plain "is it in stock / available?" question stays intent "stock" with quantity_inquiry false.
       PROMPT
     end
   end

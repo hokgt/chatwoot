@@ -900,4 +900,66 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(plan[:action]).to eq(:reply)
     end
   end
+
+  describe '#process end-to-end: real extractor answer-shape normalization drives routing' do
+    subject(:orchestrator) do
+      described_class.new(
+        intent_extractor: Marine::Catalog::IntentExtractor.new(base_service: base_service),
+        repositories: { family: family_repository, variant: variant_repository, price: price_repository, stock: stock_repository },
+        variant_resolver: variant_resolver
+      )
+    end
+
+    let(:base_service) { instance_double(Marine::Llm::BaseService, configured?: true) }
+
+    # A stock turn the provider classifies by structured ANSWER SHAPE (never the abstract boolean).
+    def stub_extraction(shape:)
+      payload = { 'product_related' => true, 'intent' => 'stock', 'family_mention' => 'Impeller',
+                  'explicit_child_code' => 'CHILD-1', 'stock_answer_shape' => shape }.to_json
+      allow(base_service).to receive(:complete).and_return(ok: true, message: payload)
+    end
+
+    it 'routes a normalized exact_count stock turn to the safe exact_quantity handoff before any stock read' do
+      stub_extraction(shape: 'exact_count')
+
+      plan = orchestrator.process(text: 'how many units are on hand?', flow: nil)
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply]).to eq(kind: :unsupported)
+      expect(plan[:handoff_category]).to eq('exact_quantity')
+      expect(plan[:reply]).not_to have_key(:parts)
+      expect(stock_repository).not_to have_received(:status_for)
+      expect(variant_resolver).not_to have_received(:resolve)
+    end
+
+    it 'routes a normalized availability stock turn through the binary stock path (stock_available)' do
+      stub_extraction(shape: 'availability')
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'CHILD-1')
+      allow(stock_repository).to receive(:status_for).with('CHILD-1').and_return(:available)
+
+      plan = orchestrator.process(text: 'is it available?', flow: nil)
+
+      expect(plan[:action]).to eq(:reply)
+      expect(plan[:reply]).to eq(kind: :stock_available)
+    end
+
+    # Guard: the answer-shape normalization sets quantity_inquiry/unsupported_request from a stock
+    # shape, but a provider that hallucinates stock_answer_shape: exact_count on a NON-stock turn
+    # (here a plain parent_info question — no stock or price asked) must NOT be dragged into the
+    # exact_quantity handoff. The orchestrator gates that handoff on a stock intent, so this turn
+    # answers normally (parent_info) and never touches the stock repository or variant resolver.
+    it 'does not route a hallucinated exact_count shape on a non-stock parent_info turn to handoff' do
+      payload = { 'product_related' => true, 'intent' => 'parent_info', 'family_mention' => 'Impeller',
+                  'stock_answer_shape' => 'exact_count' }.to_json
+      allow(base_service).to receive(:complete).and_return(ok: true, message: payload)
+
+      plan = orchestrator.process(text: 'what is the Impeller family?', flow: nil)
+
+      expect(plan[:action]).to eq(:reply)
+      expect(plan[:reply]).to eq(kind: :parent_info, family_code: 'FAM-1', family_name: 'Impeller')
+      expect(plan).not_to have_key(:handoff_category)
+      expect(stock_repository).not_to have_received(:status_for)
+      expect(variant_resolver).not_to have_received(:resolve)
+    end
+  end
 end
