@@ -50,10 +50,11 @@ module Marine
       }.freeze
 
       GENERATION_INSTRUCTION = <<~PROMPT.strip
-        Rephrase the Product Reply below to answer the customer naturally in the same language and context.
-        The Product Reply is your ONLY source of facts. Preserve every product name, code, number, price, currency, unit, and availability statement it contains exactly and unchanged.
-        Do not add, change, infer, or omit any fact, and introduce nothing the Product Reply does not state.
-        Answer the latest request directly and concisely, using earlier messages only when relevant.
+        Rephrase the Product Reply below to answer the customer naturally, warmly, and conversationally in the same language and context.
+        The Product Reply is your ONLY source of facts. Keep every product name, code, number, price, currency, and unit it contains exactly and unchanged.
+        Keep the availability meaning identical — in stock stays in stock, out of stock stays out of stock — but express it in fresh, natural words that fit the customer's latest question, and never state or imply a quantity.
+        Do not add, change, infer, or omit any other fact, and introduce nothing the Product Reply does not state.
+        Answer the latest request directly and concisely, varying your wording to suit it instead of repeating a fixed sentence, and use earlier messages only when relevant.
         Output only your reply text, with no JSON, markdown, quotes, or explanation.
       PROMPT
 

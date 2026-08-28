@@ -327,4 +327,94 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
       expect(validator).not_to have_received(:valid?)
     end
   end
+
+  # Stock-availability naturalization — the reply must sound natural and adapt to the latest
+  # inquiry rather than echoing one rigid canned availability sentence. The generation prompt must
+  # therefore preserve the concrete token-protected facts exactly while allowing the availability to
+  # be expressed in FRESH, varied words (its binary meaning still guarded by the two gates), and must
+  # never let wording inject a quantity or flip the in-stock/out-of-stock boolean.
+  describe 'stock-availability natural wording' do
+    let(:in_stock_descriptor) { { kind: :stock_available } }
+    let(:in_stock_fallback) { 'Good news — that item is currently in stock.' }
+    let(:out_of_stock_descriptor) { { kind: :stock_empty } }
+    let(:out_of_stock_fallback) { "I'm sorry, that item is currently out of stock." }
+
+    def capture_generation_system(descriptor:, fallback:, customer_request: 'is it available?')
+      captured = {}
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      allow(llm).to receive(:chat) do |args|
+        captured.merge!(args)
+        { ok: true, message: reply_envelope('Yes, that one is available right now.'), error: nil }
+      end
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      stub_semantic(true)
+      call(descriptor: descriptor, fallback: fallback, customer_request: customer_request)
+      captured
+    end
+
+    it 'instructs the model to keep the availability MEANING but express it in fresh, varied words (not a fixed sentence)' do
+      system = capture_generation_system(descriptor: in_stock_descriptor, fallback: in_stock_fallback)[:system]
+
+      # Root-cause guard: the old prompt froze the "availability statement ... exactly and unchanged",
+      # forcing the model to echo one canned sentence for every stock reply.
+      expect(system).not_to include('availability statement')
+      expect(system).to include('fresh, natural words')
+      expect(system).to include('varying your wording')
+      # The concrete facts (and the no-quantity rule) are still preserved verbatim.
+      expect(system).to include('ONLY source of facts')
+      expect(system).to include('exactly and unchanged')
+      expect(system).to match(/never state or imply a quantity/i)
+    end
+
+    it 'delivers a varied, natural in-stock reply adapted to the latest question through both gates' do
+      stub_generation(message: 'Yes — we do have that one on hand right now, happy to help!')
+      stub_semantic(true)
+
+      result = call(descriptor: in_stock_descriptor, fallback: in_stock_fallback, customer_request: 'do you still have it?')
+
+      expect(result).to eq('Yes — we do have that one on hand right now, happy to help!')
+      expect(result).not_to eq(in_stock_fallback) # no longer forced to the rigid canned sentence
+    end
+
+    it 'delivers a varied, natural out-of-stock reply through both gates' do
+      stub_generation(message: "Unfortunately that one's sold out at the moment — sorry about that.")
+      stub_semantic(true)
+
+      expect(call(descriptor: out_of_stock_descriptor, fallback: out_of_stock_fallback))
+        .to eq("Unfortunately that one's sold out at the moment — sorry about that.")
+    end
+
+    it 'rejects a quantity injected by naturalization deterministically, before the semantic gate' do
+      validator = stub_semantic(true)
+      stub_generation(message: 'Yes, we currently have 24 of those on hand.') # invents a quantity
+
+      expect(call(descriptor: in_stock_descriptor, fallback: in_stock_fallback)).to be_nil
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    it 'rejects a candidate that flips the in-stock boolean via the semantic gate (safe fallback)' do
+      stub_generation(message: "I'm sorry, that item is out of stock right now.") # contradicts in-stock truth
+      stub_semantic(false)
+
+      expect(call(descriptor: in_stock_descriptor, fallback: in_stock_fallback)).to be_nil
+    end
+
+    it 'passes the latest inquiry and stock fallback to generation so wording can adapt to it' do
+      captured = capture_generation_system(descriptor: in_stock_descriptor, fallback: in_stock_fallback,
+                                           customer_request: 'is the impeller in stock?')
+
+      expect(captured[:system]).to include(in_stock_fallback)
+      contents = captured[:messages].map { |m| m[:content] || m['content'] }
+      expect(contents.last).to eq('is the impeller in stock?')
+    end
+
+    it 'falls back safely (nil) when stock generation fails, so the caller delivers the exact fallback' do
+      allow(Marine::Llm::BaseService).to receive(:new)
+        .and_return(instance_double(Marine::Llm::BaseService, configured?: false))
+      validator = stub_semantic(true)
+
+      expect(call(descriptor: in_stock_descriptor, fallback: in_stock_fallback)).to be_nil
+      expect(validator).not_to have_received(:valid?)
+    end
+  end
 end
