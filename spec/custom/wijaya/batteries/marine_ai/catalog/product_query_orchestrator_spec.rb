@@ -180,7 +180,7 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       plan = orchestrator.plan_for_intent(intent: stock_intent, flow: nil)
 
       expect(plan[:action]).to eq(:reply)
-      expect(plan[:reply]).to eq(kind: :stock_available)
+      expect(plan[:reply]).to eq(kind: :stock_available, variant_code: 'CHILD-1')
       expect(deep_values(plan)).to all(satisfy { |v| !v.is_a?(Numeric) })
     end
 
@@ -189,7 +189,7 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
 
       plan = orchestrator.plan_for_intent(intent: stock_intent, flow: nil)
 
-      expect(plan[:reply]).to eq(kind: :stock_empty)
+      expect(plan[:reply]).to eq(kind: :stock_empty, variant_code: 'CHILD-1')
     end
 
     it 'fails closed to a handoff when the stock repository is unavailable (never a false empty)' do
@@ -383,7 +383,7 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       )
 
       expect(plan[:action]).to eq(:reply)
-      expect(plan[:reply]).to eq(kind: :stock_available)
+      expect(plan[:reply]).to eq(kind: :stock_available, variant_code: 'CHILD-1')
       expect(plan[:state][:changes]).to include('current_intent' => 'stock')
     end
 
@@ -940,7 +940,7 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       plan = orchestrator.process(text: 'is it available?', flow: nil)
 
       expect(plan[:action]).to eq(:reply)
-      expect(plan[:reply]).to eq(kind: :stock_available)
+      expect(plan[:reply]).to eq(kind: :stock_available, variant_code: 'CHILD-1')
     end
 
     # Guard: the answer-shape normalization sets quantity_inquiry/unsupported_request from a stock

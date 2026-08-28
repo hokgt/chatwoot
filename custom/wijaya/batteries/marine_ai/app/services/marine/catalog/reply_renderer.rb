@@ -10,8 +10,9 @@
 # price/stock reply, and keeps the object graph free of raw facts.
 #
 # Hard guarantees enforced here:
-#   * stock descriptors carry only a binary :available / :empty / :unavailable kind —
-#     never a numeric quantity, warehouse detail, SQL, or raw error;
+#   * stock descriptors carry only a binary :available / :empty / :unavailable kind plus, for
+#     the two binary kinds, the validated variant_code the availability is FOR (so a natural
+#     reply can name the product) — never a numeric quantity, warehouse detail, SQL, or raw error;
 #   * price descriptors carry only the three approved customer fields
 #     (price_list_rate, currency, uom) plus the validated variant_code the price is
 #     FOR (so a natural reply can name the product it prices) — nothing else from the row;
@@ -73,9 +74,13 @@ module Marine
       def price_unavailable = descriptor(:price_unavailable)
       def price_conflict = descriptor(:price_conflict)
 
-      # Stock is a binary availability status ONLY — never a quantity.
-      def stock_available = descriptor(:stock_available)
-      def stock_empty = descriptor(:stock_empty)
+      # Stock is a binary availability status ONLY — never a quantity. The validated variant
+      # code the availability is FOR rides along (bounded/cleaned like the price code) so a
+      # natural reply can name the product it reports on and the deterministic fallback grounds
+      # that exact, immutable code. A blank/malformed code is dropped to nil (fails closed at the
+      # gates). stock_unavailable stays factless — it is the fail-closed/handoff kind.
+      def stock_available(variant_code) = descriptor(:stock_available, variant_code: safe_scalar(variant_code, MAX_CODE_NAME_LENGTH))
+      def stock_empty(variant_code) = descriptor(:stock_empty, variant_code: safe_scalar(variant_code, MAX_CODE_NAME_LENGTH))
       def stock_unavailable = descriptor(:stock_unavailable)
 
       def catalog_unavailable = descriptor(:catalog_unavailable)

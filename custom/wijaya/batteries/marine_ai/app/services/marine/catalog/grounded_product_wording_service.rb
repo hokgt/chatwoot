@@ -55,21 +55,23 @@ module Marine
       # keeps the unscoped rubric (its price is still token-protected deterministically).
       STOCK_KINDS = %i[stock_available stock_empty].freeze
 
-      # Narrowly scoped semantic-judgement guidance for a pure stock-availability reply. It clarifies
-      # WHAT the material fact is so the general rubric stops rejecting benign same-direction
-      # rephrasings (relative-time words, pronouns, generic referential nouns, and referential framing
-      # tied to the current question) as added/unequal facts — the exact live-acceptance failure —
-      # WITHOUT relaxing the flip / uncertainty / extra-fact rejections, and in particular still
-      # rejecting any SPECIFIC product name, model, or code the Approved Answer does not state. Because
-      # this service always answers the customer's OWN latest request, a phrase like "the item you
-      # asked about" is true by construction and adds no product fact; the concrete numeric/code facts
-      # remain guarded by the deterministic ProductFactProtectionValidator that runs first. It names no
+      # Narrowly scoped semantic-judgement guidance for a pure stock-availability reply. The Approved
+      # Answer now names the exact validated product/variant identity the availability is FOR, so this
+      # focus tells the judge there are TWO material facts — that identity and the binary in/out
+      # outcome — and that a Candidate repeating the SAME identity unchanged is PRESERVING it, not
+      # adding a fact. That stops the general rubric from over-rejecting faithful, greeting- or
+      # framing-bearing rephrasings (relative-time words, pronouns, warm acknowledgements) that keep
+      # the exact identity and outcome — the live-acceptance failure — WITHOUT relaxing the flip /
+      # uncertainty / extra-fact rejections, and in particular still rejecting a CHANGED, DROPPED, or
+      # DIFFERENT identity the Approved Answer does not state. The identity's byte-exact form is also
+      # guarded by the deterministic ProductFactProtectionValidator that runs first. It names no
       # language, phrase list, product, or company, and passes no raw customer text.
       STOCK_FACT_FOCUS = <<~PROMPT.strip
-        For THIS answer the only material fact is a single binary stock-availability outcome — either in stock or out of stock.
-        Any Candidate Reply that states the SAME availability outcome preserves that fact and is meaning-equivalent, whatever its wording, sentence shape, or pronouns, and however it phrases the time ("still", "right now", "currently", "at the moment") — these are conversational phrasing, not added facts.
-        You are judging a reply that is ALWAYS answering the customer's own latest question, so any phrase describing the reply's subject as the thing the customer asked about, mentioned, means, or is asking for — "the item you asked about", "the variant you mentioned", "the one you mean", or the equivalent in any language — is true by construction and adds NO fact about what was requested; never count it as an added, changed, or unequal fact. Likewise the generic word chosen for that subject — "item", "product", "variant", "unit", "one", or the equivalent in any language — is referential wording only: it carries no fact, need not match the word the Approved Answer used, and, with no specific name, number, code, or attribute attached, names nothing more specific than "the thing being discussed" (the bare word "variant" included). Judge ONLY the availability outcome and whether some OTHER concrete claim was added.
-        Reject if the candidate reverses the availability outcome, makes it uncertain or conditional when the Approved Answer is definite, or introduces any concrete new claim the Approved Answer does not state — a specific product name, model, or code, a quantity, a warehouse or location, a price, or a delivery or lead time.
+        For THIS answer there are exactly two material facts: (1) the specific validated product or variant identity the Approved Answer names — its exact code, model, or name — and (2) one definite binary stock-availability outcome, either in stock or out of stock.
+        A Candidate Reply preserves the facts when it keeps that SAME product/variant identity unchanged AND states the SAME availability outcome, whatever its wording, sentence shape, or pronouns, and however it phrases the time ("still", "right now", "currently", "at the moment") — these are conversational phrasing, not added facts. The identity the Approved Answer already states is NOT a new or added fact when the Candidate repeats it exactly: carrying that same identity through is required preservation, never an addition.
+        Ordinary greetings, warm acknowledgements, apologies, and other conversational framing are not factual claims — never let them cause rejection.
+        Reject the Candidate only if it changes, drops, or substitutes a DIFFERENT product/variant identity (any code, model, or name the Approved Answer does not state), reverses the availability outcome, makes that outcome uncertain or conditional when the Approved Answer is definite, or introduces any other concrete claim the Approved Answer does not state — a quantity, a warehouse, location, or bin, a price, or a delivery or lead time.
+        Judge ONLY these two facts and whether some OTHER concrete claim was added; apply this in any language.
       PROMPT
 
       GENERATION_INSTRUCTION = <<~PROMPT.strip

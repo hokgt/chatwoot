@@ -96,7 +96,7 @@ RSpec.describe 'Marine product flow cross-component regression' do
 
     # A representative real descriptor for each renderer kind, built by the renderer itself.
     def composite_descriptor
-      renderer.composite([renderer.price_available({ price_list_rate: '10.00', currency: 'USD', uom: 'ea' }, 'C-1'), renderer.stock_available])
+      renderer.composite([renderer.price_available({ price_list_rate: '10.00', currency: 'USD', uom: 'ea' }, 'C-1'), renderer.stock_available('C-1')])
     end
 
     def descriptor_for(kind) # rubocop:disable Metrics/CyclomaticComplexity -- a flat per-kind dispatch
@@ -105,6 +105,10 @@ RSpec.describe 'Marine product flow cross-component regression' do
       when :catalog then renderer.catalog(code: 'FAM-1', name: 'Impeller')
       when :variant_info then renderer.variant_info({ code: 'FAM-1' }, 'C-1')
       when :price_available then renderer.price_available({ price_list_rate: '10.00', currency: 'USD', uom: 'ea' }, 'C-1')
+      # A digit-free validated code so the "stock text never contains a digit" quantity invariant below
+      # still meaningfully holds while the code is named.
+      when :stock_available then renderer.stock_available('RED')
+      when :stock_empty then renderer.stock_empty('RED')
       when :clarify_family then renderer.clarify_family([{ code: 'FAM-1', name: 'Impeller' }])
       when :clarify_variant then renderer.clarify_variant(%w[Size])
       when :composite then composite_descriptor

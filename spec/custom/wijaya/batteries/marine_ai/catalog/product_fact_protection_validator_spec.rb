@@ -23,8 +23,8 @@ RSpec.describe Marine::Catalog::ProductFactProtectionValidator do
     it 'accepts every supported kind only under its one allowed action' do
       expect(eligible?({ kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' })).to be(true)
       expect(eligible?({ kind: :variant_info, family_code: 'IMP', variant_code: 'IMP-3' })).to be(true)
-      expect(eligible?({ kind: :stock_available })).to be(true)
-      expect(eligible?({ kind: :stock_empty })).to be(true)
+      expect(eligible?({ kind: :stock_available, variant_code: 'IMP-3' })).to be(true)
+      expect(eligible?({ kind: :stock_empty, variant_code: 'IMP-3' })).to be(true)
       expect(eligible?({ kind: :price_available, variant_code: 'IMP-3', price_list_rate: '150000', currency: 'IDR', uom: 'pcs' })).to be(true)
       expect(eligible?({ kind: :catalog, family_code: 'IMP', family_name: 'Impeller' }, action: :send_catalog)).to be(true)
       expect(eligible?({ kind: :clarify_family, candidates: [{ code: 'IMP', name: 'Impeller' }] }, action: :clarify_family)).to be(true)
@@ -33,7 +33,7 @@ RSpec.describe Marine::Catalog::ProductFactProtectionValidator do
 
     it 'rejects a supported kind presented under the wrong product action' do
       expect(eligible?({ kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' }, action: :clarify_family)).to be(false)
-      expect(eligible?({ kind: :stock_available }, action: :clarify_variant)).to be(false)
+      expect(eligible?({ kind: :stock_available, variant_code: 'IMP-3' }, action: :clarify_variant)).to be(false)
       expect(eligible?({ kind: :clarify_family, candidates: [] })).to be(false)
       # A direct-catalog descriptor is eligible ONLY under :send_catalog, never a plain :reply.
       expect(eligible?({ kind: :catalog, family_code: 'IMP', family_name: 'Impeller' })).to be(false)
@@ -119,21 +119,34 @@ RSpec.describe Marine::Catalog::ProductFactProtectionValidator do
     end
   end
 
-  describe '#accepts? — Tier 2 stock outcomes (no quantity may leak)' do
-    it 'accepts an equivalent stock candidate carrying no numeric quantity' do
-      available = 'Good news — that item is currently in stock.'
-      empty = "I'm sorry, that item is currently out of stock."
-      expect(accepts?({ kind: :stock_available }, available, 'That item is in stock right now.')).to be(true)
-      expect(accepts?({ kind: :stock_empty }, empty, 'That item is out of stock at the moment.')).to be(true)
+  describe '#accepts? — Tier 2 stock outcomes (exact validated code; no quantity may leak)' do
+    let(:available_desc) { { kind: :stock_available, variant_code: 'IMP-3' } }
+    let(:empty_desc) { { kind: :stock_empty, variant_code: 'IMP-3' } }
+    let(:available) { 'IMP-3 is currently in stock.' }
+    let(:empty) { "I'm sorry, IMP-3 is currently out of stock." }
+
+    it 'accepts an equivalent stock candidate naming the exact validated code and carrying no quantity' do
+      expect(accepts?(available_desc, available, 'IMP-3 is in stock right now.')).to be(true)
+      expect(accepts?(empty_desc, empty, 'IMP-3 is out of stock at the moment.')).to be(true)
     end
 
     it 'rejects a stock candidate that injects a quantity number' do
-      fallback = 'Good news — that item is currently in stock.'
-      expect(accepts?({ kind: :stock_available }, fallback, 'Good news — 5 units are in stock.')).to be(false)
+      expect(accepts?(available_desc, available, 'Good news — we have 5 units of IMP-3 in stock.')).to be(false)
+    end
+
+    it 'rejects a stock candidate that drops, alters, or invents the validated code' do
+      expect(accepts?(available_desc, available, 'That item is in stock right now.')).to be(false)         # dropped
+      expect(accepts?(available_desc, available, 'IMP-4 is in stock right now.')).to be(false)              # altered
+      expect(accepts?(available_desc, available, 'IMP-3 and IMP-9 are in stock right now.')).to be(false)   # new code added
+    end
+
+    it 'rejects a stock descriptor whose validated code is blank/missing (fails closed to fallback)' do
+      expect(eligible?({ kind: :stock_available, variant_code: '   ' })).to be(false)
+      expect(eligible?({ kind: :stock_available })).to be(false)
     end
 
     it 'rejects a stock kind under an unsupported action' do
-      expect(accepts?({ kind: :stock_available }, 'In stock.', 'In stock.', action: :clarify_family)).to be(false)
+      expect(accepts?(available_desc, available, 'IMP-3 is in stock.', action: :clarify_family)).to be(false)
     end
   end
 

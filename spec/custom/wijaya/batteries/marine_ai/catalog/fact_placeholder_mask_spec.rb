@@ -40,23 +40,34 @@ RSpec.describe Marine::Catalog::FactPlaceholderMask do
       expect(mask.restore(translated)).to eq('Berikut detail untuk AB12. Mau harga atau ketersediaan?')
     end
 
+    it 'masks the validated variant code in a binary stock reply and restores it byte-exact' do
+      mask = described_class.new(descriptor: { kind: :stock_available, variant_code: 'AB12' })
+      masked = mask.mask('Good news — AB12 is currently in stock.')
+
+      expect(masked).not_to include('AB12')
+      restored = mask.restore(translate(masked, 'Good news —' => 'Kabar baik —',
+                                                'is currently in stock.' => 'sedang tersedia.'))
+      expect(restored).to eq('Kabar baik — AB12 sedang tersedia.')
+    end
+
     it 'masks the union of a composite reply\'s immutable part facts and restores them all' do
       descriptor = {
         kind: :composite,
         parts: [
           { kind: :price_available, variant_code: 'IMP-3', price_list_rate: '150000', currency: 'IDR', uom: 'pcs' },
-          { kind: :stock_available }
+          { kind: :stock_available, variant_code: 'IMP-3' }
         ]
       }
       mask = described_class.new(descriptor: descriptor)
-      source = 'The price for IMP-3 is IDR 150000 per pcs. Good news — that item is currently in stock.'
+      # The canonical same-variant composite fallback names the shared code IMP-3 ONCE (the price
+      # clause) and refers back to it in the stock clause, so the mask masks that single occurrence.
+      source = 'The price for IMP-3 is IDR 150000 per pcs. It is currently in stock.'
 
       masked = mask.mask(source)
       expect(masked).not_to include('IMP-3', 'IDR', '150000', 'pcs')
-      # Replace the whole stock sentence first, so the later ' is ' substitution only touches the price prose.
-      translated = translate(masked, 'Good news — that item is currently in stock.' => 'Kabar baik — barang tersedia.',
+      translated = translate(masked, 'It is currently in stock.' => 'Sekarang tersedia.',
                                      'The price for' => 'Harga untuk', ' is ' => ' adalah ')
-      expect(mask.restore(translated)).to eq('Harga untuk IMP-3 adalah IDR 150000 per pcs. Kabar baik — barang tersedia.')
+      expect(mask.restore(translated)).to eq('Harga untuk IMP-3 adalah IDR 150000 per pcs. Sekarang tersedia.')
     end
 
     it 'preserves a short immutable value that is a token of a longer one (longest-first masking)' do
@@ -102,8 +113,8 @@ RSpec.describe Marine::Catalog::FactPlaceholderMask do
       expect(mask.mask(source)).to eq(source)
     end
 
-    it 'leaves a stock reply unmasked (no immutable fact, availability only)' do
-      mask = described_class.new(descriptor: { kind: :stock_available })
+    it 'leaves a code-less stock reply unmasked (the product-agnostic fallback carries no immutable fact)' do
+      mask = described_class.new(descriptor: { kind: :stock_available, variant_code: nil })
       expect(mask.mask('Good news — that item is currently in stock.')).to eq('Good news — that item is currently in stock.')
     end
   end

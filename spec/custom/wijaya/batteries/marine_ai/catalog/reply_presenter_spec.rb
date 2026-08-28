@@ -36,12 +36,24 @@ RSpec.describe Marine::Catalog::ReplyPresenter do
         .to eq('The price for BD-RED is USD 125.50 per Nos.')
     end
 
-    it 'renders the static price_unavailable / stock templates' do
+    it 'renders the static price_unavailable template' do
       expect(presenter.reply_text(plan(action: :reply, reply: renderer.price_unavailable)))
         .to eq("I'm sorry, I don't have the price for that item right now.")
-      expect(presenter.reply_text(plan(action: :reply, reply: renderer.stock_available)))
+    end
+
+    it 'names the validated variant code in the binary stock templates' do
+      # The available line leads with the code and a plain definite statement (no fixed upbeat opener)
+      # so ordinary availability replies stop reading as one canned "Good news — ..." sentence.
+      expect(presenter.reply_text(plan(action: :reply, reply: renderer.stock_available('BD-RED'))))
+        .to eq('BD-RED is currently in stock.')
+      expect(presenter.reply_text(plan(action: :reply, reply: renderer.stock_empty('BD-RED'))))
+        .to eq("I'm sorry, BD-RED is currently out of stock.")
+    end
+
+    it 'falls back to the product-agnostic stock line when no usable code is present' do
+      expect(presenter.reply_text(plan(action: :reply, reply: { kind: :stock_available, variant_code: nil })))
         .to eq('Good news — that item is currently in stock.')
-      expect(presenter.reply_text(plan(action: :reply, reply: renderer.stock_empty)))
+      expect(presenter.reply_text(plan(action: :reply, reply: { kind: :stock_empty, variant_code: '  ' })))
         .to eq("I'm sorry, that item is currently out of stock.")
     end
 

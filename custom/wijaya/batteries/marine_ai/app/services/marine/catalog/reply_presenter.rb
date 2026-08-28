@@ -13,7 +13,9 @@
 module Marine
   module Catalog
     class ReplyPresenter
-      # Fixed, fact-safe templates for descriptor kinds that carry no interpolated field.
+      # Fixed, fact-safe templates for descriptor kinds that carry no interpolated field. The two
+      # stock entries double as the product-agnostic fallback when a stock descriptor carries no
+      # usable validated code (see #stock_text); a code-bearing stock descriptor names that code.
       STATIC_PRODUCT_TEXT = {
         price_unavailable: "I'm sorry, I don't have the price for that item right now.",
         stock_available: 'Good news — that item is currently in stock.',
@@ -57,11 +59,19 @@ module Marine
         STATIC_PRODUCT_TEXT[descriptor[:kind]] || GENERIC_PRODUCT_TEXT
       end
 
-      # One customer-facing reply for a supported multi-intent turn: each child descriptor's exact
-      # deterministic sentence, in the composite's canonical order, joined into a single message — so
-      # both authorized outcomes are delivered once, with no duplicated fact and no second delivery.
+      # One customer-facing reply for a supported multi-intent turn. The canonical, well-formed
+      # same-variant price+stock composite (a price leg then a binary stock leg, both naming the SAME
+      # validated code) names that code ONCE in the price clause and refers back to it with a natural
+      # referential subject in the stock clause ("The price for CHILD-1 is USD 125.50 per Nos. It is
+      # currently in stock."), so the deterministic text reads naturally and its token inventory no
+      # longer forces a generated candidate to repeat the code. Any other shape — a noncanonical order,
+      # a missing/blank or CONFLICTING code, or a non price+stock pair — falls back to the fail-closed
+      # per-part join, whose every leg still names its own validated code. Both deliver each authorized
+      # outcome once, with no duplicated fact and no second delivery.
       def composite_text(descriptor)
-        Array(descriptor[:parts]).filter_map { |part| single_descriptor_text(part) if part.is_a?(Hash) }.join(' ')
+        parts = Array(descriptor[:parts])
+        same_variant_price_stock_text(parts) ||
+          parts.filter_map { |part| single_descriptor_text(part) if part.is_a?(Hash) }.join(' ')
       end
 
       # The deterministic sentence for ONE child descriptor (the same mapping reply_text applies to a
@@ -122,14 +132,62 @@ module Marine
 
       private
 
-      def dynamic_product_text(descriptor)
+      def dynamic_product_text(descriptor) # rubocop:disable Metrics/CyclomaticComplexity -- a flat per-kind dispatch
         case descriptor[:kind]
         when :parent_info then parent_info_text(descriptor)
         when :variant_info then "Here are the details for #{descriptor[:variant_code]}. Would you like the price or availability?"
         when :price_available then price_available_text(descriptor)
+        when :stock_available, :stock_empty then stock_text(descriptor)
         when :clarify_family then clarify_family_text(descriptor[:candidates])
         when :clarify_variant then clarify_variant_text(descriptor[:attribute_names])
         when :catalog then catalog_ready_text(descriptor)
+        end
+      end
+
+      # Binary availability naming the exact validated variant code so the deterministic fallback
+      # grounds that immutable fact (the mask/gates then keep it byte-exact in any natural rephrase
+      # or translation). The available line leads with the code and a plain definite statement rather
+      # than a fixed upbeat opener, so ordinary availability replies stop reading as one canned
+      # sentence; natural, context-adapted variation still comes from the model path. A blank/malformed
+      # code (nil after the renderer's cleaning) falls back to the generic, product-agnostic sentence.
+      def stock_text(descriptor)
+        code = descriptor[:variant_code].presence
+        case descriptor[:kind]
+        when :stock_available then code ? "#{code} is currently in stock." : STATIC_PRODUCT_TEXT[:stock_available]
+        when :stock_empty then code ? "I'm sorry, #{code} is currently out of stock." : STATIC_PRODUCT_TEXT[:stock_empty]
+        end
+      end
+
+      # The natural deterministic text for the canonical same-variant price→stock composite, or nil for
+      # any other shape (the caller then falls back to the per-part join). When it applies, the price
+      # clause names the shared validated code and the stock clause refers back to it, so the code is
+      # stated once. Canonical production order is price then stock.
+      def same_variant_price_stock_text(parts)
+        return nil unless parts.length == 2 && parts.all?(Hash)
+
+        price, stock = parts
+        return nil unless shared_composite_code(price, stock)
+
+        "#{price_available_text(price)} #{referential_stock_clause(stock[:kind])}"
+      end
+
+      # The single validated code a canonical price→stock composite shares, or nil when the two parts
+      # are not a price_available leg followed by a binary stock leg naming the SAME non-blank code (a
+      # noncanonical order, a missing/blank code, or CONFLICTING codes all fail closed to nil).
+      def shared_composite_code(price, stock)
+        return nil unless price[:kind] == :price_available
+        return nil unless %i[stock_available stock_empty].include?(stock[:kind])
+
+        code = price[:variant_code].presence
+        code if code && stock[:variant_code].presence == code
+      end
+
+      # The stock clause that refers back to a variant code already named earlier in the composite, so
+      # that validated code is stated once. Mirrors #stock_text's binary wording with a pronoun subject.
+      def referential_stock_clause(kind)
+        case kind
+        when :stock_available then 'It is currently in stock.'
+        when :stock_empty then "I'm sorry, it is currently out of stock."
         end
       end
 

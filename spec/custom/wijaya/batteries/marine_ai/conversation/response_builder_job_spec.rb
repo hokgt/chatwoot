@@ -571,13 +571,13 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       end
 
       it 'returns the exact deterministic localized response when wording is rejected' do
-        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available },
+        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available, variant_code: 'IMP-3' },
                                        operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' }))
         stub_wording(nil)
 
         described_class.perform_now(conversation, assistant, incoming.id)
 
-        expect(conversation.messages.outgoing.last.content).to eq('Good news — that item is currently in stock.')
+        expect(conversation.messages.outgoing.last.content).to eq('IMP-3 is currently in stock.')
       end
 
       it 'prepares wording from the ContextBuilder bounded trigger/history, exact localized fallback, and opening state' do
@@ -588,7 +588,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
           'In stock right now.'
         end
         allow(Marine::Catalog::GroundedProductWordingService).to receive(:new).and_return(service)
-        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available },
+        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available, variant_code: 'IMP-3' },
                                        operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' }))
 
         described_class.perform_now(conversation, assistant, incoming.id)
@@ -598,7 +598,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         expect(captured[:customer_request]).to eq('price for impeller 3 inch') # the bounded trigger content
         expect(captured[:message_history]).to eq([]) # only the trigger exists; no prior public turns
         # the EXACT deterministic localized fallback is passed as the sole factual authority
-        expect(captured[:fallback]).to eq('Good news — that item is currently in stock.')
+        expect(captured[:fallback]).to eq('IMP-3 is currently in stock.')
         expect(captured[:opening]).to be(true) # no earlier Marine reply -> Phase 2 opening turn
         expect(conversation.messages.outgoing.last.content).to eq('In stock right now.')
       end
@@ -615,12 +615,12 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         raising = instance_double(Marine::Catalog::GroundedProductWordingService)
         allow(raising).to receive(:call).and_raise(StandardError, 'boom')
         allow(Marine::Catalog::GroundedProductWordingService).to receive(:new).and_return(raising)
-        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available },
+        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available, variant_code: 'IMP-3' },
                                        operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' }))
 
         described_class.perform_now(conversation, assistant, incoming.id)
 
-        expect(conversation.messages.outgoing.last.content).to eq('Good news — that item is currently in stock.')
+        expect(conversation.messages.outgoing.last.content).to eq('IMP-3 is currently in stock.')
         expect(localizer_calls).to eq(1) # only the single lock-free precompute; delivery did not re-localize
         expect(claim_status).to eq('completed')
       end
@@ -653,7 +653,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         create(:message, conversation: conversation, message_type: :incoming, content: 'actually never mind')
         baseline = conversation.messages.outgoing.count
         service = stub_wording('In stock right now.')
-        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available },
+        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available, variant_code: 'IMP-3' },
                                        operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' }))
 
         described_class.perform_now(conversation, assistant, trigger.id)
@@ -669,7 +669,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
           localizer_calls += 1
           method.call(**kwargs)
         end
-        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available },
+        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available, variant_code: 'IMP-3' },
                                        operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' }))
         stub_wording('In stock right now.')
 

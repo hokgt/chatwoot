@@ -43,8 +43,8 @@ module Marine
       CONTRACTS = {
         parent_info: { action: :reply, keys: %i[family_code family_name] },
         variant_info: { action: :reply, keys: %i[family_code variant_code] },
-        stock_available: { action: :reply, keys: [] },
-        stock_empty: { action: :reply, keys: [] },
+        stock_available: { action: :reply, keys: %i[variant_code] },
+        stock_empty: { action: :reply, keys: %i[variant_code] },
         price_available: { action: :reply, keys: %i[variant_code price_list_rate currency uom] },
         catalog: { action: :send_catalog, keys: %i[family_code family_name] },
         clarify_family: { action: :clarify_family, keys: %i[candidates] },
@@ -142,14 +142,13 @@ module Marine
       # Protected display values derived ONLY from allowlisted descriptor fields, matching what
       # the deterministic template renders. Returns an Array of strings (possibly empty), or the
       # REJECT sentinel when a required value is missing/blank/ambiguous/nonfinite.
-      def protected_values(descriptor) # rubocop:disable Metrics/CyclomaticComplexity -- a flat per-kind dispatch
+      def protected_values(descriptor)
         case descriptor[:kind]
         when :parent_info, :catalog then single(family_display(descriptor))
-        when :variant_info then single(presence_string(descriptor[:variant_code]))
+        when :variant_info, :stock_available, :stock_empty then single(presence_string(descriptor[:variant_code]))
         when :price_available then price_values(descriptor)
         when :clarify_family then clarify_family_values(descriptor[:candidates])
         when :clarify_variant then value_list(descriptor[:attribute_names])
-        when :stock_available, :stock_empty then []
         when :composite then composite_values(descriptor[:parts])
         else REJECT
         end
@@ -158,15 +157,35 @@ module Marine
       # The union of every part's protected display values. A composite is eligible ONLY when it has
       # at least two parts, each a well-shaped descriptor of a naturalizable part kind whose own
       # protected values resolve; any malformed/ineligible part rejects the whole composite (wording
-      # skipped, exact fallback delivered). Duplicate protected values across parts reject (ambiguous).
+      # skipped, exact fallback delivered). Every part is grounded on the SAME validated variant, so
+      # that variant code legitimately REPEATS across the price and stock legs: the shared code is
+      # collapsed to a single protected value rather than misread as ambiguity. CONFLICTING variant
+      # codes across parts — or a part missing the code — fail closed. Any duplicate that remains among
+      # the OTHER protected values (price rate/currency/UOM) is genuine ambiguity and still rejects.
       def composite_values(parts)
         return REJECT unless parts.is_a?(Array) && parts.length >= 2
 
-        collected = parts.flat_map { |part| composite_part_values(part) }
-        return REJECT if collected.include?(REJECT)
+        per_part = parts.map { |part| composite_part_values(part) }
+        return REJECT if per_part.include?(REJECT)
+
+        code = shared_variant_code(parts)
+        return REJECT if code.nil?
+
+        collected = [code] + (per_part.flatten - [code])
         return REJECT if collected.uniq.length != collected.length
 
         collected
+      end
+
+      # The single validated variant code every composite part must share. Each naturalizable part
+      # kind (price_available, stock_available, stock_empty) carries :variant_code; every present
+      # value must be byte-identical, else the composite fails closed — a conflicting or blank code is
+      # never a legitimate same-variant price+stock reply. Returns the shared code, or nil to reject.
+      def shared_variant_code(parts)
+        codes = parts.map { |part| presence_string(part[:variant_code]) }
+        return nil if codes.any?(&:nil?)
+
+        codes.uniq.length == 1 ? codes.first : nil
       end
 
       def composite_part_values(part)

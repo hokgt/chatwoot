@@ -376,13 +376,14 @@ module Marine
         end
       end
 
-      # The binary stock-availability descriptor for a validated child. :available / :empty only; an
+      # The binary stock-availability descriptor for a validated child, carrying that exact validated
+      # `code` so a natural reply can name the product it reports on. :available / :empty only; an
       # unexpected status raises CatalogUnavailableError, caught by plan_for_intent and turned into a
       # safe handoff (never a false empty). Never a quantity — the repository collapses all bins first.
       def stock_descriptor(code)
         case stock_repository.status_for(code)
-        when :available then reply_renderer.stock_available
-        when :empty then reply_renderer.stock_empty
+        when :available then reply_renderer.stock_available(code)
+        when :empty then reply_renderer.stock_empty(code)
         else raise Marine::Catalog::Errors::CatalogUnavailableError
         end
       end

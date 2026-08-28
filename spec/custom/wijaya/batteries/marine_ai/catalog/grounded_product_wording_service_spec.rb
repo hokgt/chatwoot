@@ -334,10 +334,10 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
   # be expressed in FRESH, varied words (its binary meaning still guarded by the two gates), and must
   # never let wording inject a quantity or flip the in-stock/out-of-stock boolean.
   describe 'stock-availability natural wording' do
-    let(:in_stock_descriptor) { { kind: :stock_available } }
-    let(:in_stock_fallback) { 'Good news — that item is currently in stock.' }
-    let(:out_of_stock_descriptor) { { kind: :stock_empty } }
-    let(:out_of_stock_fallback) { "I'm sorry, that item is currently out of stock." }
+    let(:in_stock_descriptor) { { kind: :stock_available, variant_code: 'IMP-3' } }
+    let(:in_stock_fallback) { 'IMP-3 is currently in stock.' }
+    let(:out_of_stock_descriptor) { { kind: :stock_empty, variant_code: 'IMP-3' } }
+    let(:out_of_stock_fallback) { "I'm sorry, IMP-3 is currently out of stock." }
 
     def capture_generation_system(descriptor:, fallback:, customer_request: 'is it available?')
       captured = {}
@@ -367,33 +367,33 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
     end
 
     it 'delivers a varied, natural in-stock reply adapted to the latest question through both gates' do
-      stub_generation(message: 'Yes — we do have that one on hand right now, happy to help!')
+      stub_generation(message: 'Yes — we do have IMP-3 on hand right now, happy to help!')
       stub_semantic(true)
 
       result = call(descriptor: in_stock_descriptor, fallback: in_stock_fallback, customer_request: 'do you still have it?')
 
-      expect(result).to eq('Yes — we do have that one on hand right now, happy to help!')
+      expect(result).to eq('Yes — we do have IMP-3 on hand right now, happy to help!')
       expect(result).not_to eq(in_stock_fallback) # no longer forced to the rigid canned sentence
     end
 
-    it 'delivers a varied, natural out-of-stock reply through both gates' do
-      stub_generation(message: "Unfortunately that one's sold out at the moment — sorry about that.")
+    it 'delivers a varied, natural out-of-stock reply naming the exact code through both gates' do
+      stub_generation(message: "Unfortunately IMP-3's sold out at the moment — sorry about that.")
       stub_semantic(true)
 
       expect(call(descriptor: out_of_stock_descriptor, fallback: out_of_stock_fallback))
-        .to eq("Unfortunately that one's sold out at the moment — sorry about that.")
+        .to eq("Unfortunately IMP-3's sold out at the moment — sorry about that.")
     end
 
     it 'rejects a quantity injected by naturalization deterministically, before the semantic gate' do
       validator = stub_semantic(true)
-      stub_generation(message: 'Yes, we currently have 24 of those on hand.') # invents a quantity
+      stub_generation(message: 'Yes, we currently have 24 of IMP-3 on hand.') # invents a quantity
 
       expect(call(descriptor: in_stock_descriptor, fallback: in_stock_fallback)).to be_nil
       expect(validator).not_to have_received(:valid?)
     end
 
     it 'rejects a candidate that flips the in-stock boolean via the semantic gate (safe fallback)' do
-      stub_generation(message: "I'm sorry, that item is out of stock right now.") # contradicts in-stock truth
+      stub_generation(message: "I'm sorry, IMP-3 is out of stock right now.") # contradicts in-stock truth
       stub_semantic(false)
 
       expect(call(descriptor: in_stock_descriptor, fallback: in_stock_fallback)).to be_nil
@@ -438,13 +438,13 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
 
       it 'sends binary-stock fact-focus for a stock_available reply' do
         focus = captured_fact_focus(descriptor: in_stock_descriptor, fallback: in_stock_fallback,
-                                    message: 'Yes, we have that one right now.')[:fact_focus]
+                                    message: 'Yes, we have IMP-3 right now.')[:fact_focus]
         expect(focus).to match(/binary/i).and match(/in stock|out of stock/i)
       end
 
       it 'sends binary-stock fact-focus for a stock_empty reply' do
         focus = captured_fact_focus(descriptor: out_of_stock_descriptor, fallback: out_of_stock_fallback,
-                                    message: "Unfortunately that one's sold out at the moment — sorry about that.")[:fact_focus]
+                                    message: "Unfortunately IMP-3's sold out at the moment — sorry about that.")[:fact_focus]
         expect(focus).to be_present
       end
 
@@ -463,15 +463,84 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
         expect(captured[:fact_focus]).to be_nil
       end
 
-      # Contract of the guidance itself: a generic unnamed referential noun (item/variant/one), and a
-      # phrase tying the subject to the current question ("the item you asked about") — true by
-      # construction since the service answers the customer's own request — are both reference wording,
-      # not an added fact, while a specific name/model/code stays a reject.
-      it 'allows a generic referential noun and current-question framing but still rejects a specific name/model/code' do
+      # Contract of the guidance itself. The stock Approved Answer now names the validated variant
+      # code, so the focus must declare TWO material facts (the identity AND the binary outcome),
+      # state that repeating the exact identity is preservation (not an added fact), accept ordinary
+      # greetings/framing, and still reject a changed/dropped/different identity, an availability flip,
+      # uncertainty/conditionality, a quantity, a location, a price, or a delivery/lead time.
+      it 'declares identity + outcome as the two facts, treats an exact-identity repeat as preservation, accepts greetings, rejects unsafe changes' do
         guidance = described_class::STOCK_FACT_FOCUS
-        expect(guidance).to match(/generic/i).and match(/adds NO fact|carries no fact/i)
-        expect(guidance).to match(/you asked about|you mean/i).and match(/true by construction/i)
-        expect(guidance).to match(/specific product name/i).and match(/\bmodel\b/i).and match(/\bcode\b/i)
+        expect(guidance).to match(/two material facts/i)
+        expect(guidance).to match(/identity/i).and match(/code, model, or name/i)
+        expect(guidance).to match(/binary/i).and match(/in stock/i).and match(/out of stock/i)
+        # exact identity repeated is preservation, not an added fact
+        expect(guidance).to match(/NOT a new or added fact/i).and match(/preservation/i)
+        # greetings/framing never cause rejection
+        expect(guidance).to match(/greetings/i).and match(/never let them cause rejection/i)
+        # unsafe changes still reject
+        expect(guidance).to match(/changes, drops, or substitutes a DIFFERENT/i)
+        expect(guidance).to match(/reverses the availability/i)
+        expect(guidance).to match(/uncertain or conditional/i)
+        expect(guidance).to match(/quantity/i).and match(/warehouse, location, or bin/i)
+          .and match(/price/i).and match(/delivery or lead time/i)
+        # no product-specific or phrase-list hardcoding
+        expect(guidance).not_to match(/IMP-3|SR-20/)
+      end
+
+      # A faithful, greeting-bearing candidate that keeps the exact code and availability clears the
+      # deterministic gate (greetings add no protected/inventory tokens) and reaches the semantic
+      # validator carrying the binary-stock focus; when the semantic gate accepts, it is delivered.
+      it 'passes a greeting-bearing faithful candidate through the deterministic gate to the semantic validator, then delivers it' do
+        stub_generation(message: 'Hi there! Yes — IMP-3 is in stock right now.')
+        validator = instance_double(Marine::Charge::FactPreservationValidator)
+        captured = {}
+        allow(validator).to receive(:valid?) do |args|
+          captured.merge!(args)
+          true
+        end
+        allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(validator)
+
+        result = call(descriptor: in_stock_descriptor, fallback: in_stock_fallback, customer_request: 'is it available?')
+
+        expect(captured[:fact_focus]).to eq(described_class::STOCK_FACT_FOCUS)
+        expect(captured[:candidate]).to eq('Hi there! Yes — IMP-3 is in stock right now.')
+        expect(result).to eq('Hi there! Yes — IMP-3 is in stock right now.')
+      end
+
+      # The deterministic gate — running BEFORE the semantic one — already fails closed on a changed,
+      # dropped, or different variant identity, so those never reach (and cannot be rescued by) the
+      # semantic validator.
+      it 'rejects a changed, dropped, or different variant identity deterministically, before the semantic gate' do
+        validator = stub_semantic(true)
+
+        stub_generation(message: 'Good news — IMP-4 is currently in stock.') # changed code
+        expect(call(descriptor: in_stock_descriptor, fallback: in_stock_fallback)).to be_nil
+
+        stub_generation(message: 'Yes, that one is available right now.') # dropped code
+        expect(call(descriptor: in_stock_descriptor, fallback: in_stock_fallback)).to be_nil
+
+        stub_generation(message: 'Yes — IMP-3 and IMP-9 are both in stock.') # extra/different code
+        expect(call(descriptor: in_stock_descriptor, fallback: in_stock_fallback)).to be_nil
+
+        expect(validator).not_to have_received(:valid?)
+      end
+
+      # A candidate that keeps the exact code but is semantically unsafe (an availability flip,
+      # uncertainty/conditionality, or an added location/price/delivery fact the deterministic
+      # inventory cannot see) clears the deterministic gate and is refused by the semantic validator,
+      # so the caller falls back to the exact deterministic reply. The stock focus is still supplied.
+      it 'lets the semantic validator veto a code-preserving but unsafe candidate, falling back safely' do
+        stub_generation(message: 'IMP-3 might be in stock, ready for next-week delivery.') # uncertainty + lead time
+        validator = instance_double(Marine::Charge::FactPreservationValidator)
+        captured = {}
+        allow(validator).to receive(:valid?) do |args|
+          captured.merge!(args)
+          false
+        end
+        allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(validator)
+
+        expect(call(descriptor: in_stock_descriptor, fallback: in_stock_fallback)).to be_nil
+        expect(captured[:fact_focus]).to eq(described_class::STOCK_FACT_FOCUS)
       end
     end
   end

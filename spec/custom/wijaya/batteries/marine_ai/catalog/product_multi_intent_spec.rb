@@ -25,6 +25,9 @@ RSpec.describe 'Marine multi-intent (D6)' do
     let(:variant_resolver) { instance_double(Marine::Catalog::VariantResolver) }
     let(:available_price) { { status: :available, price_list_rate: '125.50', currency: 'USD', uom: 'Nos' } }
     let(:price_part) { { kind: :price_available, variant_code: 'CHILD-1', price_list_rate: '125.50', currency: 'USD', uom: 'Nos' } }
+    # The stock leg now carries the SAME validated variant code as the price leg (the composite is one
+    # variant); the fact-protection gate collapses the repeated code rather than rejecting it.
+    let(:stock_part) { { kind: :stock_available, variant_code: 'CHILD-1' } }
 
     before do
       allow(family_repository).to receive(:resolve_exact).and_return(code: 'FAM-1', name: 'Impeller')
@@ -59,7 +62,7 @@ RSpec.describe 'Marine multi-intent (D6)' do
 
       expect(plan[:action]).to eq(:reply)
       expect(plan[:reply][:kind]).to eq(:composite)
-      expect(plan[:reply][:parts]).to eq([price_part, { kind: :stock_available }])
+      expect(plan[:reply][:parts]).to eq([price_part, stock_part])
       expect(plan[:state][:changes]).to include('validated_variant' => 'CHILD-1', 'current_intent' => 'price')
     end
 
@@ -67,7 +70,7 @@ RSpec.describe 'Marine multi-intent (D6)' do
       plan = orchestrator.plan_for_intent(intent: intent(intent: 'stock', requested_intents: %w[stock price]), flow: nil)
 
       expect(plan[:reply][:kind]).to eq(:composite)
-      expect(plan[:reply][:parts]).to eq([price_part, { kind: :stock_available }])
+      expect(plan[:reply][:parts]).to eq([price_part, stock_part])
     end
 
     it 'resolves family + variant exactly once for the shared request' do
@@ -82,7 +85,7 @@ RSpec.describe 'Marine multi-intent (D6)' do
     it 'dedupes repeated labels into a single composite (no duplicated delivery of a fact)' do
       plan = orchestrator.plan_for_intent(intent: intent(requested_intents: %w[price price stock stock]), flow: nil)
 
-      expect(plan[:reply][:parts]).to eq([price_part, { kind: :stock_available }])
+      expect(plan[:reply][:parts]).to eq([price_part, stock_part])
     end
 
     it 'collapses stock across warehouses to a binary availability status and never exposes a quantity' do
@@ -91,9 +94,9 @@ RSpec.describe 'Marine multi-intent (D6)' do
       plan = orchestrator.plan_for_intent(intent: intent(requested_intents: %w[price stock]), flow: nil)
 
       stock = plan[:reply][:parts].last
-      # Binary status descriptor ONLY — no numeric quantity or warehouse detail may appear.
-      expect(stock).to eq(kind: :stock_available)
-      expect(stock.keys).to eq(%i[kind])
+      # Binary status + the validated variant code ONLY — no numeric quantity or warehouse detail.
+      expect(stock).to eq(kind: :stock_available, variant_code: 'CHILD-1')
+      expect(stock.keys).to eq(%i[kind variant_code])
     end
 
     it 'still yields a composite when price is factually unavailable (both outcomes reported)' do
@@ -101,7 +104,7 @@ RSpec.describe 'Marine multi-intent (D6)' do
 
       plan = orchestrator.plan_for_intent(intent: intent(requested_intents: %w[price stock]), flow: nil)
 
-      expect(plan[:reply][:parts]).to eq([{ kind: :price_unavailable }, { kind: :stock_available }])
+      expect(plan[:reply][:parts]).to eq([{ kind: :price_unavailable }, stock_part])
     end
 
     it 'reports empty stock alongside an available price' do
@@ -109,7 +112,7 @@ RSpec.describe 'Marine multi-intent (D6)' do
 
       plan = orchestrator.plan_for_intent(intent: intent(requested_intents: %w[price stock]), flow: nil)
 
-      expect(plan[:reply][:parts]).to eq([price_part, { kind: :stock_empty }])
+      expect(plan[:reply][:parts]).to eq([price_part, { kind: :stock_empty, variant_code: 'CHILD-1' }])
     end
 
     it 'fails closed to a single handoff (never a partial answer) when the price conflicts' do
@@ -166,7 +169,7 @@ RSpec.describe 'Marine multi-intent (D6)' do
       plan = orchestrator.plan_for_intent(intent: bare, flow: flow)
 
       expect(plan[:reply][:kind]).to eq(:composite)
-      expect(plan[:reply][:parts]).to eq([price_part, { kind: :stock_available }])
+      expect(plan[:reply][:parts]).to eq([price_part, stock_part])
       # Validated progress clears the pending pair so a later bare turn does not re-fulfill it.
       expect(plan[:state][:changes]).to include('requested_intents' => nil)
     end
@@ -196,13 +199,13 @@ RSpec.describe 'Marine multi-intent (D6)' do
         intent: intent(intent: 'stock', requested_intents: nil), flow: nil
       )
 
-      expect(plan[:reply]).to eq(kind: :stock_available)
+      expect(plan[:reply]).to eq(stock_part)
     end
   end
 
   describe Marine::Catalog::ReplyRenderer do
     let(:price_desc) { described_class.new.price_available({ price_list_rate: '9.00', currency: 'USD', uom: 'Nos' }, 'C-1') }
-    let(:stock_desc) { described_class.new.stock_available }
+    let(:stock_desc) { described_class.new.stock_available('C-1') }
 
     it 'builds a frozen composite descriptor holding the ordered child descriptors' do
       composite = described_class.new.composite([price_desc, stock_desc])
@@ -224,17 +227,28 @@ RSpec.describe 'Marine multi-intent (D6)' do
       { action: :reply, reply: renderer.composite(parts), state: { operation: :none, changes: {} } }
     end
 
-    it 'renders one reply text carrying both the price and the stock sentence' do
-      text = presenter.reply_text(composite_plan([price_desc, renderer.stock_available]))
+    it 'names the shared variant code once and refers back to it in the stock clause (one code occurrence)' do
+      text = presenter.reply_text(composite_plan([price_desc, renderer.stock_available('CHILD-1')]))
 
-      expect(text).to eq('The price for CHILD-1 is USD 125.50 per Nos. Good news — that item is currently in stock.')
+      expect(text).to eq('The price for CHILD-1 is USD 125.50 per Nos. It is currently in stock.')
+      expect(text.scan('CHILD-1').length).to eq(1)
     end
 
-    it 'renders price + out-of-stock in one reply' do
-      text = presenter.reply_text(composite_plan([price_desc, renderer.stock_empty]))
+    it 'renders price + out-of-stock in one reply, naming the code once' do
+      text = presenter.reply_text(composite_plan([price_desc, renderer.stock_empty('CHILD-1')]))
 
-      expect(text).to include('The price for CHILD-1 is USD 125.50 per Nos.')
-      expect(text).to include("I'm sorry, that item is currently out of stock.")
+      expect(text).to eq("The price for CHILD-1 is USD 125.50 per Nos. I'm sorry, it is currently out of stock.")
+      expect(text.scan('CHILD-1').length).to eq(1)
+    end
+
+    it 'falls back to the per-part join (each leg naming its own code) for a conflicting-code composite' do
+      # A conflicting-code composite is not the canonical same-variant shape, so the referential
+      # rendering is skipped and the fail-closed join names each leg's own validated code. The
+      # fact-protection gate independently marks such a composite ineligible, so this exact
+      # deterministic text is delivered rather than a naturalized rephrase.
+      text = presenter.reply_text(composite_plan([price_desc, renderer.stock_available('OTHER-9')]))
+
+      expect(text).to eq('The price for CHILD-1 is USD 125.50 per Nos. OTHER-9 is currently in stock.')
     end
   end
 
@@ -243,14 +257,16 @@ RSpec.describe 'Marine multi-intent (D6)' do
 
     let(:renderer) { Marine::Catalog::ReplyRenderer.new }
     let(:price_desc) { renderer.price_available({ price_list_rate: '125.50', currency: 'USD', uom: 'Nos' }, 'CHILD-1') }
-    let(:composite) { renderer.composite([price_desc, renderer.stock_available]) }
-    let(:fallback) { 'The price for CHILD-1 is USD 125.50 per Nos. Good news — that item is currently in stock.' }
+    let(:composite) { renderer.composite([price_desc, renderer.stock_available('CHILD-1')]) }
+    # The canonical composite fallback names the shared code ONCE (price clause) and refers back to it
+    # in the stock clause, so the token inventory admits a natural one-code candidate.
+    let(:fallback) { 'The price for CHILD-1 is USD 125.50 per Nos. It is currently in stock.' }
 
-    it 'is eligible for a well-formed price+stock composite under the reply action' do
+    it 'is eligible for a well-formed price+stock composite (same variant) under the reply action' do
       expect(validator.eligible?(action: :reply, descriptor: composite)).to be(true)
     end
 
-    it 'accepts a natural rephrase that preserves every price fact and the availability statement' do
+    it 'accepts a natural rephrase that names the exact code once and preserves every price + stock fact' do
       candidate = 'CHILD-1 is priced at USD 125.50 per Nos, and it is currently in stock.'
 
       expect(validator.accepts?(action: :reply, descriptor: composite, fallback: fallback, candidate: candidate)).to be(true)
@@ -262,8 +278,35 @@ RSpec.describe 'Marine multi-intent (D6)' do
       expect(validator.accepts?(action: :reply, descriptor: composite, fallback: fallback, candidate: candidate)).to be(false)
     end
 
+    it 'rejects a candidate that changes, drops, or adds the shared variant code' do
+      changed = 'The price for CHILD-2 is USD 125.50 per Nos, and it is currently in stock.'
+      dropped = 'The price is USD 125.50 per Nos, and it is currently in stock.'
+      added = 'The price for CHILD-1 is USD 125.50 per Nos, and CHILD-9 is currently in stock.'
+
+      expect(validator.accepts?(action: :reply, descriptor: composite, fallback: fallback, candidate: changed)).to be(false)
+      expect(validator.accepts?(action: :reply, descriptor: composite, fallback: fallback, candidate: dropped)).to be(false)
+      expect(validator.accepts?(action: :reply, descriptor: composite, fallback: fallback, candidate: added)).to be(false)
+    end
+
+    it 'rejects a composite candidate that injects a quantity number (fails closed)' do
+      candidate = 'CHILD-1 is priced at USD 125.50 per Nos, and we have 12 of it in stock.'
+
+      expect(validator.accepts?(action: :reply, descriptor: composite, fallback: fallback, candidate: candidate)).to be(false)
+    end
+
+    it 'collapses the SAME variant code repeated across the price and stock legs (still eligible)' do
+      # Both legs reference CHILD-1; the shared code is one protected value, not an ambiguous duplicate.
+      expect(validator.send(:protected_values, composite)).to eq(%w[CHILD-1 USD 125.50 Nos])
+    end
+
+    it 'fails closed on a composite whose legs carry CONFLICTING variant codes' do
+      conflicting = renderer.composite([price_desc, renderer.stock_available('OTHER-9')])
+
+      expect(validator.eligible?(action: :reply, descriptor: conflicting)).to be(false)
+    end
+
     it 'is ineligible when a part is not a naturalizable kind (price unavailable), so wording is skipped' do
-      other = renderer.composite([renderer.price_unavailable, renderer.stock_available])
+      other = renderer.composite([renderer.price_unavailable, renderer.stock_available('CHILD-1')])
 
       expect(validator.eligible?(action: :reply, descriptor: other)).to be(false)
     end

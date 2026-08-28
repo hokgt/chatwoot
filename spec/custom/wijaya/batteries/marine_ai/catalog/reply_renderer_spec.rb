@@ -41,10 +41,17 @@ RSpec.describe Marine::Catalog::ReplyRenderer do
   end
 
   describe 'stock' do
-    it 'renders binary status only — never a quantity or warehouse fact' do
-      expect(renderer.stock_available).to eq(kind: :stock_available)
-      expect(renderer.stock_empty).to eq(kind: :stock_empty)
+    it 'renders binary status carrying only the validated variant code — never a quantity or warehouse fact' do
+      expect(renderer.stock_available('BD-RED')).to eq(kind: :stock_available, variant_code: 'BD-RED')
+      expect(renderer.stock_empty('BD-RED')).to eq(kind: :stock_empty, variant_code: 'BD-RED')
       expect(renderer.stock_unavailable).to eq(kind: :stock_unavailable)
+    end
+
+    it 'control-char-cleans and length-bounds the variant code, dropping a blank/non-scalar one to nil' do
+      expect(renderer.stock_available("BD#{0.chr}RED")).to eq(kind: :stock_available, variant_code: 'BD RED')
+      expect(renderer.stock_available('X' * 200)).to eq(kind: :stock_available, variant_code: 'X' * described_class::MAX_CODE_NAME_LENGTH)
+      expect(renderer.stock_available('   ')).to eq(kind: :stock_available, variant_code: nil)
+      expect(renderer.stock_empty(%w[not scalar])).to eq(kind: :stock_empty, variant_code: nil)
     end
   end
 
@@ -117,7 +124,7 @@ RSpec.describe Marine::Catalog::ReplyRenderer do
         renderer.variant_info({ code: 'F', name: 'N' }, 'C'),
         renderer.price_available({ price_list_rate: '1', currency: 'USD', uom: 'Nos' }, 'C'),
         renderer.price_unavailable, renderer.price_conflict,
-        renderer.stock_available, renderer.stock_empty, renderer.stock_unavailable,
+        renderer.stock_available('C'), renderer.stock_empty('C'), renderer.stock_unavailable,
         renderer.clarify_family([]), renderer.clarify_variant([]),
         renderer.catalog(code: 'F', name: 'N'),
         renderer.catalog_unavailable, renderer.unsupported

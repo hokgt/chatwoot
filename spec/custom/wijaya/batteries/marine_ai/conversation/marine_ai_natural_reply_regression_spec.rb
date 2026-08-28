@@ -62,7 +62,7 @@ RSpec.describe 'Marine natural reply regression' do
       plan = orchestrator.plan_for_intent(intent: intent(quantity_inquiry: false), flow: nil)
 
       expect(plan[:action]).to eq(:reply)
-      expect(plan[:reply]).to eq(kind: :stock_available)
+      expect(plan[:reply]).to eq(kind: :stock_available, variant_code: 'CHILD-1')
     end
 
     it 'still fails closed to clarify_family for a quantity question on an ambiguous family' do
