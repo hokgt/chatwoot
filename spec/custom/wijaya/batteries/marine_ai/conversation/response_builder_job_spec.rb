@@ -590,6 +590,9 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       # stock line and falls closed to the in-language factless handoff — it never ships English to a
       # non-English customer. An English (source) target keeps the plain English fallback.
       describe 'pure stock reply language guarantee' do
+        let(:stock_source) { 'IMP-3 is currently in stock.' }
+        let(:ack_en) { Marine::Catalog::ReplyPresenter::HANDOFF_ACK_TEXT }
+
         def indonesian_trigger
           create(:message, conversation: conversation, message_type: :incoming, content: 'apakah IMP-3 tersedia')
         end
@@ -664,6 +667,164 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
           described_class.perform_now(conversation, assistant, incoming.id)
 
           expect(conversation.messages.outgoing.last.content).to eq('IMP-3 is currently in stock.')
+        end
+
+        # --- Generic target-language validation of the FINAL localized fallback -------------------
+        #
+        # The delivered stock line must be PROVABLY in the customer's language: byte-equality to the
+        # English source can never prove that. These stub the localizer to inject a specific localized
+        # fallback and the shared detector to control its reliable/language reading, so each fallback
+        # shape (exact source, English paraphrase, other-language/mixed/unreliable, reliably-target)
+        # is asserted directly. Under a known non-source target only a RELIABLE same-primary-subtag
+        # read may deliver; every other shape fails closed to the handoff, which sends its factless
+        # acknowledgement only when THAT too is provably in-language and otherwise stays silent.
+        #
+        # ReplyLocalizer stubbed by input text -> localized output (default: returns the input).
+        def stub_localizer(map)
+          allow(Marine::Catalog::ReplyLocalizer).to receive(:new) do |**kwargs|
+            instance_double(Marine::Catalog::ReplyLocalizer, call: map.fetch(kwargs[:text], kwargs[:text]))
+          end
+        end
+
+        # LanguageDetector stubbed by text -> detection reading (default: unreliable/unknown).
+        def stub_detector(map)
+          allow(Marine::Llm::LanguageDetector).to receive(:new) do |text|
+            reading = map.fetch(text, { language: 'unknown', reliable: false, confidence: 0.0 })
+            instance_double(Marine::Llm::LanguageDetector, detect: reading)
+          end
+        end
+
+        def stock_handoff_active?
+          Marine::Circuit::HandoffStateStore.new(conversation: conversation.reload).active?
+        end
+
+        def claim_status_for(message)
+          message.reload.additional_attributes.dig('wijaya_marine_ai', 'processing_claim_v1', 'status')
+        end
+
+        it '(1) refuses the coded stock line when the localized fallback is the exact English source (target id)' do
+          msg = indonesian_trigger
+          stub_reasoning(stock_id_payload)
+          stub_wording(nil)
+          stub_localizer(stock_source => stock_source) # localizer degraded to the English source
+          stub_detector(stock_source => { language: 'en', reliable: true, confidence: 0.99 })
+
+          described_class.perform_now(conversation, assistant, msg.id)
+
+          expect(conversation.messages.outgoing.where(private: false)).to be_empty
+          expect(stock_handoff_active?).to be(true)
+          expect(claim_status_for(msg)).to eq('completed')
+        end
+
+        it '(2) refuses the coded stock line when the localized fallback is an English PARAPHRASE (not equal to the source)' do
+          msg = indonesian_trigger
+          paraphrase = 'That item is available right now.'
+          stub_reasoning(stock_id_payload)
+          stub_wording(nil)
+          stub_localizer(stock_source => paraphrase)
+          stub_detector(paraphrase => { language: 'en', reliable: true, confidence: 0.98 })
+
+          described_class.perform_now(conversation, assistant, msg.id)
+
+          # The OLD byte-equality gate would have DELIVERED this paraphrase (it differs from the source).
+          expect(conversation.messages.where(content: paraphrase)).to be_empty
+          expect(conversation.messages.outgoing.where(private: false)).to be_empty
+          expect(stock_handoff_active?).to be(true)
+        end
+
+        it '(3) refuses the coded stock line when the localized fallback is another language / mixed / unreliably detected (target id)' do
+          msg = indonesian_trigger
+          mixed = 'IMP-3 stok disponible ahora'
+          stub_reasoning(stock_id_payload)
+          stub_wording(nil)
+          stub_localizer(stock_source => mixed)
+          # A non-source, non-target result the detector cannot read reliably -> fail closed.
+          stub_detector(mixed => { language: 'es', reliable: false, confidence: 0.4 })
+
+          described_class.perform_now(conversation, assistant, msg.id)
+
+          expect(conversation.messages.where(content: mixed)).to be_empty
+          expect(conversation.messages.outgoing.where(private: false)).to be_empty
+          expect(stock_handoff_active?).to be(true)
+        end
+
+        it '(4) delivers the localized fallback when the detector RELIABLY reads it as the customer language (target id)' do
+          msg = indonesian_trigger
+          localized = 'IMP-3 saat ini tersedia.'
+          stub_reasoning(stock_id_payload)
+          stub_wording(nil)
+          stub_localizer(stock_source => localized)
+          stub_detector(localized => { language: 'id', reliable: true, confidence: 0.99 })
+
+          described_class.perform_now(conversation, assistant, msg.id)
+
+          expect(conversation.messages.outgoing.last.content).to eq(localized)
+          expect(stock_handoff_active?).to be(false)
+        end
+
+        it '(5) delivers the English fallback for an English (source) target and does not hand off' do
+          stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available, variant_code: 'IMP-3' },
+                                         operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' },
+                                         language: 'en'))
+          stub_wording(nil)
+
+          described_class.perform_now(conversation, assistant, incoming.id)
+
+          expect(conversation.messages.outgoing.last.content).to eq(stock_source)
+          expect(stock_handoff_active?).to be(false)
+        end
+
+        it '(6) hands off SILENTLY (no visible message) but still executes the handoff when the acknowledgement cannot be proven in-language' do
+          msg = indonesian_trigger
+          stub_reasoning(stock_id_payload)
+          stub_wording(nil)
+          # Both the stock fallback and the factless acknowledgement degrade to English (translation outage).
+          stub_localizer(stock_source => stock_source, ack_en => ack_en)
+          stub_detector(stock_source => { language: 'en', reliable: true, confidence: 0.99 },
+                        ack_en => { language: 'en', reliable: true, confidence: 0.99 })
+
+          described_class.perform_now(conversation, assistant, msg.id)
+
+          # No customer-facing message at all — the wrong-language acknowledgement was suppressed...
+          expect(conversation.messages.outgoing.where(private: false)).to be_empty
+          # ...but the handoff still executed: private reason note + active marker.
+          expect(conversation.messages.where(private: true).map(&:content)).to include(a_string_including('product_stock_available'))
+          expect(stock_handoff_active?).to be(true)
+          expect(claim_status_for(msg)).to eq('completed')
+        end
+
+        it '(6b) sends the VISIBLE in-language acknowledgement when it is provably in-language but the stock line is not' do
+          msg = indonesian_trigger
+          ack_id = 'Maaf, saya belum bisa memastikannya. Saya akan menghubungkan Anda dengan rekan.'
+          stub_reasoning(stock_id_payload)
+          stub_wording(nil)
+          stub_localizer(stock_source => stock_source, ack_en => ack_id)
+          stub_detector(stock_source => { language: 'en', reliable: true, confidence: 0.99 },
+                        ack_id => { language: 'id', reliable: true, confidence: 0.99 })
+
+          described_class.perform_now(conversation, assistant, msg.id)
+
+          visible = conversation.messages.outgoing.where(private: false)
+          expect(visible.count).to eq(1)
+          expect(visible.last.content).to eq(ack_id)
+          expect(visible.last.content).not_to include('in stock') # no wrong-language stock assertion
+          expect(stock_handoff_active?).to be(true)
+        end
+
+        it '(7) hands off SILENTLY under a known target when localization itself RAISES during preparation' do
+          msg = indonesian_trigger
+          stub_reasoning(stock_id_payload)
+          stub_wording(nil)
+          allow(Marine::Catalog::ReplyLocalizer).to receive(:new).and_raise(StandardError, 'network down')
+          # The deterministic English text degradation would be a wrong-language stock line under target id.
+          stub_detector(stock_source => { language: 'en', reliable: true, confidence: 0.99 })
+
+          described_class.perform_now(conversation, assistant, msg.id)
+
+          expect(conversation.messages.where(content: stock_source)).to be_empty
+          expect(conversation.messages.outgoing.where(private: false)).to be_empty
+          expect(stock_handoff_active?).to be(true)
+          expect(claim_status_for(msg)).to eq('completed')
         end
       end
 

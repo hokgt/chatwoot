@@ -13,11 +13,16 @@ class Marine::Circuit::HandoffService
   # message: an OPTIONAL per-turn public handoff line (e.g. a context-aware, language-consistent
   # acknowledgement of the current unsupported request). When blank, the configured/default
   # message is used unchanged, so every non-product handoff path is unaffected.
-  def initialize(conversation:, assistant:, reason: nil, message: nil)
+  # silent: when true, NO customer-facing public message is created — the conversation is still
+  # handed off (private reason note, bot_handoff!, active marker) but nothing visible is sent. Used
+  # only when a language-consistent acknowledgement cannot be proven, so a wrong-language line is
+  # never delivered; every existing caller omits it (defaults false) and is unaffected.
+  def initialize(conversation:, assistant:, reason: nil, message: nil, silent: false)
     @conversation = conversation
     @assistant = assistant
     @reason = reason
     @message = message
+    @silent = silent
   end
 
   # Idempotent, concurrency-safe handoff. Under the Conversation row lock (reloaded to
@@ -36,7 +41,7 @@ class Marine::Circuit::HandoffService
 
       message_ids = []
       message_ids << create_private_reason_note.id if reason.present?
-      message_ids << create_handoff_message.id
+      message_ids << create_handoff_message.id unless @silent
       conversation.bot_handoff!
       handoff_store.activate!(message_ids: message_ids)
     end

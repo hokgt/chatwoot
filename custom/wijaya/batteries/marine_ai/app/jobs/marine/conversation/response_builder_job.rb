@@ -180,12 +180,14 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     @product_language = plan[:language]
     apply_product_state(plan[:state])
 
-    # A pure stock reply whose only language-safe delivery is the in-language factless handoff
-    # (its localized coded text degraded to English and no natural candidate was accepted) routes
-    # through the SAME circuit handoff as an ordinary product handoff, using the precomputed
-    # in-language acknowledgement — never a wrong-language stock assertion.
+    # A pure stock reply whose localized coded text could not be PROVEN in the customer's language
+    # (and whose natural candidate was not accepted) routes through the SAME circuit handoff as an
+    # ordinary product handoff — never a wrong-language stock assertion. It carries the precomputed
+    # in-language acknowledgement only when that too is provably in the customer's language; when the
+    # acknowledgement itself cannot be proven in-language it hands off SILENTLY (internal transfer,
+    # no visible message) so no wrong-language line is ever sent.
     if @force_stock_language_handoff
-      process_handoff(product_handoff_reason(plan), message: @handoff_message)
+      process_handoff(product_handoff_reason(plan), message: @handoff_message, silent: @stock_handoff_silent)
     else
       case plan[:action]
       when :handoff
@@ -410,7 +412,22 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     fallback = localized_product_text(presenter.reply_text(plan), action: plan[:action], descriptor: descriptor)
     @prepared_product_text = naturalized_product_text(plan, descriptor, fallback)
   rescue StandardError
-    @prepared_product_text = presenter.reply_text(plan)
+    @prepared_product_text = degraded_product_text(plan)
+  end
+
+  # Preparation failed before a validated localized reply existed. Deliver the deterministic English
+  # text — EXCEPT for a pure stock reply under a known non-source target, where English would be a
+  # wrong-language stock assertion: refuse it and hand off SILENTLY instead (the strict per-language
+  # guarantee is preserved, and no wrong-language stock line is ever sent). Unknown/source targets
+  # keep the English fallback (no guarantee is claimed there). No network call is made here.
+  def degraded_product_text(plan)
+    english = presenter.reply_text(plan)
+    return english unless stock_reply_kind?(plan[:reply]) && stock_reply_target_language
+    return english if reliably_in_language?(english, stock_reply_target_language)
+
+    @force_stock_language_handoff = true
+    @stock_handoff_silent = true
+    nil
   end
 
   # An accepted natural-wording candidate when the descriptor is protection-eligible, else the
@@ -427,7 +444,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
     # A pure stock reply must never ship in the wrong language: guarantee the customer's language
     # for a known non-source target, else route to the in-language handoff floor.
-    language_safe_stock_text(plan, fallback)
+    language_safe_stock_text(fallback)
   end
 
   # Pure binary-availability reply kinds — the ONLY replies whose visible text carries the strict
@@ -440,18 +457,38 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   end
 
   # The language-guaranteed text for a pure stock reply whose natural candidate was NOT accepted.
-  # For a known non-source target the localized fallback must be in that language; when it instead
-  # degraded to the exact English source (the provider stripped the fact-mask sentinels), shipping it
-  # would send English to a non-English customer — so refuse the coded stock line and fall closed to
-  # the in-language factless handoff acknowledgement (precomputed lock-free), which carries no fact to
-  # mask and so localizes cleanly. An unknown/source target keeps the existing English fallback.
-  def language_safe_stock_text(plan, fallback)
-    return fallback if stock_reply_target_language.nil?
-    return fallback if fallback != presenter.reply_text(plan)
+  # For a known non-source target the VISIBLE stock line must be PROVABLY in that language: the
+  # localized coded fallback is delivered ONLY when the shared detector RELIABLY reads it with the
+  # customer's primary subtag. A fallback that is the exact English source, an English paraphrase,
+  # another language, mixed, unreadable, or only unreliably detected all FAIL CLOSED (byte-equality
+  # to the source alone can never prove language) — the coded stock line is refused and the turn
+  # escalates through the SAME circuit handoff. That handoff carries the factless in-language
+  # acknowledgement only when THAT too is provably in the customer's language; otherwise it hands
+  # off SILENTLY (internal transfer, no visible message), so no wrong-language line is ever sent. An
+  # unknown/source target keeps the existing English fallback (no guarantee is claimed there).
+  def language_safe_stock_text(fallback)
+    target = stock_reply_target_language
+    return fallback if target.nil?
+    return fallback if reliably_in_language?(fallback, target)
 
     @force_stock_language_handoff = true
-    @handoff_message = localized_product_text(presenter.handoff_ack_text(nil))
+    ack = localized_product_text(presenter.handoff_ack_text(nil))
+    if reliably_in_language?(ack, target)
+      @handoff_message = ack
+    else
+      @stock_handoff_silent = true
+    end
     nil
+  end
+
+  # True ONLY when `text` is RELIABLY detected in `target` (compared on the primary subtag). A
+  # reliably-different, mixed, unreadable, or only-unreliably-read result returns false, so any
+  # stock assertion or acknowledgement that cannot be proven in the customer's language fails
+  # closed. Reuses the shared Marine::Llm::LanguageDetector — the SAME reliable-same-primary-subtag
+  # mechanism the wording service gates its accepted candidate with — with no phrase list.
+  def reliably_in_language?(text, target)
+    result = Marine::Llm::LanguageDetector.new(text.to_s).detect
+    result[:reliable] && result[:language].to_s.strip.downcase.split('-').first == target
   end
 
   # The bounded non-source primary target subtag for the current stock reply, or nil when the
@@ -613,9 +650,9 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     @conversation.messages.incoming.where(private: false).order(id: :desc).limit(MAX_LANGUAGE_CONTEXT).pluck(:content)
   end
 
-  def process_handoff(reason = nil, message: nil)
+  def process_handoff(reason = nil, message: nil, silent: false)
     Marine::Circuit::HandoffService.new(conversation: @conversation, assistant: @assistant,
-                                        reason: reason, message: message).perform
+                                        reason: reason, message: message, silent: silent).perform
   end
 
   # --- Deterministic product text --------------------------------------------
