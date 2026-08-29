@@ -469,7 +469,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     context = Marine::Conversation::ContextBuilder.new(conversation: @conversation, trigger_message: @trigger_message).build
     Marine::Catalog::GroundedProductWordingService.new(account: @conversation.account).call(
       action: plan[:action], descriptor: descriptor, fallback: fallback,
-      customer_request: context.trigger, message_history: context.history, opening: context.opening?
+      customer_request: context.trigger, message_history: context.history, opening: context.opening?,
+      reply_language: @product_language
     )
   rescue StandardError
     nil

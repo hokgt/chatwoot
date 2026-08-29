@@ -75,13 +75,20 @@ module Marine
       PROMPT
 
       GENERATION_INSTRUCTION = <<~PROMPT.strip
-        Rephrase the Product Reply below to answer the customer naturally, warmly, and conversationally in the same language and context.
+        Rephrase the Product Reply below to answer the customer naturally, warmly, and conversationally, as a helpful human colleague would.
+        Write your ENTIRE reply in the SAME language as the customer's latest message, and never switch to another language — the Product Reply is written in English only as an internal source of facts, not as the language to reply in.
         The Product Reply is your ONLY source of facts. Keep every product name, code, number, price, currency, and unit it contains exactly and unchanged.
         Keep the availability meaning identical — in stock stays in stock, out of stock stays out of stock — but express it in fresh, natural words that fit the customer's latest question, and never state or imply a quantity.
         Do not add, change, infer, or omit any other fact, and introduce nothing the Product Reply does not state.
         Answer the latest request directly and concisely, varying your wording to suit it instead of repeating a fixed sentence, and use earlier messages only when relevant.
         Output only your reply text, with no JSON, markdown, quotes, or explanation.
       PROMPT
+
+      # Bounded, allowlisted reply-language FORMAT (a format allowlist, not a language list):
+      # a 2–3 letter primary subtag with an optional single subtag. Mirrors ReplyLocalizer's
+      # pattern so the authoritative provider/customer language a caller threads in is validated
+      # identically before it drives the deterministic language-consistency gate.
+      LANGUAGE_PATTERN = /\A[a-z]{2,3}(?:-[a-z0-9]{2,8})?\z/
 
       def initialize(account: nil)
         @account = account
@@ -91,7 +98,17 @@ module Marine
       # generation failure, or validation rejection/uncertainty. The returned string is the EXACT
       # enforced text both gates judged, delivered without further transformation. `opening` is the
       # Phase 2 opening/follow-up state and drives the reused Phase 4 greeting policy.
-      def call(action:, descriptor:, fallback:, customer_request:, message_history: [], opening: true) # rubocop:disable Metrics/ParameterLists
+      #
+      # `reply_language` is the authoritative customer/reply language the caller resolved from the
+      # SAME customer turn (the provider classification the localizer already read). When it is a
+      # known, well-formed code, the accepted candidate must be in THAT language: a candidate the
+      # detector reliably reads as a different primary language is rejected (deliver the exact
+      # localized fallback) so a wrong-language rephrase — e.g. an English reply to an Indonesian
+      # customer — can never pass. When it is absent/unknown, or the candidate's language cannot be
+      # read reliably, the gate does not fire, so faithful same-language wording is never rejected
+      # over pronouns, framing, or time adverbs. Language binding is generic (a detector + a code),
+      # with no per-language phrase list.
+      def call(action:, descriptor:, fallback:, customer_request:, message_history: [], opening: true, reply_language: nil) # rubocop:disable Metrics/ParameterLists,Metrics/CyclomaticComplexity -- a flat sequence of fail-closed delivery gates
         # Deterministic eligibility first: an unsupported/malformed descriptor never invokes an LLM.
         return nil unless fact_protection.eligible?(action: action, descriptor: descriptor)
 
@@ -106,6 +123,9 @@ module Marine
         # Deterministic protected-value/token gate BEFORE the semantic call — a deterministic
         # rejection prevents the semantic LLM call entirely.
         return nil unless fact_protection.accepts?(action: action, descriptor: descriptor, fallback: fallback, candidate: enforced)
+        # Deterministic language-consistency gate, also BEFORE the semantic call: a wrong-language
+        # candidate is rejected without spending the semantic LLM call.
+        return nil unless language_consistent?(enforced, reply_language)
         return nil unless validator.valid?(approved_answer: fallback, candidate: enforced, fact_focus: fact_focus_for(descriptor))
 
         enforced
@@ -201,6 +221,45 @@ module Marine
 
         history + [{ role: 'user', content: customer_request.to_s }]
       end
+
+      # True unless the candidate is RELIABLY read as a different primary language than the
+      # authoritative reply/customer language. Fires only when `reply_language` is a known,
+      # well-formed code (the provider classification of the same customer turn); an absent/unknown
+      # target, or a candidate the shared detector cannot read reliably, fails OPEN (true) so faithful
+      # same-language wording is never rejected. Compared at the PRIMARY subtag so a regional variant
+      # (e.g. zh-latn vs zh) still matches. Reuses Marine::Llm::LanguageDetector — no phrase list.
+      def language_consistent?(candidate, reply_language)
+        target = normalize_language(reply_language)
+        return true if target.nil?
+
+        candidate_language = reliable_language(candidate)
+        return true if candidate_language.nil?
+
+        primary_subtag(candidate_language) == primary_subtag(target)
+      end
+
+      # The candidate's detected language ONLY when the detector is reliable about it, else nil. A
+      # full reply sentence classifies reliably where a short customer turn would not, so binding the
+      # target to the provider signal (not a re-detection of the short turn) avoids CLD3 misreads.
+      def reliable_language(text)
+        result = Marine::Llm::LanguageDetector.new(text).detect
+        return nil unless result[:reliable]
+
+        code = result[:language].to_s.strip.downcase
+        code.empty? || code == 'unknown' ? nil : code
+      end
+
+      # Bounded, allowlisted language code, or nil for a missing/malformed/unknown value.
+      def normalize_language(value)
+        return nil unless value.is_a?(String)
+
+        code = value.strip.downcase
+        return nil if code.empty? || code == 'unknown'
+
+        code if code.match?(LANGUAGE_PATTERN)
+      end
+
+      def primary_subtag(code) = code.split('-').first
 
       # The binary-stock materiality guidance for a pure stock reply, else nil (unscoped rubric) —
       # the narrow scope that keeps every other product/FAQ semantic judgement unchanged. The

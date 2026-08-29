@@ -36,9 +36,10 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
   end
 
   def call(action: :reply, descriptor: self.descriptor, fallback: self.fallback, # rubocop:disable Metrics/ParameterLists
-           customer_request: 'what is impeller?', message_history: [], opening: true)
+           customer_request: 'what is impeller?', message_history: [], opening: true, reply_language: nil)
     service.call(action: action, descriptor: descriptor, fallback: fallback,
-                 customer_request: customer_request, message_history: message_history, opening: opening)
+                 customer_request: customer_request, message_history: message_history, opening: opening,
+                 reply_language: reply_language)
   end
 
   it 'returns the candidate when generation, deterministic, and semantic gates all accept' do
@@ -543,5 +544,123 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
         expect(captured[:fact_focus]).to eq(described_class::STOCK_FACT_FOCUS)
       end
     end
+  end
+
+  # Customer-language binding — the final visible wording must be in the customer's own language.
+  # The caller threads the authoritative reply/customer language (the provider classification of the
+  # same turn); a candidate the detector reliably reads as a different primary language is rejected
+  # (deliver the exact localized fallback), so a wrong-language rephrase — e.g. an English reply to
+  # an Indonesian customer — can never pass. The gate fires only with a known target and a reliably
+  # read candidate, so faithful same-language wording is never rejected over pronouns/framing/time.
+  describe 'customer-language consistency gate' do
+    let(:in_stock_descriptor) { { kind: :stock_available, variant_code: 'IMP-3' } }
+    let(:in_stock_fallback) { 'IMP-3 is currently in stock.' }
+
+    # Stub the shared detector for ONE exact candidate string only (call_original elsewhere so the
+    # real greeting policy is unaffected), so the gate is exercised without depending on CLD3 output.
+    def stub_candidate_language(text, language:, reliable: true)
+      allow(Marine::Llm::LanguageDetector).to receive(:new).and_call_original
+      detector = instance_double(Marine::Llm::LanguageDetector,
+                                 detect: { language: language, reliable: reliable, confidence: 1.0 })
+      allow(Marine::Llm::LanguageDetector).to receive(:new).with(text).and_return(detector)
+    end
+
+    def call_stock(reply_language:, customer_request: 'apakah IMP-3 tersedia?')
+      call(descriptor: in_stock_descriptor, fallback: in_stock_fallback,
+           customer_request: customer_request, reply_language: reply_language)
+    end
+
+    it 'rejects an English candidate for an Indonesian customer (no English reply passes for an id request)' do
+      candidate = 'Yes, IMP-3 is currently in stock!'
+      stub_generation(message: candidate)
+      stub_candidate_language(candidate, language: 'en')
+      validator = stub_semantic(true)
+
+      expect(call_stock(reply_language: 'id')).to be_nil
+      # rejected deterministically BEFORE the semantic LLM call
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    it 'delivers a natural Indonesian candidate for an Indonesian customer' do
+      candidate = 'Halo! Untuk IMP-3, saat ini tersedia ya.'
+      stub_generation(message: candidate)
+      stub_candidate_language(candidate, language: 'id')
+      stub_semantic(true)
+
+      expect(call_stock(reply_language: 'id')).to eq(candidate)
+    end
+
+    it 'keeps an English candidate for an English customer' do
+      candidate = 'Yes — IMP-3 is on hand right now.'
+      stub_generation(message: candidate)
+      stub_candidate_language(candidate, language: 'en')
+      stub_semantic(true)
+
+      expect(call_stock(reply_language: 'en', customer_request: 'is IMP-3 in stock?')).to eq(candidate)
+    end
+
+    it 'rejects an Indonesian candidate for an English customer' do
+      candidate = 'Ya, IMP-3 saat ini tersedia.'
+      stub_generation(message: candidate)
+      stub_candidate_language(candidate, language: 'id')
+      stub_semantic(true)
+
+      expect(call_stock(reply_language: 'en', customer_request: 'is IMP-3 in stock?')).to be_nil
+    end
+
+    it 'matches at the primary subtag so a regional variant is not a mismatch' do
+      candidate = 'Ya, IMP-3 saat ini tersedia.'
+      stub_generation(message: candidate)
+      stub_candidate_language(candidate, language: 'id')
+      stub_semantic(true)
+
+      expect(call_stock(reply_language: 'id-id')).to eq(candidate)
+    end
+
+    it 'does not fire when no reply language is supplied (backward-compatible)' do
+      candidate = 'Yes, IMP-3 is currently in stock!'
+      stub_generation(message: candidate)
+      # Detector would say en, but with no target the gate must not fire.
+      stub_candidate_language(candidate, language: 'en')
+      stub_semantic(true)
+
+      expect(call_stock(reply_language: nil)).to eq(candidate)
+    end
+
+    it 'does not fire when the candidate language cannot be read reliably (never over-rejects faithful wording)' do
+      candidate = 'Ya, IMP-3 tersedia.'
+      stub_generation(message: candidate)
+      stub_candidate_language(candidate, language: 'ms', reliable: false)
+      stub_semantic(true)
+
+      expect(call_stock(reply_language: 'id')).to eq(candidate)
+    end
+
+    it 'ignores a malformed reply-language code (gate off, not a crash)' do
+      candidate = 'Yes, IMP-3 is currently in stock!'
+      stub_generation(message: candidate)
+      stub_candidate_language(candidate, language: 'en')
+      stub_semantic(true)
+
+      expect(call_stock(reply_language: 'not a code!!')).to eq(candidate)
+    end
+  end
+
+  # Generation must instruct the model to reply in the CUSTOMER's language, not the (English) Product
+  # Reply's — the ambiguity that let availability replies come back in English for an id customer.
+  it 'instructs the model to reply in the same language as the customer message, treating the English Product Reply as facts only' do
+    captured = {}
+    llm = instance_double(Marine::Llm::BaseService, configured?: true)
+    allow(llm).to receive(:chat) do |args|
+      captured.merge!(args)
+      { ok: true, message: reply_envelope('About Impeller — which variant?'), error: nil }
+    end
+    allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+    stub_semantic(true)
+
+    call
+
+    expect(captured[:system]).to match(/same language as the customer/i)
+    expect(captured[:system]).to match(/never switch to another language/i)
   end
 end
