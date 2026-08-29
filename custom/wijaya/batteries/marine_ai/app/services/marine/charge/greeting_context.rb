@@ -4,6 +4,17 @@ class Marine::Charge::GreetingContext
   # through ActiveSupport::TimeZone conversion rather than raw Time.now.
   DEFAULT_TIMEZONE = 'Asia/Jakarta'.freeze
 
+  # The time-of-day greeting this context grounds is Indonesian ("Selamat pagi", …) — Marine's own
+  # business-hours courtesy, appropriate ONLY to a reply that will itself be Indonesian. When a
+  # caller knows the customer/reply language and it is a KNOWN non-Indonesian language, an opening
+  # turn must not ground that greeting into the system prompt nor leave one on the reply. The
+  # decision is purely by the language's PRIMARY SUBTAG (a generic code comparison), never a phrase.
+  INDONESIAN_SUBTAG = 'id'.freeze
+
+  # Bounded, allowlisted language FORMAT (a format allowlist, not a language list): a 2–3 letter
+  # primary subtag with an optional single subtag. Mirrors the localizer/wording-service pattern.
+  LANGUAGE_PATTERN = /\A[a-z]{2,3}(?:-[a-z0-9]{2,8})?\z/
+
   # Deterministic Indonesian time-of-day greetings keyed by local hour bucket:
   # 04:00-10:59 pagi, 11:00-14:59 siang, 15:00-17:59 sore, 18:00-03:59 malam.
   GREETINGS = { pagi: 'Selamat pagi', siang: 'Selamat siang', sore: 'Selamat sore', malam: 'Selamat malam' }.freeze
@@ -58,12 +69,27 @@ class Marine::Charge::GreetingContext
   def follow_up_prompt = FOLLOW_UP_PROMPT
 
   # Phase-4 greeting policy for the generated-RAG system prompt: an opening turn grounds the
-  # authoritative business-time greeting; a follow-up turn carries the no-new-greeting policy.
-  def interaction_prompt(opening:) = opening ? system_prompt : follow_up_prompt
+  # authoritative business-time greeting; a follow-up turn carries the no-new-greeting policy. When
+  # `reply_language` is a KNOWN non-Indonesian language, the opening turn grounds the authoritative
+  # time WITHOUT imposing the Indonesian greeting, so the reply opens in the customer's own language.
+  def interaction_prompt(opening:, reply_language: nil)
+    return follow_up_prompt unless opening
+    return non_indonesian_opening_prompt if suppress_indonesian_greeting?(reply_language)
+
+    system_prompt
+  end
 
   # Phase-4 deterministic enforcement over the LLM reply: an opening turn corrects a wrong-time
-  # opening greeting; a follow-up turn removes a recognized opening greeting entirely.
-  def enforce(message, opening:) = opening ? normalize_opening_greeting(message) : remove_opening_greeting(message)
+  # opening greeting; a follow-up turn removes a recognized opening greeting entirely. When
+  # `reply_language` is a KNOWN non-Indonesian language, an opening turn instead STRIPS only a leaked
+  # Indonesian time-of-day greeting (leaving a legitimate customer-language salutation intact), so an
+  # Indonesian greeting can never be normalized onto a reply written in another language.
+  def enforce(message, opening:, reply_language: nil)
+    return remove_opening_greeting(message) unless opening
+    return strip_indonesian_time_greeting(message) if suppress_indonesian_greeting?(reply_language)
+
+    normalize_opening_greeting(message)
+  end
 
   # Authoritative current-time block for the system prompt. States the local business
   # date/time, timezone, and the correct greeting so the LLM never infers "now" from
@@ -121,6 +147,49 @@ class Marine::Charge::GreetingContext
   private
 
   attr_reader :account
+
+  # True only when `reply_language` is a KNOWN, well-formed language whose primary subtag is not
+  # Indonesian — the case where the Indonesian greeting must not be imposed. Absent/unknown/malformed
+  # (nil primary) keeps the existing Indonesian behavior, so non-stock callers are unaffected.
+  def suppress_indonesian_greeting?(reply_language)
+    primary = language_primary_subtag(reply_language)
+    !primary.nil? && primary != INDONESIAN_SUBTAG
+  end
+
+  # The bounded, allowlisted primary subtag of a language code, or nil for a missing/malformed/unknown
+  # value. Generic: a format check plus a subtag split, no per-language table.
+  def language_primary_subtag(value)
+    return nil unless value.is_a?(String)
+
+    code = value.strip.downcase
+    return nil if code.empty? || code == 'unknown'
+    return nil unless code.match?(LANGUAGE_PATTERN)
+
+    code.split('-').first
+  end
+
+  # Opening turn for a KNOWN non-Indonesian customer: still ground the authoritative current time (so
+  # the model never infers "now" from stale history) but impose NO Indonesian greeting — the reply
+  # must open naturally in the customer's OWN language. Names no greeting phrase and no language.
+  def non_indonesian_opening_prompt
+    now = business_time
+    <<~PROMPT.strip
+      Current business date and time: #{now.strftime('%A, %d %B %Y, %H:%M')} (#{business_timezone.name}).
+      Treat this as the authoritative current time. Do NOT infer the current time from historical conversation content or earlier messages.
+      This is an opening message: greet and reply naturally in the customer's OWN language, and do NOT add a greeting in any other language.
+    PROMPT
+  end
+
+  # Remove ONLY a leaked Indonesian "Selamat <period>" time-of-day greeting (with its optional
+  # Halo/Hai/Hello/Hi lead-in) from the very start, then re-capitalize the remainder. A standalone
+  # customer-language salutation (e.g. an English "Hello,") carries no "Selamat <period>", so it is
+  # NOT matched here and stays intact — this strips only the Indonesian greeting, never the customer's
+  # own. A no-op when the reply does not open with an Indonesian time-of-day greeting.
+  def strip_indonesian_time_greeting(text)
+    return text if text.blank? || !text.match?(OPENING_GREETING_REGEX)
+
+    capitalize_first(text.sub(OPENING_GREETING_REGEX, '').sub(/\A[\s!,.]+/, ''))
+  end
 
   # Uppercase only the first character so the sentence left after removing an opening greeting
   # reads naturally; the rest of the reply is preserved verbatim.

@@ -548,10 +548,12 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
 
   # Customer-language binding — the final visible wording must be in the customer's own language.
   # The caller threads the authoritative reply/customer language (the provider classification of the
-  # same turn); a candidate the detector reliably reads as a different primary language is rejected
-  # (deliver the exact localized fallback), so a wrong-language rephrase — e.g. an English reply to
-  # an Indonesian customer — can never pass. The gate fires only with a known target and a reliably
-  # read candidate, so faithful same-language wording is never rejected over pronouns/framing/time.
+  # same turn). Under a KNOWN target the gate is fail-CLOSED: a candidate passes ONLY when the shared
+  # detector RELIABLY reads it with the same primary subtag; a reliably-different read AND an
+  # unreliable/unreadable read are both rejected (the caller then delivers a same-language fallback),
+  # so no possibly-wrong-language candidate — e.g. an English reply to an Indonesian customer — can
+  # pass. Only an absent/unknown/malformed target turns the gate off (no authoritative language to
+  # bind to), keeping the pre-language behavior for callers that supply no target.
   describe 'customer-language consistency gate' do
     let(:in_stock_descriptor) { { kind: :stock_available, variant_code: 'IMP-3' } }
     let(:in_stock_fallback) { 'IMP-3 is currently in stock.' }
@@ -627,13 +629,26 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
       expect(call_stock(reply_language: nil)).to eq(candidate)
     end
 
-    it 'does not fire when the candidate language cannot be read reliably (never over-rejects faithful wording)' do
+    it 'rejects (fails closed) when the candidate language cannot be read reliably under a known id target' do
       candidate = 'Ya, IMP-3 tersedia.'
       stub_generation(message: candidate)
       stub_candidate_language(candidate, language: 'ms', reliable: false)
-      stub_semantic(true)
+      validator = stub_semantic(true)
 
-      expect(call_stock(reply_language: 'id')).to eq(candidate)
+      # Fail-closed: a known target with no reliable candidate read never silently accepts a
+      # possibly-wrong-language candidate; the caller supplies a same-language fallback instead.
+      expect(call_stock(reply_language: 'id')).to be_nil
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    it 'rejects (fails closed) when the candidate language cannot be read reliably under a known en target' do
+      candidate = 'Yes, IMP-3 is on hand.'
+      stub_generation(message: candidate)
+      stub_candidate_language(candidate, language: 'unknown', reliable: false)
+      validator = stub_semantic(true)
+
+      expect(call_stock(reply_language: 'en', customer_request: 'is IMP-3 in stock?')).to be_nil
+      expect(validator).not_to have_received(:valid?)
     end
 
     it 'ignores a malformed reply-language code (gate off, not a crash)' do
@@ -643,6 +658,53 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
       stub_semantic(true)
 
       expect(call_stock(reply_language: 'not a code!!')).to eq(candidate)
+    end
+  end
+
+  # The reused Phase-4 greeting policy is Indonesian-specific (Marine's business-hours courtesy); for
+  # a KNOWN non-Indonesian customer an opening turn must neither ground nor leave an Indonesian
+  # greeting, so the reply cannot become a language mismatch that would reject and fall back.
+  describe 'target-language-aware opening greeting' do
+    def capture_generation_system(reply_language:)
+      captured = {}
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      allow(llm).to receive(:chat) do |args|
+        captured.merge!(args)
+        { ok: true, message: reply_envelope('About Impeller — which variant?'), error: nil }
+      end
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      stub_semantic(true)
+      call(opening: true, reply_language: reply_language)
+      captured[:system]
+    end
+
+    it 'grounds the Indonesian time-of-day greeting for an Indonesian opening turn' do
+      expect(capture_generation_system(reply_language: 'id')).to match(/Selamat (pagi|siang|sore|malam)/)
+    end
+
+    it 'keeps the Indonesian greeting when no target language is supplied (backward-compatible)' do
+      expect(capture_generation_system(reply_language: nil)).to match(/Selamat (pagi|siang|sore|malam)/)
+    end
+
+    it 'does NOT impose the Indonesian greeting for a known non-Indonesian opening turn' do
+      system = capture_generation_system(reply_language: 'en')
+      expect(system).not_to match(/Selamat/)
+      expect(system).to match(/customer's OWN language/i)
+    end
+
+    it 'strips a leaked Indonesian opening greeting from an English reply before the gates and delivers clean English' do
+      stub_generation(message: 'Selamat pagi! IMP-3 is currently in stock.')
+      # After enforcement only the English body remains; the detector reads THAT text as English.
+      detector = instance_double(Marine::Llm::LanguageDetector, detect: { language: 'en', reliable: true, confidence: 1.0 })
+      allow(Marine::Llm::LanguageDetector).to receive(:new).and_call_original
+      allow(Marine::Llm::LanguageDetector).to receive(:new).with('IMP-3 is currently in stock.').and_return(detector)
+      stub_semantic(true)
+
+      result = service.call(action: :reply, descriptor: { kind: :stock_available, variant_code: 'IMP-3' },
+                            fallback: 'IMP-3 is currently in stock.', customer_request: 'is IMP-3 in stock?',
+                            opening: true, reply_language: 'en')
+
+      expect(result).to eq('IMP-3 is currently in stock.')
     end
   end
 

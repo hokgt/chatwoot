@@ -180,15 +180,23 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     @product_language = plan[:language]
     apply_product_state(plan[:state])
 
-    case plan[:action]
-    when :handoff
+    # A pure stock reply whose only language-safe delivery is the in-language factless handoff
+    # (its localized coded text degraded to English and no natural candidate was accepted) routes
+    # through the SAME circuit handoff as an ordinary product handoff, using the precomputed
+    # in-language acknowledgement — never a wrong-language stock assertion.
+    if @force_stock_language_handoff
       process_handoff(product_handoff_reason(plan), message: @handoff_message)
-    when :send_catalog
-      deliver_product_catalog(plan)
-      increment_marine_usage
     else
-      create_product_reply(plan)
-      increment_marine_usage
+      case plan[:action]
+      when :handoff
+        process_handoff(product_handoff_reason(plan), message: @handoff_message)
+      when :send_catalog
+        deliver_product_catalog(plan)
+        increment_marine_usage
+      else
+        create_product_reply(plan)
+        increment_marine_usage
+      end
     end
     complete_claim
   end
@@ -413,7 +421,49 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   def naturalized_product_text(plan, descriptor, fallback)
     return fallback unless fact_protection.eligible?(action: plan[:action], descriptor: descriptor)
 
-    wording_candidate(plan, descriptor, fallback) || fallback
+    candidate = wording_candidate(plan, descriptor, fallback)
+    return candidate if candidate
+    return fallback unless stock_reply_kind?(descriptor)
+
+    # A pure stock reply must never ship in the wrong language: guarantee the customer's language
+    # for a known non-source target, else route to the in-language handoff floor.
+    language_safe_stock_text(plan, fallback)
+  end
+
+  # Pure binary-availability reply kinds — the ONLY replies whose visible text carries the strict
+  # "always in the customer's language" guarantee (their sole fact is a variant code, so the safe
+  # floor can drop to a factless in-language handoff without losing a price/quantity/other fact).
+  STOCK_REPLY_KINDS = %i[stock_available stock_empty].freeze
+
+  def stock_reply_kind?(descriptor)
+    descriptor.is_a?(Hash) && STOCK_REPLY_KINDS.include?(descriptor[:kind])
+  end
+
+  # The language-guaranteed text for a pure stock reply whose natural candidate was NOT accepted.
+  # For a known non-source target the localized fallback must be in that language; when it instead
+  # degraded to the exact English source (the provider stripped the fact-mask sentinels), shipping it
+  # would send English to a non-English customer — so refuse the coded stock line and fall closed to
+  # the in-language factless handoff acknowledgement (precomputed lock-free), which carries no fact to
+  # mask and so localizes cleanly. An unknown/source target keeps the existing English fallback.
+  def language_safe_stock_text(plan, fallback)
+    return fallback if stock_reply_target_language.nil?
+    return fallback if fallback != presenter.reply_text(plan)
+
+    @force_stock_language_handoff = true
+    @handoff_message = localized_product_text(presenter.handoff_ack_text(nil))
+    nil
+  end
+
+  # The bounded non-source primary target subtag for the current stock reply, or nil when the
+  # per-turn provider language is absent/unknown/malformed or is the English source (English delivery
+  # acceptable). Mirrors the localizer's own format allowlist and source language.
+  def stock_reply_target_language
+    code = @product_language.to_s.strip.downcase
+    return nil if code.empty? || code == Marine::Catalog::ReplyLocalizer::UNKNOWN
+    return nil unless code.match?(Marine::Catalog::ReplyLocalizer::LANGUAGE_PATTERN)
+
+    primary = code.split('-').first
+    primary == Marine::Catalog::ReplyLocalizer::SOURCE_LANGUAGE ? nil : primary
   end
 
   # --- Phase 7: catalog caption / fallback wording (precomputed, lock-free) --------------

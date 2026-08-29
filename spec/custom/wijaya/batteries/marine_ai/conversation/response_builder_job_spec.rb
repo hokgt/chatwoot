@@ -52,10 +52,11 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       allow(Marine::Llm::AssistantChatService).to receive(:new).and_return(chat)
     end
 
-    def product_payload(action:, reply: nil, operation: :none, changes: {})
+    def product_payload(action:, reply: nil, operation: :none, changes: {}, language: nil)
       {
         'action' => 'product', 'orchestration_path' => 'product',
-        'product_plan' => { action: action, reply: reply, state: { operation: operation, changes: changes } }
+        'product_plan' => { action: action, reply: reply, language: language,
+                            state: { operation: operation, changes: changes } }
       }
     end
 
@@ -578,6 +579,92 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         described_class.perform_now(conversation, assistant, incoming.id)
 
         expect(conversation.messages.outgoing.last.content).to eq('IMP-3 is currently in stock.')
+      end
+
+      # --- Strict customer-language guarantee for pure stock replies ---------------------------
+      #
+      # For a KNOWN non-source target the visible stock reply must be in that language. The natural
+      # candidate (guaranteed target-language by its own fail-closed gate) is preferred; on rejection
+      # the localized coded fallback is used ONLY if it actually localized. If it degraded to the exact
+      # English source (the provider stripped the fact-mask sentinels), the job refuses the English
+      # stock line and falls closed to the in-language factless handoff — it never ships English to a
+      # non-English customer. An English (source) target keeps the plain English fallback.
+      describe 'pure stock reply language guarantee' do
+        def indonesian_trigger
+          create(:message, conversation: conversation, message_type: :incoming, content: 'apakah IMP-3 tersedia')
+        end
+
+        def stock_id_payload
+          product_payload(action: :reply, reply: { kind: :stock_available, variant_code: 'IMP-3' },
+                          operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' },
+                          language: 'id')
+        end
+
+        it 'delivers an accepted Indonesian candidate verbatim' do
+          msg = indonesian_trigger
+          stub_reasoning(stock_id_payload)
+          stub_wording('Ya, IMP-3 saat ini tersedia.')
+
+          described_class.perform_now(conversation, assistant, msg.id)
+
+          expect(conversation.messages.outgoing.last.content).to eq('Ya, IMP-3 saat ini tersedia.')
+        end
+
+        it 'delivers the localized Indonesian fallback when the candidate is rejected but localization succeeds' do
+          msg = indonesian_trigger
+          stub_reasoning(stock_id_payload)
+          stub_wording(nil)
+          # Masking-aware translator: rephrases prose, leaves the opaque fact placeholders verbatim.
+          allow(Marine::Llm::TranslateResponseService).to receive(:new) do |**kwargs|
+            localized = kwargs[:text].gsub('is currently in stock', 'saat ini tersedia')
+            instance_double(Marine::Llm::TranslateResponseService, call: { ok: true, text: localized, translated: true })
+          end
+          allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(
+            instance_double(Marine::Charge::FactPreservationValidator, valid?: true)
+          )
+
+          described_class.perform_now(conversation, assistant, msg.id)
+
+          reply = conversation.messages.outgoing.last
+          expect(reply.content).to eq('IMP-3 saat ini tersedia.')
+          expect(reply.content).to include('IMP-3') # variant identity preserved byte-exact
+        end
+
+        it 'falls closed to an in-language handoff (never English) when the candidate is rejected AND the provider strips the fact-mask sentinels' do
+          msg = indonesian_trigger
+          stub_reasoning(stock_id_payload)
+          stub_wording(nil)
+          # Realistic PUA-stripping provider: removes the placeholder sentinels, so restoration fails and
+          # ReplyLocalizer degrades to the EXACT English source — the wrong-language delivery to avoid.
+          allow(Marine::Llm::TranslateResponseService).to receive(:new) do |**kwargs|
+            stripped = kwargs[:text].gsub(Marine::Catalog::FactPlaceholderMask::SENTINEL, '')
+            instance_double(Marine::Llm::TranslateResponseService, call: { ok: true, text: stripped, translated: true })
+          end
+          handoff = instance_double(Marine::Circuit::HandoffService, perform: nil)
+          allow(Marine::Circuit::HandoffService).to receive(:new)
+            .with(hash_including(conversation: conversation, assistant: assistant, reason: 'product_stock_available'))
+            .and_return(handoff)
+
+          described_class.perform_now(conversation, assistant, msg.id)
+
+          # No wrong-language stock line was delivered; the turn escalated in-language instead.
+          expect(conversation.messages.outgoing.where(content: 'IMP-3 is currently in stock.')).to be_empty
+          expect(handoff).to have_received(:perform)
+          status = msg.reload.additional_attributes.dig('wijaya_marine_ai', 'processing_claim_v1', 'status')
+          expect(status).to eq('completed')
+        end
+
+        it 'keeps the English fallback for an English (source) target — no needless handoff' do
+          stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available, variant_code: 'IMP-3' },
+                                         operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' },
+                                         language: 'en'))
+          stub_wording(nil)
+          allow(Marine::Circuit::HandoffService).to receive(:new).and_call_original
+
+          described_class.perform_now(conversation, assistant, incoming.id)
+
+          expect(conversation.messages.outgoing.last.content).to eq('IMP-3 is currently in stock.')
+        end
       end
 
       it 'prepares wording from the ContextBuilder bounded trigger/history, exact localized fallback, and opening state' do

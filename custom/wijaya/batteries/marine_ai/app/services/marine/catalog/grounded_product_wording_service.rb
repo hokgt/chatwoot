@@ -101,23 +101,29 @@ module Marine
       #
       # `reply_language` is the authoritative customer/reply language the caller resolved from the
       # SAME customer turn (the provider classification the localizer already read). When it is a
-      # known, well-formed code, the accepted candidate must be in THAT language: a candidate the
-      # detector reliably reads as a different primary language is rejected (deliver the exact
-      # localized fallback) so a wrong-language rephrase — e.g. an English reply to an Indonesian
-      # customer — can never pass. When it is absent/unknown, or the candidate's language cannot be
-      # read reliably, the gate does not fire, so faithful same-language wording is never rejected
-      # over pronouns, framing, or time adverbs. Language binding is generic (a detector + a code),
-      # with no per-language phrase list.
+      # known, well-formed code, the accepted candidate must be PROVABLY in THAT language: only a
+      # candidate the shared detector RELIABLY reads with the same primary subtag passes; a candidate
+      # read as a different primary language, AND a candidate whose language cannot be read reliably,
+      # are both rejected (the caller then supplies a same-language fallback). This fails CLOSED under
+      # a known target — an unreliable read never silently accepts a possibly-wrong-language candidate
+      # — so no wrong-language rephrase (e.g. an English reply to an Indonesian customer) can pass.
+      # Only when the target is absent/unknown/malformed does the gate not fire (no authoritative
+      # language to bind to, backward-compatible). Language binding is generic (a detector + a code),
+      # with no per-language phrase list. The reply-language signal also makes the reused greeting
+      # policy target-aware, so an opening turn never grounds or leaves an Indonesian greeting on a
+      # reply written in a known non-Indonesian language.
       def call(action:, descriptor:, fallback:, customer_request:, message_history: [], opening: true, reply_language: nil) # rubocop:disable Metrics/ParameterLists,Metrics/CyclomaticComplexity -- a flat sequence of fail-closed delivery gates
         # Deterministic eligibility first: an unsupported/malformed descriptor never invokes an LLM.
         return nil unless fact_protection.eligible?(action: action, descriptor: descriptor)
 
-        candidate = sanitized_candidate(generate(fallback, customer_request, message_history, opening))
+        candidate = sanitized_candidate(generate(fallback, customer_request, message_history, opening, reply_language))
         return nil if candidate.nil?
 
         # Phase 4 enforcement runs BEFORE either gate so both validators judge — and the caller
-        # delivers — the exact enforced text; a follow-up greeting-only reply enforces to blank.
-        enforced = greeting_context.enforce(candidate, opening: opening).presence
+        # delivers — the exact enforced text; a follow-up greeting-only reply enforces to blank. The
+        # reply_language keeps enforcement target-aware (an Indonesian opening greeting is stripped
+        # from a known non-Indonesian reply rather than normalized onto it).
+        enforced = greeting_context.enforce(candidate, opening: opening, reply_language: reply_language).presence
         return nil if enforced.blank?
 
         # Deterministic protected-value/token gate BEFORE the semantic call — a deterministic
@@ -135,7 +141,7 @@ module Marine
 
       private
 
-      def generate(fallback, customer_request, message_history, opening)
+      def generate(fallback, customer_request, message_history, opening, reply_language)
         service = Marine::Llm::BaseService.new(account: @account)
         return nil unless service.configured?
 
@@ -147,7 +153,7 @@ module Marine
         # deterministic ProductFactProtectionValidator and the separate semantic validator.
         result = service.chat(
           messages: messages_with_query(message_history, customer_request),
-          system: generation_prompt(fallback, opening),
+          system: generation_prompt(fallback, opening, reply_language),
           temperature: 0.0,
           schema: REPLY_SCHEMA
         )
@@ -180,8 +186,9 @@ module Marine
       # The greeting policy is delegated to the reused Phase 4 GreetingContext (opening grounds the
       # authoritative business-time greeting; a follow-up carries the no-new-greeting policy), so no
       # greeting directive is hardcoded here.
-      def generation_prompt(fallback, opening)
-        [GENERATION_INSTRUCTION, greeting_context.interaction_prompt(opening: opening), "Product Reply:\n#{fallback}"].join("\n\n")
+      def generation_prompt(fallback, opening, reply_language)
+        [GENERATION_INSTRUCTION, greeting_context.interaction_prompt(opening: opening, reply_language: reply_language),
+         "Product Reply:\n#{fallback}"].join("\n\n")
       end
 
       # Smallest generic output-shape gate, run BEFORE either validator: the generation is
@@ -222,18 +229,21 @@ module Marine
         history + [{ role: 'user', content: customer_request.to_s }]
       end
 
-      # True unless the candidate is RELIABLY read as a different primary language than the
-      # authoritative reply/customer language. Fires only when `reply_language` is a known,
-      # well-formed code (the provider classification of the same customer turn); an absent/unknown
-      # target, or a candidate the shared detector cannot read reliably, fails OPEN (true) so faithful
-      # same-language wording is never rejected. Compared at the PRIMARY subtag so a regional variant
-      # (e.g. zh-latn vs zh) still matches. Reuses Marine::Llm::LanguageDetector — no phrase list.
+      # True ONLY when the candidate is PROVABLY in the authoritative reply/customer language. When
+      # `reply_language` is a known, well-formed code (the provider classification of the same customer
+      # turn), the candidate passes only if the shared detector RELIABLY reads it with the SAME primary
+      # subtag; a reliably-different read AND an unreliable/unreadable read both FAIL CLOSED (false), so
+      # under a known target no possibly-wrong-language candidate is ever silently accepted (the caller
+      # then supplies a same-language fallback). Only an absent/unknown/malformed target fails open
+      # (true) — there is no authoritative language to bind to, so faithful wording is not second-guessed
+      # (backward-compatible). Compared at the PRIMARY subtag so a regional variant (e.g. zh-latn vs zh)
+      # still matches. Reuses Marine::Llm::LanguageDetector — no phrase list.
       def language_consistent?(candidate, reply_language)
         target = normalize_language(reply_language)
         return true if target.nil?
 
         candidate_language = reliable_language(candidate)
-        return true if candidate_language.nil?
+        return false if candidate_language.nil?
 
         primary_subtag(candidate_language) == primary_subtag(target)
       end
