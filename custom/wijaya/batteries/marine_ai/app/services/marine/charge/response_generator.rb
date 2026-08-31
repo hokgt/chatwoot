@@ -9,6 +9,13 @@ class Marine::Charge::ResponseGenerator
   # answer truncated to RAG_ENTRY_TRUNCATE chars, keep the system prompt bounded.
   RAG_MAX_ENTRIES = 20
   RAG_ENTRY_TRUNCATE = 500
+  # Number of top query-matched approved records that seed the RAG grounding block in FULL. The
+  # single authoritative top match still drives confidence/answer/provenance metadata; grounding
+  # leads with the top RAG_GROUNDING_MATCHES matches so a fact the customer asked about that lives
+  # in a lower-ranked approved record (lexically distant from the query, e.g. described with domain
+  # words rather than the customer's own attribute word) still reaches the prompt instead of being
+  # crowded out or truncated. Bounded, approved-only, assistant-scoped, deduped and capped downstream.
+  RAG_GROUNDING_MATCHES = 5
   RAG_INSTRUCTION = 'Answer ONLY using the information in the Knowledge Base Context above. If the answer is not found in the context, ' \
                     'say you do not have that information and offer to connect the customer with a human agent. ' \
                     'Never invent or fabricate information. Address the latest customer request first. ' \
@@ -35,11 +42,8 @@ class Marine::Charge::ResponseGenerator
     query_translation = translate_query(customer_query)
     retrieval_query = query_translation[:text].presence || customer_query.to_s
 
+    @retrieval_query = retrieval_query
     result = knowledge_base.retrieve(retrieval_query, limit: 1)
-    # The records retrieval actually matched for this query seed the RAG grounding block so a
-    # valid KB fact the customer asked about is never crowded out or truncated away (see
-    # #knowledge_base_entries / #knowledge_base_context).
-    @grounding_matches = result.responses
 
     if result.fallback_reason.present?
       llm_payload = llm_fallback_payload(customer_query, message_history, result.fallback_reason, query_translation)
@@ -229,7 +233,7 @@ class Marine::Charge::ResponseGenerator
     entries = knowledge_base_entries
     return nil if entries.empty?
 
-    matched_ids = Array(@grounding_matches).filter_map(&:id).to_set
+    matched_ids = grounding_matches.filter_map(&:id).to_set
     entries.filter_map do |entry|
       question = entry.question.to_s.strip
       answer = entry.answer.to_s.strip
@@ -247,7 +251,17 @@ class Marine::Charge::ResponseGenerator
   # customer actually asked about is guaranteed into the prompt), then fill with the
   # query-independent breadth slice, deduped and capped.
   def knowledge_base_entries
-    (Array(@grounding_matches) + default_knowledge_base_entries).uniq(&:id).first(RAG_MAX_ENTRIES)
+    (grounding_matches + default_knowledge_base_entries).uniq(&:id).first(RAG_MAX_ENTRIES)
+  end
+
+  # The bounded set of top query-matched approved records that seed the RAG grounding block, led by
+  # the top RAG_GROUNDING_MATCHES matches (not just the single best match that drives metadata) so a
+  # fact the customer asked about that lives in a lower-ranked approved record still reaches the
+  # prompt in full. Fetched only when a RAG branch actually builds the grounding context, and never
+  # widens the cited/scored provenance set (response_ids/document_ids/confidence stay derived from
+  # the single top match). Bounded, approved-only, assistant-scoped; deduped and capped downstream.
+  def grounding_matches
+    @grounding_matches ||= knowledge_base.retrieve(@retrieval_query, limit: RAG_GROUNDING_MATCHES).responses
   end
 
   def default_knowledge_base_entries

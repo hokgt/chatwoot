@@ -42,6 +42,18 @@ module Marine
       VARIANT_REQUIRED_INTENTS = %w[price stock variant_info].freeze
       SUPPORTED_INTENTS = (VARIANT_REQUIRED_INTENTS + %w[parent_info catalog]).freeze
 
+      # Non-transactional product-KNOWLEDGE intents: the customer is asking WHAT a product is or is
+      # like (its attributes/properties), not for a price, stock level, or catalog document. The
+      # catalog repositories hold only codes, prices, and stock — never textual attributes such as
+      # texture, material, use, or care — so when such a turn cannot be resolved to a concrete catalog
+      # answer the ONLY thing the catalog can emit is an arbitrary "which product?" family
+      # clarification. The approved Knowledge Base is where those attributes live, so an unresolved
+      # knowledge turn is handed back to grounded KB retrieval instead of that deflection (see
+      # #clarify_or_defer). Transactional intents (price/stock/catalog) are never deferred and keep
+      # their deterministic clarify / fail-closed behavior. Generic and data-driven: no
+      # attribute/product/language/phrase list.
+      KNOWLEDGE_INTENTS = %w[parent_info variant_info].freeze
+
       # The only supported COMBINABLE pair for a single turn: price AND stock. Both are supported,
       # repository-grounded, variant-required intents, so one turn asking for both is fulfilled with a
       # single composite reply (assembled from the existing price/stock descriptors) rather than
@@ -178,12 +190,26 @@ module Marine
       # ambiguous raw-turn switch, the finalized identifier for an unresolved family).
       def resolve_and_plan(intent, flow)
         decision = family_decision(intent, flow)
-        return clarify_family_plan(intent, flow, decision[:identifier]) if decision[:clarify]
+        return clarify_or_defer(intent, flow, decision[:identifier]) if decision[:clarify]
 
         family = resolve_planned_family(decision)
-        return clarify_family_plan(intent, flow, decision[:identifier]) if family.nil?
+        return clarify_or_defer(intent, flow, decision[:identifier]) if family.nil?
 
         dispatch_plan(intent, flow, family, decision[:continuing])
+      end
+
+      # An unresolved family would otherwise become an arbitrary "which product?" family
+      # clarification. For a non-transactional product-KNOWLEDGE turn (KNOWLEDGE_INTENTS) that
+      # carries no catalog-grounded answer, hand the turn back to grounded KB retrieval
+      # (:not_product) so an attribute question the approved Knowledge Base can answer is not
+      # deflected; the Runner's #product_payload returns nil for :not_product and falls through to
+      # the unchanged RAG path. A transactional turn (price/stock/catalog) still clarifies the family
+      # deterministically and fails closed. Only the unresolvable-family clarification defers — every
+      # resolved catalog answer and the variant-level clarification are untouched.
+      def clarify_or_defer(intent, flow, identifier)
+        return build(:not_product) if KNOWLEDGE_INTENTS.include?(intent[:intent].to_s)
+
+        clarify_family_plan(intent, flow, identifier)
       end
 
       # Family decision/context for the turn. Returns the settled

@@ -926,6 +926,11 @@ patches:
       # fallthrough preserved; Marine routing owned by the battery adapter).
       - custom/wijaya/batteries/marine_ai/frontend/specs/useMarineCaptain.spec.js
       - custom/wijaya/batteries/marine_ai/frontend/specs/CopilotMenuBar.spec.js
+      # Product-knowledge grounding regression: a non-transactional attribute question with an
+      # unresolvable family defers to grounded KB (orchestrator :not_product) instead of a generic
+      # family clarification, and the RAG grounding block leads with the top query-matched approved
+      # records so a fact in a lower-ranked record still reaches the model in full.
+      - spec/custom/wijaya/batteries/marine_ai/product_knowledge_grounding_spec.rb
 
   - id: marine_ai_provisioning
     name: Marine AI PostgreSQL Provisioning UI
