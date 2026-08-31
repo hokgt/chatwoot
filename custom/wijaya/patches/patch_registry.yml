@@ -377,6 +377,34 @@ patches:
       - spec/custom/wijaya/development_version_hooks_spec.rb
 
 
+  - id: persistent_agent_presence
+    name: Persistent Agent Presence Heartbeat
+    battery: custom/wijaya/batteries/persistent_agent_presence
+    description: >
+      Keeps an authenticated agent continuously ONLINE while their Chatwoot tab or
+      window stays open, even when it is unfocused or backgrounded. Upstream drives
+      the RoomChannel `update_presence` ping from a main-thread recursive setTimeout
+      (PRESENCE_INTERVAL 20s). Browsers throttle main-thread timers in hidden tabs
+      (Chrome intensive throttling wakes them ~once/minute after 5 minutes hidden),
+      so the ping lands past the backend PRESENCE_DURATION window (20s,
+      lib/online_status_tracker.rb) and the agent silently drops out of presence,
+      excluding them from online-only auto-assignment. The battery moves the ping
+      onto a dedicated Web Worker timer, which is not subject to that main-thread
+      throttling, so the heartbeat keeps cadence while the page is loaded. It falls
+      back to the upstream recursive-setTimeout when Web Workers are unavailable, so
+      presence never regresses below upstream. The worker is page-scoped: tab close,
+      logout, crash, network loss, or a frozen/discarded tab stop the pings and the
+      native Redis presence window expires the agent — TTL remains the dead-client
+      safety net. No backend, assignment, or online-only semantics are changed.
+    custom_files:
+      - custom/wijaya/batteries/persistent_agent_presence/frontend/createPresenceHeartbeat.js
+    core_hook_touchpoints:
+      - app/javascript/shared/helpers/BaseActionCableConnector.js
+    tests:
+      - custom/wijaya/batteries/persistent_agent_presence/frontend/specs/createPresenceHeartbeat.spec.js
+      - custom/wijaya/batteries/persistent_agent_presence/frontend/specs/BaseActionCableConnector.integration.spec.js
+
+
   - id: test_database_safety
     name: Containerized Test Database Isolation
     battery: custom/wijaya/batteries/test_database_safety

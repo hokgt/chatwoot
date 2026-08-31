@@ -166,7 +166,32 @@ zero business logic — all logic lives under `custom/wijaya/batteries/<feature>
 - **Necessity** — required; there is no non-invasive extension point on this composable, so the
   import + single return-boundary wrapper is the minimal accepted hook.
 
-### 9. Other frontend battery contributions
+### 9. `persistent_agent_presence` — presence heartbeat driver
+
+- **Call site** — `app/javascript/shared/helpers/BaseActionCableConnector.js`
+- **Purpose** — keep an authenticated agent ONLINE while their tab/window stays open, even when
+  unfocused or backgrounded, so online-only auto-assignment keeps reaching them.
+- **Flow** — the native connector no longer arms its own main-thread `setTimeout` ping. Two thin
+  marker blocks (a) import `createPersistentPresenceHeartbeat` from
+  `@wijaya/persistent_agent_presence/frontend/createPresenceHeartbeat` and (b) call it in the
+  constructor with `() => this.subscription.updatePresence()` and the existing `presenceInterval`,
+  storing the returned `stopPresenceHeartbeat`. A third block calls that stop function in
+  `disconnect()`. The battery owns a dedicated Web Worker whose timer is not subject to the
+  main-thread background-tab throttling that delayed the upstream ping past the backend 20s
+  presence window; it falls back to the upstream recursive `setTimeout` when Web Workers are
+  unavailable.
+- **Fail mode** — **fail safe to upstream**. Worker unavailable/blocked → main-thread setTimeout
+  fallback (upstream behavior). Page close / logout / crash / network loss / frozen tab → worker
+  stops and the native Redis presence window (TTL) expires the agent. Presence is never faked for
+  a client that is gone; no backend or assignment semantics change.
+- **Risk** — low (shared connector; additive, page-scoped). Covered by the Battery's
+  `frontend/specs/createPresenceHeartbeat.spec.js` (worker cadence, hidden-tab resilience,
+  fallback, idempotent stop) and `frontend/specs/BaseActionCableConnector.integration.spec.js`
+  (worker-backed ping, hidden-tab delivery, disconnect cleanup).
+- **Necessity** — required; there is no non-invasive extension point on the connector's heartbeat,
+  so the import + constructor call + disconnect cleanup is the minimal accepted hook.
+
+### 10. Other frontend battery contributions
 
 The following native files carry marker-wrapped delegations to their batteries (i18n merges,
 route table entries, store module registration, permission predicates, message rendering). Each is

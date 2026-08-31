@@ -86,6 +86,7 @@ assert_thin_marker_blocks app/javascript/dashboard/composables/useCaptain.js mar
 assert_thin_marker_blocks app/javascript/dashboard/components/widgets/WootWriter/CopilotMenuBar.vue marine_ai 8
 assert_thin_marker_blocks app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue marine_ai 8
 assert_thin_marker_blocks app/javascript/dashboard/routes/dashboard/settings/account/components/BuildInfo.vue development_version 8
+assert_thin_marker_blocks app/javascript/shared/helpers/BaseActionCableConnector.js persistent_agent_presence 8
 
 require_file custom/wijaya/batteries/ads_tracking/referral_parser.rb
 require_file custom/wijaya/batteries/ads_tracking/hooks.rb
@@ -236,6 +237,17 @@ for file in \
   app/javascript/dashboard/routes/dashboard/settings/account/components/BuildInfo.vue; do
   require_marker "$file" "WIJAYA_CUSTOM_START development_version"
   require_marker "$file" "WIJAYA_CUSTOM_END development_version"
+done
+
+# persistent_agent_presence
+# Worker-backed presence heartbeat keeps a backgrounded-but-open agent tab ONLINE;
+# the native connector imports the battery factory and delegates its ping to it.
+require_file custom/wijaya/batteries/persistent_agent_presence/frontend/createPresenceHeartbeat.js
+
+for file in \
+  app/javascript/shared/helpers/BaseActionCableConnector.js; do
+  require_marker "$file" "WIJAYA_CUSTOM_START persistent_agent_presence"
+  require_marker "$file" "WIJAYA_CUSTOM_END persistent_agent_presence"
 done
 
 # test_database_safety
