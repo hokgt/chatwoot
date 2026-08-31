@@ -36,6 +36,10 @@ class Marine::Charge::ResponseGenerator
     retrieval_query = query_translation[:text].presence || customer_query.to_s
 
     result = knowledge_base.retrieve(retrieval_query, limit: 1)
+    # The records retrieval actually matched for this query seed the RAG grounding block so a
+    # valid KB fact the customer asked about is never crowded out or truncated away (see
+    # #knowledge_base_entries / #knowledge_base_context).
+    @grounding_matches = result.responses
 
     if result.fallback_reason.present?
       llm_payload = llm_fallback_payload(customer_query, message_history, result.fallback_reason, query_translation)
@@ -225,16 +229,28 @@ class Marine::Charge::ResponseGenerator
     entries = knowledge_base_entries
     return nil if entries.empty?
 
+    matched_ids = Array(@grounding_matches).filter_map(&:id).to_set
     entries.filter_map do |entry|
       question = entry.question.to_s.strip
       answer = entry.answer.to_s.strip
       next if answer.blank?
 
-      "Q: #{question}\nA: #{answer.truncate(RAG_ENTRY_TRUNCATE)}"
+      # Records retrieval matched for THIS query are grounded in full so a fact deep in the
+      # chunk (e.g. an operational-hours line past the truncation cutoff) survives; the
+      # supplemental breadth entries stay truncated to keep the prompt bounded.
+      body = matched_ids.include?(entry.id) ? answer : answer.truncate(RAG_ENTRY_TRUNCATE)
+      "Q: #{question}\nA: #{body}"
     end.join("\n\n").presence
   end
 
+  # Lead the grounding entries with the records retrieval matched for this query (so what the
+  # customer actually asked about is guaranteed into the prompt), then fill with the
+  # query-independent breadth slice, deduped and capped.
   def knowledge_base_entries
+    (Array(@grounding_matches) + default_knowledge_base_entries).uniq(&:id).first(RAG_MAX_ENTRIES)
+  end
+
+  def default_knowledge_base_entries
     return [] unless assistant.respond_to?(:responses)
 
     approved = assistant.responses.approved
