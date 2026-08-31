@@ -176,14 +176,18 @@ zero business logic — all logic lives under `custom/wijaya/batteries/<feature>
   `@wijaya/persistent_agent_presence/frontend/createPresenceHeartbeat` and (b) call it in the
   constructor with `() => this.subscription.updatePresence()` and the existing `presenceInterval`,
   storing the returned `stopPresenceHeartbeat`. A third block calls that stop function in
-  `disconnect()`. The battery owns a dedicated Web Worker whose timer is not subject to the
-  main-thread background-tab throttling that delayed the upstream ping past the backend 20s
-  presence window; it falls back to the upstream recursive `setTimeout` when Web Workers are
-  unavailable.
+  `disconnect()`. The battery owns a dedicated Web Worker whose timer avoids the ordinary
+  main-thread hidden-tab throttling that delayed the upstream ping past the backend 20s presence
+  window. Because the backend TTL check is strict (`connected_time > now - window`) on integer
+  seconds, the worker heartbeats at **half** the supplied window (~10s for the default 20s window,
+  floored at 1ms) so a slightly late ping still lands inside the window. It falls back to the
+  upstream recursive `setTimeout` at the full upstream cadence when Web Workers are unavailable.
 - **Fail mode** — **fail safe to upstream**. Worker unavailable/blocked → main-thread setTimeout
-  fallback (upstream behavior). Page close / logout / crash / network loss / frozen tab → worker
-  stops and the native Redis presence window (TTL) expires the agent. Presence is never faked for
-  a client that is gone; no backend or assignment semantics change.
+  fallback (upstream behavior). A worker is not exempt from every browser/OS suspension: a fully
+  frozen, discarded, or killed page/process cannot run its timer, so page close / logout / crash /
+  network loss / frozen tab all stop the pings and the native Redis presence window (TTL) expires
+  the agent. Presence is never faked for a client that is gone; no backend or assignment semantics
+  change.
 - **Risk** — low (shared connector; additive, page-scoped). Covered by the Battery's
   `frontend/specs/createPresenceHeartbeat.spec.js` (worker cadence, hidden-tab resilience,
   fallback, idempotent stop) and `frontend/specs/BaseActionCableConnector.integration.spec.js`

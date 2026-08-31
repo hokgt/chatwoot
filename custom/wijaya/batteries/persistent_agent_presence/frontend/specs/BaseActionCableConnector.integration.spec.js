@@ -83,9 +83,11 @@ describe('BaseActionCableConnector persistent presence integration', () => {
 
     expect(connector).toBeTruthy();
     expect(FakeWorker.instances).toHaveLength(1);
+    // Effective worker cadence is half the 20s presence window, leaving margin
+    // below the strict backend TTL.
     expect(FakeWorker.instances[0].posted).toContainEqual({
       command: 'start',
-      interval: 20000,
+      interval: 10000,
     });
   });
 

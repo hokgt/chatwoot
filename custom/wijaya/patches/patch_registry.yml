@@ -389,13 +389,18 @@ patches:
       so the ping lands past the backend PRESENCE_DURATION window (20s,
       lib/online_status_tracker.rb) and the agent silently drops out of presence,
       excluding them from online-only auto-assignment. The battery moves the ping
-      onto a dedicated Web Worker timer, which is not subject to that main-thread
-      throttling, so the heartbeat keeps cadence while the page is loaded. It falls
-      back to the upstream recursive-setTimeout when Web Workers are unavailable, so
-      presence never regresses below upstream. The worker is page-scoped: tab close,
-      logout, crash, network loss, or a frozen/discarded tab stop the pings and the
-      native Redis presence window expires the agent — TTL remains the dead-client
-      safety net. No backend, assignment, or online-only semantics are changed.
+      onto a dedicated Web Worker timer, which avoids that ordinary main-thread
+      hidden-tab throttling. Because the backend check is strict
+      (`connected_time > now - window`) on integer seconds, the worker heartbeats at
+      half the supplied window (~10s for the default 20s window, floored at 1ms) so a
+      slightly late ping still lands inside the window. It falls back to the upstream
+      recursive-setTimeout at the full upstream cadence when Web Workers are
+      unavailable, so presence never regresses below upstream. A worker is not exempt
+      from every suspension: a fully frozen, discarded, or killed page/process cannot
+      heartbeat, so tab close, logout, crash, network loss, or a frozen/discarded tab
+      stop the pings and the native Redis presence window expires the agent — TTL
+      remains the dead-client safety net. No backend, assignment, or online-only
+      semantics are changed.
     custom_files:
       - custom/wijaya/batteries/persistent_agent_presence/frontend/createPresenceHeartbeat.js
     core_hook_touchpoints:

@@ -54,9 +54,40 @@ describe('createPersistentPresenceHeartbeat', () => {
       createPersistentPresenceHeartbeat(onTick, 20000);
 
       expect(FakeWorker.instances).toHaveLength(1);
+      // Effective worker cadence is half the supplied 20s window (see the
+      // margin test below).
       expect(FakeWorker.instances[0].posted).toEqual([
-        { command: 'start', interval: 20000 },
+        { command: 'start', interval: 10000 },
       ]);
+    });
+
+    it('heartbeats below the supplied window so presence keeps margin against the strict backend TTL', () => {
+      // The supplied interval equals the backend presence window
+      // (PRESENCE_DURATION). The backend check is a strict
+      // `connected_time > now - window` on integer-second timestamps, so a
+      // ping-once-per-window cadence has zero slack for timer jitter, tick
+      // delivery, ActionCable/network latency, and the integer boundary — a
+      // slightly late ping briefly expires presence. The worker must beat at a
+      // bounded fraction (half) of the window to keep meaningful margin.
+      const onTick = vi.fn();
+      createPersistentPresenceHeartbeat(onTick, 20000);
+
+      const [startMessage] = FakeWorker.instances[0].posted;
+      expect(startMessage.command).toBe('start');
+      expect(startMessage.interval).toBeLessThan(20000);
+      expect(startMessage.interval).toBe(10000);
+    });
+
+    it('never derives a zero or sub-millisecond worker interval from a tiny injected interval', () => {
+      // Arbitrary short intervals injected by tests (or misconfiguration) must
+      // still yield a valid positive integer interval — a 0ms/NaN interval would
+      // spin the worker timer or never fire.
+      const onTick = vi.fn();
+      createPersistentPresenceHeartbeat(onTick, 1);
+
+      const [startMessage] = FakeWorker.instances[0].posted;
+      expect(startMessage.interval).toBeGreaterThanOrEqual(1);
+      expect(Number.isInteger(startMessage.interval)).toBe(true);
     });
 
     it('keeps firing while the tab is hidden/unfocused (worker is unthrottled)', () => {

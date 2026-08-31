@@ -12,13 +12,21 @@
 // is merely open-but-unfocused (Excel, another tab, etc.) silently drops out of
 // presence and stops receiving auto-assignments.
 //
-// A dedicated Web Worker owns the timer instead. Worker timers are not subject
-// to the main-thread background-throttling that delays the upstream ping, so the
-// heartbeat keeps its cadence while the page stays loaded. The worker is scoped
-// to the page: closing the tab, logging out, a crash, a network drop, or the
-// browser freezing/discarding the tab all stop the pings, and the native Redis
-// presence window then expires the agent. That TTL remains the dead-client
-// safety net — this never fakes presence for a client that is truly gone.
+// A dedicated Web Worker owns the timer instead. A worker timer avoids the
+// ordinary main-thread hidden-tab throttling that delays the upstream ping, so
+// the heartbeat keeps its cadence while the page stays loaded. A worker is not
+// absolutely exempt from every browser/OS suspension, though: a fully frozen,
+// discarded, or killed page/process cannot run its timer at all — those cases
+// stop the pings and the native Redis presence window then expires the agent, as
+// intended. That TTL remains the dead-client safety net — this never fakes
+// presence for a client that is truly gone.
+//
+// The supplied interval equals the backend presence window, whose check is a
+// strict `connected_time > now - window` on integer-second timestamps. Pinging
+// once per window leaves zero slack for timer jitter, tick delivery, and
+// ActionCable/network latency, so a slightly late ping can briefly expire
+// presence. The worker therefore heartbeats at a bounded fraction (half) of the
+// window (WORKER_HEARTBEAT_DIVISOR) to keep comfortable margin.
 
 const WORKER_SOURCE = `
   let timerId = null;
@@ -33,9 +41,23 @@ const WORKER_SOURCE = `
   };
 `;
 
+// Heartbeat at half the supplied window so presence has margin below the strict
+// backend TTL (see header). `Math.max(1, …)` floors the result at 1ms so an
+// arbitrarily small injected interval can never yield a zero/sub-millisecond
+// interval that would spin or stall the worker timer.
+const WORKER_HEARTBEAT_DIVISOR = 2;
+
+function workerHeartbeatInterval(intervalMs) {
+  return Math.max(1, Math.floor(intervalMs / WORKER_HEARTBEAT_DIVISOR));
+}
+
 // Main-thread fallback, used only when Web Workers are unavailable or blocked.
-// It reproduces the upstream recursive-setTimeout behaviour so presence never
-// regresses below upstream in unsupported environments.
+// It reproduces the upstream recursive-setTimeout behaviour at the upstream
+// cadence (the full supplied interval) so presence never regresses below
+// upstream in unsupported environments. It is deliberately not tightened: a
+// main-thread timer is throttled in a hidden tab regardless, so a shorter cadence
+// would not buy reliable margin there, and preserving exact upstream behaviour is
+// preferable for the fallback path.
 function createTimeoutHeartbeat(onTick, intervalMs) {
   let stopped = false;
   let timeoutId = null;
@@ -72,7 +94,10 @@ export function createPersistentPresenceHeartbeat(onTick, intervalMs) {
   }
 
   worker.onmessage = () => onTick();
-  worker.postMessage({ command: 'start', interval: intervalMs });
+  worker.postMessage({
+    command: 'start',
+    interval: workerHeartbeatInterval(intervalMs),
+  });
 
   let stopped = false;
   return () => {
