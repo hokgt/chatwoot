@@ -4,12 +4,14 @@ require 'rails_helper'
 
 # Conversation <-> source-less Playground PARITY for a pure stock reply.
 #
-# Reproduces the reported inconsistency: for the SAME account/assistant/context/catalog state and the
-# SAME deterministic stock result, the trigger-bound conversation and the source-less Playground must
-# reach the IDENTICAL business conclusion — DELIVER an in-language stock line, or HAND OFF. The bug
-# was that the conversation ran a fail-closed customer-language gate (handing off when the localized
-# stock line could not be proven in-language) while the Playground skipped it and asserted
-# availability. Both now consume Marine::Catalog::StockReplyComposer, so their conclusions match.
+# For the SAME account/assistant/context/catalog state and the SAME deterministic stock result, the
+# trigger-bound conversation and the source-less Playground must reach the IDENTICAL business
+# conclusion. Both consume Marine::Catalog::StockReplyComposer, whose STRICT contract is:
+#   * the ONLY delivered stock text is an accepted DYNAMIC natural candidate; when one is produced,
+#     BOTH surfaces DELIVER that same candidate and neither hands off;
+#   * when NO safe dynamic candidate is produced (generation/validation rejected it), BOTH surfaces
+#     FAIL CLOSED to the same factless handoff acknowledgement — NEITHER ships the deterministic
+#     (English or localized) stock sentence as the final answer, and NEITHER asserts availability.
 #
 # The wording service, localizer, and language detector are stubbed identically for both surfaces so
 # the ONLY thing under test is that each surface turns the same descriptor into the same conclusion.
@@ -24,6 +26,7 @@ RSpec.describe 'Marine stock reply conversation<->playground parity' do
   let(:english_stock) { 'BD-1 is currently in stock.' }
   let(:english_empty) { "I'm sorry, BD-1 is currently out of stock." }
   let(:localized_stock) { 'BD-1 saat ini tersedia.' }
+  let(:dynamic_candidate) { 'Ya, BD-1 saat ini tersedia untuk Anda.' }
   let(:ack_en) { Marine::Catalog::ReplyPresenter::HANDOFF_ACK_TEXT }
   let(:ack_id) { 'Maaf, saya belum bisa memastikannya. Saya akan menghubungkan Anda dengan rekan.' }
 
@@ -87,55 +90,58 @@ RSpec.describe 'Marine stock reply conversation<->playground parity' do
 
   # ================================================================================================
 
-  describe 'available stock, Indonesian, localization succeeds -> BOTH DELIVER the same stock line' do
+  describe 'accepted DYNAMIC candidate -> BOTH DELIVER the same candidate, no handoff' do
     before do
-      stub_wording(nil) # candidate rejected: the deterministic in-language fallback is delivered
+      stub_wording(dynamic_candidate) # the two-gate wording service accepted a natural rephrase
       stub_localizer(english_stock => localized_stock)
       stub_detector(localized_stock => { language: 'id', reliable: true, confidence: 0.99 })
     end
 
-    it 'conversation delivers the in-language stock line, no handoff' do
+    it 'conversation delivers the dynamic candidate, no handoff' do
       run_conversation(stock_descriptor)
-      expect(conversation_visible.last.content).to eq(localized_stock)
+      expect(conversation_visible.last.content).to eq(dynamic_candidate)
       expect(conversation_handoff?).to be(false)
     end
 
-    it 'playground delivers the SAME in-language stock line' do
+    it 'playground delivers the SAME dynamic candidate' do
       payload = run_playground(stock_descriptor)
-      expect(payload['response']).to eq(localized_stock)
+      expect(payload['response']).to eq(dynamic_candidate)
     end
 
     it 'reaches the identical DELIVER conclusion on both surfaces' do
       run_conversation(stock_descriptor)
       payload = run_playground(stock_descriptor)
       expect(conversation_visible.last.content).to eq(payload['response'])
-      expect(payload['response']).to eq(localized_stock)
+      expect(payload['response']).to eq(dynamic_candidate)
     end
   end
 
-  describe 'available stock, Indonesian, localization degrades to English -> BOTH HAND OFF (the reported bug)' do
+  describe 'candidate REJECTED, localization succeeds in-language -> BOTH HAND OFF (never ship the localized template)' do
     before do
+      # No safe dynamic candidate. The deterministic stock line localizes cleanly to Indonesian, but a
+      # localized deterministic template is grounding only — it must NEVER be the delivered stock answer.
       stub_wording(nil)
-      # The stock line degrades to the English source; the factless acknowledgement localizes to id.
-      stub_localizer(english_stock => english_stock, ack_en => ack_id)
-      stub_detector(english_stock => { language: 'en', reliable: true, confidence: 0.99 },
+      stub_localizer(english_stock => localized_stock, ack_en => ack_id)
+      stub_detector(localized_stock => { language: 'id', reliable: true, confidence: 0.99 },
                     ack_id => { language: 'id', reliable: true, confidence: 0.99 })
     end
 
-    it 'conversation refuses the English stock line and hands off (product_stock_available) with the in-language acknowledgement' do
+    it 'conversation refuses the localized stock line and hands off (product_stock_available) with the in-language acknowledgement' do
       run_conversation(stock_descriptor)
 
+      expect(conversation.messages.where(content: localized_stock)).to be_empty
       expect(conversation.messages.where(content: english_stock)).to be_empty
       expect(conversation_visible.last.content).to eq(ack_id)
       expect(conversation_handoff?).to be(true)
       expect(conversation.messages.where(private: true).map(&:content)).to include(a_string_including('product_stock_available'))
     end
 
-    it 'playground ALSO refuses the English stock line and shows the same handoff acknowledgement (no availability claim)' do
+    it 'playground ALSO refuses the localized stock line and shows the same handoff acknowledgement (no availability claim)' do
       payload = run_playground(stock_descriptor)
 
       expect(payload['response']).to eq(ack_id)
-      expect(payload['response']).not_to include('in stock')
+      expect(payload['response']).not_to eq(localized_stock)
+      expect(payload['response']).not_to include('tersedia') # no availability assertion
     end
 
     it 'reaches the identical HAND OFF conclusion on both surfaces (neither asserts availability)' do
@@ -148,7 +154,26 @@ RSpec.describe 'Marine stock reply conversation<->playground parity' do
     end
   end
 
-  describe 'out-of-stock, Indonesian, localization degrades to English -> BOTH HAND OFF (no invented availability)' do
+  describe 'candidate REJECTED, localization degrades to English -> BOTH HAND OFF (no English stock line)' do
+    before do
+      stub_wording(nil)
+      stub_localizer(english_stock => english_stock, ack_en => ack_id)
+      stub_detector(english_stock => { language: 'en', reliable: true, confidence: 0.99 },
+                    ack_id => { language: 'id', reliable: true, confidence: 0.99 })
+    end
+
+    it 'both surfaces hand off with the same acknowledgement rather than shipping an English stock line' do
+      run_conversation(stock_descriptor)
+      payload = run_playground(stock_descriptor)
+
+      expect(conversation.messages.where(content: english_stock)).to be_empty
+      expect(conversation_visible.last.content).to eq(ack_id)
+      expect(conversation_handoff?).to be(true)
+      expect(payload['response']).to eq(ack_id)
+    end
+  end
+
+  describe 'out-of-stock, candidate REJECTED -> BOTH HAND OFF (no invented availability, no canned out-of-stock line)' do
     before do
       stub_wording(nil)
       stub_localizer(english_empty => english_empty, ack_en => ack_id)
@@ -156,7 +181,7 @@ RSpec.describe 'Marine stock reply conversation<->playground parity' do
                     ack_id => { language: 'id', reliable: true, confidence: 0.99 })
     end
 
-    it 'both surfaces hand off with the same acknowledgement rather than shipping an English out-of-stock line' do
+    it 'both surfaces hand off with the same acknowledgement rather than shipping an out-of-stock line' do
       run_conversation(empty_descriptor)
       payload = run_playground(empty_descriptor)
 
@@ -167,16 +192,21 @@ RSpec.describe 'Marine stock reply conversation<->playground parity' do
     end
   end
 
-  describe 'English (source) target -> BOTH DELIVER the English stock line, no needless handoff' do
-    before { stub_wording(nil) }
+  describe 'English (source) target, candidate REJECTED -> BOTH HAND OFF (never a canned English stock line)' do
+    before do
+      stub_wording(nil)
+      stub_localizer(english_stock => english_stock, ack_en => ack_en)
+      stub_detector(ack_en => { language: 'en', reliable: true, confidence: 0.99 })
+    end
 
-    it 'delivers the English stock line on both surfaces' do
+    it 'both surfaces hand off with the visible English factless acknowledgement, not the stock line' do
       run_conversation(stock_descriptor, language: 'en')
       payload = run_playground(stock_descriptor, language: 'en')
 
-      expect(conversation_visible.last.content).to eq(english_stock)
-      expect(conversation_handoff?).to be(false)
-      expect(payload['response']).to eq(english_stock)
+      expect(conversation.messages.where(content: english_stock)).to be_empty
+      expect(conversation_visible.last.content).to eq(ack_en)
+      expect(conversation_handoff?).to be(true)
+      expect(payload['response']).to eq(ack_en)
     end
   end
 end

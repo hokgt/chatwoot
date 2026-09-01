@@ -2,9 +2,15 @@
 
 require 'rails_helper'
 
-# Unit coverage for the shared DELIVER/HANDOFF stock decision. The natural-wording service and the
-# language detector are stubbed so each branch is asserted deterministically; the fact-protection
-# eligibility check runs for real (BD-1 is a valid coded stock descriptor).
+# Unit coverage for the shared fail-closed DELIVER/HANDOFF stock decision. The natural-wording
+# service and the language detector are stubbed so each branch is asserted deterministically; the
+# fact-protection eligibility check runs for real (BD-1 is a valid coded stock descriptor).
+#
+# STRICT CONTRACT: the ONLY text the composer DELIVERS for a stock turn is an accepted DYNAMIC
+# natural candidate. The deterministic (English or localized) stock sentence is grounding ONLY — it
+# is NEVER the delivered final answer. Every non-accepted path (rejected candidate, codeless/
+# ineligible descriptor, unknown/source/known target, degraded localization) fails closed to the
+# factless handoff.
 RSpec.describe Marine::Catalog::StockReplyComposer do
   subject(:composer) { described_class.new(account: nil) }
 
@@ -44,19 +50,60 @@ RSpec.describe Marine::Catalog::StockReplyComposer do
       expect(decision.text).to eq('Ya, BD-1 saat ini tersedia!')
     end
 
-    it 'DELIVERS the localized fallback when the candidate is rejected but the fallback is reliably in-language' do
-      stub_wording(nil)
-      stub_detector(fallback => { language: 'id', reliable: true, confidence: 0.99 })
+    # --- RED: the deterministic/localized stock sentence must NEVER be the final answer -----------
 
-      decision = compose
-      expect(decision).to be_deliver
-      expect(decision.text).to eq(fallback)
+    it 'HANDS OFF (never delivers the localized fallback) when the candidate is rejected — even if the fallback is reliably in-language' do
+      stub_wording(nil)
+      stub_detector(fallback => { language: 'id', reliable: true, confidence: 0.99 },
+                    ack_id => { language: 'id', reliable: true, confidence: 0.99 })
+
+      decision = compose(ack: -> { ack_id })
+      expect(decision).to be_handoff
+      expect(decision.text).to be_nil
+      expect(decision.message).to eq(ack_id) # factless acknowledgement, not the stock line
+      expect(decision.message).not_to eq(fallback)
     end
 
-    it 'HANDS OFF with a visible in-language acknowledgement when the fallback is not provably in-language' do
+    it 'HANDS OFF (never delivers the English fallback) for an English (source) target when the candidate is rejected' do
       stub_wording(nil)
-      stub_detector(fallback => { language: 'en', reliable: true, confidence: 0.99 },
-                    ack_id => { language: 'id', reliable: true, confidence: 0.99 })
+      stub_detector(ack_en => { language: 'en', reliable: true, confidence: 0.99 })
+
+      decision = compose(reply_language: 'en', fall: english_source, ack: -> { ack_en })
+      expect(decision).to be_handoff
+      expect(decision.text).to be_nil
+      expect(decision.message).to eq(ack_en) # visible English factless acknowledgement (source target)
+      expect(decision.message).not_to eq(english_source)
+    end
+
+    it 'HANDS OFF (never delivers the fallback) for an unknown/malformed target when the candidate is rejected' do
+      stub_wording(nil)
+      stub_detector(ack_en => { language: 'en', reliable: true, confidence: 0.99 })
+
+      %w[unknown].each do |lang|
+        decision = compose(reply_language: lang, ack: -> { ack_en })
+        expect(decision).to be_handoff
+        expect(decision.text).to be_nil
+      end
+      expect(compose(reply_language: '  ', ack: -> { ack_en }).text).to be_nil
+      expect(compose(reply_language: 'not a code', ack: -> { ack_en }).text).to be_nil
+    end
+
+    it 'HANDS OFF for a codeless/malformed stock descriptor without naturalizing (ineligible) — never a hardcoded stock claim' do
+      expect(Marine::Catalog::GroundedProductWordingService).not_to receive(:new)
+      stub_detector(ack_id => { language: 'id', reliable: true, confidence: 0.99 })
+
+      decision = compose(desc: renderer.stock_available(nil),
+                         fall: 'Good news — that item is currently in stock.', ack: -> { ack_id })
+      expect(decision).to be_handoff
+      expect(decision.text).to be_nil
+      expect(decision.message).to eq(ack_id)
+    end
+
+    # --- Handoff acknowledgement language behaviour on the fail-closed path ------------------------
+
+    it 'HANDS OFF with a visible in-language acknowledgement when it is provably in the target language' do
+      stub_wording(nil)
+      stub_detector(ack_id => { language: 'id', reliable: true, confidence: 0.99 })
 
       decision = compose(ack: -> { ack_id })
       expect(decision).to be_handoff
@@ -64,41 +111,15 @@ RSpec.describe Marine::Catalog::StockReplyComposer do
       expect(decision.silent).to be(false)
     end
 
-    it 'HANDS OFF SILENTLY when neither the fallback nor the acknowledgement can be proven in-language' do
+    it 'HANDS OFF SILENTLY when the acknowledgement cannot be proven in the target language' do
       stub_wording(nil)
-      stub_detector(fallback => { language: 'en', reliable: true, confidence: 0.99 },
-                    ack_en => { language: 'en', reliable: true, confidence: 0.99 })
+      stub_detector(ack_en => { language: 'en', reliable: true, confidence: 0.99 })
 
       decision = compose(ack: -> { ack_en })
       expect(decision).to be_handoff
       expect(decision.message).to be_nil
       expect(decision.silent).to be(true)
       expect(decision.ack).to eq(ack_en) # still available for a preview surface to show
-    end
-
-    it 'DELIVERS the English fallback for an English (source) target without any handoff' do
-      stub_wording(nil)
-
-      decision = compose(reply_language: 'en', fall: english_source)
-      expect(decision).to be_deliver
-      expect(decision.text).to eq(english_source)
-    end
-
-    it 'DELIVERS the fallback for an unknown/malformed target (no in-language guarantee claimed)' do
-      stub_wording(nil)
-
-      expect(compose(reply_language: 'unknown').text).to eq(fallback)
-      expect(compose(reply_language: '  ').text).to eq(fallback)
-      expect(compose(reply_language: 'not a code').text).to eq(fallback)
-    end
-
-    it 'DELIVERS a codeless stock fallback without naturalizing or gating (ineligible descriptor)' do
-      expect(Marine::Catalog::GroundedProductWordingService).not_to receive(:new)
-      expect(Marine::Llm::LanguageDetector).not_to receive(:new)
-
-      decision = compose(desc: renderer.stock_available(nil), fall: 'Good news — that item is currently in stock.')
-      expect(decision).to be_deliver
-      expect(decision.text).to eq('Good news — that item is currently in stock.')
     end
 
     it 'passes a non-stock descriptor straight through without naturalizing (not its concern)' do
@@ -111,18 +132,12 @@ RSpec.describe Marine::Catalog::StockReplyComposer do
   end
 
   describe '#degraded' do
-    it 'DELIVERS the English text for an unknown/source target' do
-      expect(composer.degraded(text: english_source, reply_language: 'en')).to be_deliver
-      expect(composer.degraded(text: english_source, reply_language: nil)).to be_deliver
-    end
-
-    it 'HANDS OFF SILENTLY under a known non-source target when the English text is not in-language' do
-      stub_detector(english_source => { language: 'en', reliable: true, confidence: 0.99 })
-
-      decision = composer.degraded(text: english_source, reply_language: 'id')
+    it 'ALWAYS hands off SILENTLY (localization already failed — no candidate, no localizable ack, no stock prose)' do
+      decision = composer.degraded
       expect(decision).to be_handoff
-      expect(decision.silent).to be(true)
+      expect(decision.text).to be_nil
       expect(decision.message).to be_nil
+      expect(decision.silent).to be(true)
     end
   end
 end

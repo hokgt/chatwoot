@@ -415,21 +415,20 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     @prepared_product_text = degraded_product_text(plan)
   end
 
-  # Preparation failed before a validated localized reply existed. Deliver the deterministic English
-  # text — EXCEPT for a pure stock reply under a known non-source target, where English would be a
-  # wrong-language stock assertion: the shared composer refuses it and hands off SILENTLY instead
-  # (the strict per-language guarantee is preserved, and no wrong-language stock line is ever sent).
-  # Unknown/source targets keep the English fallback (no guarantee is claimed there). No network
-  # call is made here (localization already failed).
+  # Preparation failed before a validated localized reply existed. For a non-stock reply, deliver the
+  # deterministic English text (the exact text ReplyLocalizer itself degrades to). For a pure stock
+  # reply the deterministic English/localized sentence is grounding only and must NEVER be the final
+  # stock answer: with no accepted dynamic candidate and no localizable acknowledgement, the shared
+  # composer fails closed to a SILENT handoff (internal transfer, no visible message) — no
+  # wrong-language and no canned stock line is ever sent, on any target. No network call is made here
+  # (localization already failed).
   def degraded_product_text(plan)
-    english = presenter.reply_text(plan)
-    return english unless stock_reply_kind?(plan[:reply])
+    return presenter.reply_text(plan) unless stock_reply_kind?(plan[:reply])
 
-    decision = stock_composer.degraded(text: english, reply_language: @product_language)
-    return decision.text if decision.deliver?
-
+    decision = stock_composer.degraded
     @force_stock_language_handoff = true
-    @stock_handoff_silent = true
+    @stock_handoff_silent = decision.silent
+    @handoff_message = decision.message
     nil
   end
 
@@ -448,10 +447,11 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   end
 
   # Resolve a pure stock reply through the shared composer, then map its Decision onto this
-  # conversation's delivery adapter: deliver the accepted/in-language text, or record the fail-closed
+  # conversation's delivery adapter: deliver the accepted DYNAMIC candidate, or record the fail-closed
   # circuit-handoff flags (visible in-language acknowledgement, or SILENT internal transfer). The
-  # composer runs the natural wording and the strict fail-closed language check identically to the
-  # Playground, so neither surface can claim availability while the other hands off.
+  # composer runs the natural wording and the strict fail-closed decision identically to the
+  # Playground, so neither surface can claim availability while the other hands off, and the
+  # deterministic stock sentence is only ever grounding — never the delivered stock answer.
   def stock_reply_text(descriptor, fallback)
     context = Marine::Conversation::ContextBuilder.new(conversation: @conversation, trigger_message: @trigger_message).build
     decision = stock_composer.compose(

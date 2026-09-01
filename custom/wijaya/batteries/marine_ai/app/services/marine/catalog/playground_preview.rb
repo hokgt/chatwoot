@@ -123,11 +123,12 @@ module Marine
           Marine::Catalog::StockReplyComposer::STOCK_KINDS.include?(plan.dig(:reply, :kind))
       end
 
-      # DELIVER -> the composer's in-language stock text (accepted natural candidate or in-language/
-      # source deterministic fallback). HANDOFF -> the factless acknowledgement the customer would
-      # see (the composer's in-language acknowledgement when provable, else its localized fallback
-      # acknowledgement), rendered preview-only with NO assignment/handoff/persistence mutation —
-      # exactly the safe outcome the real conversation reaches, just via the preview delivery adapter.
+      # DELIVER -> the composer's accepted DYNAMIC in-language stock candidate (never the deterministic
+      # grounding fallback, which stays internal). HANDOFF -> the factless acknowledgement the customer
+      # would see (the composer's in-language acknowledgement when provable, else its localized fallback
+      # acknowledgement) — the same safe business outcome the real conversation reaches (a factless
+      # transfer, NOT a stock claim), rendered preview-only with NO assignment/handoff/persistence
+      # mutation, just via the preview delivery adapter. It never disguises a handoff as a stock reply.
       def stock_payload(plan, query, history, snapshot)
         descriptor = plan[:reply]
         fallback = localize(english: presenter.reply_text(plan), protection: [plan[:action], descriptor],

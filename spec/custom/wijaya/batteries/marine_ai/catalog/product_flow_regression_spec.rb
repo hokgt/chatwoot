@@ -145,11 +145,11 @@ RSpec.describe 'Marine product flow cross-component regression' do
     it 'attaches only the safe marine_product source markers — no citations/confidence/raw facts' do
       job.instance_variable_set(:@conversation, conversation)
       job.instance_variable_set(:@assistant, assistant)
-      plan = { action: :reply, reply: { kind: :stock_available }, state: { operation: :none, changes: {} } }
+      plan = { action: :reply, reply: { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' }, state: { operation: :none, changes: {} } }
 
       expect(messages).to receive(:create!).with(
         hash_including(
-          message_type: :outgoing, content: 'Good news — that item is currently in stock.',
+          message_type: :outgoing, content: "You're asking about Impeller. Which specific variant would you like to know about?",
           additional_attributes: { source_type: 'marine_product', orchestration_path: 'product' }
         )
       )

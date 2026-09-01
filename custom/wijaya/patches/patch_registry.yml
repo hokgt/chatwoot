@@ -868,10 +868,12 @@ patches:
       # fail-closed, no facts/history logged).
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_fact_protection_validator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/grounded_product_wording_service_spec.rb
-      # Shared StockReplyComposer: unit coverage of the DELIVER/HANDOFF decision (accepted natural
-      # candidate, in-language/source/unknown-target fallback delivery, fail-closed handoff with
-      # in-language vs silent acknowledgement, codeless-descriptor passthrough, degraded path) plus the
-      # conversation<->Playground stock parity spec proving identical business conclusions.
+      # Shared StockReplyComposer: unit coverage of the fail-closed DELIVER/HANDOFF decision — the ONLY
+      # delivered stock text is an accepted DYNAMIC natural candidate; every non-accepted path (rejected
+      # candidate, codeless/ineligible descriptor, unknown/source/known target, degraded localization)
+      # fails closed to the factless handoff (visible in-language vs silent acknowledgement) and never
+      # ships the deterministic stock sentence — plus the conversation<->Playground stock parity spec
+      # proving identical business conclusions (dynamic deliver, or the same factless handoff).
       - spec/custom/wijaya/batteries/marine_ai/catalog/stock_reply_composer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/stock_reply_parity_spec.rb
       # Phase 7 — context-aware natural product-handoff acknowledgement service + regression

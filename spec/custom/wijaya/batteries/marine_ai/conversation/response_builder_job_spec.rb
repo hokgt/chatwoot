@@ -93,7 +93,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
     end
 
     it 'produces no second output and no double usage on a duplicate delivery of the same incoming message' do
-      stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available }))
+      stub_reasoning(product_payload(action: :reply, reply: { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' }))
 
       described_class.perform_now(conversation, assistant, incoming.id)
       described_class.perform_now(conversation, assistant, incoming.id)
@@ -475,7 +475,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
     end
 
     it 'rolls back product flow state and leaves the claim retryable when message creation fails' do
-      stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available },
+      stub_reasoning(product_payload(action: :reply, reply: { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' },
                                      operation: :update, changes: { 'validated_family' => 'IMP' }))
       allow_any_instance_of(described_class).to receive(:create_product_reply).and_raise(ActiveRecord::RecordInvalid)
 
@@ -571,27 +571,30 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         expect(product_state['validated_variant']).to eq('IMP-3')
       end
 
-      it 'returns the exact deterministic localized response when wording is rejected' do
-        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available, variant_code: 'IMP-3' },
-                                       operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' }))
+      it 'returns the exact deterministic response when wording is rejected (non-stock keeps the fallback)' do
+        stub_reasoning(product_payload(action: :reply, reply: { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' },
+                                       operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'parent_info' }))
         stub_wording(nil)
 
         described_class.perform_now(conversation, assistant, incoming.id)
 
-        expect(conversation.messages.outgoing.last.content).to eq('IMP-3 is currently in stock.')
+        expected = "You're asking about Impeller. Which specific variant would you like to know about?"
+        expect(conversation.messages.outgoing.last.content).to eq(expected)
       end
 
-      # --- Strict customer-language guarantee for pure stock replies ---------------------------
+      # --- Strict fail-closed guarantee for pure stock replies ---------------------------------
       #
-      # For a KNOWN non-source target the visible stock reply must be in that language. The natural
-      # candidate (guaranteed target-language by its own fail-closed gate) is preferred; on rejection
-      # the localized coded fallback is used ONLY if it actually localized. If it degraded to the exact
-      # English source (the provider stripped the fact-mask sentinels), the job refuses the English
-      # stock line and falls closed to the in-language factless handoff — it never ships English to a
-      # non-English customer. An English (source) target keeps the plain English fallback.
+      # The ONLY delivered stock text is an accepted DYNAMIC natural candidate (guaranteed
+      # target-language by its own fail-closed gate). The deterministic (English or localized) stock
+      # sentence is grounding ONLY — it is NEVER the final answer. When no safe candidate is produced
+      # (rejected/failed generation, codeless descriptor, or degraded localization), the job FAILS
+      # CLOSED to the factless handoff — visible in-language acknowledgement when provable, otherwise a
+      # SILENT internal transfer — on EVERY target, including English. It never ships a canned stock
+      # sentence in any language.
       describe 'pure stock reply language guarantee' do
         let(:stock_source) { 'IMP-3 is currently in stock.' }
         let(:ack_en) { Marine::Catalog::ReplyPresenter::HANDOFF_ACK_TEXT }
+        let(:ack_id) { 'Maaf, saya belum bisa memastikannya. Saya akan menghubungkan Anda dengan rekan.' }
 
         def indonesian_trigger
           create(:message, conversation: conversation, message_type: :incoming, content: 'apakah IMP-3 tersedia')
@@ -613,11 +616,12 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
           expect(conversation.messages.outgoing.last.content).to eq('Ya, IMP-3 saat ini tersedia.')
         end
 
-        it 'delivers the localized Indonesian fallback when the candidate is rejected but localization succeeds' do
+        it 'HANDS OFF (never delivers the localized template) when the candidate is rejected even though localization succeeds in-language' do
           msg = indonesian_trigger
           stub_reasoning(stock_id_payload)
           stub_wording(nil)
-          # Masking-aware translator: rephrases prose, leaves the opaque fact placeholders verbatim.
+          # Masking-aware translator: rephrases prose, leaves the opaque fact placeholders verbatim, so
+          # ReplyLocalizer WOULD produce a clean in-language stock line — which must still never ship.
           allow(Marine::Llm::TranslateResponseService).to receive(:new) do |**kwargs|
             localized = kwargs[:text].gsub('is currently in stock', 'saat ini tersedia')
             instance_double(Marine::Llm::TranslateResponseService, call: { ok: true, text: localized, translated: true })
@@ -628,9 +632,11 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
 
           described_class.perform_now(conversation, assistant, msg.id)
 
-          reply = conversation.messages.outgoing.last
-          expect(reply.content).to eq('IMP-3 saat ini tersedia.')
-          expect(reply.content).to include('IMP-3') # variant identity preserved byte-exact
+          # The clean localized stock line was NOT delivered; the turn failed closed to the handoff.
+          expect(conversation.messages.where(content: 'IMP-3 saat ini tersedia.')).to be_empty
+          expect(conversation.messages.outgoing.where(private: false).map(&:content)).not_to include('IMP-3 saat ini tersedia.')
+          expect(stock_handoff_active?).to be(true)
+          expect(claim_status_for(msg)).to eq('completed')
         end
 
         it 'falls closed to an in-language handoff (never English) when the candidate is rejected AND the provider strips the fact-mask sentinels' do
@@ -657,16 +663,17 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
           expect(status).to eq('completed')
         end
 
-        it 'keeps the English fallback for an English (source) target — no needless handoff' do
+        it 'HANDS OFF with the factless English ack for an English (source) target on rejection — never a canned English stock line' do
           stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available, variant_code: 'IMP-3' },
                                          operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' },
                                          language: 'en'))
           stub_wording(nil)
-          allow(Marine::Circuit::HandoffService).to receive(:new).and_call_original
 
           described_class.perform_now(conversation, assistant, incoming.id)
 
-          expect(conversation.messages.outgoing.last.content).to eq('IMP-3 is currently in stock.')
+          expect(conversation.messages.where(content: 'IMP-3 is currently in stock.')).to be_empty
+          expect(conversation.messages.outgoing.where(private: false).last.content).to eq(ack_en)
+          expect(stock_handoff_active?).to be(true)
         end
 
         # --- Generic target-language validation of the FINAL localized fallback -------------------
@@ -748,21 +755,23 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
           expect(stock_handoff_active?).to be(true)
         end
 
-        it '(4) delivers the localized fallback when the detector RELIABLY reads it as the customer language (target id)' do
+        it '(4) HANDS OFF even when the localized fallback is RELIABLY in the customer language (a template is never the final answer)' do
           msg = indonesian_trigger
           localized = 'IMP-3 saat ini tersedia.'
           stub_reasoning(stock_id_payload)
           stub_wording(nil)
-          stub_localizer(stock_source => localized)
-          stub_detector(localized => { language: 'id', reliable: true, confidence: 0.99 })
+          stub_localizer(stock_source => localized, ack_en => ack_id)
+          stub_detector(localized => { language: 'id', reliable: true, confidence: 0.99 },
+                        ack_id => { language: 'id', reliable: true, confidence: 0.99 })
 
           described_class.perform_now(conversation, assistant, msg.id)
 
-          expect(conversation.messages.outgoing.last.content).to eq(localized)
-          expect(stock_handoff_active?).to be(false)
+          expect(conversation.messages.where(content: localized)).to be_empty
+          expect(conversation.messages.outgoing.where(private: false).last.content).to eq(ack_id) # factless handoff ack
+          expect(stock_handoff_active?).to be(true)
         end
 
-        it '(5) delivers the English fallback for an English (source) target and does not hand off' do
+        it '(5) HANDS OFF for an English (source) target when the candidate is rejected — never the canned English stock line' do
           stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available, variant_code: 'IMP-3' },
                                          operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' },
                                          language: 'en'))
@@ -770,8 +779,9 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
 
           described_class.perform_now(conversation, assistant, incoming.id)
 
-          expect(conversation.messages.outgoing.last.content).to eq(stock_source)
-          expect(stock_handoff_active?).to be(false)
+          expect(conversation.messages.where(content: stock_source)).to be_empty
+          expect(conversation.messages.outgoing.where(private: false).last.content).to eq(ack_en)
+          expect(stock_handoff_active?).to be(true)
         end
 
         it '(6) hands off SILENTLY (no visible message) but still executes the handoff when the acknowledgement cannot be proven in-language' do
@@ -795,7 +805,6 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
 
         it '(6b) sends the VISIBLE in-language acknowledgement when it is provably in-language but the stock line is not' do
           msg = indonesian_trigger
-          ack_id = 'Maaf, saya belum bisa memastikannya. Saya akan menghubungkan Anda dengan rekan.'
           stub_reasoning(stock_id_payload)
           stub_wording(nil)
           stub_localizer(stock_source => stock_source, ack_en => ack_id)
@@ -851,10 +860,11 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         expect(conversation.messages.outgoing.last.content).to eq('In stock right now.')
       end
 
-      it 'delivers deterministic content with no re-localization under the finalize lock when wording generation fails' do
+      it 'delivers deterministic content with no re-localization under the finalize lock when wording generation fails (non-stock reply)' do
         # The eligible path is already committed, so a wording-service failure retains the exact
         # localized fallback computed lock-free; delivery uses it verbatim with NO second
-        # ReplyLocalizer call (which would be a network call under the finalize row lock).
+        # ReplyLocalizer call (which would be a network call under the finalize row lock). A non-stock
+        # reply is used because a stock reply fails closed to the handoff, not the deterministic line.
         localizer_calls = 0
         allow(Marine::Catalog::ReplyLocalizer).to receive(:new).and_wrap_original do |method, **kwargs|
           localizer_calls += 1
@@ -863,21 +873,25 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         raising = instance_double(Marine::Catalog::GroundedProductWordingService)
         allow(raising).to receive(:call).and_raise(StandardError, 'boom')
         allow(Marine::Catalog::GroundedProductWordingService).to receive(:new).and_return(raising)
-        stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available, variant_code: 'IMP-3' },
-                                       operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' }))
+        stub_reasoning(product_payload(
+                         action: :reply,
+                         reply: { kind: :price_available, variant_code: 'IMP-3', currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
+                         operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'price' }
+                       ))
 
         described_class.perform_now(conversation, assistant, incoming.id)
 
-        expect(conversation.messages.outgoing.last.content).to eq('IMP-3 is currently in stock.')
+        expect(conversation.messages.outgoing.last.content).to eq('The price for IMP-3 is IDR 150000 per pcs.')
         expect(localizer_calls).to eq(1) # only the single lock-free precompute; delivery did not re-localize
         expect(claim_status).to eq('completed')
       end
 
-      it 'falls back to deterministic English with no further network call when localization itself fails during preparation' do
-        # Localization raising before any localized fallback exists: preparation degrades to the
-        # deterministic English reply (the exact text ReplyLocalizer itself returns on failure) and
-        # never retries an LLM/network path under the finalize lock. The wording service is never
-        # even constructed (the failure precedes it).
+      it 'HANDS OFF SILENTLY for a codeless stock reply (no extra network call) when localization fails in preparation — never a canned line' do
+        # Localization raising before any localized fallback exists: for a stock reply the deterministic
+        # English stock sentence is grounding only, so preparation degrades to a SILENT handoff (never a
+        # canned stock line) and never retries an LLM/network path under the finalize lock. The wording
+        # service is never even constructed (the failure precedes it, and a codeless descriptor is
+        # ineligible anyway).
         call_count = 0
         allow(Marine::Catalog::ReplyLocalizer).to receive(:new) do
           call_count += 1
@@ -887,11 +901,13 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         end
         expect(Marine::Catalog::GroundedProductWordingService).not_to receive(:new)
         stub_reasoning(product_payload(action: :reply, reply: { kind: :stock_available },
-                                       operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' }))
+                                       operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'stock' }, language: 'id'))
 
         described_class.perform_now(conversation, assistant, incoming.id)
 
-        expect(conversation.messages.outgoing.last.content).to eq('Good news — that item is currently in stock.')
+        expect(conversation.messages.where(content: 'Good news — that item is currently in stock.')).to be_empty
+        expect(conversation.messages.outgoing.where(private: false)).to be_empty
+        expect(Marine::Circuit::HandoffStateStore.new(conversation: conversation.reload).active?).to be(true)
         expect(call_count).to eq(1) # localization attempted once (raised); never retried under the lock
         expect(claim_status).to eq('completed')
       end
