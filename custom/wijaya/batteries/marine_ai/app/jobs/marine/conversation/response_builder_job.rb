@@ -417,90 +417,67 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
   # Preparation failed before a validated localized reply existed. Deliver the deterministic English
   # text — EXCEPT for a pure stock reply under a known non-source target, where English would be a
-  # wrong-language stock assertion: refuse it and hand off SILENTLY instead (the strict per-language
-  # guarantee is preserved, and no wrong-language stock line is ever sent). Unknown/source targets
-  # keep the English fallback (no guarantee is claimed there). No network call is made here.
+  # wrong-language stock assertion: the shared composer refuses it and hands off SILENTLY instead
+  # (the strict per-language guarantee is preserved, and no wrong-language stock line is ever sent).
+  # Unknown/source targets keep the English fallback (no guarantee is claimed there). No network
+  # call is made here (localization already failed).
   def degraded_product_text(plan)
     english = presenter.reply_text(plan)
-    return english unless stock_reply_kind?(plan[:reply]) && stock_reply_target_language
-    return english if reliably_in_language?(english, stock_reply_target_language)
+    return english unless stock_reply_kind?(plan[:reply])
+
+    decision = stock_composer.degraded(text: english, reply_language: @product_language)
+    return decision.text if decision.deliver?
 
     @force_stock_language_handoff = true
     @stock_handoff_silent = true
     nil
   end
 
-  # An accepted natural-wording candidate when the descriptor is protection-eligible, else the
-  # exact localized fallback — the same "naturalize only if protected, keep localized otherwise"
-  # rule #catalog_caption_text applies, factored out so #prepare_product_wording stays a plain
-  # dispatch. Runs inside that method's rescue, so any wording/localization failure still degrades
+  # An accepted natural-wording candidate when the descriptor is protection-eligible, else the exact
+  # localized fallback. A pure stock reply is delegated to the shared
+  # Marine::Catalog::StockReplyComposer (the SAME dynamic response boundary the source-less
+  # PlaygroundPreview consumes) so both surfaces reach the identical DELIVER/HANDOFF business
+  # conclusion; every other protection-eligible reply keeps the inline naturalize-or-fallback rule.
+  # Runs inside #prepare_product_wording's rescue, so any wording/localization failure still degrades
   # to the deterministic English text.
   def naturalized_product_text(plan, descriptor, fallback)
+    return stock_reply_text(descriptor, fallback) if stock_reply_kind?(descriptor)
     return fallback unless fact_protection.eligible?(action: plan[:action], descriptor: descriptor)
 
-    candidate = wording_candidate(plan, descriptor, fallback)
-    return candidate if candidate
-    return fallback unless stock_reply_kind?(descriptor)
+    wording_candidate(plan, descriptor, fallback) || fallback
+  end
 
-    # A pure stock reply must never ship in the wrong language: guarantee the customer's language
-    # for a known non-source target, else route to the in-language handoff floor.
-    language_safe_stock_text(fallback)
+  # Resolve a pure stock reply through the shared composer, then map its Decision onto this
+  # conversation's delivery adapter: deliver the accepted/in-language text, or record the fail-closed
+  # circuit-handoff flags (visible in-language acknowledgement, or SILENT internal transfer). The
+  # composer runs the natural wording and the strict fail-closed language check identically to the
+  # Playground, so neither surface can claim availability while the other hands off.
+  def stock_reply_text(descriptor, fallback)
+    context = Marine::Conversation::ContextBuilder.new(conversation: @conversation, trigger_message: @trigger_message).build
+    decision = stock_composer.compose(
+      descriptor: descriptor, fallback: fallback, reply_language: @product_language,
+      customer_request: context.trigger, message_history: context.history, opening: context.opening?,
+      localized_ack: -> { localized_product_text(presenter.handoff_ack_text(nil)) }
+    )
+    return decision.text if decision.deliver?
+
+    @force_stock_language_handoff = true
+    @handoff_message = decision.message
+    @stock_handoff_silent = decision.silent
+    nil
   end
 
   # Pure binary-availability reply kinds — the ONLY replies whose visible text carries the strict
   # "always in the customer's language" guarantee (their sole fact is a variant code, so the safe
   # floor can drop to a factless in-language handoff without losing a price/quantity/other fact).
-  STOCK_REPLY_KINDS = %i[stock_available stock_empty].freeze
+  STOCK_REPLY_KINDS = Marine::Catalog::StockReplyComposer::STOCK_KINDS
 
   def stock_reply_kind?(descriptor)
     descriptor.is_a?(Hash) && STOCK_REPLY_KINDS.include?(descriptor[:kind])
   end
 
-  # The language-guaranteed text for a pure stock reply whose natural candidate was NOT accepted.
-  # For a known non-source target the VISIBLE stock line must be PROVABLY in that language: the
-  # localized coded fallback is delivered ONLY when the shared detector RELIABLY reads it with the
-  # customer's primary subtag. A fallback that is the exact English source, an English paraphrase,
-  # another language, mixed, unreadable, or only unreliably detected all FAIL CLOSED (byte-equality
-  # to the source alone can never prove language) — the coded stock line is refused and the turn
-  # escalates through the SAME circuit handoff. That handoff carries the factless in-language
-  # acknowledgement only when THAT too is provably in the customer's language; otherwise it hands
-  # off SILENTLY (internal transfer, no visible message), so no wrong-language line is ever sent. An
-  # unknown/source target keeps the existing English fallback (no guarantee is claimed there).
-  def language_safe_stock_text(fallback)
-    target = stock_reply_target_language
-    return fallback if target.nil?
-    return fallback if reliably_in_language?(fallback, target)
-
-    @force_stock_language_handoff = true
-    ack = localized_product_text(presenter.handoff_ack_text(nil))
-    if reliably_in_language?(ack, target)
-      @handoff_message = ack
-    else
-      @stock_handoff_silent = true
-    end
-    nil
-  end
-
-  # True ONLY when `text` is RELIABLY detected in `target` (compared on the primary subtag). A
-  # reliably-different, mixed, unreadable, or only-unreliably-read result returns false, so any
-  # stock assertion or acknowledgement that cannot be proven in the customer's language fails
-  # closed. Reuses the shared Marine::Llm::LanguageDetector — the SAME reliable-same-primary-subtag
-  # mechanism the wording service gates its accepted candidate with — with no phrase list.
-  def reliably_in_language?(text, target)
-    result = Marine::Llm::LanguageDetector.new(text.to_s).detect
-    result[:reliable] && result[:language].to_s.strip.downcase.split('-').first == target
-  end
-
-  # The bounded non-source primary target subtag for the current stock reply, or nil when the
-  # per-turn provider language is absent/unknown/malformed or is the English source (English delivery
-  # acceptable). Mirrors the localizer's own format allowlist and source language.
-  def stock_reply_target_language
-    code = @product_language.to_s.strip.downcase
-    return nil if code.empty? || code == Marine::Catalog::ReplyLocalizer::UNKNOWN
-    return nil unless code.match?(Marine::Catalog::ReplyLocalizer::LANGUAGE_PATTERN)
-
-    primary = code.split('-').first
-    primary == Marine::Catalog::ReplyLocalizer::SOURCE_LANGUAGE ? nil : primary
+  def stock_composer
+    @stock_composer ||= Marine::Catalog::StockReplyComposer.new(account: @conversation.account)
   end
 
   # --- Phase 7: catalog caption / fallback wording (precomputed, lock-free) --------------

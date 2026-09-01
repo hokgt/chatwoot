@@ -592,6 +592,14 @@ patches:
       # descriptors are never naturalized. Precomputed lock-free by ResponseBuilderJob.
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_fact_protection_validator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/grounded_product_wording_service.rb
+      # Shared, surface-agnostic dynamic response boundary for a pure binary STOCK reply. Centralizes
+      # the fact-protected natural rephrase AND the strict fail-closed customer-language DELIVER/HANDOFF
+      # decision (previously only in ResponseBuilderJob) so the trigger-bound conversation and the
+      # source-less PlaygroundPreview reach the SAME business conclusion for the same catalog/context/
+      # language state — neither claims availability while the other hands off. Pure over its inputs
+      # (no DB/flow/state read or write); each surface supplies the already-localized fallback + a lazy
+      # localized-acknowledgement producer and consumes the returned Decision via its own adapter.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/stock_reply_composer.rb
       # Phase 7 — context-aware natural wording for a product HANDOFF acknowledgement. An
       # unsupported request (warehouse location, delivery to a customer-supplied destination,
       # shipping cost) or an exact-quantity question hands off; instead of the generic branded
@@ -860,6 +868,12 @@ patches:
       # fail-closed, no facts/history logged).
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_fact_protection_validator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/grounded_product_wording_service_spec.rb
+      # Shared StockReplyComposer: unit coverage of the DELIVER/HANDOFF decision (accepted natural
+      # candidate, in-language/source/unknown-target fallback delivery, fail-closed handoff with
+      # in-language vs silent acknowledgement, codeless-descriptor passthrough, degraded path) plus the
+      # conversation<->Playground stock parity spec proving identical business conclusions.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/stock_reply_composer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/stock_reply_parity_spec.rb
       # Phase 7 — context-aware natural product-handoff acknowledgement service + regression
       # coverage for quantity-inquiry routing, price/catalog grounded context, and language
       # consistency (see marine_ai_natural_reply_regression_spec).

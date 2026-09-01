@@ -32,6 +32,9 @@
 # blank query, or an unexpected (non-catalog) failure (fail-safe: no worse than the prior behavior).
 module Marine
   module Catalog
+    # rubocop:disable Metrics/ClassLength -- the preview is a single cohesive read-only delivery
+    # adapter (state decode/apply, catalog card, and now the shared-composer stock path) whose parts
+    # only make sense together; splitting it would scatter the source-less preview contract.
     class PlaygroundPreview
       LOG_PREFIX = '[Marine::Catalog::PlaygroundPreview]'.freeze
       SOURCE_TYPE = 'marine_product'.freeze
@@ -102,10 +105,55 @@ module Marine
 
       def build_payload(plan, query, history, prior)
         snapshot = apply_state(plan, prior)
+        return stock_payload(plan, query, history, snapshot) if stock_reply?(plan)
+
         english, catalog_card, next_snapshot = render(plan, snapshot)
         text = localize(english: english, protection: localization_protection(plan),
                         language: plan[:language], query: query, history: history)
         reply_payload(text, next_state: next_snapshot, catalog: catalog_card)
+      end
+
+      # A pure stock reply is resolved through the shared Marine::Catalog::StockReplyComposer — the
+      # SAME dynamic response boundary the real conversation (ResponseBuilderJob) consumes — so the
+      # source-less preview reaches the IDENTICAL DELIVER/HANDOFF business conclusion for the same
+      # account/assistant/context/catalog/language state. It never claims availability where a real
+      # conversation would hand off (the reported inconsistency), nor the reverse.
+      def stock_reply?(plan)
+        plan[:action] == :reply &&
+          Marine::Catalog::StockReplyComposer::STOCK_KINDS.include?(plan.dig(:reply, :kind))
+      end
+
+      # DELIVER -> the composer's in-language stock text (accepted natural candidate or in-language/
+      # source deterministic fallback). HANDOFF -> the factless acknowledgement the customer would
+      # see (the composer's in-language acknowledgement when provable, else its localized fallback
+      # acknowledgement), rendered preview-only with NO assignment/handoff/persistence mutation —
+      # exactly the safe outcome the real conversation reaches, just via the preview delivery adapter.
+      def stock_payload(plan, query, history, snapshot)
+        descriptor = plan[:reply]
+        fallback = localize(english: presenter.reply_text(plan), protection: [plan[:action], descriptor],
+                            language: plan[:language], query: query, history: history)
+        decision = stock_composer.compose(
+          descriptor: descriptor, fallback: fallback, reply_language: plan[:language],
+          customer_request: query.to_s, message_history: history, opening: opening?(history),
+          localized_ack: lambda {
+            localize(english: presenter.handoff_ack_text(nil), protection: [nil, nil],
+                     language: plan[:language], query: query, history: history)
+          }
+        )
+        return reply_payload(decision.text, next_state: snapshot) if decision.deliver?
+
+        reply_payload(decision.message || decision.ack, next_state: snapshot)
+      end
+
+      # Opening (vs follow-up) for the reused greeting policy: no prior assistant turn in the bounded
+      # history mirrors the conversation's "Marine has not yet replied in this window". Wording only —
+      # it never affects the DELIVER/HANDOFF business decision.
+      def opening?(history)
+        Array(history).none? { |turn| (turn[:role] || turn['role']).to_s == 'assistant' }
+      end
+
+      def stock_composer
+        @stock_composer ||= Marine::Catalog::StockReplyComposer.new(account: account)
       end
 
       # Apply the plan's deterministic state operation to the prior IN-MEMORY snapshot — the exact
@@ -282,5 +330,6 @@ module Marine
         Rails.logger.info("#{LOG_PREFIX} event=#{event} #{parts}".strip)
       end
     end
+    # rubocop:enable Metrics/ClassLength
   end
 end
