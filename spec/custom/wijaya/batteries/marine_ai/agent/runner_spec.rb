@@ -40,6 +40,14 @@ RSpec.describe Marine::Agent::Runner do
     allow(Marine::Charge::ResponseGenerator).to receive(:new).and_return(generator)
     allow(Marine::Agent::ScenarioSelector).to receive(:new).and_return(selector)
     allow(selector).to receive(:select).and_return(nil)
+    # These examples exercise the runner's routing / greeting / Playground behavior, NOT the shared
+    # domain-boundary seam (which is covered in full by runner_domain_boundary_spec and
+    # domain_boundary_guard_spec). The guard is now fail-CLOSED on an unconfigured LLM, so stub it to
+    # ALLOW here — the production "allowed, in-domain" decision — so every non-boundary case continues
+    # to fall through to the RAG ResponseGenerator exactly as before.
+    allow(Marine::Circuit::DomainBoundaryGuard).to receive(:new).and_return(
+      instance_double(Marine::Circuit::DomainBoundaryGuard, call: nil)
+    )
   end
 
   describe 'default retrieval path' do

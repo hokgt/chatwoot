@@ -147,6 +147,13 @@ RSpec.describe 'Api::V1::Accounts::Marine::Assistants', type: :request do
         )
         allow(Marine::Agent::ScenarioSelector).to receive(:new).and_return(selector)
         allow(selector).to receive(:select).and_return(nil)
+        # The shared domain-boundary guard is now fail-CLOSED on an unconfigured LLM (there is none in
+        # this request spec). This context proves the source-less preview's delivery/isolation, not the
+        # boundary (covered by domain_boundary_guard_spec / runner_domain_boundary_spec), so stub the
+        # guard to ALLOW — the production "in-domain, allowed" decision — and let the turn reach RAG.
+        allow(Marine::Circuit::DomainBoundaryGuard).to receive(:new).and_return(
+          instance_double(Marine::Circuit::DomainBoundaryGuard, call: nil)
+        )
       end
 
       it 'returns a grounded reply and delivers nothing' do
@@ -211,6 +218,12 @@ RSpec.describe 'Api::V1::Accounts::Marine::Assistants', type: :request do
         allow(Marine::Charge::ResponseGenerator).to receive(:new).and_return(generator)
         allow(Marine::Agent::ScenarioSelector).to receive(:new).and_return(selector)
         allow(selector).to receive(:select).and_return(nil)
+        # Guard is fail-closed on the unconfigured test LLM; stub it to ALLOW so the turn reaches the
+        # (stubbed) generator that raises the deadline — this test asserts deadline propagation past
+        # Runner#run's `rescue StandardError`, not the boundary decision.
+        allow(Marine::Circuit::DomainBoundaryGuard).to receive(:new).and_return(
+          instance_double(Marine::Circuit::DomainBoundaryGuard, call: nil)
+        )
         allow(generator).to receive(:generate).and_raise(deadline_error)
 
         post "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}/playground",

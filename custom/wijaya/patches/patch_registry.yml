@@ -470,7 +470,12 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/charge/grounded_wording_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/charge/fact_preservation_validator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/charge/confidence_scorer.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/charge/control_leak_inspector.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/handoff_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/domain_boundary_guard.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/domain_security_decision_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/boundary_reply_composer.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/boundary_reply_validator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/assistant_chat_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/embedding_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/config.rb
@@ -800,6 +805,8 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/charge/response_generator_hours_grounding_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/charge/grounded_wording_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/charge/fact_preservation_validator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/control_leak_inspector_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/response_generator_confidentiality_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/response_builder_job_spec.rb
       # D6 — full trigger-bound job-path proof: one inbound price+stock turn -> one composite message.
       - spec/custom/wijaya/batteries/marine_ai/conversation/product_multi_intent_job_spec.rb
@@ -849,6 +856,12 @@ patches:
       # Handoff lifecycle window — channel-aware boundary expiry + inbound-driven re-engagement
       # (fresh window clears the marker; within-window stays silent; expiry emits nothing).
       - spec/custom/wijaya/batteries/marine_ai/circuit/handoff_window_spec.rb
+      # Textilindo domain / security boundary — shared post-product/pre-RAG gate: semantic
+      # classifier, dynamic refusal generator, independent refusal validator, and the shared guard.
+      - spec/custom/wijaya/batteries/marine_ai/circuit/domain_security_decision_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/circuit/boundary_reply_composer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/circuit/boundary_reply_validator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/circuit/domain_boundary_guard_spec.rb
       # Phase 4 — Product Decision and State Machine Orchestrator specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/variant_resolver_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/reply_renderer_spec.rb
@@ -914,6 +927,7 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/copilot/query_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/agent/scenario_selector_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/agent/runner_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/agent/runner_domain_boundary_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/agent/faq_precedence_spec.rb
       # Playground preview — multi-turn context forwarding, bounded/allowlisted history,
       # authorization, and non-delivering isolation (no Conversation/Message side effects).

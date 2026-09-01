@@ -59,6 +59,11 @@ class Marine::Agent::Runner
   # (source-less) or direct-unit run has no trigger and falls back to the caller-supplied
   # additional_message / message_history unchanged.
   def run(additional_message: nil, message_history: [])
+    # Reset the per-run Gate-G signal before routing so a prior turn's EXACT approved-FAQ hit can
+    # never silently bypass the domain-boundary classifier for a later unrelated turn if this Runner
+    # instance is ever reused (a fresh instance is created per call today; this keeps that invariant
+    # explicit and safe regardless of caller).
+    @faq_precedence_hit = false
     context = canonical_context
     history = context ? context.history : Array(message_history)
     trigger = context ? context.trigger : additional_message
@@ -68,10 +73,7 @@ class Marine::Agent::Runner
                               source: source_label, query_present: query.present?,
                               interaction_phase: context&.phase)
 
-    # Product orchestration BEFORE RAG: the trigger-bound conversation path (product_payload) or,
-    # for a source-less run with no conversation, the read-only Playground catalog preview. Both
-    # return nil to fall through to the unchanged retrieval path.
-    orchestrated = product_payload(context, query) || playground_preview(query, history)
+    orchestrated = pre_rag_payload(context, query, history)
     return orchestrated if orchestrated
 
     scenario = select_scenario(query)
@@ -179,6 +181,9 @@ class Marine::Agent::Runner
     return false if result.nil?
     return false unless result.fallback_reason.blank? && result.confidence >= FAQ_PRECEDENCE_MIN_CONFIDENCE
 
+    # Remember the EXACT approved match so the shared domain-boundary gate bypasses classification for
+    # this highest-trust, curated, in-domain turn (see #domain_boundary_payload) — no extra retrieval.
+    @faq_precedence_hit = true
     log_event('faq.precedence', confidence: result.confidence, source_type: result.source_type)
     true
   end
@@ -275,6 +280,43 @@ class Marine::Agent::Runner
     Marine::Catalog::ProductFlowStateStore.new(conversation: nil).normalize_snapshot(decoded).present?
   rescue StandardError
     false
+  end
+
+  # The shared domain/security decision. Returns nil to ALLOW (fall through to the unchanged RAG
+  # ResponseGenerator) or a delivery-compatible deny payload. Fail-CLOSED on every uncertain state,
+  # including an unconfigured / erroring classifier (denies with the safe fallback). See
+  # DomainBoundaryGuard.
+  #
+  # An EXACT approved FAQ/KB match bypasses the gate entirely: it is the highest-trust, curated,
+  # in-domain signal (the same Gate G tier that already preempts product orchestration), so it is
+  # never subjected to classification and its approved answer is always deliverable. The signal is
+  # whatever Gate G already computed on this turn (product_payload / playground_preview) — no extra
+  # retrieval. On the legacy source-less path Gate G is not evaluated, so the gate runs and, in
+  # production (LLM configured), the classifier itself allows a genuine Textilindo/FAQ question.
+  def domain_boundary_payload(query, history)
+    return nil if @faq_precedence_hit
+
+    Marine::Circuit::DomainBoundaryGuard
+      .new(assistant: assistant, account: product_account)
+      .call(query: query, history: history)
+  end
+
+  # The single pre-RAG orchestration fallthrough, in priority order: product orchestration (the
+  # trigger-bound conversation path) or, for a source-less run with no conversation, the read-only
+  # Playground catalog preview; then the SINGLE shared post-product/pre-RAG Textilindo domain /
+  # security boundary (domain_boundary_result) — both surfaces converge here and reach the identical
+  # decision. Each returns nil to fall through to the unchanged retrieval path; a boundary denial
+  # returns a delivery-compatible refusal payload instead of entering general RAG.
+  def pre_rag_payload(context, query, history)
+    product_payload(context, query) || playground_preview(query, history) ||
+      domain_boundary_result(query, history)
+  end
+
+  # The boundary decision wrapped so a Playground deny keeps its ephemeral flow token exactly as a
+  # RAG/FAQ turn would (no-op on the conversation path). nil (allow) falls through to general RAG.
+  def domain_boundary_result(query, history)
+    payload = domain_boundary_payload(query, history)
+    payload && preserve_playground_state(payload)
   end
 
   def response_generator
