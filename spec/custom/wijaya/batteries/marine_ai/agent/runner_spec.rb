@@ -471,7 +471,7 @@ RSpec.describe Marine::Agent::Runner do
 
       expect(result).to eq(payload)
       expect(Marine::Catalog::PlaygroundPreview).to have_received(:new).with(assistant: assistant, account: account)
-      expect(preview).to have_received(:call).with(query: 'ada katalog baby doll ?', history: [], state_token: nil)
+      expect(preview).to have_received(:call).with(query: 'ada katalog baby doll ?', history: [], state_token: nil, knowledge_available: false)
       expect(generator).not_to have_received(:generate)
     end
 

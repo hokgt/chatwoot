@@ -54,6 +54,16 @@ module Marine
       # attribute/product/language/phrase list.
       KNOWLEDGE_INTENTS = %w[parent_info variant_info].freeze
 
+      # Transactional / deliverable intents that carry a DETERMINISTIC, repository-grounded (or
+      # fail-closed) catalog answer and must therefore NEVER be diverted to grounded KB retrieval,
+      # even when the KB has a confident match for the turn: price and stock are repository facts,
+      # catalog is a native document delivery. Every OTHER product-related turn (parent_info,
+      # variant_info, or an unsupported/unknown product turn) is INFORMATIONAL — its only catalog
+      # output is an attribute-free identity echo or a clarification/handoff — so it may defer to the
+      # approved Knowledge Base when the KB actually answers it (see #defer_to_knowledge?). An
+      # exact-quantity ask is transactional-adjacent and is excluded separately via quantity_inquiry.
+      TRANSACTIONAL_INTENTS = %w[price stock catalog].freeze
+
       # The only supported COMBINABLE pair for a single turn: price AND stock. Both are supported,
       # repository-grounded, variant-required intents, so one turn asking for both is fulfilled with a
       # single composite reply (assembled from the existing price/stock descriptors) rather than
@@ -109,9 +119,9 @@ module Marine
       # Full path: extract intent from raw customer text (via the INJECTED extractor,
       # never the provider directly), then plan. Only this entry point touches the
       # extractor, so a no-provider test uses #plan_for_intent with a pre-extracted intent.
-      def process(text:, context: nil, flow: nil, suppressed: false)
+      def process(text:, context: nil, flow: nil, suppressed: false, knowledge_available: false)
         intent = intent_extractor.extract(text: text, context: context, state: state_summary(flow))
-        plan_for_intent(intent: intent, flow: flow, suppressed: suppressed, text: text)
+        plan_for_intent(intent: intent, flow: flow, suppressed: suppressed, text: text, knowledge_available: knowledge_available)
       end
 
       # Deterministic planning over an already-extracted (untrusted) intent hash and a
@@ -121,13 +131,9 @@ module Marine
       # `text` is the OPTIONAL raw customer turn. When supplied (the full #process path),
       # it enables data-driven family recovery from the untrusted turn when the extracted
       # family mention is missing or noisy; direct-component callers may omit it.
-      def plan_for_intent(intent:, flow: nil, suppressed: false, text: nil)
+      def plan_for_intent(intent:, flow: nil, suppressed: false, text: nil, knowledge_available: false)
         intent = symbolize(intent)
-        # Raw turn (family recovery) and bounded delivery metadata are captured per call
-        # before any early return so every built plan carries consistent metadata.
-        @turn_text = text.to_s
-        @plan_language = normalize_language(intent[:customer_language])
-        @plan_handoff_category = normalize_unsupported_request(intent[:unsupported_request])
+        capture_turn_metadata(intent, text, knowledge_available)
 
         return build(:stop) if suppressed
 
@@ -142,6 +148,14 @@ module Marine
         @requested_intents = effective_requested_intents(intent, flow)
 
         intent = retain_flow_intent(intent, flow)
+        # An INFORMATIONAL product turn the approved KB confidently answers defers to grounded KB
+        # retrieval (:not_product) instead of an attribute-free catalog identity echo, a variant
+        # clarification, or an unsupported-request handoff — so an approved KB fact about a product is
+        # surfaced rather than hidden by catalog interception. Fires only when the KB actually answers
+        # (never a fabricated deflection) and never for a transactional price/stock/catalog or
+        # exact-quantity turn, whose deterministic / fail-closed behavior is preserved below. Runs
+        # AFTER retain_flow_intent so an active price/stock variant continuation is already excluded.
+        return build(:not_product) if defer_to_knowledge?(intent)
         return build(:handoff, reply: reply_renderer.unsupported) unless SUPPORTED_INTENTS.include?(intent[:intent].to_s)
 
         resolve_and_plan(intent, flow)
@@ -152,6 +166,22 @@ module Marine
       end
 
       private
+
+      # Per-call turn metadata captured before any early return so every built plan carries it
+      # consistently: the raw turn (data-driven family recovery), the bounded delivery language and
+      # unsupported-request handoff category, and the injected KB-availability signal. The last is
+      # whether the approved Knowledge Base confidently answers THIS turn's query — computed by the
+      # runtime (which owns KB access) and injected so this domain layer stays free of any
+      # KB/retrieval coupling; it is only ever CONSULTED for an informational turn (see
+      # #defer_to_knowledge?) and can never redirect a transactional price/stock/catalog or
+      # exact-quantity turn. It defaults false, so every existing direct caller keeps its unchanged
+      # deterministic catalog behavior.
+      def capture_turn_metadata(intent, text, knowledge_available)
+        @turn_text = text.to_s
+        @plan_language = normalize_language(intent[:customer_language])
+        @plan_handoff_category = normalize_unsupported_request(intent[:unsupported_request])
+        @knowledge_available = knowledge_available
+      end
 
       attr_reader :family_repository, :variant_repository, :price_repository,
                   :stock_repository, :variant_resolver, :reply_renderer
@@ -210,6 +240,22 @@ module Marine
         return build(:not_product) if KNOWLEDGE_INTENTS.include?(intent[:intent].to_s)
 
         clarify_family_plan(intent, flow, identifier)
+      end
+
+      # True when this INFORMATIONAL product turn should defer to grounded KB retrieval because the
+      # approved Knowledge Base confidently answers it. Requires the injected knowledge_available
+      # signal; never fires for a transactional / deliverable intent (TRANSACTIONAL_INTENTS) or an
+      # exact-quantity ask (quantity_inquiry), so price/stock/catalog delivery and the exact-quantity
+      # handoff stay deterministic and fail-closed. Every remaining product-related intent
+      # (parent_info, variant_info, or an unsupported/unknown product turn) is informational — its
+      # only catalog output is an attribute-free echo or a clarification/handoff — so the approved KB
+      # answer, when present, wins. Generic and data-driven: the availability signal comes from the
+      # runtime KB retrieval, not any attribute/product/language/phrase list here.
+      def defer_to_knowledge?(intent)
+        return false unless @knowledge_available
+        return false if truthy(intent[:quantity_inquiry])
+
+        TRANSACTIONAL_INTENTS.exclude?(intent[:intent].to_s)
       end
 
       # Family decision/context for the turn. Returns the settled

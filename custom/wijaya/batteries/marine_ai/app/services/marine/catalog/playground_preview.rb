@@ -49,13 +49,14 @@ module Marine
         @account = account
       end
 
-      def call(query:, history: [], state_token: nil)
+      def call(query:, history: [], state_token: nil, knowledge_available: false)
         return nil if query.blank?
 
         bounded = bounded_history(history)
         prior = decode_state(state_token)
         plan = orchestrator.process(text: query.to_s, context: bounded,
-                                    flow: store.snapshot_for_planning(prior) || {}, suppressed: false)
+                                    flow: store.snapshot_for_planning(prior) || {}, suppressed: false,
+                                    knowledge_available: knowledge_available)
         return nil if plan[:action] == :not_product
 
         log_event('preview.plan', action: plan[:action], language: plan[:language])

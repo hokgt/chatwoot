@@ -75,6 +75,50 @@ RSpec.describe 'Marine product-knowledge grounding', type: :model do
       expect(plan[:action]).to eq(:clarify_family)
       expect(plan[:reply][:kind]).to eq(:clarify_family)
     end
+
+    # KB-availability-gated informational deferral: when the runtime reports the approved KB
+    # confidently answers the turn (knowledge_available: true), an INFORMATIONAL product turn defers
+    # to grounded KB retrieval (:not_product) instead of a catalog identity echo / variant
+    # clarification / handoff that would HIDE the approved KB answer — even when the family resolves.
+    # A transactional price/stock/catalog or exact-quantity turn is NEVER diverted. Without the signal
+    # (default false) every intent keeps its unchanged deterministic catalog behavior (proven above).
+    context 'when the approved KB confidently answers the turn (knowledge_available: true)' do
+      before do
+        # Family resolves to a concrete catalog row, so the catalog COULD deflect — the deferral must
+        # still win for an informational turn because the KB actually holds the answer.
+        allow(family_repository).to receive(:resolve_exact).and_return(code: 'FAM-1', name: 'Nebula Weave')
+        allow(variant_repository).to receive(:attribute_names).with('FAM-1').and_return(['sheen'])
+      end
+
+      %w[parent_info variant_info unsupported unknown].each do |informational|
+        it "defers an informational #{informational} turn to grounded KB (:not_product)" do
+          plan = orchestrator.plan_for_intent(
+            intent: knowledge_intent(intent: informational, requires_exact_variant: informational == 'variant_info'),
+            flow: nil, knowledge_available: true
+          )
+
+          expect(plan[:action]).to eq(:not_product)
+          expect(plan[:state]).to eq(operation: :none, changes: {})
+        end
+      end
+
+      %w[price stock catalog].each do |transactional|
+        it "NEVER diverts a transactional #{transactional} turn even when the KB is confident (safety)" do
+          plan = orchestrator.plan_for_intent(intent: knowledge_intent(intent: transactional), flow: nil, knowledge_available: true)
+
+          expect(plan[:action]).not_to eq(:not_product)
+        end
+      end
+
+      it 'NEVER diverts an exact-quantity (quantity_inquiry) stock turn even when the KB is confident (safety)' do
+        allow(family_repository).to receive(:resolve_exact).and_return(code: 'FAM-1', name: 'Nebula Weave')
+        plan = orchestrator.plan_for_intent(
+          intent: knowledge_intent(intent: 'stock', quantity_inquiry: true), flow: nil, knowledge_available: true
+        )
+
+        expect(plan[:action]).not_to eq(:not_product)
+      end
+    end
   end
 
   # --- Layer 2: RAG grounding leads with the top matched records ---------------------------

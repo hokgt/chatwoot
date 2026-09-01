@@ -148,30 +148,52 @@ class Marine::Agent::Runner
   # circuits BEFORE the orchestrator so an erroneous product classification cannot preempt it.
   def product_payload(context, query)
     return nil unless context
-    return nil if faq_precedence?(query)
+
+    kb = knowledge_result(query)
+    return nil if faq_precedence?(kb)
 
     plan = product_orchestrator.process(text: context.trigger, context: context.history,
-                                        flow: product_flow, suppressed: false)
+                                        flow: product_flow, suppressed: false,
+                                        knowledge_available: knowledge_available?(kb))
     return nil if plan[:action] == :not_product
 
     log_event('answer.product', action: plan[:action])
     { 'action' => 'product', 'orchestration_path' => PATH_PRODUCT, 'product_plan' => plan }
   end
 
-  # True when an approved FAQ/KB entry EXACTLY matches this turn's query, so the turn must be
-  # answered via the unchanged retrieval path instead of product orchestration. Uses the same
-  # deterministic retrieval the ResponseGenerator uses and requires a confident (non-fallback)
-  # exact match. A blank query, an empty/low-confidence/token-blended result, or any retrieval
-  # that falls back never grants precedence (fail closed), so product routing is preserved for
-  # every genuine product request. See FAQ_PRECEDENCE_MIN_CONFIDENCE.
-  def faq_precedence?(query)
-    return false if query.blank?
+  # One deterministic approved-KB retrieval for this turn's query, shared by Gate G
+  # (#faq_precedence?) and the informational KB-availability signal (#knowledge_available?) so a
+  # single retrieve serves both. Assistant/account-scoped, approved-only. nil for a blank query.
+  def knowledge_result(query)
+    return nil if query.blank?
 
-    result = knowledge_base.retrieve(query, limit: 1)
+    knowledge_base.retrieve(query, limit: 1)
+  end
+
+  # True when an approved FAQ/KB entry EXACTLY matches this turn's query, so the turn must be
+  # answered via the unchanged retrieval path instead of product orchestration. Requires a
+  # confident (non-fallback) EXACT match. An empty/low-confidence/token-blended/fallback result
+  # never grants precedence (fail closed), so product routing is preserved for every genuine
+  # product request. See FAQ_PRECEDENCE_MIN_CONFIDENCE.
+  def faq_precedence?(result)
+    return false if result.nil?
     return false unless result.fallback_reason.blank? && result.confidence >= FAQ_PRECEDENCE_MIN_CONFIDENCE
 
     log_event('faq.precedence', confidence: result.confidence, source_type: result.source_type)
     true
+  end
+
+  # Whether the approved Knowledge Base CONFIDENTLY answers this turn (a non-fallback retrieval
+  # match, at any confidence tier — not only the EXACT tier Gate G requires). Injected into the
+  # product orchestrator so an INFORMATIONAL product turn (parent_info / variant_info / an
+  # unsupported product question) the KB actually answers defers to grounded KB retrieval instead
+  # of an attribute-free catalog echo, clarification, or handoff. The orchestrator ignores it for
+  # transactional price/stock/catalog and exact-quantity turns, so their deterministic / fail-closed
+  # behavior is untouched. Fail closed: nil / fallback result yields false.
+  def knowledge_available?(result)
+    return false if result.nil?
+
+    result.fallback_reason.blank?
   end
 
   def knowledge_base
@@ -215,13 +237,16 @@ class Marine::Agent::Runner
   def playground_preview(query, history)
     return nil unless source == PLAYGROUND_SOURCE && conversation.nil?
     return nil if query.blank?
-    return nil if faq_precedence?(query)
+
+    kb = knowledge_result(query)
+    return nil if faq_precedence?(kb)
 
     account = product_account
     return nil if account.nil?
 
     Marine::Catalog::PlaygroundPreview.new(assistant: assistant, account: account)
-                                      .call(query: query, history: history, state_token: state_token)
+                                      .call(query: query, history: history, state_token: state_token,
+                                            knowledge_available: knowledge_available?(kb))
   end
 
   # Preserve the ephemeral product-flow state across a Playground turn that fell through to

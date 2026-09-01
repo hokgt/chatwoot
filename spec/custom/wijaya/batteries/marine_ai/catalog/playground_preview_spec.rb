@@ -207,7 +207,7 @@ RSpec.describe Marine::Catalog::PlaygroundPreview do
       expect(orchestrator).to have_received(:process).with(
         text: 'follow up',
         context: [{ role: 'user', content: 'earlier' }, { role: 'assistant', content: 'reply' }],
-        flow: {}, suppressed: false
+        flow: {}, suppressed: false, knowledge_available: false
       )
     end
 
