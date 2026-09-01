@@ -588,8 +588,13 @@ patches:
       # explicit action+kind allowlist, protected display-value presence (alphanumeric-boundary
       # literal match) + token-inventory equality, and generation grounded ONLY on the fallback +
       # Phase 2 bounded context under the reused Phase 4 opening/follow-up greeting policy. Any
-      # uncertainty returns the exact deterministic fallback; send_catalog/handoff/excluded
-      # descriptors are never naturalized. Precomputed lock-free by ResponseBuilderJob.
+      # uncertainty returns nil (caller delivers the exact deterministic fallback / factless handoff);
+      # a pure stock reply first spends a bounded MAX_STOCK_ATTEMPTS resample across EVERY non-accepted
+      # branch (malformed/blank or greeting-enforced-blank generation, bare restatement, deterministic
+      # fact/code rejection, wrong/unreadable language, semantic rejection/uncertainty) under the
+      # non-deterministic provider before failing closed — each retry fully re-gated, never relaxed.
+      # send_catalog/handoff/excluded descriptors are never naturalized. Precomputed lock-free by
+      # ResponseBuilderJob.
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_fact_protection_validator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/grounded_product_wording_service.rb
       # Shared, surface-agnostic dynamic response boundary for a pure binary STOCK reply. Centralizes

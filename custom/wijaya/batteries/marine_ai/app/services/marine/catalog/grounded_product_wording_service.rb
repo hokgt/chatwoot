@@ -107,6 +107,19 @@ module Marine
         Your previous reply was too close to a bare restatement of the fact. Answer the customer again, warmer and more genuinely conversational, adding real human framing (a friendly acknowledgement and a short offer to help) around the same unchanged facts — without introducing any new fact.
       PROMPT
 
+      # Appended ONLY to a bounded stock-reply regeneration whose previous candidate was NOT a bare
+      # restatement yet was still not accepted — a malformed/blank or greeting-enforced-blank generation, a
+      # deterministic protected-fact/code rejection, a wrong/unreadable-language reply, or a semantic
+      # rejection/uncertainty. Because the configured provider is non-deterministic, a fresh resample can
+      # independently pass every gate. It is a GENERIC corrective constraint ONLY: it never quotes or
+      # describes the rejected candidate, names no language, product, phrase, or example, and grants no
+      # relaxation — every gate still re-runs fully untrusted on the new candidate. It simply restates the
+      # standing requirements so the resample is more likely to land, paired with the small nonzero stock
+      # temperature so the retry actually resamples.
+      CORRECTIVE_NUDGE = <<~PROMPT.strip
+        Answer the customer again as a fresh, natural reply. Keep every product name, code, number, price, currency, and unit exactly as given and unchanged, keep the same availability meaning, and add no new fact of any kind. Write the entire reply in the same language as the customer's latest message. Output only the reply text.
+      PROMPT
+
       # A pure stock reply is generated at a SMALL bounded nonzero temperature (not greedy 0.0) so the
       # human framing has room to vary instead of collapsing onto the same terse restatement, AND so the
       # single bounded regeneration below actually resamples. It never relaxes acceptance: the candidate
@@ -115,9 +128,13 @@ module Marine
       # (non-stock) reply keeps greedy 0.0 unchanged.
       STOCK_TEMPERATURE = 0.6
 
-      # At most one regeneration for a stock reply whose first candidate is a bare restatement of the
-      # fallback: one initial attempt plus one retry. If the retry is still bare, the service fails closed
-      # to nil (the caller delivers its exact deterministic fallback) rather than looping unboundedly.
+      # The bounded attempt budget for a pure stock reply: one initial attempt plus at most one retry. It
+      # covers EVERY non-accepted stock outcome (a bare restatement, a malformed/blank or greeting-enforced-
+      # blank generation, a deterministic fact/code rejection, a wrong/unreadable language, or a semantic
+      # rejection/uncertainty), because the configured provider is non-deterministic and a fresh resample can
+      # independently pass every gate. When the budget is exhausted the service fails closed to nil (the
+      # caller delivers its shared factless handoff) rather than looping. Every other (non-stock) reply keeps
+      # its single attempt unchanged.
       MAX_STOCK_ATTEMPTS = 2
 
       # The fallback's fact-stripped skeleton must be at least this many words for the bare-restatement
@@ -168,46 +185,53 @@ module Marine
         # Deterministic eligibility first: an unsupported/malformed descriptor never invokes an LLM.
         return nil unless fact_protection.eligible?(action: action, descriptor: descriptor)
 
-        # A pure stock reply gets a small nonzero temperature and, if the first candidate is a bare
-        # restatement of the deterministic fallback, exactly ONE bounded regeneration for warmth (see
-        # #merely_restates?). Every other reply keeps the single greedy-temperature generation.
+        # A pure stock reply is retried within a bounded attempt budget: the configured provider is
+        # non-deterministic (an identical request can hand off on one run and deliver on the next), so
+        # every non-accepted stock outcome — a malformed/blank or greeting-enforced-blank generation, a
+        # bare restatement, a deterministic fact/code rejection, a wrong/unreadable language, or a
+        # semantic rejection/uncertainty — spends the budget on a FRESH resample instead of failing on the
+        # first attempt. Each retry stays fully untrusted and is re-gated from scratch. Every other
+        # (non-stock) reply keeps its single greedy-temperature generation and single set of gates.
         stock = STOCK_KINDS.include?(descriptor[:kind])
         attempt = 0
         nudge = nil
         loop do
           attempt += 1
+
+          # Generate an untrusted candidate, then run Phase 4 greeting enforcement BEFORE either gate so
+          # both validators judge — and the caller delivers — the EXACT enforced text (a follow-up opening
+          # greeting is stripped, a wrong-time opening greeting normalized, a follow-up greeting-only reply
+          # enforced to blank). The reply_language keeps enforcement target-aware. A nil candidate or a
+          # blank enforced result is simply a non-accepted attempt (retried for stock, see below).
           candidate = sanitized_candidate(generate(fallback, customer_request, message_history, opening, reply_language, stock: stock, nudge: nudge))
-          return nil if candidate.nil?
+          enforced = candidate && greeting_context.enforce(candidate, opening: opening, reply_language: reply_language).presence
 
-          # Phase 4 enforcement runs BEFORE either gate so both validators judge — and the caller
-          # delivers — the exact enforced text; a follow-up greeting-only reply enforces to blank. The
-          # reply_language keeps enforcement target-aware (an Indonesian opening greeting is stripped
-          # from a known non-Indonesian reply rather than normalized onto it).
-          enforced = greeting_context.enforce(candidate, opening: opening, reply_language: reply_language).presence
-          return nil if enforced.blank?
+          # Bare-restatement guard (stock only), judged BEFORE any gate so a bare reply never spends the
+          # semantic LLM call: a candidate reproducing the whole fallback fact-skeleton with almost no
+          # conversational framing is a stiff template, not a naturalization, and drives a warmth-focused
+          # regeneration. A genuinely warm reply that keeps the faithful availability phrase is NOT bare.
+          bare = stock && enforced.present? && merely_restates?(enforced, fallback)
 
-          # Bare-restatement guard (stock only), BEFORE any gate: a candidate that reproduces the whole
-          # fallback fact-skeleton with almost no conversational framing is a stiff template, not a
-          # naturalization. Regenerate once for warmth; if the retry is still bare, fail closed to nil so
-          # the caller delivers its exact deterministic fallback rather than looping. Runs before the
-          # semantic call so a bare reply never spends it. A genuinely warm reply that happens to keep the
-          # faithful availability phrase (with real added framing) is NOT bare and passes straight through.
-          if stock && merely_restates?(enforced, fallback)
-            return nil if attempt >= MAX_STOCK_ATTEMPTS
-
-            nudge = REGENERATION_NUDGE
-            next
+          # Acceptance: a non-bare enforced candidate must INDEPENDENTLY clear the deterministic
+          # protected-value/token gate, then the deterministic language-consistency gate, then the SEPARATE
+          # semantic validator — in that order, each short-circuiting the next so a deterministic rejection
+          # never spends the semantic call. Only an all-accept candidate is delivered, exactly as enforced.
+          if enforced.present? && !bare &&
+             fact_protection.accepts?(action: action, descriptor: descriptor, fallback: fallback, candidate: enforced) &&
+             language_consistent?(enforced, reply_language) &&
+             validator.valid?(approved_answer: fallback, candidate: enforced, fact_focus: fact_focus_for(descriptor))
+            return enforced
           end
 
-          # Deterministic protected-value/token gate BEFORE the semantic call — a deterministic
-          # rejection prevents the semantic LLM call entirely.
-          return nil unless fact_protection.accepts?(action: action, descriptor: descriptor, fallback: fallback, candidate: enforced)
-          # Deterministic language-consistency gate, also BEFORE the semantic call: a wrong-language
-          # candidate is rejected without spending the semantic LLM call.
-          return nil unless language_consistent?(enforced, reply_language)
-          return nil unless validator.valid?(approved_answer: fallback, candidate: enforced, fact_focus: fact_focus_for(descriptor))
+          # Not accepted this attempt. A pure stock reply spends the bounded budget on a fresh resample
+          # across EVERY non-accepted branch; any other reply keeps its single attempt. When the budget is
+          # exhausted the service fails CLOSED to nil and the caller delivers the shared factless handoff
+          # (never a static/deterministic stock line). The retry carries only a GENERIC nudge — a warmth
+          # nudge for a bare restatement, else a generic corrective constraint — never the rejected
+          # candidate's content.
+          return nil unless stock && attempt < MAX_STOCK_ATTEMPTS
 
-          return enforced
+          nudge = bare ? REGENERATION_NUDGE : CORRECTIVE_NUDGE
         end
       rescue StandardError
         nil

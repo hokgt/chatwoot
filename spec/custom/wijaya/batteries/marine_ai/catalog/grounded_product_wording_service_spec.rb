@@ -903,4 +903,206 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
       expect(captured[:system]).not_to include(described_class::STOCK_WARMTH_INSTRUCTION)
     end
   end
+
+  # Second follow-up — bounded stock-retry across ALL non-accepted branches. The configured provider is
+  # non-deterministic (an identical unavailable probe handed off on one run and delivered on the next), so
+  # a pure stock reply now spends the SAME bounded MAX_STOCK_ATTEMPTS budget on a FRESH resample for EVERY
+  # non-accepted candidate outcome — not only a bare restatement. Each retry stays fully untrusted and is
+  # re-gated from scratch; two unsafe candidates still fail closed to nil (the caller hands off) with no
+  # deterministic/static fallback ever delivered. Non-stock replies keep their single attempt. Provider and
+  # semantic-validator call counts are asserted EXACTLY so the budget is provably bounded.
+  describe 'bounded stock retry across all non-accepted branches' do
+    let(:in_stock_descriptor) { { kind: :stock_available, variant_code: 'IMP-3' } }
+    let(:in_stock_fallback) { 'IMP-3 is currently in stock.' }
+    let(:id_fallback) { 'IMP-3 saat ini tersedia.' }
+
+    # Successive envelope-wrapped chat replies, one consumed per generation attempt; the last repeats.
+    def stub_generations(*messages)
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      responses = messages.map { |m| { ok: true, message: reply_envelope(m), error: nil } }
+      allow(llm).to receive(:chat).and_return(*responses)
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      llm
+    end
+
+    # Detector stub for EXACT candidate strings (call_original elsewhere so the real greeting policy is
+    # unaffected), exercising the language gate without depending on CLD3 output.
+    def stub_languages(map)
+      allow(Marine::Llm::LanguageDetector).to receive(:new).and_call_original
+      map.each do |text, language|
+        detector = instance_double(Marine::Llm::LanguageDetector,
+                                   detect: { language: language, reliable: true, confidence: 1.0 })
+        allow(Marine::Llm::LanguageDetector).to receive(:new).with(text).and_return(detector)
+      end
+    end
+
+    def stock_call(descriptor: in_stock_descriptor, fallback: in_stock_fallback,
+                   customer_request: 'is IMP-3 in stock?', opening: true, reply_language: nil)
+      service.call(action: :reply, descriptor: descriptor, fallback: fallback,
+                   customer_request: customer_request, opening: opening, reply_language: reply_language)
+    end
+
+    # ---- malformed / blank generation ----
+    it 'retries a malformed/blank generation, then delivers the second safe candidate' do
+      llm = stub_generations('', 'Yep! We have IMP-3 on hand right now, happy to help.')
+      validator = stub_semantic(true)
+
+      expect(stock_call).to eq('Yep! We have IMP-3 on hand right now, happy to help.')
+      expect(llm).to have_received(:chat).twice
+      expect(validator).to have_received(:valid?).once # only the safe second candidate reaches the semantic gate
+    end
+
+    it 'fails closed to nil after two malformed generations (no fallback delivered)' do
+      llm = stub_generations('', '')
+      validator = stub_semantic(true)
+
+      expect(stock_call).to be_nil
+      expect(llm).to have_received(:chat).twice
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    # ---- greeting-enforced blank (follow-up greeting-only reply) ----
+    it 'retries a greeting-enforced-blank candidate, then delivers the second safe candidate' do
+      llm = stub_generations('Halo!', 'Sure — IMP-3 is on hand right now, glad to help.')
+      validator = stub_semantic(true)
+
+      expect(stock_call(opening: false)).to eq('Sure — IMP-3 is on hand right now, glad to help.')
+      expect(llm).to have_received(:chat).twice
+      expect(validator).to have_received(:valid?).once
+    end
+
+    # ---- deterministic fact rejection: extra quantity ----
+    it 'retries an injected-quantity candidate, then delivers a clean second candidate' do
+      llm = stub_generations('Yes, we currently have 24 of IMP-3 on hand.', # extra quantity -> deterministic reject
+                             'Yes — IMP-3 is on hand right now, happy to help.')
+      validator = stub_semantic(true)
+
+      expect(stock_call).to eq('Yes — IMP-3 is on hand right now, happy to help.')
+      expect(llm).to have_received(:chat).twice
+      expect(validator).to have_received(:valid?).once # the rejected quantity candidate never reaches the semantic gate
+    end
+
+    it 'fails closed after two injected-quantity candidates, never reaching the semantic gate' do
+      llm = stub_generations('Yes, we currently have 24 of IMP-3 on hand.',
+                             'Sure, all 12 units of IMP-3 are ready.')
+      validator = stub_semantic(true)
+
+      expect(stock_call).to be_nil
+      expect(llm).to have_received(:chat).twice
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    # ---- deterministic fact rejection: changed / dropped / extra code ----
+    it 'retries a changed-code candidate, then delivers a code-preserving second candidate' do
+      llm = stub_generations('Good news — IMP-4 is on hand right now.', # changed code -> deterministic reject
+                             'Good news — IMP-3 is on hand right now, happy to help.')
+      validator = stub_semantic(true)
+
+      expect(stock_call).to eq('Good news — IMP-3 is on hand right now, happy to help.')
+      expect(llm).to have_received(:chat).twice
+      expect(validator).to have_received(:valid?).once
+    end
+
+    # ---- wrong / unreliable language ----
+    it 'retries a wrong-language candidate, then delivers a correct-language second candidate' do
+      wrong = 'Yes — IMP-3 is on hand right now.'
+      right = 'IMP-3 saat ini tersedia ya, ada yang bisa dibantu?'
+      llm = stub_generations(wrong, right)
+      stub_languages(wrong => 'en', right => 'id')
+      validator = stub_semantic(true)
+
+      expect(stock_call(fallback: id_fallback, reply_language: 'id',
+                        customer_request: 'apakah IMP-3 tersedia?', opening: false)).to eq(right)
+      expect(llm).to have_received(:chat).twice
+      expect(validator).to have_received(:valid?).once # the wrong-language candidate is rejected before the semantic gate
+    end
+
+    it 'fails closed after two wrong-language candidates, never reaching the semantic gate' do
+      wrong1 = 'Yes — IMP-3 is on hand right now.'
+      wrong2 = 'Sure, IMP-3 is available right now.'
+      llm = stub_generations(wrong1, wrong2)
+      stub_languages(wrong1 => 'en', wrong2 => 'en')
+      validator = stub_semantic(true)
+
+      expect(stock_call(fallback: id_fallback, reply_language: 'id',
+                        customer_request: 'apakah IMP-3 tersedia?', opening: false)).to be_nil
+      expect(llm).to have_received(:chat).twice
+      expect(validator).not_to have_received(:valid?)
+    end
+
+    # ---- semantic rejection / uncertainty (a fresh verdict is required on each attempt) ----
+    it 'retries a semantically rejected candidate, then delivers a second candidate the judge accepts' do
+      first = 'IMP-3 might be in stock, ready for next-week delivery.' # semantically unsafe: uncertainty + lead time
+      second = 'Yes — IMP-3 is on hand right now, happy to help.'
+      llm = stub_generations(first, second)
+      validator = instance_double(Marine::Charge::FactPreservationValidator)
+      allow(validator).to receive(:valid?).and_return(false, true)
+      allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(validator)
+
+      expect(stock_call).to eq(second)
+      expect(llm).to have_received(:chat).twice
+      expect(validator).to have_received(:valid?).twice # each attempt gets its OWN fresh verdict; uncertainty is never reused
+    end
+
+    it 'fails closed after two semantically rejected candidates (uncertainty is never turned into acceptance)' do
+      llm = stub_generations('IMP-3 might be in stock, maybe.', 'Possibly IMP-3 is around somewhere.')
+      validator = stub_semantic(false)
+
+      expect(stock_call).to be_nil
+      expect(llm).to have_received(:chat).twice
+      expect(validator).to have_received(:valid?).twice
+    end
+
+    # ---- unavailable (stock_empty) parity: the reported intermittent kind ----
+    it 'retries an unavailable stock reply and delivers the second dynamic candidate, code preserved' do
+      second = 'Sayang sekali, IMP-3 sedang tidak tersedia saat ini.'
+      llm = stub_generations('', second) # transient malformed generation, then a valid dynamic unavailable answer
+      stub_languages(second => 'id')
+      stub_semantic(true)
+
+      result = service.call(action: :reply, descriptor: { kind: :stock_empty, variant_code: 'IMP-3' },
+                            fallback: 'Maaf, IMP-3 saat ini tidak tersedia.', reply_language: 'id',
+                            customer_request: 'apakah IMP-3 tersedia?', opening: false)
+      expect(result).to eq(second)
+      expect(result).to include('IMP-3') # exact code preserved on the unavailable outcome
+      expect(llm).to have_received(:chat).twice
+    end
+
+    # ---- retry nudge is generic; never leaks the rejected candidate ----
+    it 'sends the generic corrective nudge (not the warmth nudge, never the rejected text) on a non-bare retry' do
+      first = 'Yes, we currently have 24 of IMP-3 on hand.' # deterministic reject, NOT a bare restatement
+      second = 'Yes — IMP-3 is on hand right now, happy to help.'
+      systems = []
+      replies = [reply_envelope(first), reply_envelope(second)]
+      idx = 0
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      allow(llm).to receive(:chat) do |args|
+        systems << args[:system]
+        reply = replies[idx]
+        idx += 1
+        { ok: true, message: reply, error: nil }
+      end
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      stub_semantic(true)
+
+      stock_call
+
+      expect(systems.first).not_to include(described_class::CORRECTIVE_NUDGE)
+      expect(systems.last).to include(described_class::CORRECTIVE_NUDGE)
+      expect(systems.last).not_to include(described_class::REGENERATION_NUDGE) # corrective, not warmth, for a non-bare reject
+      expect(systems.last).not_to include('24') # the rejected candidate's content never leaks into the retry prompt
+      # the corrective nudge names no product, language, phrase, or example
+      expect(described_class::CORRECTIVE_NUDGE).not_to match(/IMP-3|SR-20|tersedia|in stock/i)
+    end
+
+    # ---- non-stock is UNCHANGED: a rejection is a SINGLE attempt, no retry ----
+    it 'does NOT retry a non-stock reply on semantic rejection (single attempt, scope is stock only)' do
+      llm = stub_generations('About Impeller — which variant would you like?')
+      validator = stub_semantic(false)
+
+      expect(call).to be_nil # default parent_info descriptor (non-stock)
+      expect(llm).to have_received(:chat).once
+      expect(validator).to have_received(:valid?).once
+    end
+  end
 end
