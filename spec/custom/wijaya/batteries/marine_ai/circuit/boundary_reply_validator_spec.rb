@@ -23,6 +23,16 @@ RSpec.describe Marine::Circuit::BoundaryReplyValidator do
     expect(validator.valid?(candidate: 'Maaf, saya hanya membantu soal Textilindo.', category: :unrelated, language: 'id')).to be(true)
   end
 
+  describe 'Textilindo redirect contract' do
+    it 'accepts a redirect regardless of brand casing' do
+      expect(validator.valid?(candidate: 'Sorry, I can only help with TEXTILINDO products.', category: :unrelated)).to be(true)
+    end
+
+    it 'rejects an otherwise well-formed refusal that does NOT redirect to Textilindo' do
+      expect(validator.valid?(candidate: 'Sorry, I cannot help with that request.', category: :unrelated)).to be(false)
+    end
+  end
+
   describe 'fail-closed' do
     it 'rejects a blank candidate' do
       expect(validator.valid?(candidate: '   ', category: :unrelated)).to be(false)

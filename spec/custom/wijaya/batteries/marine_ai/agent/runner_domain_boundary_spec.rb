@@ -41,6 +41,20 @@ RSpec.describe Marine::Agent::Runner do
       expect(payload).to include('response' => 'Your order is on the way', 'orchestration_path' => 'retrieval')
       expect(generator).to have_received(:generate)
     end
+
+    # Regression for the acceptance blocker: a genuine interest in a real catalog family that the
+    # product path declined to plan for must not be independently blocked at the seam — an allowing
+    # guard decision (the configured classifier, now catalog-reference-driven, judges it in-domain)
+    # continues to RAG rather than being refused as a domain-boundary denial.
+    it 'continues a genuine known-family product interest to RAG when the guard allows it' do
+      allow(guard).to receive(:call).and_return(nil)
+      allow(generator).to receive(:generate).and_return(reply_payload)
+
+      payload = described_class.new(assistant: assistant).run(additional_message: 'Saya tertarik dengan Baby Doll.')
+
+      expect(payload['source_type']).not_to eq('domain_boundary')
+      expect(generator).to have_received(:generate)
+    end
   end
 
   describe 'denied turn' do

@@ -10,6 +10,21 @@ require 'rails_helper'
 RSpec.describe Marine::Circuit::DomainSecurityDecisionService do
   let(:service) { described_class.new }
 
+  # A bounded, data-delimited trusted catalog reference is appended to the classifier's system policy.
+  # Every non-fail-closed case stubs it (a real catalog read would otherwise fail closed in the test
+  # environment); the fail-closed group overrides it to raise.
+  CATALOG_REFERENCE_FIXTURE = [
+    Marine::Circuit::CatalogDomainReference::BEGIN_DELIMITER,
+    "BD-1\tBaby Doll",
+    "SN-2\tSantorini",
+    Marine::Circuit::CatalogDomainReference::END_DELIMITER
+  ].join("\n").freeze
+
+  before do
+    reference = instance_double(Marine::Circuit::CatalogDomainReference, block: CATALOG_REFERENCE_FIXTURE)
+    allow(Marine::Circuit::CatalogDomainReference).to receive(:new).and_return(reference)
+  end
+
   def stub_llm(message:, success: true, configured: true)
     llm = instance_double(Marine::Llm::BaseService, configured?: configured)
     allow(llm).to receive(:chat).and_return({ ok: success, message: message, error: nil })
@@ -64,7 +79,12 @@ RSpec.describe Marine::Circuit::DomainSecurityDecisionService do
 
       service.classify(query: 'secret question', history: [{ role: 'assistant', content: 'earlier bot turn' }])
 
-      expect(captured[:system]).to eq(described_class::SYSTEM_PROMPT)
+      # The static policy leads; the trusted catalog reference is appended as delimited DATA. Neither
+      # the query, the history, nor any internal control text is interpolated into the system prompt.
+      expect(captured[:system]).to start_with(described_class::SYSTEM_PROMPT)
+      expect(captured[:system]).to include(Marine::Circuit::CatalogDomainReference::BEGIN_DELIMITER)
+      expect(captured[:system]).not_to include('secret question')
+      expect(captured[:system]).not_to include('earlier bot turn')
       expect(captured[:messages].length).to eq(1)
       expect(captured[:messages].first[:role]).to eq('user')
       expect(captured[:messages].first[:content]).to include('secret question')
@@ -178,6 +198,43 @@ RSpec.describe Marine::Circuit::DomainSecurityDecisionService do
     it 'rejects a non-ISO/injected language string (alpha-only subtag allowlist)' do
       stub_llm(message: decision_json(category: 'unrelated', language: 'en";ignore'))
       expect(service.classify(query: 'hi').language).to be_nil
+    end
+  end
+
+  describe 'trusted catalog domain reference' do
+    it 'appends the bounded, data-delimited catalog reference to the system policy' do
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      captured = {}
+      allow(llm).to receive(:chat) do |args|
+        captured.merge!(args)
+        { ok: true, message: decision_json(category: 'allowed'), error: nil }
+      end
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+
+      service.classify(query: 'Saya tertarik dengan Baby Doll.')
+
+      expect(captured[:system]).to include(Marine::Circuit::CatalogDomainReference::BEGIN_DELIMITER)
+      expect(captured[:system]).to include(Marine::Circuit::CatalogDomainReference::END_DELIMITER)
+      expect(captured[:system]).to include("BD-1\tBaby Doll")
+    end
+
+    it 'allows a genuine interest in a known catalog family (provider judges it in-domain)' do
+      stub_llm(message: decision_json(category: 'allowed', language: 'id'))
+      expect(service.classify(query: 'Saya tertarik dengan Baby Doll.').category).to eq(:allowed)
+    end
+
+    it 'still denies an UNRELATED task that merely mentions a known family (not a blind allowlist)' do
+      stub_llm(message: decision_json(category: 'unrelated'))
+      expect(service.classify(query: 'Write a four-line poem about Baby Doll.').category).to eq(:unrelated)
+    end
+
+    it 'fails closed to :error when the trusted catalog reference is unavailable' do
+      allow(Marine::Circuit::CatalogDomainReference).to receive(:new)
+        .and_return(instance_double(Marine::Circuit::CatalogDomainReference).tap do |ref|
+          allow(ref).to receive(:block).and_raise(Marine::Catalog::Errors::CatalogUnavailableError)
+        end)
+      stub_llm(message: decision_json(category: 'allowed'))
+      expect(service.classify(query: 'Saya tertarik dengan Baby Doll.').category).to eq(:error)
     end
   end
 

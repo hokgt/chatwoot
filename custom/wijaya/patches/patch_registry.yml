@@ -474,6 +474,7 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/handoff_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/domain_boundary_guard.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/domain_security_decision_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/catalog_domain_reference.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/boundary_reply_composer.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/boundary_reply_validator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/assistant_chat_service.rb
@@ -859,6 +860,7 @@ patches:
       # Textilindo domain / security boundary — shared post-product/pre-RAG gate: semantic
       # classifier, dynamic refusal generator, independent refusal validator, and the shared guard.
       - spec/custom/wijaya/batteries/marine_ai/circuit/domain_security_decision_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/circuit/catalog_domain_reference_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/circuit/boundary_reply_composer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/circuit/boundary_reply_validator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/circuit/domain_boundary_guard_spec.rb

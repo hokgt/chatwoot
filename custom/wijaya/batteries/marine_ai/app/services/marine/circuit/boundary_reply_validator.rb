@@ -20,6 +20,14 @@ class Marine::Circuit::BoundaryReplyValidator
   MAX_SENTENCES = 4
   MAX_NONBLANK_LINES = 3
 
+  # A valid boundary refusal must visibly redirect the customer to Textilindo — the ONE thing every
+  # safe refusal (including the guard's SAFE_FALLBACK) has in common. This is a positive OUTPUT
+  # contract (the brand name must be present), not an attack-keyword blacklist and not a refusal-phrase
+  # dictionary: it asserts the candidate points the customer back to Textilindo rather than silently
+  # declining or drifting off into the declined task. A candidate missing it fails closed to the
+  # guard's safe fallback (which itself names Textilindo). Case-insensitive literal brand token.
+  REQUIRED_BRAND = 'textilindo'.freeze
+
   # category / language are accepted for signature parity with the guard and the prior contract; a
   # local structural gate does not need them. Returns true ONLY for a short, single, prose-shaped
   # candidate; false on blank / invalid-encoding / over-long / multi-line / code-or-JSON-shaped input.
@@ -39,9 +47,15 @@ class Marine::Circuit::BoundaryReplyValidator
   def structurally_sound?(text)
     text.present? &&
       text.length <= MAX_CHARS &&
+      redirects_to_brand?(text) &&
       !fenced_or_structured?(text) &&
       nonblank_line_count(text) <= MAX_NONBLANK_LINES &&
       sentence_count(text) <= MAX_SENTENCES
+  end
+
+  # The customer-facing redirect contract: the candidate must literally name Textilindo (any case).
+  def redirects_to_brand?(text)
+    text.downcase.include?(REQUIRED_BRAND)
   end
 
   # A code fence or a whole-body JSON/array signals the model emitted structured output or performed a
