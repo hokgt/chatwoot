@@ -14,8 +14,17 @@
 # Output contract (exactly these keys, always):
 #   product_related, intent, family_mention, explicit_child_code,
 #   attribute_candidates, requires_exact_variant, clarification_reply,
-#   family_changed, intent_changed, multiple_numeric_candidates, quantity_inquiry,
-#   unsupported_request, confidence, customer_language, reason
+#   family_changed, intent_changed, intent_scope, multiple_numeric_candidates,
+#   quantity_inquiry, unsupported_request, confidence, customer_language, reason
+#
+# intent_scope is a bounded, untrusted, allowlisted CONTINUATION classifier (or nil) that is only
+# meaningful while the assistant is AWAITING a code/variant answer (awaiting_code true): "slot_value"
+# when the latest message merely SUPPLIES the requested code/variant/attribute (continuing the active
+# request), "new_intent" when the message EXPLICITLY states a different business request. It lets the
+# orchestrator tell a volatile informational relabel of a candidate-only slot answer apart from a
+# genuine intent switch; it NEVER influences family/child/catalog selection. Anything else, or a
+# missing value, normalizes to nil (unknown scope), which the orchestrator treats conservatively — it
+# never overrides the extracted intent on an unknown scope, so a real switch is preserved.
 #
 # quantity_inquiry is a bounded, untrusted boolean flag: true ONLY when the customer asks for
 # an EXACT on-hand quantity ("how many units do you have"), which the catalog does not expose.
@@ -62,6 +71,16 @@ module Marine
       # Anything else, or a missing value, contributes no exact-count signal (the legacy boolean still
       # applies), so a plain availability ask stays binary.
       STOCK_ANSWER_SHAPES = %w[exact_count availability].freeze
+
+      # Fixed, allowlisted CONTINUATION scope for a candidate-only slot answer, classified by the
+      # provider while the assistant is awaiting a code/variant: "slot_value" when the latest message
+      # merely SUPPLIES the requested code/variant/attribute (continuing the active current_intent),
+      # "new_intent" when it EXPLICITLY states a different business request. A closed slot-vs-switch
+      # vocabulary — never a language, phrase, or raw-text list — so the orchestrator can tell a
+      # volatile informational relabel of a slot answer apart from a genuine intent switch. Anything
+      # else, or a missing value, normalizes to nil (unknown scope), which the orchestrator treats
+      # conservatively (no supported-intent override).
+      INTENT_SCOPES = %w[new_intent slot_value].freeze
 
       # Internal, allowlisted reason codes — never raw exceptions or LLM prose.
       REASONS = %w[extracted not_product llm_unconfigured llm_unavailable llm_error malformed_response].freeze
@@ -157,6 +176,7 @@ module Marine
           clarification_reply: bounded_string(parsed['clarification_reply'], MAX_CLARIFICATION_LENGTH),
           family_changed: family_changed?(family_mention, state),
           intent_changed: intent_changed?(intent, state),
+          intent_scope: normalize_intent_scope(parsed['intent_scope']),
           multiple_numeric_candidates: multiple_numeric,
           quantity_inquiry: quantity_inquiry,
           unsupported_request: normalize_unsupported_request(parsed['unsupported_request'], quantity_inquiry),
@@ -191,6 +211,17 @@ module Marine
 
         shape = value.strip.downcase
         STOCK_ANSWER_SHAPES.include?(shape) ? shape : nil
+      end
+
+      # Untrusted continuation scope, folded to the fixed allowlist or nil. A non-String, unknown, or
+      # blank value contributes no scope signal (nil), which the orchestrator treats conservatively:
+      # it never overrides an extracted supported intent on an unknown scope, so a genuine switch is
+      # preserved. Only ever consulted at the orchestrator's unresolved-slot seam.
+      def normalize_intent_scope(value)
+        return nil unless value.is_a?(String)
+
+        scope = value.strip.downcase
+        INTENT_SCOPES.include?(scope) ? scope : nil
       end
 
       # Untrusted unsupported-request category, folded to the fixed generic allowlist or nil. An exact
@@ -362,6 +393,7 @@ module Marine
           clarification_reply: nil,
           family_changed: false,
           intent_changed: false,
+          intent_scope: nil,
           multiple_numeric_candidates: false,
           quantity_inquiry: false,
           unsupported_request: nil,
@@ -390,6 +422,10 @@ module Marine
         stock_answer_shape (string|null, for a stock/availability question ONLY: "exact_count" when the customer asks HOW MANY
         units are on hand or otherwise wants a specific NUMBER of units, "availability" when they only ask whether it is in stock
         (a yes/no answer); null when the turn is not asking about stock at all);
+        intent_scope (string|null, ONLY when awaiting_code is true: "slot_value" when the customer's latest message merely SUPPLIES
+        the code, variant, or attribute the assistant just asked for — continuing the SAME current_intent without stating a new
+        request; "new_intent" when the message EXPLICITLY asks for something different from current_intent (for example switching to
+        price, stock, catalog, or a distinct information question); null when awaiting_code is false or neither clearly applies);
         confidence ("low"/"medium"/"high");
         unsupported_request (string|null, ONLY when the customer asks for something this catalog assistant cannot answer — one of
         "delivery_feasibility" (can you deliver to a place), "shipping_cost" (how much is shipping/delivery), "warehouse_location"
@@ -408,6 +444,10 @@ module Marine
         this from the meaning of the customer's own words in whatever language they use, not from surface keywords.
         Set quantity_inquiry true whenever stock_answer_shape is "exact_count" — an exact on-hand count is a number the assistant
         cannot look up; a plain "is it in stock / available?" question stays intent "stock" with quantity_inquiry false.
+        When awaiting_code is true and the customer's latest message only provides the requested code, variant, or attribute value
+        without asking for anything different, set intent_scope "slot_value" and keep current_intent as the intent. Set intent_scope
+        "new_intent" only when the customer clearly asks for something different from current_intent. Judge this from the meaning of
+        the customer's own words in whatever language they use, not from surface keywords.
       PROMPT
     end
   end

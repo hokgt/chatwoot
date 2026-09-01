@@ -19,7 +19,7 @@ RSpec.describe Marine::Catalog::IntentExtractor do
   # The exact, complete set of contract keys — the result must never drift from it.
   CONTRACT_KEYS = %i[
     product_related intent requested_intents family_mention explicit_child_code attribute_candidates
-    requires_exact_variant clarification_reply family_changed intent_changed
+    requires_exact_variant clarification_reply family_changed intent_changed intent_scope
     multiple_numeric_candidates quantity_inquiry unsupported_request confidence customer_language reason
   ].freeze
 
@@ -270,6 +270,63 @@ RSpec.describe Marine::Catalog::IntentExtractor do
       stub_llm(message: llm_json(intent: 'stock', stock_answer_shape: 'exact_count', unsupported_request: 'shipping_cost'))
 
       expect(extract[:unsupported_request]).to eq('exact_quantity')
+    end
+  end
+
+  describe 'intent_scope continuation classifier (bounded slot-vs-switch signal)' do
+    it 'passes through a slot_value scope while awaiting a code (candidate-only answer)' do
+      stub_llm(message: llm_json(intent: 'variant_info', explicit_child_code: 'BD-1', intent_scope: 'slot_value'))
+
+      result = extract(text: 'varian warna BD-1', state: { awaiting_code: true, current_intent: 'stock' })
+      expect(result[:intent_scope]).to eq('slot_value')
+    end
+
+    it 'passes through a new_intent scope for an explicit switch that also names a candidate' do
+      stub_llm(message: llm_json(intent: 'price', explicit_child_code: 'BD-1', intent_scope: 'new_intent'))
+
+      result = extract(text: 'actually what is the price of BD-1', state: { awaiting_code: true, current_intent: 'stock' })
+      expect(result[:intent_scope]).to eq('new_intent')
+    end
+
+    it 'normalizes case/whitespace before matching the scope allowlist' do
+      stub_llm(message: llm_json(intent: 'variant_info', intent_scope: '  Slot_Value '))
+
+      expect(extract[:intent_scope]).to eq('slot_value')
+    end
+
+    it 'fails closed to nil on a missing scope' do
+      stub_llm(message: llm_json(intent: 'variant_info'))
+
+      expect(extract[:intent_scope]).to be_nil
+    end
+
+    it 'fails closed to nil on an unknown/malformed scope' do
+      stub_llm(message: llm_json(intent: 'variant_info', intent_scope: 'maybe_switch'))
+
+      expect(extract[:intent_scope]).to be_nil
+    end
+
+    it 'drops a type-confused non-string scope (nil)' do
+      stub_llm(message: '{"product_related": true, "intent": "variant_info", "intent_scope": ["slot_value"]}')
+
+      expect(extract[:intent_scope]).to be_nil
+    end
+
+    it 'defaults to nil on the safe unknown result when the LLM fails' do
+      stub_llm(message: 'not json', success: true)
+
+      expect(extract[:intent_scope]).to be_nil
+    end
+
+    it 'establishes the slot-vs-switch contract in the system prompt (allowlisted values, no keyword list)' do
+      stub_llm(message: llm_json(intent: 'variant_info'))
+
+      extract(state: { awaiting_code: true, current_intent: 'stock' })
+
+      system = captured_prompts.last[:system]
+      expect(system).to include('intent_scope')
+      expect(system).to include('slot_value')
+      expect(system).to include('new_intent')
     end
   end
 

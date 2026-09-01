@@ -192,12 +192,14 @@ module Marine
         @intent_extractor ||= IntentExtractor.new
       end
 
-      # Code-only (or attribute-candidate) continuation while AWAITING_VARIANT: a bare
-      # child code carries no re-extractable intent, so an `unknown`/`unsupported` extraction
-      # would otherwise hand off and drop the flow. Deterministically retain the active flow's
-      # variant-required current_intent (never fabricating family/child — repository validation
-      # downstream stays mandatory). Only the planning intent value is swapped; an explicit
-      # supported intent switch and a candidate-less message are left untouched.
+      # A candidate-only continuation while AWAITING_VARIANT: the customer is supplying the child
+      # code / attribute the flow is waiting for, not opening a new request. A bare code carries no
+      # re-extractable intent (an `unknown`/`unsupported` extraction), and the provider may ALSO emit a
+      # volatile informational label (e.g. `variant_info`) for that very same slot answer — both would
+      # otherwise drop the active variant-required flow and answer the wrong question. Deterministically
+      # retain the active flow's variant-required current_intent (never fabricating family/child —
+      # repository validation downstream stays mandatory). Only the planning intent value is swapped; a
+      # genuine explicit intent switch and a candidate-less message are left untouched.
       def retain_flow_intent(intent, flow)
         return intent unless continuation_retains_intent?(intent, flow)
 
@@ -205,13 +207,41 @@ module Marine
       end
 
       def continuation_retains_intent?(intent, flow)
-        return false unless %w[unknown unsupported].include?(intent[:intent].to_s)
-        return false unless flow_active?(flow)
-        return false if flow['validated_family'].to_s.strip.empty?
-        return false if flow['validated_variant'].to_s.strip.present?
+        return false unless awaiting_variant_slot?(flow)
         return false unless new_candidates?(intent)
+        return false unless retainable_continuation_label?(intent, flow)
 
         VARIANT_REQUIRED_INTENTS.include?(flow['current_intent'].to_s)
+      end
+
+      # The AWAITING_VARIANT precondition: an active flow with a validated family but no validated
+      # variant yet — the state in which a variant-required current_intent is waiting on a
+      # child/attribute slot answer.
+      def awaiting_variant_slot?(flow)
+        active_validated_flow?(flow) && flow['validated_variant'].to_s.strip.empty?
+      end
+
+      # Whether the extracted label of a candidate-only continuation may be overridden by the flow's
+      # retained intent. A bare code extracts as `unknown`/`unsupported` (no re-extractable intent) and
+      # is always retainable. A SUPPORTED label is retained ONLY when it differs from the flow's current
+      # intent AND the provider affirmatively classified the message as a mere slot answer
+      # (intent_scope == 'slot_value') — a volatile informational relabel of a candidate reply. A
+      # message that explicitly states a new business intent (intent_scope 'new_intent'), or carries a
+      # missing/uncertain scope, is NEVER retained, so a genuine supported switch — and any multi-intent
+      # turn — is preserved. Fail-closed on an unknown scope: the extracted intent wins.
+      def retainable_continuation_label?(intent, flow)
+        label = intent[:intent].to_s
+        return true if %w[unknown unsupported].include?(label)
+        return false if label == flow['current_intent'].to_s
+
+        slot_value_continuation?(intent)
+      end
+
+      # The provider affirmatively classified the latest message as merely supplying the awaited slot
+      # value (not stating a new intent). Read from the bounded, allowlisted extractor field; a
+      # missing/unknown scope is not a slot-value classification, so the extracted intent stands.
+      def slot_value_continuation?(intent)
+        intent[:intent_scope].to_s == 'slot_value'
       end
 
       # Small coordinator: settle the canonical family decision/context for the turn, resolve the

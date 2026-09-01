@@ -398,6 +398,99 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(plan[:action]).to eq(:handoff)
       expect(plan[:reply]).to eq(kind: :unsupported)
     end
+
+    # A stochastic FALSE supported relabel (`variant_info`) of a candidate-only slot answer while a
+    # stock flow awaits its variant. With the provider's slot_value continuation scope, the flow's
+    # stock intent is retained and the deterministic stock lookup runs — not a generic variant echo.
+    it 'retains the flow stock intent for a candidate answer the provider labels variant_info with slot_value scope' do
+      flow = active_flow('current_intent' => 'stock', 'validated_variant' => nil)
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'BD-1')
+      allow(stock_repository).to receive(:status_for).with('BD-1').and_return(:available)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'variant_info', intent_scope: 'slot_value', intent_changed: true,
+                       explicit_child_code: 'BD-1', family_mention: nil),
+        flow: flow
+      )
+
+      expect(stock_repository).to have_received(:status_for).with('BD-1')
+      expect(plan[:action]).to eq(:reply)
+      expect(plan[:reply]).to eq(kind: :stock_available, variant_code: 'BD-1')
+      expect(plan[:state][:changes]).to include('current_intent' => 'stock', 'validated_variant' => 'BD-1')
+    end
+
+    it 'retains an active price flow for a candidate answer relabeled variant_info with slot_value scope' do
+      flow = active_flow('current_intent' => 'price', 'validated_variant' => nil)
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'BD-1')
+      allow(price_repository).to receive(:price_for).with('BD-1').and_return(available_price)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'variant_info', intent_scope: 'slot_value', explicit_child_code: 'BD-1', family_mention: nil),
+        flow: flow
+      )
+
+      expect(plan[:action]).to eq(:reply)
+      expect(plan[:reply]).to include(kind: :price_available, variant_code: 'BD-1')
+    end
+
+    # A GENUINE explicit switch (provider scope new_intent) must NOT be pinned to the stale stock
+    # intent even though a candidate is present: it switches to price.
+    it 'switches to price for an explicit price ask with a candidate (new_intent scope) over a stock flow' do
+      flow = active_flow('current_intent' => 'stock', 'validated_variant' => nil)
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'BD-1')
+      allow(price_repository).to receive(:price_for).with('BD-1').and_return(available_price)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'price', intent_scope: 'new_intent', intent_changed: true,
+                       explicit_child_code: 'BD-1', family_mention: nil),
+        flow: flow
+      )
+
+      expect(plan[:action]).to eq(:reply)
+      expect(plan[:reply]).to include(kind: :price_available, variant_code: 'BD-1')
+    end
+
+    # Fail-closed: an uncertain (missing) scope on a supported relabel is NOT retained — the extracted
+    # intent stands, so a genuine switch can never be pinned to a stale intent by a dropped signal.
+    it 'does not retain a supported relabel when the continuation scope is missing (fail closed to extracted intent)' do
+      flow = active_flow('current_intent' => 'stock', 'validated_variant' => nil)
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'BD-1')
+      allow(variant_repository).to receive(:resolve_child).with('FAM-1', 'BD-1').and_return(code: 'BD-1')
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'variant_info', intent_scope: nil, explicit_child_code: 'BD-1', family_mention: nil),
+        flow: flow
+      )
+
+      expect(stock_repository).not_to have_received(:status_for)
+      expect(plan[:reply]).to include(kind: :variant_info)
+    end
+
+    it 'does not revive a completed/terminated flow even with a candidate and slot_value scope' do
+      flow = active_flow('status' => 'terminated', 'current_intent' => 'stock', 'validated_variant' => nil)
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'BD-1')
+
+      orchestrator.plan_for_intent(
+        intent: intent(intent: 'variant_info', intent_scope: 'slot_value', explicit_child_code: 'BD-1', family_mention: nil),
+        flow: flow
+      )
+
+      expect(stock_repository).not_to have_received(:status_for)
+    end
+
+    it 'does not retain when the flow already has a validated variant (not awaiting a slot)' do
+      flow = active_flow('current_intent' => 'stock', 'validated_variant' => 'CHILD-1')
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'BD-1')
+      allow(variant_repository).to receive(:resolve_child).with('FAM-1', 'BD-1').and_return(code: 'BD-1')
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'variant_info', intent_scope: 'slot_value', explicit_child_code: 'BD-1', family_mention: nil),
+        flow: flow
+      )
+
+      expect(stock_repository).not_to have_received(:status_for)
+      expect(plan[:reply]).to include(kind: :variant_info)
+    end
   end
 
   describe 'intent switch within the same family' do
@@ -960,6 +1053,65 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(plan).not_to have_key(:handoff_category)
       expect(stock_repository).not_to have_received(:status_for)
       expect(variant_resolver).not_to have_received(:resolve)
+    end
+  end
+
+  # The SHARED extractor -> orchestrator seam that BOTH the Conversation Runner and the source-less
+  # PlaygroundPreview call via #process. Exercising the REAL IntentExtractor (provider stubbed) proves
+  # the volatile-relabel routing fix end-to-end through the normalized intent_scope contract, so both
+  # surfaces reach the identical stock descriptor for a candidate-only continuation — no duplicate
+  # intent logic in either adapter.
+  describe '#process end-to-end: volatile supported relabel of a candidate-only continuation' do
+    subject(:orchestrator) do
+      described_class.new(
+        intent_extractor: Marine::Catalog::IntentExtractor.new(base_service: base_service),
+        repositories: { family: family_repository, variant: variant_repository, price: price_repository, stock: stock_repository },
+        variant_resolver: variant_resolver
+      )
+    end
+
+    let(:base_service) { instance_double(Marine::Llm::BaseService, configured?: true) }
+    let(:awaiting_stock_flow) { active_flow('current_intent' => 'stock', 'validated_variant' => nil) }
+
+    def stub_provider(**payload)
+      allow(base_service).to receive(:complete).and_return(ok: true, message: payload.transform_keys(&:to_s).to_json)
+    end
+
+    # The exact reported divergence: while a stock flow awaits its variant, the provider stochastically
+    # relabels the candidate-only answer "variant_info" but classifies its scope as a slot answer. The
+    # shared seam must retain stock and run the deterministic stock lookup — never a generic variant echo.
+    it 'routes a variant_info+slot_value candidate answer to the deterministic stock reply' do
+      stub_provider(product_related: true, intent: 'variant_info', family_mention: nil,
+                    explicit_child_code: 'BD-1', intent_scope: 'slot_value')
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'BD-1')
+      allow(stock_repository).to receive(:status_for).with('BD-1').and_return(:available)
+
+      plan = orchestrator.process(text: 'varian warna BD-1', flow: awaiting_stock_flow)
+
+      expect(plan[:action]).to eq(:reply)
+      expect(plan[:reply]).to eq(kind: :stock_available, variant_code: 'BD-1')
+      expect(plan[:state][:changes]).to include('current_intent' => 'stock', 'validated_variant' => 'BD-1')
+    end
+
+    it 'still switches to price for an explicit price ask with a candidate (new_intent scope)' do
+      stub_provider(product_related: true, intent: 'price', family_mention: nil,
+                    explicit_child_code: 'BD-1', intent_scope: 'new_intent')
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'BD-1')
+      allow(price_repository).to receive(:price_for).with('BD-1').and_return(available_price)
+
+      plan = orchestrator.process(text: 'harga BD-1 berapa', flow: awaiting_stock_flow)
+
+      expect(plan[:reply]).to include(kind: :price_available, variant_code: 'BD-1')
+    end
+
+    it 'fails closed to the extracted variant_info when the provider omits the continuation scope' do
+      stub_provider(product_related: true, intent: 'variant_info', family_mention: nil, explicit_child_code: 'BD-1')
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'BD-1')
+
+      plan = orchestrator.process(text: 'varian warna BD-1', flow: awaiting_stock_flow)
+
+      expect(plan[:reply]).to include(kind: :variant_info)
+      expect(stock_repository).not_to have_received(:status_for)
     end
   end
 end
