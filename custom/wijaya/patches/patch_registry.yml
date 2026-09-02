@@ -69,6 +69,7 @@ patches:
       - app/javascript/dashboard/components-next/message/Message.vue
     tests:
       - spec/custom/wijaya/batteries/ads_tracking/referral_parser_spec.rb
+      - custom/wijaya/batteries/ads_tracking/frontend/AdsReferral.spec.js
       - spec/services/whatsapp/incoming_message_whatsapp_cloud_service_spec.rb
       - spec/builders/messages/facebook/message_builder_spec.rb
       - spec/builders/messages/instagram/message_builder_spec.rb

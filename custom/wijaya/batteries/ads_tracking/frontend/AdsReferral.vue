@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 
 const props = defineProps({
   referral: { type: Object, default: () => ({}) },
@@ -15,16 +15,47 @@ const sourceUrl = computed(() => props.referral?.sourceUrl || null);
 // Prefer thumbnailUrl, fall back to imageUrl for the preview image.
 const mediaUrl = computed(() => thumbnailUrl.value || imageUrl.value);
 
+// Only absolute http(s) URLs may be used as media sources or external actions
+// so that javascript:/data: and other unsafe schemes can never be emitted.
+// Parsing without a base rejects relative paths outright — a referral URL is
+// always an absolute destination, never something resolved against our origin.
+const isSafeHttpUrl = value => {
+  if (!value) return false;
+  try {
+    const { protocol } = new URL(value);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+
 const isVideo = computed(() => {
   const mediaType = (props.referral?.mediaType || '').toString().toLowerCase();
   return mediaType === 'video' || Boolean(videoUrl.value);
 });
 
-// For video ads prefer the video URL, otherwise fall back through the
-// remaining links so the action always opens the most relevant destination.
+// We optimistically attempt inline playback for video referrals with a safe
+// URL, but the browser's media pipeline is the authority: a Facebook page/Reel
+// URL (or any non-media source) fires an error and we drop to the fallback.
+const videoFailed = ref(false);
+const safeVideoUrl = computed(() =>
+  isVideo.value && isSafeHttpUrl(videoUrl.value) ? videoUrl.value : null
+);
+const showInlineVideo = computed(
+  () => Boolean(safeVideoUrl.value) && !videoFailed.value
+);
+const onVideoError = () => {
+  videoFailed.value = true;
+};
+
+// External action used by the fallback card. For video referrals the video URL
+// (e.g. the Reel page) is the meaningful destination once inline playback
+// fails, so it stays ahead of sourceUrl to preserve the prior fallback target.
 const openUrl = computed(() => {
-  if (isVideo.value && videoUrl.value) return videoUrl.value;
-  return sourceUrl.value || imageUrl.value || thumbnailUrl.value || null;
+  const candidates = isVideo.value
+    ? [videoUrl.value, sourceUrl.value, imageUrl.value, thumbnailUrl.value]
+    : [sourceUrl.value, imageUrl.value, thumbnailUrl.value];
+  return candidates.find(isSafeHttpUrl) || null;
 });
 
 const sponsoredLabel = computed(() => 'Sponsored');
@@ -38,13 +69,25 @@ const shouldRender = computed(
 <template>
   <template v-if="shouldRender">
     <component
-      :is="openUrl ? 'a' : 'div'"
-      :href="openUrl || undefined"
-      :target="openUrl ? '_blank' : undefined"
-      :rel="openUrl ? 'noopener noreferrer' : undefined"
+      :is="!showInlineVideo && openUrl ? 'a' : 'div'"
+      :href="!showInlineVideo && openUrl ? openUrl : undefined"
+      :target="!showInlineVideo && openUrl ? '_blank' : undefined"
+      :rel="!showInlineVideo && openUrl ? 'noopener noreferrer' : undefined"
       class="ads-referral-card group mb-1 block overflow-hidden rounded-xl border border-n-weak bg-n-slate-3 text-xs text-n-slate-12 no-underline transition-shadow hover:shadow-md"
     >
-      <div v-if="mediaUrl" class="relative">
+      <div v-if="showInlineVideo" class="relative">
+        <video
+          :src="safeVideoUrl"
+          :poster="mediaUrl || undefined"
+          controls
+          playsinline
+          preload="metadata"
+          data-test-id="ads-referral-video"
+          class="h-44 w-full bg-black object-contain"
+          @error="onVideoError"
+        />
+      </div>
+      <div v-else-if="mediaUrl" class="relative">
         <img
           :src="mediaUrl"
           :alt="headline || 'Advertisement'"
@@ -81,7 +124,7 @@ const shouldRender = computed(
           {{ body }}
         </span>
         <span
-          v-if="openUrl"
+          v-if="!showInlineVideo && openUrl"
           class="mt-1 inline-flex items-center gap-1 text-xs font-medium text-n-blue-text group-hover:underline"
         >
           {{ actionLabel }}
