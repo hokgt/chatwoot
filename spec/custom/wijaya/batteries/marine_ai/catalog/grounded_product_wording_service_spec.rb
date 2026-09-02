@@ -35,6 +35,30 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
     validator
   end
 
+  # Schema-aware chat stub for the stock language-proof path. Generation calls (REPLY_SCHEMA) are
+  # answered from the queued messages in order (the last repeats); a provider language-PROOF call
+  # (LANGUAGE_SCHEMA, made only for a stock candidate whose LOCAL read does not match the target)
+  # is answered from `proofs`, keyed by the candidate string it is asked to classify. This lets a
+  # test drive both the bounded generation retry AND the reliable-different/indeterminable provider
+  # proof deterministically, and count the two call kinds separately.
+  def stub_generations_and_proofs(gen_messages, proofs: {})
+    llm = instance_double(Marine::Llm::BaseService, configured?: true)
+    responses = gen_messages.map { |m| { ok: true, message: reply_envelope(m), error: nil } }
+    idx = 0
+    allow(llm).to receive(:chat) do |args|
+      if args[:schema] == described_class::LANGUAGE_SCHEMA
+        candidate = args[:messages].last[:content] || args[:messages].last['content']
+        { ok: true, message: { language: proofs.fetch(candidate, 'unknown') }.to_json, error: nil }
+      else
+        resp = responses[idx] || responses.last
+        idx += 1
+        resp
+      end
+    end
+    allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+    llm
+  end
+
   def call(action: :reply, descriptor: self.descriptor, fallback: self.fallback, # rubocop:disable Metrics/ParameterLists
            customer_request: 'what is impeller?', message_history: [], opening: true, reply_language: nil)
     service.call(action: action, descriptor: descriptor, fallback: fallback,
@@ -251,7 +275,7 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
   # Gate F — a NON-stock product generation is requested at temperature 0.0 as a variance-reducing
   # control (greedy decoding minimizes sampling variance so the rephrase drifts less run-to-run);
   # temperature 0.0 is NOT a determinism guarantee. (A pure stock reply instead uses a small bounded
-  # nonzero temperature — see 'structural anti-copy and bounded regeneration'.) It never relaxes
+  # nonzero temperature — see 'stock natural-wording generation'.) It never relaxes
   # acceptance: the candidate stays fully untrusted and still passes the deterministic
   # ProductFactProtectionValidator and the separate semantic validator unchanged.
   it 'requests a non-stock generation at variance-reducing temperature 0.0' do
@@ -401,11 +425,14 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
       expect(call(descriptor: in_stock_descriptor, fallback: in_stock_fallback)).to be_nil
     end
 
-    it 'passes the latest inquiry and stock fallback to generation so wording can adapt to it' do
+    it 'passes the latest inquiry and the structured availability status (never the fallback sentence) to generation' do
       captured = capture_generation_system(descriptor: in_stock_descriptor, fallback: in_stock_fallback,
                                            customer_request: 'is the impeller in stock?')
 
-      expect(captured[:system]).to include(in_stock_fallback)
+      # A stock reply now grounds on the structured availability data (identity + binary status), so the
+      # provider is never handed the prewritten fallback sentence to echo.
+      expect(captured[:system]).to include('"product":"IMP-3"').and include('"availability":"available"')
+      expect(captured[:system]).not_to include(in_stock_fallback)
       contents = captured[:messages].map { |m| m[:content] || m['content'] }
       expect(contents.last).to eq('is the impeller in stock?')
     end
@@ -477,8 +504,10 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
         expect(guidance).to match(/binary/i).and match(/in stock/i).and match(/out of stock/i)
         # exact identity repeated is preservation, not an added fact
         expect(guidance).to match(/NOT a new or added fact/i).and match(/preservation/i)
-        # greetings/framing never cause rejection
+        # greetings/framing never cause rejection — including a brief offer of further help, the warm
+        # closing pleasantry the judge otherwise miscounted as an added fact (the opening-turn over-rejection)
         expect(guidance).to match(/greetings/i).and match(/never let them cause rejection/i)
+        expect(guidance).to match(/offer of further help/i)
         # unsafe changes still reject
         expect(guidance).to match(/changes, drops, or substitutes a DIFFERENT/i)
         expect(guidance).to match(/reverses the availability/i)
@@ -574,8 +603,7 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
     end
 
     it 'rejects an English candidate for an Indonesian customer (no English reply passes for an id request)' do
-      # A NON-copy natural English candidate, so the language gate (not the structural anti-copy) is
-      # what rejects it for an id customer.
+      # A natural English candidate for an id customer, so the language gate is what rejects it.
       candidate = 'Yes — IMP-3 is on hand right now!'
       stub_generation(message: candidate)
       stub_candidate_language(candidate, language: 'en')
@@ -684,16 +712,31 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
       expect(validator).not_to have_received(:valid?)
     end
 
-    it 'still rejects a RELIABLY-different candidate for a STOCK reply without spending a provider proof' do
+    # CLD3 regularly reports genuine Indonesian as its confusable neighbour Malay ('ms') on a short
+    # availability line, so a RELIABLY-different LOCAL read is not authoritative enough to force a handoff
+    # on a KNOWN stock fact. For a STOCK reply the candidate's language is PROVEN via the provider (the
+    # same capability that produced the target); a proven-target match is delivered.
+    it 'delivers a STOCK candidate CLD3 reads as a reliably-different confusable language when the provider PROVES the target' do
       candidate = 'Ya, IMP-3 tersedia.'
-      stub_candidate_language(candidate, language: 'ms', reliable: true)
-      llm = stub_generation(message: candidate)
+      stub_candidate_language(candidate, language: 'ms', reliable: true) # CLD3 misreads id as ms
+      stub_generation_with_language_proof(reply: candidate, proven: 'id') # provider proves it IS id
+      validator = stub_semantic(true)
+
+      expect(call_stock(reply_language: 'id')).to eq(candidate)
+      expect(validator).to have_received(:valid?)
+    end
+
+    # Fail-closed is preserved: a genuine wrong-language reply (reliably-different local read that the
+    # provider ALSO proves is a different language than the target) is rejected — the provider proof never
+    # turns wrong-language output into a delivery.
+    it 'rejects a STOCK candidate reliably-read as different when the provider proves a DIFFERENT language' do
+      candidate = 'Yes, IMP-3 on hand.'
+      stub_candidate_language(candidate, language: 'en', reliable: true)
+      stub_generation_with_language_proof(reply: candidate, proven: 'en') # provider confirms genuine en
       validator = stub_semantic(true)
 
       expect(call_stock(reply_language: 'id')).to be_nil
-      expect(validator).not_to have_received(:valid?)
-      # a reliably-different LOCAL read is rejected on the fast path: no provider language proof is made
-      expect(llm).not_to have_received(:chat).with(hash_including(schema: described_class::LANGUAGE_SCHEMA))
+      expect(validator).not_to have_received(:valid?) # rejected before the semantic gate
     end
 
     it 'fails closed for a NON-stock reply when the candidate language cannot be read reliably (no provider proof)' do
@@ -751,8 +794,8 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
     end
 
     it 'strips a leaked Indonesian opening greeting from an English reply before the gates and delivers clean English' do
-      # A NON-copy natural English body carrying a leaked Indonesian opening greeting: after enforcement
-      # only the English body remains, and (being no structural copy of the fallback) it is delivered.
+      # A natural English body carrying a leaked Indonesian opening greeting: after enforcement only the
+      # English body remains, and once the gates pass it is delivered.
       stub_generation(message: 'Selamat pagi! Yes — IMP-3 is on hand right now.')
       detector = instance_double(Marine::Llm::LanguageDetector, detect: { language: 'en', reliable: true, confidence: 1.0 })
       allow(Marine::Llm::LanguageDetector).to receive(:new).and_call_original
@@ -785,15 +828,128 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
     expect(captured[:system]).to match(/never switch to another language/i)
   end
 
-  # Structural anti-copy + bounded regeneration — the live tone failure. At greedy temperature a
-  # same-language stock reply came back as a verbatim translation of the deterministic fallback
-  # ("<code> saat ini tersedia"): it passed every fact/language gate and shipped as the accepted
-  # "natural" wording, the exact stiff structure the user rejected. A pure stock reply is now generated
-  # at a small bounded nonzero temperature and, when the candidate merely reproduces the fallback's
-  # fact-stripped sentence skeleton, regenerated exactly ONCE with a generic structural nudge; a
-  # persistent copy fails closed to the exact fallback. The check is language-agnostic (compares
-  # structure, not a phrase list) and applies to stock kinds only.
-  describe 'structural anti-copy and bounded regeneration (stock)' do
+  # The architectural correction: a pure stock reply is grounded on a STRUCTURED availability data block
+  # (the already-validated variant identity + a binary in/out status) instead of the prewritten localized
+  # fallback SENTENCE, so the provider is never handed a finished sentence to echo (the proven handoff root
+  # cause). The deterministic fallback still judges the candidate in BOTH gates; a NON-stock reply is
+  # unchanged and still grounds on the "Product Reply" sentence.
+  describe 'structured stock generation context (no fallback prose)' do
+    let(:in_stock_descriptor) { { kind: :stock_available, variant_code: 'IMP-3' } }
+    let(:in_stock_fallback) { 'IMP-3 is currently in stock.' }
+    let(:out_descriptor) { { kind: :stock_empty, variant_code: 'IMP-3' } }
+    # An unavailable fallback deliberately carrying a QUANTITY ('0') and warehouse-ish prose that must
+    # NEVER reach the generation prompt — only the binary status may.
+    let(:out_fallback) { 'Sorry, IMP-3 is currently out of stock (0 remaining at the main warehouse).' }
+
+    # Capture the GENERATION system prompt (REPLY_SCHEMA call), delivering a supplied dynamic candidate.
+    def capture_stock_system(descriptor:, fallback:, reply:)
+      captured = {}
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      allow(llm).to receive(:chat) do |args|
+        captured.merge!(args) if args[:schema] == described_class::REPLY_SCHEMA
+        { ok: true, message: reply_envelope(reply), error: nil }
+      end
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      stub_semantic(true)
+      service.call(action: :reply, descriptor: descriptor, fallback: fallback,
+                   customer_request: 'is IMP-3 in stock?', opening: false, reply_language: nil)
+      captured[:system]
+    end
+
+    # The Availability Data JSON object embedded in the system prompt, parsed for exact-shape assertions.
+    def availability_data(system)
+      JSON.parse(system[/\{"product".*?\}/])
+    end
+
+    it 'grounds an AVAILABLE stock generation on the exact identity + binary status, not the fallback prose' do
+      system = capture_stock_system(descriptor: in_stock_descriptor, fallback: in_stock_fallback,
+                                    reply: 'Yep — IMP-3 is on hand right now!')
+      expect(system).to include('IMP-3')                       # exact public identity present
+      expect(system).to include('"availability":"available"')  # binary status present as generic data
+      expect(availability_data(system)).to eq('product' => 'IMP-3', 'availability' => 'available')
+      # the prewritten fallback SENTENCE is never handed to the provider to echo
+      expect(system).not_to include(in_stock_fallback)
+      expect(system).not_to match(/Product Reply/)
+    end
+
+    it 'grounds an UNAVAILABLE stock generation on the binary status, leaking neither the fallback prose nor its quantity' do
+      system = capture_stock_system(descriptor: out_descriptor, fallback: out_fallback,
+                                    reply: 'Sorry, IMP-3 is not available right now.')
+      expect(system).to include('"availability":"unavailable"')
+      expect(availability_data(system)).to eq('product' => 'IMP-3', 'availability' => 'unavailable')
+      # neither the fallback sentence, its quantity, nor its warehouse detail leaks into the prompt
+      expect(system).not_to include(out_fallback)
+      expect(system).not_to match(/warehouse|remaining/i)
+      expect(availability_data(system).keys).to contain_exactly('product', 'availability') # no quantity/internal field
+    end
+
+    it 'still judges the stock candidate against the deterministic fallback in BOTH gates' do
+      fp = instance_double(Marine::Catalog::ProductFactProtectionValidator, eligible?: true)
+      fp_args = {}
+      allow(fp).to receive(:accepts?) do |args|
+        fp_args.merge!(args)
+        true
+      end
+      allow(Marine::Catalog::ProductFactProtectionValidator).to receive(:new).and_return(fp)
+      sem_args = {}
+      validator = instance_double(Marine::Charge::FactPreservationValidator)
+      allow(validator).to receive(:valid?) do |args|
+        sem_args.merge!(args)
+        true
+      end
+      allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(validator)
+      stub_generation(message: 'Yep — IMP-3 is on hand right now!')
+
+      service.call(action: :reply, descriptor: in_stock_descriptor, fallback: in_stock_fallback,
+                   customer_request: 'is IMP-3 in stock?', opening: false)
+
+      expect(fp_args[:fallback]).to eq(in_stock_fallback)         # deterministic gate judges against the fallback
+      expect(sem_args[:approved_answer]).to eq(in_stock_fallback) # semantic gate's approved answer is the fallback
+    end
+
+    it 'leaves a NON-stock generation grounded on the Product Reply fallback (unchanged, no data block)' do
+      captured = {}
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      allow(llm).to receive(:chat) do |args|
+        captured.merge!(args)
+        { ok: true, message: reply_envelope('About Impeller — which variant would you like?'), error: nil }
+      end
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      stub_semantic(true)
+
+      call # default parent_info (non-stock)
+
+      expect(captured[:system]).to include("Product Reply:\n#{fallback}")
+      expect(captured[:system]).not_to match(/Availability Data/)
+    end
+
+    it 'delivers a dynamically reworded AVAILABLE line (never the fallback sentence)' do
+      stub_generation(message: 'Yep — IMP-3 is on hand right now!')
+      stub_semantic(true)
+      result = service.call(action: :reply, descriptor: in_stock_descriptor, fallback: in_stock_fallback,
+                            customer_request: 'is IMP-3 in stock?', opening: false)
+      expect(result).to eq('Yep — IMP-3 is on hand right now!')
+      expect(result).not_to eq(in_stock_fallback)
+    end
+
+    it 'delivers a dynamically reworded UNAVAILABLE line (never the fallback sentence)' do
+      stub_generation(message: 'Sorry, IMP-3 is not available at the moment.')
+      stub_semantic(true)
+      result = service.call(action: :reply, descriptor: out_descriptor, fallback: 'IMP-3 is currently out of stock.',
+                            customer_request: 'is IMP-3 in stock?', opening: false)
+      expect(result).to eq('Sorry, IMP-3 is not available at the moment.')
+    end
+  end
+
+  # Stock natural-wording generation — a pure stock reply is generated dynamically by the configured
+  # provider from the STRUCTURED availability data (identity + binary status), at a small bounded nonzero
+  # temperature so the wording can vary. The delivered text is ALWAYS a provider-generated candidate that
+  # cleared every gate; it is NEVER rejected merely for equalling or structurally matching the localized
+  # fallback. Equality with the fallback is a harmless coincidence, not a safety boundary — the customer
+  # explicitly accepts a concise reply that naturally coincides with the fallback — so a passing candidate
+  # is delivered on the FIRST attempt. Retries are reserved for ACTUAL generation/gate failures (covered in
+  # the block below); this scope is stock kinds only.
+  describe 'stock natural-wording generation (dynamic, fallback-equality allowed)' do
     let(:in_stock_descriptor) { { kind: :stock_available, variant_code: 'IMP-3' } }
     let(:in_stock_fallback) { 'IMP-3 is currently in stock.' }
     let(:id_fallback) { 'IMP-3 saat ini tersedia.' }
@@ -823,121 +979,100 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
       expect(captured[:temperature]).to be <= 0.6
     end
 
-    it 'does NOT accept a candidate that merely reproduces the fallback sentence structure (English)' do
-      llm = stub_generations('Yes, IMP-3 is currently in stock.', 'Good news — IMP-3 is currently in stock.')
-      validator = stub_semantic(true)
-
-      # Both attempts copy the "<code> is currently in stock" skeleton -> fail closed, no semantic call.
-      expect(call(descriptor: in_stock_descriptor, fallback: in_stock_fallback, customer_request: 'is IMP-3 in stock?')).to be_nil
-      expect(llm).to have_received(:chat).twice
-      expect(validator).not_to have_received(:valid?)
-    end
-
-    it 'does NOT accept the reported Indonesian copy "<code> saat ini tersedia" behind a greeting' do
-      llm = stub_generations('Selamat pagi! Ya, IMP-3 saat ini tersedia.', 'IMP-3 saat ini tersedia.')
-      validator = stub_semantic(true)
-
-      expect(service.call(action: :reply, descriptor: in_stock_descriptor, fallback: id_fallback,
-                          customer_request: 'apakah IMP-3 tersedia?', opening: true)).to be_nil
-      expect(llm).to have_received(:chat).twice
-      expect(validator).not_to have_received(:valid?)
-    end
-
-    it 'recovers via ONE bounded regeneration: a copy first, then a natural candidate is accepted' do
-      llm = stub_generations('IMP-3 is currently in stock.', 'Yep! We have got IMP-3 on hand right now.')
+    # The corrective fix: a provider-generated candidate that happens to equal the localized fallback is
+    # DELIVERED once every gate passes — generation still happened, and equality is not rejection.
+    it 'delivers a dynamically generated candidate identical to the fallback after all gates (equality is not rejection)' do
+      llm = stub_generations(id_fallback) # provider output coincides with the localized fallback
       stub_semantic(true)
 
-      result = call(descriptor: in_stock_descriptor, fallback: in_stock_fallback, customer_request: 'is IMP-3 in stock?')
+      result = service.call(action: :reply, descriptor: in_stock_descriptor, fallback: id_fallback,
+                            customer_request: 'apakah IMP-3 tersedia?', opening: false)
 
-      expect(result).to eq('Yep! We have got IMP-3 on hand right now.')
-      expect(llm).to have_received(:chat).twice
+      expect(result).to eq(id_fallback)
+      expect(llm).to have_received(:chat).once # generation was called; a passing candidate is not retried
     end
 
-    it 'appends a generic structural regeneration nudge (no language/phrase/example) to the retry only' do
-      systems = []
-      replies = [reply_envelope('IMP-3 is currently in stock.'), reply_envelope('Yep, IMP-3 is on hand right now!')]
-      idx = 0
-      llm = instance_double(Marine::Llm::BaseService, configured?: true)
-      allow(llm).to receive(:chat) do |args|
-        systems << args[:system]
-        reply = replies[idx]
-        idx += 1
-        { ok: true, message: reply, error: nil }
-      end
-      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+    # English parity: a candidate reproducing the fallback's sentence structure verbatim is likewise
+    # delivered — the anti-copy rejection is gone, so no dynamic candidate is dropped for resembling it.
+    it 'delivers a candidate structurally matching the fallback once every gate passes (English)' do
+      llm = stub_generations('Yes, IMP-3 is currently in stock.') # carries the fallback skeleton verbatim
       stub_semantic(true)
 
-      call(descriptor: in_stock_descriptor, fallback: in_stock_fallback, customer_request: 'is IMP-3 in stock?')
-
-      expect(systems.first).not_to include(described_class::REGENERATION_NUDGE)
-      expect(systems.last).to include(described_class::REGENERATION_NUDGE)
-      # the nudge is a generic structural instruction, never a product/language/phrase example
-      expect(described_class::REGENERATION_NUDGE).not_to match(/IMP-3|SR-20|tersedia|in stock/i)
+      expect(call(descriptor: in_stock_descriptor, fallback: in_stock_fallback,
+                  customer_request: 'is IMP-3 in stock?')).to eq('Yes, IMP-3 is currently in stock.')
+      expect(llm).to have_received(:chat).once
     end
 
-    it 'is bounded: never generates more than twice even if every candidate copies' do
-      llm = stub_generations('IMP-3 is currently in stock.', 'IMP-3 is currently in stock.', 'IMP-3 is currently in stock.')
+    it 'delivers the reported Indonesian availability line "<code> saat ini tersedia" once the gates pass' do
+      llm = stub_generations('IMP-3 saat ini tersedia.')
       stub_semantic(true)
 
-      expect(call(descriptor: in_stock_descriptor, fallback: in_stock_fallback, customer_request: 'is IMP-3 in stock?')).to be_nil
-      expect(llm).to have_received(:chat).twice
-    end
-
-    it 'still fails closed when the regenerated candidate is wrong-language — safety unchanged' do
-      retry_candidate = 'Yes, IMP-3 is on hand right now!'
-      llm = stub_generations(id_fallback, retry_candidate) # first copies, retry is English for an id customer
-      allow(Marine::Llm::LanguageDetector).to receive(:new).and_call_original
-      detector = instance_double(Marine::Llm::LanguageDetector, detect: { language: 'en', reliable: true, confidence: 1.0 })
-      allow(Marine::Llm::LanguageDetector).to receive(:new).with(retry_candidate).and_return(detector)
-      validator = stub_semantic(true)
-
-      expect(service.call(action: :reply, descriptor: in_stock_descriptor, fallback: id_fallback,
-                          customer_request: 'apakah IMP-3 tersedia?', opening: false, reply_language: 'id')).to be_nil
-      expect(validator).not_to have_received(:valid?)
-      expect(llm).to have_received(:chat).twice
+      result = service.call(action: :reply, descriptor: in_stock_descriptor, fallback: id_fallback,
+                            customer_request: 'apakah IMP-3 tersedia?', opening: false)
+      expect(result).to eq('IMP-3 saat ini tersedia.')
+      expect(llm).to have_received(:chat).once
     end
 
     it 'accepts a genuinely natural Indonesian candidate on the FIRST try (not a language phrase ban)' do
       llm = stub_generations('Selamat pagi! Stok IMP-3 masih ada kok.')
       stub_semantic(true)
 
-      result = service.call(action: :reply, descriptor: in_stock_descriptor, fallback: id_fallback,
-                            customer_request: 'apakah IMP-3 tersedia?', opening: true)
-      expect(result).to eq('Selamat pagi! Stok IMP-3 masih ada kok.')
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do # 09:37 WIB -> pagi, so the opening greeting is not normalized
+        result = service.call(action: :reply, descriptor: in_stock_descriptor, fallback: id_fallback,
+                              customer_request: 'apakah IMP-3 tersedia?', opening: true)
+        expect(result).to eq('Selamat pagi! Stok IMP-3 masih ada kok.')
+      end
       expect(llm).to have_received(:chat).once
     end
 
-    it 'does not apply the bare-restatement check to a non-stock reply (scope is stock only)' do
-      llm = stub_generations(fallback) # default parent_info: candidate identical to the fallback structure
+    it 'delivers a non-stock reply identical to the fallback on a single attempt (scope is stock only)' do
+      llm = stub_generations(fallback) # default parent_info: candidate identical to the fallback
       stub_semantic(true)
 
       expect(call).to eq(fallback)
       expect(llm).to have_received(:chat).once
     end
 
-    # The crux of the design: a genuinely WARM, framed reply that happens to keep the faithful
-    # availability phrase ("saat ini tersedia") is NOT a bare restatement and is accepted as-is — the
-    # check rejects stiffness, not the presence of the faithful phrase.
-    it 'accepts a warm, framed reply that keeps the faithful availability phrase (not bare)' do
+    # A genuinely WARM, framed reply that keeps the faithful availability phrase ("saat ini tersedia") is
+    # delivered as-is on the first try.
+    it 'accepts a warm, framed reply that keeps the faithful availability phrase' do
       warm = 'Selamat pagi! 😊 Ya, IMP-3 saat ini tersedia kok. Ada lagi yang bisa saya bantu?'
       llm = stub_generations(warm)
       stub_semantic(true)
 
-      result = service.call(action: :reply, descriptor: in_stock_descriptor, fallback: id_fallback,
-                            customer_request: 'apakah IMP-3 tersedia?', opening: true)
-      expect(result).to eq(warm)
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) do # 09:37 WIB -> pagi, so the opening greeting is not normalized
+        result = service.call(action: :reply, descriptor: in_stock_descriptor, fallback: id_fallback,
+                              customer_request: 'apakah IMP-3 tersedia?', opening: true)
+        expect(result).to eq(warm)
+      end
       expect(llm).to have_received(:chat).once
     end
 
-    it 'flags a greeting-plus-affirmation-only restatement as bare and regenerates to a framed reply' do
-      framed = 'Selamat pagi! Ya, IMP-3 masih ada ya. Ada lagi yang bisa saya bantu?'
-      llm = stub_generations('Selamat pagi! Ya, IMP-3 saat ini tersedia.', framed)
+    # A concise, directly generated one-sentence confirmation is delivered on the first try — no forced
+    # greeting, no offer of further help, and no rejection for coinciding with the fallback wording.
+    it 'accepts a concise, one-sentence availability confirmation with no greeting or help offer' do
+      concise = 'Ya, IMP-3 tersedia saat ini.'
+      llm = stub_generations(concise)
       stub_semantic(true)
 
       result = service.call(action: :reply, descriptor: in_stock_descriptor, fallback: id_fallback,
-                            customer_request: 'apakah IMP-3 tersedia?', opening: true)
-      expect(result).to eq(framed)
-      expect(llm).to have_received(:chat).twice
+                            customer_request: 'apakah IMP-3 tersedia?', opening: false)
+      expect(result).to eq(concise)
+      expect(llm).to have_received(:chat).once
+    end
+
+    # Unavailable parity: a concise, one-sentence UNAVAILABLE confirmation is likewise delivered on the
+    # first try.
+    it 'accepts a concise, one-sentence UNAVAILABLE confirmation on the first try' do
+      unavailable_fallback = 'Maaf, IMP-3 saat ini tidak tersedia.'
+      concise = 'Maaf ya, IMP-3 tidak tersedia saat ini.'
+      llm = stub_generations(concise)
+      stub_semantic(true)
+
+      result = service.call(action: :reply, descriptor: { kind: :stock_empty, variant_code: 'IMP-3' },
+                            fallback: unavailable_fallback, customer_request: 'apakah IMP-3 tersedia?', opening: false)
+      expect(result).to eq(concise)
+      expect(llm).to have_received(:chat).once
     end
 
     it 'appends the stock warmth mandate to a stock generation only' do
@@ -961,9 +1096,11 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
 
   # Second follow-up — bounded stock-retry across ALL non-accepted branches. The configured provider is
   # non-deterministic (an identical unavailable probe handed off on one run and delivered on the next), so
-  # a pure stock reply now spends the SAME bounded MAX_STOCK_ATTEMPTS budget on a FRESH resample for EVERY
-  # non-accepted candidate outcome — not only a bare restatement. Each retry stays fully untrusted and is
-  # re-gated from scratch; two unsafe candidates still fail closed to nil (the caller hands off) with no
+  # a pure stock reply spends the bounded MAX_STOCK_ATTEMPTS budget on a FRESH resample for EVERY
+  # non-accepted candidate outcome (a malformed/blank or greeting-enforced-blank generation, a
+  # deterministic fact/code rejection, a wrong/unreadable language, or a semantic rejection/uncertainty).
+  # Each retry stays fully untrusted and is re-gated from scratch; two unsafe candidates still fail closed
+  # to nil (the caller hands off) with no
   # deterministic/static fallback ever delivered. Non-stock replies keep their single attempt. Provider and
   # semantic-validator call counts are asserted EXACTLY so the budget is provably bounded.
   describe 'bounded stock retry across all non-accepted branches' do
@@ -1062,26 +1199,32 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
     it 'retries a wrong-language candidate, then delivers a correct-language second candidate' do
       wrong = 'Yes — IMP-3 is on hand right now.'
       right = 'IMP-3 saat ini tersedia ya, ada yang bisa dibantu?'
-      llm = stub_generations(wrong, right)
+      # attempt 1 reads reliably 'en' and the provider PROVES 'en' (rejected before semantic); attempt 2
+      # reads reliably 'id' matching the target, so it is delivered with no provider proof spent.
+      llm = stub_generations_and_proofs([wrong, right], proofs: { wrong => 'en' })
       stub_languages(wrong => 'en', right => 'id')
       validator = stub_semantic(true)
 
       expect(stock_call(fallback: id_fallback, reply_language: 'id',
                         customer_request: 'apakah IMP-3 tersedia?', opening: false)).to eq(right)
-      expect(llm).to have_received(:chat).twice
+      expect(llm).to have_received(:chat).with(hash_including(schema: described_class::REPLY_SCHEMA)).twice
+      expect(llm).to have_received(:chat).with(hash_including(schema: described_class::LANGUAGE_SCHEMA)).once
       expect(validator).to have_received(:valid?).once # the wrong-language candidate is rejected before the semantic gate
     end
 
     it 'fails closed after two wrong-language candidates, never reaching the semantic gate' do
       wrong1 = 'Yes — IMP-3 is on hand right now.'
       wrong2 = 'Sure, IMP-3 is available right now.'
-      llm = stub_generations(wrong1, wrong2)
+      # both read reliably 'en' and the provider PROVES 'en' each time, so both fail closed before the
+      # semantic gate — the reliably-different provider proof never accepts a genuine wrong-language reply.
+      llm = stub_generations_and_proofs([wrong1, wrong2], proofs: { wrong1 => 'en', wrong2 => 'en' })
       stub_languages(wrong1 => 'en', wrong2 => 'en')
       validator = stub_semantic(true)
 
       expect(stock_call(fallback: id_fallback, reply_language: 'id',
                         customer_request: 'apakah IMP-3 tersedia?', opening: false)).to be_nil
-      expect(llm).to have_received(:chat).twice
+      expect(llm).to have_received(:chat).with(hash_including(schema: described_class::REPLY_SCHEMA)).twice
+      expect(llm).to have_received(:chat).with(hash_including(schema: described_class::LANGUAGE_SCHEMA)).twice
       expect(validator).not_to have_received(:valid?)
     end
 
@@ -1124,8 +1267,8 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
     end
 
     # ---- retry nudge is generic; never leaks the rejected candidate ----
-    it 'sends the generic corrective nudge (not the warmth nudge, never the rejected text) on a non-bare retry' do
-      first = 'Yes, we currently have 24 of IMP-3 on hand.' # deterministic reject, NOT a bare restatement
+    it 'sends the generic corrective nudge (never the rejected text) on a retry' do
+      first = 'Yes, we currently have 24 of IMP-3 on hand.' # deterministic reject (extra quantity)
       second = 'Yes — IMP-3 is on hand right now, happy to help.'
       systems = []
       replies = [reply_envelope(first), reply_envelope(second)]
@@ -1140,11 +1283,12 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
       allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
       stub_semantic(true)
 
-      stock_call
+      # Fixed time so the opening-turn greeting timestamp can never coincidentally contain the rejected
+      # candidate's digits ('24'), keeping the no-leak assertion below about content, not the wall clock.
+      travel_to(Time.utc(2026, 7, 20, 2, 37)) { stock_call }
 
       expect(systems.first).not_to include(described_class::CORRECTIVE_NUDGE)
       expect(systems.last).to include(described_class::CORRECTIVE_NUDGE)
-      expect(systems.last).not_to include(described_class::REGENERATION_NUDGE) # corrective, not warmth, for a non-bare reject
       expect(systems.last).not_to include('24') # the rejected candidate's content never leaks into the retry prompt
       # the corrective nudge names no product, language, phrase, or example
       expect(described_class::CORRECTIVE_NUDGE).not_to match(/IMP-3|SR-20|tersedia|in stock/i)
