@@ -632,26 +632,81 @@ RSpec.describe Marine::Catalog::GroundedProductWordingService do
       expect(call_stock(reply_language: nil)).to eq(candidate)
     end
 
-    it 'rejects (fails closed) when the candidate language cannot be read reliably under a known id target' do
+    # A stock candidate the LOCAL detector cannot classify (a very short availability line) is proven
+    # via the provider — the same capability that produced the authoritative reply_language, which
+    # classifies short text reliably. The chat stub answers the LANGUAGE_SCHEMA proof call and the
+    # generation call distinctly so the real envelope-extraction path is exercised.
+    def stub_generation_with_language_proof(reply:, proven:)
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      allow(llm).to receive(:chat) do |args|
+        if args[:schema] == described_class::LANGUAGE_SCHEMA
+          { ok: true, message: { language: proven }.to_json, error: nil }
+        else
+          { ok: true, message: reply_envelope(reply), error: nil }
+        end
+      end
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      llm
+    end
+
+    it 'delivers an INDETERMINABLE stock candidate only when the provider PROVES the target language' do
+      # CLD3 cannot reliably classify a bare in-language availability line at its length; the provider
+      # proves it is Indonesian, so it is delivered (a handoff on a KNOWN in-stock fact is avoided)
+      # WITHOUT accepting an unproven candidate.
       candidate = 'Ya, IMP-3 tersedia.'
-      stub_generation(message: candidate)
-      stub_candidate_language(candidate, language: 'ms', reliable: false)
+      stub_candidate_language(candidate, language: 'unknown', reliable: false)
+      stub_generation_with_language_proof(reply: candidate, proven: 'id')
       validator = stub_semantic(true)
 
-      # Fail-closed: a known target with no reliable candidate read never silently accepts a
-      # possibly-wrong-language candidate; the caller supplies a same-language fallback instead.
+      expect(call_stock(reply_language: 'id')).to eq(candidate)
+      expect(validator).to have_received(:valid?)
+    end
+
+    # RED for the prior `return stock` patch: it accepted EVERY indeterminable stock candidate, so a
+    # wrong-language line CLD3 also cannot classify would ship. The provider proof rejects it.
+    it 'rejects an INDETERMINABLE stock candidate the provider proves is a DIFFERENT language' do
+      candidate = 'Yes, IMP-3 on hand.' # short English line CLD3 reads unreliably; provider proves en
+      stub_candidate_language(candidate, language: 'unknown', reliable: false)
+      stub_generation_with_language_proof(reply: candidate, proven: 'en')
+      validator = stub_semantic(true)
+
+      expect(call_stock(reply_language: 'id')).to be_nil
+      expect(validator).not_to have_received(:valid?) # rejected before the semantic gate
+    end
+
+    it 'fails closed for an INDETERMINABLE stock candidate when the provider cannot prove the language' do
+      candidate = 'Ya, IMP-3 tersedia.'
+      stub_candidate_language(candidate, language: 'unknown', reliable: false)
+      stub_generation_with_language_proof(reply: candidate, proven: 'unknown') # provider also cannot classify
+      validator = stub_semantic(true)
+
       expect(call_stock(reply_language: 'id')).to be_nil
       expect(validator).not_to have_received(:valid?)
     end
 
-    it 'rejects (fails closed) when the candidate language cannot be read reliably under a known en target' do
-      candidate = 'Yes, IMP-3 is on hand.'
-      stub_generation(message: candidate)
-      stub_candidate_language(candidate, language: 'unknown', reliable: false)
+    it 'still rejects a RELIABLY-different candidate for a STOCK reply without spending a provider proof' do
+      candidate = 'Ya, IMP-3 tersedia.'
+      stub_candidate_language(candidate, language: 'ms', reliable: true)
+      llm = stub_generation(message: candidate)
       validator = stub_semantic(true)
 
-      expect(call_stock(reply_language: 'en', customer_request: 'is IMP-3 in stock?')).to be_nil
+      expect(call_stock(reply_language: 'id')).to be_nil
       expect(validator).not_to have_received(:valid?)
+      # a reliably-different LOCAL read is rejected on the fast path: no provider language proof is made
+      expect(llm).not_to have_received(:chat).with(hash_including(schema: described_class::LANGUAGE_SCHEMA))
+    end
+
+    it 'fails closed for a NON-stock reply when the candidate language cannot be read reliably (no provider proof)' do
+      # The indeterminable relaxation is stock-scoped: a rejected non-stock reply delivers its
+      # same-language deterministic fallback (never a handoff), so it keeps the strict fail-closed floor.
+      candidate = 'Tentang Impeller, varian mana yang Anda mau?'
+      stub_candidate_language(candidate, language: 'unknown', reliable: false)
+      llm = stub_generation(message: candidate)
+      validator = stub_semantic(true)
+
+      expect(call(descriptor: descriptor, fallback: fallback, reply_language: 'id')).to be_nil
+      expect(validator).not_to have_received(:valid?)
+      expect(llm).not_to have_received(:chat).with(hash_including(schema: described_class::LANGUAGE_SCHEMA))
     end
 
     it 'ignores a malformed reply-language code (gate off, not a crash)' do
