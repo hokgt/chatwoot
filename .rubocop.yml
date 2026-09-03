@@ -172,6 +172,7 @@ Style/ClassAndModuleChildren:
     - 'custom/wijaya/batteries/custom_roles/hooks.rb'
     - 'custom/wijaya/batteries/ads_tracking/hooks.rb'
     - 'custom/wijaya/batteries/ads_tracking/referral_parser.rb'
+    - 'custom/wijaya/batteries/ads_tracking/referral_video_fetcher.rb'
     - 'custom/wijaya/batteries/development_version/hooks.rb'
     # Standalone smoke scripts (run via bare `ruby`, not rspec) that create the
     # Wijaya parent chain themselves; compact declarations raise before Wijaya exists.

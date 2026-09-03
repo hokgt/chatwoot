@@ -59,8 +59,10 @@ patches:
       the first inbound message bubble.
     custom_files:
       - custom/wijaya/batteries/ads_tracking/referral_parser.rb
+      - custom/wijaya/batteries/ads_tracking/referral_video_fetcher.rb
       - custom/wijaya/batteries/ads_tracking/hooks.rb
       - custom/wijaya/batteries/ads_tracking/frontend/AdsReferral.vue
+      - custom/wijaya/batteries/ads_tracking/frontend/referralAttachments.js
     core_hook_touchpoints:
       - app/services/whatsapp/incoming_message_base_service.rb
       - app/builders/messages/facebook/message_builder.rb
@@ -69,7 +71,10 @@ patches:
       - app/javascript/dashboard/components-next/message/Message.vue
     tests:
       - spec/custom/wijaya/batteries/ads_tracking/referral_parser_spec.rb
+      - spec/custom/wijaya/batteries/ads_tracking/referral_video_fetcher_spec.rb
+      - spec/custom/wijaya/batteries/ads_tracking/hooks_spec.rb
       - custom/wijaya/batteries/ads_tracking/frontend/AdsReferral.spec.js
+      - custom/wijaya/batteries/ads_tracking/frontend/referralAttachments.spec.js
       - spec/services/whatsapp/incoming_message_whatsapp_cloud_service_spec.rb
       - spec/builders/messages/facebook/message_builder_spec.rb
       - spec/builders/messages/instagram/message_builder_spec.rb

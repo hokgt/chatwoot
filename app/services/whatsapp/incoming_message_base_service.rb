@@ -103,7 +103,15 @@ class Whatsapp::IncomingMessageBaseService
     create_message(message, source_id: message[:id])
     attach_files
     attach_location if message_type == 'location'
+    # WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+    referral_video_attachment = Wijaya::Batteries::AdsTracking::Hooks.build_referral_video_attachment(
+      message: @message, channel: :whatsapp, outgoing_echo: outgoing_echo
+    )
+    # WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
     @message.save!
+    # WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+    Wijaya::Batteries::AdsTracking::Hooks.associate_referral_video!(message: @message, attachment: referral_video_attachment)
+    # WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
   end
 
   def set_contact

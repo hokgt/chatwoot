@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 
 const props = defineProps({
   referral: { type: Object, default: () => ({}) },
+  attachments: { type: Array, default: () => [] },
 });
 
 const headline = computed(() => props.referral?.headline || null);
@@ -34,15 +35,25 @@ const isVideo = computed(() => {
   return mediaType === 'video' || Boolean(videoUrl.value);
 });
 
-// We optimistically attempt inline playback for video referrals with a safe
-// URL, but the browser's media pipeline is the authority: a Facebook page/Reel
-// URL (or any non-media source) fires an error and we drop to the fallback.
+// Inline playback uses only the ad video the server safely downloaded and stored
+// as a normal Message attachment (associated via the Chatwoot-owned
+// videoAttachmentId, never a raw Meta URL). A Facebook page/Reel URL, a missing
+// URL, or a failed download produces no such attachment, so we fall back to the
+// thumbnail + Watch ad card. The raw referral.videoUrl is never a <video> src.
 const videoFailed = ref(false);
-const safeVideoUrl = computed(() =>
-  isVideo.value && isSafeHttpUrl(videoUrl.value) ? videoUrl.value : null
-);
+const storedVideoUrl = computed(() => {
+  const attachmentId = props.referral?.videoAttachmentId;
+  if (!attachmentId) return null;
+
+  const match = props.attachments.find(
+    attachment =>
+      attachment?.id === attachmentId &&
+      (attachment?.fileType || '').toString().toLowerCase() === 'video'
+  );
+  return match?.dataUrl || null;
+});
 const showInlineVideo = computed(
-  () => Boolean(safeVideoUrl.value) && !videoFailed.value
+  () => Boolean(storedVideoUrl.value) && !videoFailed.value
 );
 const onVideoError = () => {
   videoFailed.value = true;
@@ -77,7 +88,7 @@ const shouldRender = computed(
     >
       <div v-if="showInlineVideo" class="relative">
         <video
-          :src="safeVideoUrl"
+          :src="storedVideoUrl"
           :poster="mediaUrl || undefined"
           controls
           playsinline

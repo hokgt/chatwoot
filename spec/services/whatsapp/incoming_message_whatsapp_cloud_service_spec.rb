@@ -6,6 +6,15 @@ describe Whatsapp::IncomingMessageWhatsappCloudService do
       Redis::Alfred.scan_each(match: 'MESSAGE_SOURCE_KEY::*') { |key| Redis::Alfred.delete(key) }
     end
 
+    before do
+      # The ads-referral video download is best-effort and must never touch the
+      # network in specs. Default to the realistic "not a downloadable video"
+      # outcome (a Facebook Reel/page answers text/html); examples that assert a
+      # successful download override this stub.
+      allow(SafeFetch).to receive(:fetch)
+        .and_raise(SafeFetch::UnsupportedContentTypeError.new('content-type not allowed: text/html'))
+    end
+
     let!(:whatsapp_channel) { create(:channel_whatsapp, provider: 'whatsapp_cloud', sync_templates: false, validate_provider_config: false) }
     let(:params) do
       {
@@ -262,6 +271,62 @@ describe Whatsapp::IncomingMessageWhatsappCloudService do
         second_params[:entry][0][:changes][0][:value][:messages][0][:referral][:source_id] = 'wa-ad-2'
         described_class.new(inbox: whatsapp_channel.inbox, params: second_params).perform
         expect(whatsapp_channel.inbox.messages.order(:created_at).last.content_attributes['ads_referral']).to be_nil
+      end
+    end
+
+    context 'when the WhatsApp referral carries a video creative' do
+      let(:video_url) { 'https://cdn.example.com/creative' }
+      let(:video_referral_params) do
+        {
+          phone_number: whatsapp_channel.phone_number,
+          object: 'whatsapp_business_account',
+          entry: [{
+            changes: [{
+              value: {
+                contacts: [{ profile: { name: 'Sojan Jose' }, wa_id: '2423423243' }],
+                messages: [{
+                  from: '2423423243', id: 'wamid.referral-video-1', timestamp: '1664799904', type: 'text', text: { body: 'interested' },
+                  referral: {
+                    source_url: 'https://facebook.com/ad/wa-1', source_id: 'wa-ad-1', source_type: 'ad', headline: 'WA Ad',
+                    body: 'WA Body', media_type: 'video', video_url: video_url, thumbnail_url: 'https://cdn.example.com/thumb.jpg'
+                  }
+                }]
+              }
+            }]
+          }]
+        }.with_indifferent_access
+      end
+
+      context 'when the video URL is a downloadable video/* resource' do
+        before do
+          result = SafeFetch::Result.new(tempfile: StringIO.new('fake-video-bytes'), filename: 'creative.mp4', content_type: 'video/mp4')
+          allow(SafeFetch).to receive(:fetch).and_yield(result)
+        end
+
+        it 'stores the creative as a video attachment and points ads_referral at it while preserving both referrals' do
+          described_class.new(inbox: whatsapp_channel.inbox, params: video_referral_params).perform
+
+          message = whatsapp_channel.inbox.messages.first
+          attachment = message.attachments.find_by(file_type: :video)
+          expect(attachment).to be_present
+          expect(attachment.file).to be_attached
+          expect(message.content_attributes['ads_referral']['video_attachment_id']).to eq(attachment.id)
+          expect(message.content_attributes['ads_referral']).to include('media_type' => 'video')
+          expect(message.content_attributes['referral']).to include('media_type' => 'video')
+        end
+      end
+
+      context 'when the video URL is a Facebook Reel/page (text/html)' do
+        let(:video_url) { 'https://www.facebook.com/reel/1438165771395493/' }
+
+        it 'creates no video attachment and leaves ads_referral without a video_attachment_id' do
+          described_class.new(inbox: whatsapp_channel.inbox, params: video_referral_params).perform
+
+          message = whatsapp_channel.inbox.messages.first
+          expect(message.attachments.where(file_type: :video)).to be_empty
+          expect(message.content_attributes['ads_referral']).to be_present
+          expect(message.content_attributes['ads_referral']).not_to have_key('video_attachment_id')
+        end
       end
     end
 

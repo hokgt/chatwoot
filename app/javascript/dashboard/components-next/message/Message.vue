@@ -45,6 +45,7 @@ import VoiceCallBubble from './bubbles/VoiceCall.vue';
 import MessageError from './MessageError.vue';
 // WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
 import AdsReferral from '@wijaya/ads_tracking/frontend/AdsReferral.vue';
+import { excludeReferralVideoAttachment } from '@wijaya/ads_tracking/frontend/referralAttachments';
 // WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
 import ContextMenu from 'dashboard/modules/conversations/components/MessageContextMenu.vue';
 import { useBranding } from 'shared/composables/useBranding';
@@ -287,6 +288,19 @@ const shouldShowAvatar = computed(() => {
   return true;
 });
 
+// WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+const adsReferral = computed(
+  () => props.contentAttributes?.adsReferral || null
+);
+// The stored referral video is a normal message attachment already played
+// inline by AdsReferral; exclude just that attachment from the ordinary bubble
+// path so it is not also shown as a Video bubble. props.attachments is left
+// untouched (passed to AdsReferral and used for API/media-history semantics).
+const bubbleAttachments = computed(() =>
+  excludeReferralVideoAttachment(props.attachments, adsReferral.value)
+);
+// WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
+
 const componentToRender = computed(() => {
   if (props.isEmailInbox && !props.private) {
     const emailInboxTypes = [MESSAGE_TYPES.INCOMING, MESSAGE_TYPES.OUTGOING];
@@ -329,8 +343,13 @@ const componentToRender = computed(() => {
     return InstagramStoryBubble;
   }
 
-  if (Array.isArray(props.attachments) && props.attachments.length === 1) {
-    const fileType = props.attachments[0].fileType;
+  // WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+  // Bubble selection runs over the referral-video-excluded list so the inline
+  // ad creative does not also drive a single-attachment Video bubble.
+  const attachments = bubbleAttachments.value;
+  // WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
+  if (Array.isArray(attachments) && attachments.length === 1) {
+    const fileType = attachments[0].fileType;
 
     if (fileType === ATTACHMENT_TYPES.FALLBACK) return FallbackBubble;
 
@@ -361,12 +380,6 @@ const isBubble = computed(() => {
 const isMessageDeleted = computed(() => {
   return props.contentAttributes?.deleted;
 });
-
-// WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
-const adsReferral = computed(
-  () => props.contentAttributes?.adsReferral || null
-);
-// WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
 
 const payloadForContextMenu = computed(() => {
   return {
@@ -518,6 +531,12 @@ onMounted(setupHighlightTimer);
 
 provideMessageContext({
   ...toRefs(props),
+  // WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+  // Bubbles read `attachments` from this context; hand them the list with the
+  // inline-rendered referral video removed so it is not shown twice. The
+  // message keeps its full attachment list via unchanged props.attachments.
+  attachments: bubbleAttachments,
+  // WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
   isPrivate: computed(() => props.private),
   variant,
   orientation,
@@ -575,7 +594,11 @@ provideMessageContext({
       >
         <!-- WIJAYA_CUSTOM_START ads_tracking_ctwa_referral -->
         <div class="min-w-0">
-          <AdsReferral v-if="adsReferral" :referral="adsReferral" />
+          <AdsReferral
+            v-if="adsReferral"
+            :referral="adsReferral"
+            :attachments="attachments"
+          />
           <Component :is="componentToRender" />
         </div>
         <!-- WIJAYA_CUSTOM_END ads_tracking_ctwa_referral -->

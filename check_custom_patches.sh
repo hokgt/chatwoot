@@ -89,8 +89,10 @@ assert_thin_marker_blocks app/javascript/dashboard/routes/dashboard/settings/acc
 assert_thin_marker_blocks app/javascript/shared/helpers/BaseActionCableConnector.js persistent_agent_presence 8
 
 require_file custom/wijaya/batteries/ads_tracking/referral_parser.rb
+require_file custom/wijaya/batteries/ads_tracking/referral_video_fetcher.rb
 require_file custom/wijaya/batteries/ads_tracking/hooks.rb
 require_file custom/wijaya/batteries/ads_tracking/frontend/AdsReferral.vue
+require_file custom/wijaya/batteries/ads_tracking/frontend/referralAttachments.js
 
 for file in   app/services/whatsapp/incoming_message_base_service.rb   app/builders/messages/facebook/message_builder.rb   app/builders/messages/instagram/base_message_builder.rb   lib/integrations/facebook/message_parser.rb   app/javascript/dashboard/components-next/message/Message.vue; do
   require_marker "$file" "WIJAYA_CUSTOM_START ads_tracking_ctwa_referral"
