@@ -1,5 +1,10 @@
 class Api::V1::Accounts::Marine::InboxesController < Api::V1::Accounts::BaseController
   before_action :current_account
+  # The Marine Inboxes area (assistant<->inbox associations) is administrator-only.
+  # Reading the associations (index) is as sensitive as mutating them, so the whole
+  # controller is admin-gated — unlike Marine::AssistantPolicy#index?, which stays
+  # open because it is shared by the assistant list every Marine page needs.
+  before_action :authorize_account_update
   before_action -> { check_authorization(Marine::Assistant) }
   before_action :set_assistant
 
@@ -19,6 +24,10 @@ class Api::V1::Accounts::Marine::InboxesController < Api::V1::Accounts::BaseCont
   end
 
   private
+
+  def authorize_account_update
+    authorize Current.account, :update?
+  end
 
   def set_assistant
     @assistant = Current.account.marine_assistants.find(params[:assistant_id])

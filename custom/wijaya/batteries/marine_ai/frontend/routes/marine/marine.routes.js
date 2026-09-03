@@ -16,6 +16,15 @@ const meta = {
   permissions: ['administrator', 'agent'],
 };
 
+// Inboxes, AI Provider (LLM Settings) and Settings (incl. its Guardrails /
+// Response Guidelines subroutes) are administrator-only. Non-administrators —
+// agents and every custom role (supervisor/marketing/sales/…) — never carry the
+// 'administrator' permission, so the shared router guard (routeIsAccessibleFor)
+// redirects their direct navigation away from these routes.
+const adminMeta = {
+  permissions: ['administrator'],
+};
+
 const assistantRoutes = [
   {
     path: frontendURL('accounts/:accountId/marine/:assistantId/faqs'),
@@ -57,19 +66,19 @@ const assistantRoutes = [
     path: frontendURL('accounts/:accountId/marine/:assistantId/inboxes'),
     component: MarineInboxesIndex,
     name: 'marine_assistants_inboxes_index',
-    meta,
+    meta: adminMeta,
   },
   {
     path: frontendURL('accounts/:accountId/marine/:assistantId/settings'),
     component: MarineSettingsIndex,
     name: 'marine_assistants_settings_index',
-    meta,
+    meta: adminMeta,
   },
   {
     path: frontendURL('accounts/:accountId/marine/:assistantId/llm-settings'),
     component: MarineLLMSettingsIndex,
     name: 'marine_assistants_llm_settings_index',
-    meta,
+    meta: adminMeta,
   },
   {
     path: frontendURL(
@@ -77,7 +86,7 @@ const assistantRoutes = [
     ),
     component: MarineGuardrailsIndex,
     name: 'marine_assistants_guardrails_index',
-    meta,
+    meta: adminMeta,
   },
   {
     path: frontendURL(
@@ -85,7 +94,7 @@ const assistantRoutes = [
     ),
     component: MarineGuidelinesIndex,
     name: 'marine_assistants_guidelines_index',
-    meta,
+    meta: adminMeta,
   },
   {
     path: frontendURL('accounts/:accountId/marine/assistants'),

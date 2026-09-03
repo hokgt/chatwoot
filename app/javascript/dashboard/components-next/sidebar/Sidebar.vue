@@ -29,6 +29,7 @@ import {
 } from 'dashboard/helper/sidebarSort';
 // WIJAYA_CUSTOM_START marine_ai
 import { buildMarineSidebarSection } from '@wijaya/marine_ai/frontend/sidebar/marineSidebarSection';
+import { useAdmin } from 'dashboard/composables/useAdmin';
 // WIJAYA_CUSTOM_END marine_ai
 // WIJAYA_CUSTOM_START meta_ads_team_routing
 import { buildMetaAdsRoutingSidebarItem } from '@wijaya/meta_ads_team_routing/frontend/sidebar/metaAdsRoutingSidebarItem';
@@ -55,6 +56,9 @@ const { accountScopedRoute, isOnChatwootCloud } = useAccount();
 const store = useStore();
 const searchShortcut = useKbd([`$mod`, 'k']);
 const { t } = useI18n();
+// WIJAYA_CUSTOM_START marine_ai
+const { isAdmin: isMarineAdmin } = useAdmin();
+// WIJAYA_CUSTOM_END marine_ai
 
 const isACustomBrandedInstance = useMapGetter(
   'globalConfig/isACustomBrandedInstance'
@@ -516,7 +520,11 @@ const menuItems = computed(() => {
     },
 
     // WIJAYA_CUSTOM_START marine_ai
-    buildMarineSidebarSection({ t, accountScopedRoute }),
+    buildMarineSidebarSection({
+      t,
+      accountScopedRoute,
+      isAdmin: isMarineAdmin.value,
+    }),
     // WIJAYA_CUSTOM_END marine_ai
     {
       name: 'Contacts',

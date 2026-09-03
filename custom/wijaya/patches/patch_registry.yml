@@ -796,6 +796,10 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/llm/provider_config_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/llm/connection_test_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/llm_settings_controller_spec.rb
+      # RBAC regression: administrator-only Marine Inboxes + Settings (preferences)
+      # management endpoints reject non-admins (plain agent + custom-role agent).
+      - spec/custom/wijaya/batteries/marine_ai/controllers/inboxes_controller_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/controllers/preferences_controller_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/llm/base_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/llm/prompt_renderer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/llm/json_response_parser_spec.rb
@@ -969,6 +973,10 @@ patches:
       # fallthrough preserved; Marine routing owned by the battery adapter).
       - custom/wijaya/batteries/marine_ai/frontend/specs/useMarineCaptain.spec.js
       - custom/wijaya/batteries/marine_ai/frontend/specs/CopilotMenuBar.spec.js
+      # RBAC regression: administrator-only Marine sidebar entries (Inboxes / AI
+      # Provider / Settings) and their route metadata restrict non-administrators.
+      - custom/wijaya/batteries/marine_ai/frontend/specs/marineSidebarSection.spec.js
+      - custom/wijaya/batteries/marine_ai/frontend/specs/marine.routes.spec.js
       # Product-knowledge grounding regression: a non-transactional attribute question with an
       # unresolvable family defers to grounded KB (orchestrator :not_product) instead of a generic
       # family clarification, and the RAG grounding block leads with the top query-matched approved

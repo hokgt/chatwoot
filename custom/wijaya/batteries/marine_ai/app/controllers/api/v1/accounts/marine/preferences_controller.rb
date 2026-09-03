@@ -1,6 +1,8 @@
 class Api::V1::Accounts::Marine::PreferencesController < Api::V1::Accounts::BaseController
   before_action :current_account
-  before_action :authorize_account_update, only: [:update]
+  # Marine preferences back the administrator-only Settings area, so both reading
+  # (show) and writing (update) are gated to administrators.
+  before_action :authorize_account_update
 
   def show
     render json: Current.account.marine_preferences

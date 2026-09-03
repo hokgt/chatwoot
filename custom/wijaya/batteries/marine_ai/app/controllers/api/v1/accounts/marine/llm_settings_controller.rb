@@ -4,7 +4,10 @@
 # The raw API key is never returned — only a masked preview and a presence flag.
 class Api::V1::Accounts::Marine::LlmSettingsController < Api::V1::Accounts::BaseController
   before_action :current_account
-  before_action :authorize_account_update, only: [:update, :test]
+  # The AI Provider (LLM Settings) area is administrator-only. Reading the provider
+  # configuration (show) is gated too — it exposes the configured provider/endpoint
+  # and a masked key preview — so no non-administrator can read or mutate it.
+  before_action :authorize_account_update
 
   def show
     render json: current_settings

@@ -7,6 +7,16 @@ RSpec.describe 'Api::V1::Accounts::Marine::LlmSettings', type: :request do
   let(:admin) { create(:user, account: account, role: :administrator) }
   let(:agent) { create(:user, account: account, role: :agent) }
 
+  # supervisor / marketing / sales are custom roles (account_user role: :agent +
+  # custom_role_id); none carry 'administrator'. One custom-role example represents
+  # all three, alongside the plain-agent example.
+  let(:custom_role) { create(:custom_role, account: account, permissions: ['conversation_manage']) }
+  let(:supervisor) { create(:user) }
+
+  before do
+    create(:account_user, user: supervisor, account: account, role: :agent, custom_role: custom_role)
+  end
+
   def json_response
     JSON.parse(response.body, symbolize_names: true)
   end
@@ -22,6 +32,22 @@ RSpec.describe 'Api::V1::Accounts::Marine::LlmSettings', type: :request do
     context 'when it is an un-authenticated user' do
       it 'returns unauthorized status' do
         get "/api/v1/accounts/#{account.id}/marine/llm_settings"
+        expect(response).to have_http_status(:unauthorized)
+      end
+    end
+
+    context 'when it is a plain agent' do
+      it 'is not authorized to read provider settings' do
+        get "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            headers: agent.create_new_auth_token, as: :json
+        expect(response).to have_http_status(:unauthorized)
+      end
+    end
+
+    context 'when it is a custom-role agent (supervisor/marketing/sales)' do
+      it 'is not authorized to read provider settings' do
+        get "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            headers: supervisor.create_new_auth_token, as: :json
         expect(response).to have_http_status(:unauthorized)
       end
     end

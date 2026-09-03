@@ -235,4 +235,59 @@ RSpec.describe 'Api::V1::Accounts::Marine::Assistants', type: :request do
       end
     end
   end
+
+  # The Marine Settings area (and its Guardrails / Response Guidelines subroutes) is
+  # administrator-only. Those pages mutate the assistant via PUT update, which is gated
+  # by Marine::AssistantPolicy#update? (administrator-only). The assistant SHOW action is
+  # deliberately shared (every Marine page's assistant switcher needs it), so it must
+  # stay open to agents — this is the "do not lock shared APIs" boundary.
+  #
+  # supervisor / marketing / sales are custom roles (account_user role: :agent +
+  # custom_role_id); one custom-role example represents all three.
+  describe 'PUT /api/v1/accounts/{account.id}/marine/assistants/{assistant.id} (Settings/Guardrails/Guidelines)' do
+    let(:custom_role) { create(:custom_role, account: account, permissions: ['conversation_manage']) }
+    let(:supervisor) { create(:user) }
+
+    before do
+      create(:account_user, user: supervisor, account: account, role: :agent, custom_role: custom_role)
+    end
+
+    context 'when it is a plain agent' do
+      it 'is not authorized to update guardrails/guidelines' do
+        put "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}",
+            params: { assistant: { guardrails: ['No profanity'], response_guidelines: ['Be concise'] } },
+            headers: agent.create_new_auth_token, as: :json
+        expect(response).to have_http_status(:unauthorized)
+      end
+    end
+
+    context 'when it is a custom-role agent (supervisor/marketing/sales)' do
+      it 'is not authorized to update guardrails/guidelines' do
+        put "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}",
+            params: { assistant: { guardrails: ['No profanity'] } },
+            headers: supervisor.create_new_auth_token, as: :json
+        expect(response).to have_http_status(:unauthorized)
+      end
+    end
+
+    context 'when it is an admin' do
+      it 'persists the guardrails and response guidelines' do
+        put "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}",
+            params: { assistant: { guardrails: ['No profanity'], response_guidelines: ['Be concise'] } },
+            headers: admin.create_new_auth_token, as: :json
+        expect(response).to have_http_status(:success)
+        expect(assistant.reload.guardrails).to include('No profanity')
+        expect(assistant.reload.response_guidelines).to include('Be concise')
+      end
+    end
+
+    context 'when a plain agent reads the shared assistant show (must stay open)' do
+      it 'returns the assistant so unrestricted Marine pages keep working' do
+        get "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}",
+            headers: agent.create_new_auth_token, as: :json
+        expect(response).to have_http_status(:success)
+        expect(json_response[:id]).to eq(assistant.id)
+      end
+    end
+  end
 end
