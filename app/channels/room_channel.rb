@@ -32,7 +32,23 @@ class RoomChannel < ApplicationCable::Channel
   def update_subscription
     return if @current_account.blank?
 
+    # WIJAYA_CUSTOM_START deferred_auto_assignment
+    # Detect a real absent -> present transition for an agent (User only) BEFORE refreshing
+    # presence, so a repeated heartbeat while already present never re-triggers processing.
+    wijaya_agent_became_present = @current_user.is_a?(User) &&
+                                  !::OnlineStatusTracker.get_presence(@current_account.id, @current_user.class.name, @current_user.id)
+    # WIJAYA_CUSTOM_END deferred_auto_assignment
+
     ::OnlineStatusTracker.update_presence(@current_account.id, @current_user.class.name, @current_user.id)
+
+    # WIJAYA_CUSTOM_START deferred_auto_assignment
+    return unless wijaya_agent_became_present && defined?(Wijaya::Batteries::Core::Hooks)
+
+    Wijaya::Batteries::Core::Hooks.dispatch(
+      :deferred_auto_assignment, :on_agent_present,
+      default: nil, account_id: @current_account.id, user_id: @current_user.id
+    )
+    # WIJAYA_CUSTOM_END deferred_auto_assignment
   end
 
   def pubsub_token

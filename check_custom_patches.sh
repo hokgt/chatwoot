@@ -152,6 +152,33 @@ for file in \
 done
 
 
+# deferred_auto_assignment
+require_file custom/wijaya/batteries/deferred_auto_assignment/loader.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/conversation_extensions.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/marker.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/hooks.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/eligibility.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/registrar.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/trigger_service.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/inbox_processor.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/process_inbox_job.rb
+require_file db/migrate/20260905000000_create_wijaya_deferred_assignments.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/registration_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/processing_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/lifecycle_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/triggers_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/presence_channel_spec.rb
+# Battery Hooks module is resolved by name from the core dispatcher map.
+require_marker custom/wijaya/batteries/core/hooks.rb "deferred_auto_assignment:"
+
+for file in \
+  app/models/conversation.rb \
+  app/models/account_user.rb \
+  app/channels/room_channel.rb; do
+  require_marker "$file" "WIJAYA_CUSTOM_START deferred_auto_assignment"
+  require_marker "$file" "WIJAYA_CUSTOM_END deferred_auto_assignment"
+done
+
 # erp_lead_sidebar
 require_file custom/wijaya/batteries/erp_lead_sidebar/config.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/lead_draft.rb

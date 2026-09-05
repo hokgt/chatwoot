@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_08_04_000000) do
+ActiveRecord::Schema[7.1].define(version: 2026_09_05_000000) do
   # These extensions should be enabled to support this database
   enable_extension "pg_stat_statements"
   enable_extension "pg_trgm"
@@ -1454,6 +1454,17 @@ ActiveRecord::Schema[7.1].define(version: 2026_08_04_000000) do
     t.index ["account_id", "url"], name: "index_webhooks_on_account_id_and_url", unique: true
   end
 
+  create_table "wijaya_deferred_assignments", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.bigint "inbox_id", null: false
+    t.bigint "conversation_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_wijaya_deferred_assignments_on_account_id"
+    t.index ["conversation_id"], name: "index_wijaya_deferred_assignments_on_conversation_id", unique: true
+    t.index ["inbox_id"], name: "index_wijaya_deferred_assignments_on_inbox_id"
+  end
+
   create_table "wijaya_erp_lead_drafts", force: :cascade do |t|
     t.bigint "account_id", null: false
     t.bigint "conversation_id", null: false
@@ -1527,6 +1538,9 @@ ActiveRecord::Schema[7.1].define(version: 2026_08_04_000000) do
   add_foreign_key "marine_scenarios", "accounts", name: "fk_marine_scenarios_account_id"
   add_foreign_key "marine_scenarios", "marine_assistants", column: "assistant_id", name: "fk_marine_scenarios_assistant_id"
   add_foreign_key "user_sessions", "users"
+  add_foreign_key "wijaya_deferred_assignments", "accounts"
+  add_foreign_key "wijaya_deferred_assignments", "conversations"
+  add_foreign_key "wijaya_deferred_assignments", "inboxes"
   add_foreign_key "wijaya_erp_lead_drafts", "accounts"
   add_foreign_key "wijaya_erp_lead_drafts", "conversations"
   add_foreign_key "wijaya_erp_settings", "accounts"

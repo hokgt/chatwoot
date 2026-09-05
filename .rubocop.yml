@@ -166,6 +166,18 @@ Style/ClassAndModuleChildren:
     - 'custom/wijaya/batteries/automatic_assignment_activity/loader.rb'
     - 'custom/wijaya/batteries/automatic_assignment_activity/hooks.rb'
     - 'custom/wijaya/batteries/automatic_assignment_activity/system_assignment.rb'
+    # WIJAYA: deferred auto-assignment battery. loader.rb is required directly before its
+    # Wijaya parent exists; the model/services/job are Zeitwerk-autoloaded but reference
+    # unqualified sibling constants (Registrar/TriggerService/Eligibility/Marker/...), which
+    # resolve lexically only under nested declarations. Kept nested and uniform.
+    - 'custom/wijaya/batteries/deferred_auto_assignment/loader.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/marker.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/hooks.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/eligibility.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/registrar.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/trigger_service.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/inbox_processor.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/process_inbox_job.rb'
     - 'custom/wijaya/batteries/erp_lead_sidebar/loader.rb'
     - 'custom/wijaya/batteries/erp_lead_sidebar/refresh_service.rb'
     - 'custom/wijaya/batteries/erp_lead_sidebar/options_service.rb'

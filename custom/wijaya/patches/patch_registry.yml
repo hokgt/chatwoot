@@ -239,6 +239,88 @@ patches:
       - spec/custom/wijaya/automatic_assignment_activity/system_assignment_activity_spec.rb
 
 
+  - id: deferred_auto_assignment
+    name: Deferred Native Auto-Assignment
+    battery: custom/wijaya/batteries/deferred_auto_assignment
+    description: >
+      Retries native (legacy) auto-assignment for a brand-new conversation that genuinely
+      failed its creation-time immediate assignment because no eligible ONLINE agent existed.
+      It never replaces or redesigns immediate assignment: at conversation after_create_commit
+      a durable per-conversation marker (wijaya_deferred_assignments, unique conversation_id)
+      is created ONLY when the conversation is open, human- and bot-unassigned, on the LEGACY
+      path (Assignment V2 untouched), and native auto-assignment was applicable (team
+      conversation -> team.allow_auto_assign; otherwise inbox.enable_auto_assignment) — i.e.
+      it would have been assigned had an agent been online. No historical backfill and no
+      blanket scan of open unassigned conversations: the marker table is the entire work-list.
+      The conversation stays open with assignee_id nil (no new status), naturally visible in
+      Unassigned and All. Two triggers resume processing for exactly the agent's marked
+      inboxes: an actual AccountUser availability transition offline/busy -> online
+      (after_commit) and an actual User absent -> present RoomChannel presence transition
+      (detected before the presence refresh, so a repeated heartbeat never re-triggers). Work
+      is coalesced per inbox via a battery-OWNED Redis in-flight key (mirrors
+      AutoAssignment::AssignmentJob; never reads/writes/steals the Assignment V2 key). For
+      each marker the recheck + assignment run under a conversation row lock (SELECT ... FOR
+      UPDATE + reload): every native gate is re-evaluated, allowed ids are recomputed exactly
+      as the legacy flow (inbox capacity members, intersected with team members for a team
+      conversation, using the STORED team_id so Meta Ads routing is preserved and an online
+      inbox member outside the team is never selected), and the UNCHANGED native
+      AutoAssignment::AgentAssignmentService#find_assignee selects the agent. An explicit
+      compare-and-set predicate (open AND assignee_id NULL AND assignee_agent_bot_id NULL) is
+      re-checked immediately before the write, still under the row lock, and update! (never
+      update_all) preserves the native assignment callbacks/activity. Race semantics are only
+      what transaction ordering guarantees, not absolute priority: a manual assignment that
+      committed BEFORE we lock is seen on reload and skipped; a manual write that lands while
+      we hold the lock is serialized after us and, committing later, wins naturally over the
+      system write. The system assigns solely while the row is still open and unclaimed at the
+      instant of its write. Marker lifecycle is owned by the battery ConversationExtensions
+      concern attached to Conversation: a synchronous has_one dependent: :destroy removes the
+      child marker inline when the conversation is destroyed (core uses destroy_async /
+      DeleteObjectJob, which would otherwise raise an FK violation on a custom child table),
+      and an after_update_commit cleanup drops the marker the moment the conversation becomes
+      a human/agent-bot assignment or leaves the open status. Processing additionally destroys
+      the marker on assignment or on any residual ineligibility, and keeps it only when still
+      eligible but nobody is available yet (for a later trigger). Manual unassignment later
+      never re-creates a marker (registration is creation-only; cleanup only ever destroys).
+      All native touch points are tiny marker-wrapped calls through the fail-open core
+      dispatcher.
+    custom_files:
+      - custom/wijaya/batteries/deferred_auto_assignment/loader.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/conversation_extensions.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/marker.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/hooks.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/eligibility.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/registrar.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/trigger_service.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/inbox_processor.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/process_inbox_job.rb
+      - db/migrate/20260905000000_create_wijaya_deferred_assignments.rb
+    core_hook_touchpoints:
+      # Battery Hooks module resolved by name from the core dispatcher (core/hooks.rb map).
+      - custom/wijaya/batteries/core/hooks.rb
+      # Creation-only, post-commit registration seam.
+      - app/models/conversation.rb
+      # Availability offline/busy -> online trigger (after_commit).
+      - app/models/account_user.rb
+      # Absent -> present User presence trigger (transition detected at the seam).
+      - app/channels/room_channel.rb
+      # Generated schema touchpoint for the marker table.
+      - db/schema.rb
+    loader_touchpoints:
+      # Feature loader self-registers with the generic core loader, pushes the battery app/
+      # subtree (models/services/jobs) onto the Zeitwerk main autoloader, and (in to_prepare)
+      # requires + includes the ConversationExtensions concern into core Conversation.
+      - custom/wijaya/batteries/deferred_auto_assignment/loader.rb
+      # Battery-owned Conversation concern: marker has_one dependent: :destroy (synchronous
+      # FK-safe cleanup on conversation delete) + after_update_commit lifecycle cleanup.
+      - custom/wijaya/batteries/deferred_auto_assignment/conversation_extensions.rb
+    tests:
+      - spec/custom/wijaya/deferred_auto_assignment/registration_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/processing_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/lifecycle_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/triggers_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/presence_channel_spec.rb
+
+
   - id: erp_lead_sidebar
     name: ERPNext Lead Sidebar Form
     battery: custom/wijaya/batteries/erp_lead_sidebar

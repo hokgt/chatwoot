@@ -120,6 +120,44 @@ zero business logic — all logic lives under `custom/wijaya/batteries/<feature>
 - **Risk** — low. Isolated per battery.
 - **Necessity** — required; native `config/routes.rb` keeps only the single generic call.
 
+### 5a. `deferred_auto_assignment` → registration + availability/presence triggers
+
+- **Call sites**
+  - `app/models/conversation.rb` — `after_create_commit :wijaya_register_deferred_auto_assignment`
+    dispatches `register_unassigned_on_create` (creation-only, post-commit).
+  - `app/models/account_user.rb` — `after_update_commit` (guarded by `saved_change_to_availability?`)
+    dispatches `on_agent_available` with the previous/current availability.
+  - `app/channels/room_channel.rb` — `update_subscription` detects a real absent → present User
+    presence transition **before** refreshing presence and dispatches `on_agent_present`.
+- **Purpose** — retry native (legacy) auto-assignment for a brand-new conversation that failed its
+  creation-time immediate assignment only because no eligible **online** agent existed. Registration
+  writes a durable per-conversation marker (`wijaya_deferred_assignments`); the two triggers resume
+  processing for exactly the agent's marked inboxes when that agent becomes available/present.
+- **Flow** — each seam is a tiny `dispatch(:deferred_auto_assignment, <hook>, default: nil, ...)`
+  guarded by `defined?(Wijaya::Batteries::Core::Hooks)`. All decisions (eligibility recheck, per-inbox
+  coalesced job, row-locked native `AgentAssignmentService#find_assignee`, marker lifecycle) live in the
+  battery. Processing holds a conversation row lock (`SELECT ... FOR UPDATE` + reload) and re-checks an
+  explicit compare-and-set predicate (open AND `assignee_id` NULL AND `assignee_agent_bot_id` NULL)
+  immediately before an `update!` (never `update_all`, so native callbacks/activity are preserved). Race
+  semantics are exactly transaction ordering, not absolute priority: a manual assignment that committed
+  first is seen on reload and skipped; one that lands while we hold the lock is serialized after us and,
+  committing later, wins naturally. The stored `team_id` is used, so Meta Ads routing is preserved and an
+  online inbox member outside the team is never selected.
+- **Marker lifecycle** — owned by the battery `ConversationExtensions` concern (attached to
+  `Conversation` from the loader's `to_prepare`, so `app/models/conversation.rb` keeps only the
+  registration seam). A synchronous `has_one :wijaya_deferred_assignment, dependent: :destroy` removes
+  the child marker inline on conversation delete (core destroys via `destroy_async`/`DeleteObjectJob`,
+  which would otherwise raise an FK violation on a custom child table), and an `after_update_commit`
+  cleanup drops the marker the moment the conversation gains a human/agent-bot assignee or leaves the
+  open status. Cleanup only ever destroys — a later manual unassignment never re-registers.
+- **Native default** — `nil` everywhere; every seam is additive and returns nothing to the native path.
+- **Fail mode** — **fail open**. A missing/disabled/raising battery leaves conversation creation,
+  availability updates, and presence heartbeats exactly as upstream. Assignment V2 is never touched.
+- **Risk** — low. Never blocks creation/availability/presence; only ever assigns an unassigned open
+  conversation via the unchanged native selector.
+- **Necessity** — required: these are the only creation-completion, availability-transition, and
+  presence-transition seams; none carries feature logic.
+
 ---
 
 ## Frontend hooks
