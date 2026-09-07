@@ -98,7 +98,7 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
     # and the translation, branching on the system prompt / customer message. NO second
     # provider call is made purely for language.
     allow(Marine::Llm::BaseService).to receive(:new).and_return(base_service)
-    allow(base_service).to receive(:complete) do |prompt:, system: nil|
+    allow(base_service).to receive(:complete) do |prompt:, system: nil, **|
       provider_calls << { prompt: prompt.to_s, system: system.to_s }
       if system.to_s.include?('translator')
         { ok: true, message: TRANSLATED_MARKER, error: nil }
