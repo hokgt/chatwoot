@@ -41,7 +41,7 @@ module Marine
       def call
         ensure_account_scope!
         ensure_primary_intent!
-        validated = UploadValidator.new(@upload).call
+        validated = Marine::Documents::UploadValidator.new(@upload).call
         ensure_family_exists!
         persist(validated)
       end
@@ -51,7 +51,7 @@ module Marine
       def ensure_account_scope!
         return if @assistant.present? && @assistant.account_id == @account&.id
 
-        raise Errors::AccountMismatchError
+        raise Marine::Documents::Errors::AccountMismatchError
       end
 
       # Product catalogs are always primary in the approved model; a non-primary
@@ -59,18 +59,18 @@ module Marine
       def ensure_primary_intent!
         return unless ActiveModel::Type::Boolean.new.cast(@primary_catalog) == false
 
-        raise Errors::InvalidFileError, 'A product catalog must be primary'
+        raise Marine::Documents::Errors::InvalidFileError, 'A product catalog must be primary'
       end
 
       def ensure_family_exists!
         return if @repository.exists?(@product_family_code)
 
-        raise Errors::UnknownFamilyError
+        raise Marine::Documents::Errors::UnknownFamilyError
       end
 
       def persist(validated) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
         # Fail fast on an obvious conflict before uploading any bytes.
-        raise Errors::PrimaryConflictError if !@replace && existing_primary_scope.exists?
+        raise Marine::Documents::Errors::PrimaryConflictError if !@replace && existing_primary_scope.exists?
 
         blob = create_blob(validated)
         document = nil
@@ -79,7 +79,7 @@ module Marine
         begin
           Marine::Document.transaction do
             existing = existing_primary_scope.lock.first
-            raise Errors::PrimaryConflictError if existing && !@replace
+            raise Marine::Documents::Errors::PrimaryConflictError if existing && !@replace
 
             document = build_document
             document.source_file.attach(blob)
@@ -96,7 +96,7 @@ module Marine
           end
         rescue ActiveRecord::RecordNotUnique
           blob.purge
-          raise Errors::PrimaryConflictError
+          raise Marine::Documents::Errors::PrimaryConflictError
         rescue StandardError
           blob.purge
           raise

@@ -33,27 +33,27 @@ module Marine
 
         def call # rubocop:disable Metrics/MethodLength
           page_count = count_pages
-          raise Errors::SopPageLimitExceededError if page_count > MAX_PAGES
+          raise Marine::Documents::Errors::SopPageLimitExceededError if page_count > MAX_PAGES
 
           texts = []
           used_ocr = false
           used_text = false
 
           (1..page_count).each do |page|
-            direct = TextNormalizer.new(direct_text(page)).call
+            direct = Marine::Documents::Sop::TextNormalizer.new(direct_text(page)).call
             if meaningful?(direct)
               texts << direct
               used_text = true
             else
-              texts << TextNormalizer.new(ocr_page(page)).call
+              texts << Marine::Documents::Sop::TextNormalizer.new(ocr_page(page)).call
               used_ocr = true
             end
           end
 
-          content = TextNormalizer.new(texts.reject(&:empty?).join("\n\n")).call
-          raise Errors::SopNoReadableTextError if content.empty?
+          content = Marine::Documents::Sop::TextNormalizer.new(texts.reject(&:empty?).join("\n\n")).call
+          raise Marine::Documents::Errors::SopNoReadableTextError if content.empty?
 
-          ExtractionService::Result.new(
+          Marine::Documents::Sop::ExtractionService::Result.new(
             content: content,
             processing_method: method_for(used_text, used_ocr),
             page_count: page_count
@@ -64,20 +64,20 @@ module Marine
 
         def count_pages
           result = @runner.run('pdfinfo', @path)
-          raise Errors::SopPdfInvalidError unless result.ok
+          raise Marine::Documents::Errors::SopPdfInvalidError unless result.ok
 
           match = result.stdout.to_s.match(/^Pages:\s+(\d+)/)
-          raise Errors::SopPdfInvalidError if match.nil?
+          raise Marine::Documents::Errors::SopPdfInvalidError if match.nil?
 
           count = match[1].to_i
-          raise Errors::SopPdfInvalidError if count < 1
+          raise Marine::Documents::Errors::SopPdfInvalidError if count < 1
 
           count
         end
 
         def direct_text(page)
           result = @runner.run('pdftotext', '-f', page.to_s, '-l', page.to_s, '-layout', @path, '-')
-          raise Errors::SopExtractionFailedError unless result.ok
+          raise Marine::Documents::Errors::SopExtractionFailedError unless result.ok
 
           result.stdout
         end
@@ -87,10 +87,10 @@ module Marine
           render = @runner.run('pdftoppm', '-png', '-r', RENDER_DPI.to_s, '-scale-to', RENDER_MAX_PX.to_s,
                                '-f', page.to_s, '-l', page.to_s, '-singlefile', @path, prefix)
           image = "#{prefix}.png"
-          raise Errors::SopOcrFailedError unless render.ok && File.file?(image)
+          raise Marine::Documents::Errors::SopOcrFailedError unless render.ok && File.file?(image)
 
           ocr = @runner.run('tesseract', image, 'stdout', '-l', OCR_LANGUAGES)
-          raise Errors::SopOcrFailedError unless ocr.ok
+          raise Marine::Documents::Errors::SopOcrFailedError unless ocr.ok
 
           ocr.stdout
         ensure

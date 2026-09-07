@@ -114,7 +114,7 @@ module Marine
 
       # Message contains only a stable reason — never the filename, a path, or bytes.
       def invalid(reason)
-        Errors::InvalidFileError.new("The uploaded file #{reason}")
+        Marine::Documents::Errors::InvalidFileError.new("The uploaded file #{reason}")
       end
     end
   end

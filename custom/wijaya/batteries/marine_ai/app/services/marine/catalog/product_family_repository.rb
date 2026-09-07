@@ -26,7 +26,7 @@ module Marine
         return false if code.empty?
 
         ensure_configured!
-        Connection.select(exists_sql, [code]).any?
+        Marine::Catalog::Connection.select(exists_sql, [code]).any?
       end
 
       # Bounded, deterministic product-family lookup over template rows. `query` is an
@@ -36,7 +36,7 @@ module Marine
       def search(query: nil, limit: DEFAULT_LIMIT)
         ensure_configured!
         normalized = normalize_query(query)
-        rows = Connection.select(search_sql, [normalized, like_pattern(normalized), clamp_limit(limit)])
+        rows = Marine::Catalog::Connection.select(search_sql, [normalized, like_pattern(normalized), clamp_limit(limit)])
         rows.map { |row| { code: row['code'], name: row['name'] } }
       end
 
@@ -52,7 +52,7 @@ module Marine
         return nil if value.empty?
 
         ensure_configured!
-        rows = Connection.select(resolve_exact_sql, [value])
+        rows = Marine::Catalog::Connection.select(resolve_exact_sql, [value])
         return nil unless rows.length == 1
 
         row = rows.first
@@ -66,24 +66,24 @@ module Marine
       def active_candidates(query: nil, limit: DEFAULT_LIMIT)
         ensure_configured!
         normalized = normalize_query(query)
-        rows = Connection.select(active_candidates_sql, [normalized, like_pattern(normalized), clamp_limit(limit)])
+        rows = Marine::Catalog::Connection.select(active_candidates_sql, [normalized, like_pattern(normalized), clamp_limit(limit)])
         rows.map { |row| { code: row['code'], name: row['name'] } }
       end
 
       private
 
       def ensure_configured!
-        raise Errors::CatalogUnavailableError unless Config.configured?
+        raise Marine::Catalog::Errors::CatalogUnavailableError unless Marine::Catalog::Config.configured?
       end
 
       def exists_sql
-        "SELECT 1 FROM #{Config.qualified_table} WHERE item_code = $1 AND has_variants = true LIMIT 1"
+        "SELECT 1 FROM #{Marine::Catalog::Config.qualified_table} WHERE item_code = $1 AND has_variants = true LIMIT 1"
       end
 
       def search_sql
         <<~SQL.squish
           SELECT item_code AS code, item_name AS name
-          FROM #{Config.qualified_table}
+          FROM #{Marine::Catalog::Config.qualified_table}
           WHERE has_variants = true
             AND ($1 = '' OR item_code ILIKE $2 OR item_name ILIKE $2)
           ORDER BY item_code ASC
@@ -96,7 +96,7 @@ module Marine
       def resolve_exact_sql
         <<~SQL.squish
           SELECT item_code AS code, item_name AS name
-          FROM #{Config.qualified_table}
+          FROM #{Marine::Catalog::Config.qualified_table}
           WHERE has_variants = true
             AND disabled = false
             AND (item_code = $1 OR LOWER(item_name) = LOWER($1))
@@ -108,7 +108,7 @@ module Marine
       def active_candidates_sql
         <<~SQL.squish
           SELECT item_code AS code, item_name AS name
-          FROM #{Config.qualified_table}
+          FROM #{Marine::Catalog::Config.qualified_table}
           WHERE has_variants = true
             AND disabled = false
             AND ($1 = '' OR item_code ILIKE $2 OR item_name ILIKE $2)

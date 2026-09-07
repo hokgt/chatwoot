@@ -34,22 +34,22 @@ module Marine
           validate_dimensions!
 
           ocr = @runner.run('tesseract', @path, 'stdout', '-l', OCR_LANGUAGES)
-          raise Errors::SopOcrFailedError unless ocr.ok
+          raise Marine::Documents::Errors::SopOcrFailedError unless ocr.ok
 
-          content = TextNormalizer.new(ocr.stdout).call
-          raise Errors::SopNoReadableTextError if content.empty?
+          content = Marine::Documents::Sop::TextNormalizer.new(ocr.stdout).call
+          raise Marine::Documents::Errors::SopNoReadableTextError if content.empty?
 
-          ExtractionService::Result.new(content: content, processing_method: 'image_ocr', page_count: 1)
+          Marine::Documents::Sop::ExtractionService::Result.new(content: content, processing_method: 'image_ocr', page_count: 1)
         end
 
         private
 
         def validate_dimensions! # rubocop:disable Metrics/CyclomaticComplexity
           width, height = image_dimensions
-          raise Errors::SopImageInvalidError if width.nil? || height.nil?
-          raise Errors::SopImageInvalidError if width <= 0 || height <= 0
-          raise Errors::SopImageInvalidError if width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION
-          raise Errors::SopImageInvalidError if width * height > MAX_IMAGE_PIXELS
+          raise Marine::Documents::Errors::SopImageInvalidError if width.nil? || height.nil?
+          raise Marine::Documents::Errors::SopImageInvalidError if width <= 0 || height <= 0
+          raise Marine::Documents::Errors::SopImageInvalidError if width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION
+          raise Marine::Documents::Errors::SopImageInvalidError if width * height > MAX_IMAGE_PIXELS
         end
 
         # Reads intrinsic dimensions from the raw header bytes. Returns [width, height] or

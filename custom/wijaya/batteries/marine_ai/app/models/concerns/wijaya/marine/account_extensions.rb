@@ -25,11 +25,18 @@ module Wijaya::Marine::AccountExtensions
   def increment_marine_response_usage
     # `increment_custom_attribute` is an Enterprise-only Account method (plan usage/limits).
     # Prefer it when present so Enterprise behaviour is unchanged; in the CE/FOSS build it is
-    # absent, but `custom_attributes` is a core column, so increment the counter directly.
+    # absent, but `custom_attributes` is a core column. Mirror the Enterprise atomic jsonb_set
+    # UPDATE (not a read-modify-write of the whole column) so concurrent increments are not
+    # lost and a concurrent write to a different custom_attributes key is never clobbered.
     return increment_custom_attribute('marine_responses_usage') if respond_to?(:increment_custom_attribute)
 
-    merged = custom_attributes.merge('marine_responses_usage' => custom_attributes['marine_responses_usage'].to_i + 1)
-    update_column(:custom_attributes, merged) # rubocop:disable Rails/SkipsModelValidations
+    key = 'marine_responses_usage'
+    self.class.where(id: id).update_all([ # rubocop:disable Rails/SkipsModelValidations
+                                          "custom_attributes = jsonb_set(COALESCE(custom_attributes, '{}'), ARRAY[:key], " \
+                                          '(COALESCE((custom_attributes ->> :key)::int, 0) + 1)::text::jsonb)',
+                                          { key: key }
+                                        ])
+    custom_attributes[key] = custom_attributes[key].to_i + 1
   end
 
   def marine_preferences

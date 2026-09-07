@@ -56,7 +56,7 @@ module Marine
       end
 
       def process(document, blob_id, token)
-        result = Sop::ExtractionService.new(blob: document.source_file.blob).call
+        result = Marine::Documents::Sop::ExtractionService.new(blob: document.source_file.blob).call
         save_success(document, result, blob_id, token)
       rescue Marine::Documents::Errors::SopProcessingError => e
         mark_failed(document, e.error_code, blob_id, token)

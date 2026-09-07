@@ -17,7 +17,7 @@ module Marine
         end
 
         def call
-          CommandRunner.open do |runner|
+          Marine::Documents::CommandRunner.open do |runner|
             source = runner.workspace_path('source')
             download_to(source)
             # Make the downloaded input readable by the dropped marine_sop subprocess user
@@ -43,11 +43,11 @@ module Marine
         def dispatch(runner, source)
           case @blob.content_type
           when 'application/pdf'
-            PdfExtractor.new(path: source, runner: runner).call
+            Marine::Documents::Sop::PdfExtractor.new(path: source, runner: runner).call
           when 'image/jpeg', 'image/png'
-            ImageOcrService.new(path: source, runner: runner).call
+            Marine::Documents::Sop::ImageOcrService.new(path: source, runner: runner).call
           else
-            raise Errors::SopExtractionFailedError
+            raise Marine::Documents::Errors::SopExtractionFailedError
           end
         end
       end

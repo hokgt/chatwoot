@@ -129,8 +129,8 @@ module Marine
       # Runs argv to completion (or the shared deadline) and returns a Result.
       def run(*argv)
         argv = argv.map(&:to_s)
-        raise Errors::SopExtractionFailedError if argv.empty?
-        raise Errors::SopOcrTimeoutError if remaining_seconds <= 0
+        raise Marine::Documents::Errors::SopExtractionFailedError if argv.empty?
+        raise Marine::Documents::Errors::SopOcrTimeoutError if remaining_seconds <= 0
 
         capture(argv)
       end
@@ -164,12 +164,12 @@ module Marine
           close(stdout_io, stderr_io)
           reap(wait_thr)
           stop(readers)
-          raise Errors::SopOcrTimeoutError
+          raise Marine::Documents::Errors::SopOcrTimeoutError
         end
 
         Result.new(stdout: out, ok: wait_thr.value.success?)
       rescue Errno::ENOENT, Errno::EACCES
-        raise Errors::SopProcessingDependencyUnavailableError
+        raise Marine::Documents::Errors::SopProcessingDependencyUnavailableError
       ensure
         close(stdout_io, stderr_io)
       end

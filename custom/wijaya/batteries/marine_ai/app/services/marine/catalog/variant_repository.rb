@@ -24,7 +24,7 @@ module Marine
         return nil if family.empty? || child.empty?
 
         ensure_configured!
-        rows = Connection.select(resolve_child_sql, [family, child])
+        rows = Marine::Catalog::Connection.select(resolve_child_sql, [family, child])
         return nil unless rows.length == 1
 
         { code: rows.first['code'] }
@@ -39,7 +39,7 @@ module Marine
         return [] if family.empty?
 
         ensure_configured!
-        rows = Connection.select(attribute_names_sql, [family, MAX_ATTRIBUTE_NAMES])
+        rows = Marine::Catalog::Connection.select(attribute_names_sql, [family, MAX_ATTRIBUTE_NAMES])
         rows.pluck('name')
       end
 
@@ -54,7 +54,7 @@ module Marine
         return nil if family.empty? || name.empty? || attr_value.empty?
 
         ensure_configured!
-        rows = Connection.select(resolve_by_attribute_sql, [family, name, attr_value])
+        rows = Marine::Catalog::Connection.select(resolve_by_attribute_sql, [family, name, attr_value])
         return nil unless rows.length == 1
 
         { code: rows.first['code'] }
@@ -63,13 +63,13 @@ module Marine
       private
 
       def ensure_configured!
-        raise Errors::CatalogUnavailableError unless Config.configured?
+        raise Marine::Catalog::Errors::CatalogUnavailableError unless Marine::Catalog::Config.configured?
       end
 
       # The item table honors the operator-configured table name; the variant-attribute
       # table is a fixed name qualified by the validated schema. Neither is client input.
-      def item_table = Config.qualified_table
-      def attribute_table = "#{Config.schema}.item_variant_attribute"
+      def item_table = Marine::Catalog::Config.qualified_table
+      def attribute_table = "#{Marine::Catalog::Config.schema}.item_variant_attribute"
 
       def resolve_child_sql
         <<~SQL.squish

@@ -28,7 +28,7 @@ module Marine
         return { status: :unavailable } if code.empty?
 
         ensure_configured!
-        rows = Connection.select(price_sql, [code, USER_PRICE_LIST])
+        rows = Marine::Catalog::Connection.select(price_sql, [code, USER_PRICE_LIST])
         return { status: :unavailable } if rows.empty?
         return { status: :conflict } if rows.length > 1
 
@@ -44,12 +44,12 @@ module Marine
       private
 
       def ensure_configured!
-        raise Errors::CatalogUnavailableError unless Config.configured?
+        raise Marine::Catalog::Errors::CatalogUnavailableError unless Marine::Catalog::Config.configured?
       end
 
       # Fixed table names qualified by the validated schema; never client input.
-      def item_price_table = "#{Config.schema}.item_price"
-      def price_list_table = "#{Config.schema}.price_list"
+      def item_price_table = "#{Marine::Catalog::Config.schema}.item_price"
+      def price_list_table = "#{Marine::Catalog::Config.schema}.price_list"
 
       # DISTINCT over only the three allowlisted output columns; LIMIT 2 is enough to tell
       # a single approved tuple apart from a conflict. The price-list policy name ($2) gates

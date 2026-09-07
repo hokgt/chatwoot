@@ -49,7 +49,7 @@ module Marine
       # CatalogUnavailableError (no detail about the path/reason) when missing/empty.
       def password
         value = safe_read(password_file_path)
-        raise Errors::CatalogUnavailableError if value.blank?
+        raise Marine::Catalog::Errors::CatalogUnavailableError if value.blank?
 
         value
       end
@@ -69,7 +69,7 @@ module Marine
       def validated_identifier(value, fallback)
         candidate = value.to_s.strip
         return fallback if candidate.empty?
-        raise Errors::CatalogUnavailableError unless IDENTIFIER.match?(candidate)
+        raise Marine::Catalog::Errors::CatalogUnavailableError unless IDENTIFIER.match?(candidate)
 
         candidate
       end

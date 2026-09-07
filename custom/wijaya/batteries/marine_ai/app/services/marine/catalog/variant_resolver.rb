@@ -22,7 +22,7 @@ module Marine
   module Catalog
     class VariantResolver
       def initialize(variant_repository: nil)
-        @variant_repository = variant_repository || VariantRepository.new
+        @variant_repository = variant_repository || Marine::Catalog::VariantRepository.new
       end
 
       # Returns one of:

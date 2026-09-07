@@ -17,23 +17,23 @@ module Marine
         return :empty if code.empty?
 
         ensure_configured!
-        rows = Connection.select(status_sql, [code])
+        rows = Marine::Catalog::Connection.select(status_sql, [code])
         case rows.first && rows.first['status']
         when 'available' then :available
         when 'empty' then :empty
         else
-          raise Errors::CatalogUnavailableError
+          raise Marine::Catalog::Errors::CatalogUnavailableError
         end
       end
 
       private
 
       def ensure_configured!
-        raise Errors::CatalogUnavailableError unless Config.configured?
+        raise Marine::Catalog::Errors::CatalogUnavailableError unless Marine::Catalog::Config.configured?
       end
 
       # Fixed table name qualified by the validated schema; never client input.
-      def bin_table = "#{Config.schema}.bin"
+      def bin_table = "#{Marine::Catalog::Config.schema}.bin"
 
       # Aggregates actual_qty across ALL bins for the item and returns ONLY a binary status
       # field — no numeric quantity is ever selected or returned. COALESCE handles the

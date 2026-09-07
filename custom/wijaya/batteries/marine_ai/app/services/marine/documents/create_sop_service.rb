@@ -35,7 +35,7 @@ module Marine
 
       def call
         ensure_account_scope!
-        validated = UploadValidator.new(@upload).call
+        validated = Marine::Documents::UploadValidator.new(@upload).call
         document = persist(validated)
         enqueue_processing(document)
         document
@@ -46,7 +46,7 @@ module Marine
       def ensure_account_scope!
         return if @assistant.present? && @assistant.account_id == @account&.id
 
-        raise Errors::AccountMismatchError
+        raise Marine::Documents::Errors::AccountMismatchError
       end
 
       def persist(validated)
