@@ -12,6 +12,16 @@ require:
 
 Layout/LineLength:
   Max: 150
+  Exclude:
+    # WIJAYA: immutable historical migration restored byte-for-byte to
+    # origin/production; must not be reformatted to satisfy newer cops.
+    - 'db/migrate/20260708010000_create_wijaya_marine_tables.rb'
+
+Layout/HashAlignment:
+  Exclude:
+    # WIJAYA: immutable historical migration restored byte-for-byte to
+    # origin/production; must not be reformatted to satisfy newer cops.
+    - 'db/migrate/20260706000000_create_wijaya_erp_lead_drafts.rb'
 
 Metrics/ClassLength:
   Max: 175
