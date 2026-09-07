@@ -168,13 +168,16 @@ require_file spec/custom/wijaya/deferred_auto_assignment/processing_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/lifecycle_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/triggers_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/presence_channel_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/remediation_spec.rb
 # Battery Hooks module is resolved by name from the core dispatcher map.
 require_marker custom/wijaya/batteries/core/hooks.rb "deferred_auto_assignment:"
 
 for file in \
   app/models/conversation.rb \
   app/models/account_user.rb \
-  app/channels/room_channel.rb; do
+  app/channels/room_channel.rb \
+  app/models/inbox_member.rb \
+  app/models/team_member.rb; do
   require_marker "$file" "WIJAYA_CUSTOM_START deferred_auto_assignment"
   require_marker "$file" "WIJAYA_CUSTOM_END deferred_auto_assignment"
 done

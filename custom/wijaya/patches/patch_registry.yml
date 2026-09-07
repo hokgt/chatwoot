@@ -303,6 +303,10 @@ patches:
       - app/models/account_user.rb
       # Absent -> present User presence trigger (transition detected at the seam).
       - app/channels/room_channel.rb
+      # New inbox member -> bounded reprocessing of that inbox's markers (after_create_commit).
+      - app/models/inbox_member.rb
+      # New team member -> bounded reprocessing of that team's marked inboxes (after_create_commit).
+      - app/models/team_member.rb
       # Generated schema touchpoint for the marker table.
       - db/schema.rb
     loader_touchpoints:
@@ -319,6 +323,7 @@ patches:
       - spec/custom/wijaya/deferred_auto_assignment/lifecycle_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/triggers_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/presence_channel_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/remediation_spec.rb
 
 
   - id: erp_lead_sidebar

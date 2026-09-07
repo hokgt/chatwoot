@@ -59,7 +59,6 @@ RSpec.describe 'Deferred auto-assignment triggers', type: :model do
 
   describe Wijaya::Batteries::DeferredAutoAssignment::TriggerService do
     it 'enqueues only for the agent inboxes that currently hold a marker' do
-      allow(Wijaya::Batteries::DeferredAutoAssignment::ProcessInboxJob).to receive(:enqueue_for_inbox)
       marked_inbox = create(:inbox, account: account)
       member_no_marker = create(:inbox, account: account)
       create(:inbox_member, inbox: marked_inbox, user: user)
@@ -68,6 +67,9 @@ RSpec.describe 'Deferred auto-assignment triggers', type: :model do
       Wijaya::Batteries::DeferredAutoAssignment::Marker.where(conversation_id: conversation.id)
                                                        .first_or_create!(account: account, inbox: marked_inbox)
 
+      # Stub AFTER setup so only enqueue_for_agent's calls are recorded (the registrar's
+      # creation-time enqueue for this inbox has already run and is not under test here).
+      allow(Wijaya::Batteries::DeferredAutoAssignment::ProcessInboxJob).to receive(:enqueue_for_inbox)
       described_class.enqueue_for_agent(account_id: account.id, user_id: user.id)
 
       expect(Wijaya::Batteries::DeferredAutoAssignment::ProcessInboxJob).to have_received(:enqueue_for_inbox).with(marked_inbox.id)

@@ -1538,9 +1538,9 @@ ActiveRecord::Schema[7.1].define(version: 2026_09_05_000000) do
   add_foreign_key "marine_scenarios", "accounts", name: "fk_marine_scenarios_account_id"
   add_foreign_key "marine_scenarios", "marine_assistants", column: "assistant_id", name: "fk_marine_scenarios_assistant_id"
   add_foreign_key "user_sessions", "users"
-  add_foreign_key "wijaya_deferred_assignments", "accounts"
-  add_foreign_key "wijaya_deferred_assignments", "conversations"
-  add_foreign_key "wijaya_deferred_assignments", "inboxes"
+  add_foreign_key "wijaya_deferred_assignments", "accounts", on_delete: :cascade
+  add_foreign_key "wijaya_deferred_assignments", "conversations", on_delete: :cascade
+  add_foreign_key "wijaya_deferred_assignments", "inboxes", on_delete: :cascade
   add_foreign_key "wijaya_erp_lead_drafts", "accounts"
   add_foreign_key "wijaya_erp_lead_drafts", "conversations"
   add_foreign_key "wijaya_erp_settings", "accounts"

@@ -19,6 +19,12 @@ module Wijaya
             marker.account_id = conversation.account_id
             marker.inbox_id = conversation.inbox_id
           end
+
+          # Close the trigger-before-marker race: an agent who became reachable AFTER the
+          # creation-time assignment attempt but BEFORE this marker existed would have found no
+          # marker to act on, and no later trigger is guaranteed. A coalesced, marker-gated pass
+          # now assigns immediately if an eligible agent is already available.
+          ProcessInboxJob.enqueue_for_inbox(conversation.inbox_id)
         end
       end
     end

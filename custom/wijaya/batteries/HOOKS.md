@@ -129,10 +129,32 @@ zero business logic — all logic lives under `custom/wijaya/batteries/<feature>
     dispatches `on_agent_available` with the previous/current availability.
   - `app/channels/room_channel.rb` — `update_subscription` detects a real absent → present User
     presence transition **before** refreshing presence and dispatches `on_agent_present`.
+  - `app/models/inbox_member.rb` — `after_create_commit :wijaya_process_deferred_on_inbox_member_added`
+    dispatches `on_inbox_member_added`: a newly added inbox agent may be the first eligible one, so the
+    battery runs a marker-gated, coalesced pass over that inbox.
+  - `app/models/team_member.rb` — `after_create_commit :wijaya_process_deferred_on_team_member_added`
+    dispatches `on_team_member_added`: a newly added team agent triggers a marker-gated pass over exactly
+    the inboxes holding a marker for a conversation routed to that team (stored `team_id`).
 - **Purpose** — retry native (legacy) auto-assignment for a brand-new conversation that failed its
   creation-time immediate assignment only because no eligible **online** agent existed. Registration
-  writes a durable per-conversation marker (`wijaya_deferred_assignments`); the two triggers resume
-  processing for exactly the agent's marked inboxes when that agent becomes available/present.
+  writes a durable per-conversation marker (`wijaya_deferred_assignments`); the triggers resume
+  processing for exactly the agent's marked inboxes when that agent becomes available/present or is
+  newly added to an inbox/team, and when freed assignment capacity (a conversation resolved or
+  reassigned) may let a still-waiting conversation be assigned.
+- **Registrar re-enqueue** — after writing the marker the registrar enqueues one coalesced,
+  marker-gated pass for the inbox, closing the trigger-before-marker race (an agent who became reachable
+  between the creation-time attempt and the marker write leaves no marker for the availability/presence
+  trigger to act on, and no later trigger is guaranteed).
+- **Rerun handshake** — the per-inbox job coalesces via a battery-owned Redis in-flight key. A trigger
+  that arrives while a job is in-flight cannot enqueue a second job, so it records a rerun request
+  (`WIJAYA_DEFERRED_ASSIGNMENT_RERUN::<inbox_id>`, TTL-bounded). The running job, in its `ensure`,
+  **releases the in-flight claim first and then consumes the request** (atomic get-and-clear via
+  `delete`), enqueuing exactly one more pass. This guarantees no lost wakeup for work created mid-scan
+  while running at most one redundant pass; the TTL prevents a crashed worker from stranding the request.
+- **Capacity recovery** — the battery `ConversationExtensions` concern adds a second
+  `after_update_commit` that, when a previously assigned conversation frees capacity (left "open", or its
+  assignee changed/cleared), runs a marker-gated coalesced pass for the inbox. Fail-open and never
+  re-registers a marker.
 - **Flow** — each seam is a tiny `dispatch(:deferred_auto_assignment, <hook>, default: nil, ...)`
   guarded by `defined?(Wijaya::Batteries::Core::Hooks)`. All decisions (eligibility recheck, per-inbox
   coalesced job, row-locked native `AgentAssignmentService#find_assignee`, marker lifecycle) live in the
@@ -149,14 +171,16 @@ zero business logic — all logic lives under `custom/wijaya/batteries/<feature>
   the child marker inline on conversation delete (core destroys via `destroy_async`/`DeleteObjectJob`,
   which would otherwise raise an FK violation on a custom child table), and an `after_update_commit`
   cleanup drops the marker the moment the conversation gains a human/agent-bot assignee or leaves the
-  open status. Cleanup only ever destroys — a later manual unassignment never re-registers.
+  open status. Cleanup only ever destroys — a later manual unassignment never re-registers. As a
+  DB-level safety net (core also deletes conversations via `destroy_async`/`delete_all`), all three
+  marker foreign keys (account, inbox, conversation) are `on_delete: :cascade`.
 - **Native default** — `nil` everywhere; every seam is additive and returns nothing to the native path.
 - **Fail mode** — **fail open**. A missing/disabled/raising battery leaves conversation creation,
   availability updates, and presence heartbeats exactly as upstream. Assignment V2 is never touched.
 - **Risk** — low. Never blocks creation/availability/presence; only ever assigns an unassigned open
   conversation via the unchanged native selector.
-- **Necessity** — required: these are the only creation-completion, availability-transition, and
-  presence-transition seams; none carries feature logic.
+- **Necessity** — required: these are the only creation-completion, availability-transition,
+  presence-transition, and inbox/team membership seams; none carries feature logic.
 
 ---
 
