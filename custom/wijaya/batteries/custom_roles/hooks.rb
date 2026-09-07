@@ -14,6 +14,12 @@ module Wijaya
         CONVERSATION_UNASSIGNED_MANAGE = 'conversation_unassigned_manage'
         CONVERSATION_PARTICIPATING_MANAGE = 'conversation_participating_manage'
 
+        CONVERSATION_PERMISSIONS = [
+          CONVERSATION_MANAGE,
+          CONVERSATION_UNASSIGNED_MANAGE,
+          CONVERSATION_PARTICIPATING_MANAGE
+        ].freeze
+
         module_function
 
         def validate_known_permissions!(record, available_permissions)
@@ -21,6 +27,13 @@ module Wijaya
           return if unknown_permissions.blank?
 
           record.errors.add(:permissions, "contains unsupported permissions: #{unknown_permissions.join(', ')}")
+        end
+
+        def validate_exactly_one_conversation_permission!(record)
+          selected_conversation_permissions = record.permissions & CONVERSATION_PERMISSIONS
+          return if selected_conversation_permissions.one?
+
+          record.errors.add(:permissions, 'must include exactly one conversation permission')
         end
 
         def account_user_permissions(account_user, default_permissions)
