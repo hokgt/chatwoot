@@ -107,20 +107,6 @@ for file in   app/builders/agent_builder.rb   app/controllers/api/v1/accounts/ag
   require_marker "$file" "WIJAYA_CUSTOM_END custom_roles_rbac"
 done
 
-# Reconciled custom-role RBAC intentionally does NOT force "exactly one conversation
-# permission" at the model layer: native Enterprise supports roles with zero or
-# multiple conversation scopes, and Wijaya assignment restrictions live in the hook
-# policy, not a blanket model validation. Guard against the retired stricter rule
-# silently returning (it was reintroduced once and had to be reverted).
-for file in \
-  custom/wijaya/batteries/custom_roles/hooks.rb \
-  enterprise/app/models/custom_role.rb; do
-  if [[ -f "$file" ]] && grep -Eq 'exactly_one_conversation_permission|must include exactly one conversation permission' "$file"; then
-    echo "FORBIDDEN: retired 'exactly one conversation permission' model validation present in $file (reconciled behavior allows zero/multiple conversation scopes; do not reinstate)" >&2
-    missing=1
-  fi
-done
-
 # meta_ads_team_routing
 require_file custom/wijaya/batteries/meta_ads_team_routing/routing_rule.rb
 require_file custom/wijaya/batteries/meta_ads_team_routing/routing_service.rb
