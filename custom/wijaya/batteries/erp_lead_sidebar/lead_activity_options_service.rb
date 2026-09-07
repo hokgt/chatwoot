@@ -30,10 +30,10 @@ module Wijaya::Batteries::ErpLeadSidebar
 
     # Sorted list of Lead Activity Master `name`s. Raises SyncError when ERP is
     # unconfigured or the fetch fails, so callers can reject before insert.
-    def fetch_names
+    def fetch_names # rubocop:disable Metrics/CyclomaticComplexity
       raise SyncError, 'ERPNext connection is not configured' unless Config.erp_configured?(@account)
 
-      response = get_list
+      response = request_list
       body = parse_body(response.body)
 
       unless response.is_a?(Net::HTTPSuccess)
@@ -55,7 +55,7 @@ module Wijaya::Batteries::ErpLeadSidebar
 
     private
 
-    def get_list
+    def request_list
       SafeHttp.request(
         method: :get,
         uri: list_uri,

@@ -40,7 +40,7 @@ module Wijaya
           Rails.autoloaders.main.dirs.any? { |dir| File.expand_path(dir) == path.to_s }
         end
 
-        def load_models! # rubocop:disable Metrics/AbcSize
+        def load_models! # rubocop:disable Metrics/AbcSize,Metrics/MethodLength
           root = ROOT
           Rails.application.config.to_prepare do
             require root.join('config').to_s

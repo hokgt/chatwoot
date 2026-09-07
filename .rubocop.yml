@@ -181,6 +181,15 @@ Style/ClassAndModuleChildren:
     - 'custom/wijaya/batteries/erp_lead_sidebar/loader.rb'
     - 'custom/wijaya/batteries/erp_lead_sidebar/refresh_service.rb'
     - 'custom/wijaya/batteries/erp_lead_sidebar/options_service.rb'
+    # Manual Lead Activity family: same nested-declaration requirement — each file
+    # references unqualified sibling constants (Config/SafeHttp/SyncError/ValidationError
+    # and the LeadActivity* siblings) that resolve lexically only under the nested
+    # `module Wijaya::Batteries::ErpLeadSidebar` scope. Compact form drops that scope
+    # from lexical nesting and raises `uninitialized constant` at load.
+    - 'custom/wijaya/batteries/erp_lead_sidebar/lead_activity_options_service.rb'
+    - 'custom/wijaya/batteries/erp_lead_sidebar/lead_activity_person_directory.rb'
+    - 'custom/wijaya/batteries/erp_lead_sidebar/lead_activity_payload_builder.rb'
+    - 'custom/wijaya/batteries/erp_lead_sidebar/lead_activity_service.rb'
     - 'custom/wijaya/batteries/custom_roles/hooks.rb'
     - 'custom/wijaya/batteries/ads_tracking/hooks.rb'
     - 'custom/wijaya/batteries/ads_tracking/referral_parser.rb'

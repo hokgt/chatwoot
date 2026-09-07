@@ -30,7 +30,7 @@ require 'securerandom'
 # the unqualified sibling references (Config, SafeHttp, PayloadBuilder, etc.)
 # resolve.
 module Wijaya::Batteries::ErpLeadSidebar
-  class LeadActivityService
+  class LeadActivityService # rubocop:disable Metrics/ClassLength
     LOCK_TTL = 30
     OUTCOME_TTL = 24 * 60 * 60
     SUCCESS_MESSAGE = 'Lead Activity added successfully.'
@@ -106,7 +106,7 @@ module Wijaya::Batteries::ErpLeadSidebar
 
     # --- ERP insert -----------------------------------------------------------
 
-    def post_activity(submission_id, payload)
+    def post_activity(submission_id, payload) # rubocop:disable Metrics/MethodLength
       response = SafeHttp.request(
         method: :post,
         uri: insert_uri,

@@ -6,7 +6,7 @@
 module Wijaya::Batteries::ErpLeadSidebar::Routes
   module_function
 
-  def draw(mapper)
+  def draw(mapper) # rubocop:disable Metrics/MethodLength
     mapper.instance_exec do
       namespace :wijaya do
         resources :erp_lead_drafts, only: %i[show update] do

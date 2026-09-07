@@ -8,7 +8,7 @@ require 'agents'
 # The class is kept for Zeitwerk autoloading, but instantiation now raises so no
 # code path can perform outbound HTTP requests through it.
 class Marine::Tools::HttpTool < Agents::Tool
-  def initialize(*)
+  def initialize(*) # rubocop:disable Lint/MissingSuper
     raise 'Marine::Tools::HttpTool has been removed to eliminate Marine AI outbound ERP connectivity'
   end
 end

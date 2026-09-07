@@ -92,7 +92,7 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::LeadActivityService do
     Redis::Alfred.delete(outcome_key)
   end
 
-  context 'on a valid submission' do
+  context 'when the submission is valid' do
     it 'POSTs exactly one frappe.client.insert with the server-derived parent' do
       result = service.perform
 
@@ -194,7 +194,7 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::LeadActivityService do
   end
 
   context 'with a person in charge (manually chosen, exact-revalidated before insert)' do
-    def get_requests
+    def directory_get_requests
       requests.select { |request| request.is_a?(Net::HTTP::Get) }
     end
 
@@ -222,7 +222,7 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::LeadActivityService do
 
       doc = JSON.parse(post_requests.first.body)['doc']
       expect(doc['person_in_charge']).to eq('')
-      expect(get_requests).to be_empty
+      expect(directory_get_requests).to be_empty
       expect(post_requests.size).to eq(1)
     end
 
@@ -234,7 +234,7 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::LeadActivityService do
       doc = JSON.parse(post_requests.first.body)['doc']
       expect(doc['person_in_charge']).to eq('agent@erp.example')
       # A fresh exact User lookup was issued for the chosen value.
-      expect(get_requests.map(&:path).join).to include('agent%40erp.example')
+      expect(directory_get_requests.map(&:path).join).to include('agent%40erp.example')
     end
 
     it 'rejects an unknown/deleted value with a 422 and issues no insert' do
@@ -306,7 +306,7 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::LeadActivityService do
 
       expect(result.http_status).to eq(:unprocessable_entity)
       expect(result.status).to eq('invalid')
-      expect(get_requests).to be_empty
+      expect(directory_get_requests).to be_empty
       expect(post_requests).to be_empty
       expect(Redis::Alfred.get(outcome_key)).to be_nil
     end
@@ -401,7 +401,7 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::LeadActivityService do
     end
   end
 
-  context 'concurrency and idempotency' do
+  context 'with concurrency and idempotency' do
     it 'blocks a concurrent submission holding the in-flight lock' do
       Redis::Alfred.set(lock_key, 'other-token', ex: 30)
 

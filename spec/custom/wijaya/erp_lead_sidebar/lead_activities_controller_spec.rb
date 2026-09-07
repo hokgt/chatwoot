@@ -149,7 +149,7 @@ RSpec.describe 'Wijaya Lead Activities API', type: :request do
 
     it 'excludes structural keys from the params handed to the service' do
       captured = nil
-      allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityService).to receive(:new) do |draft:, agent:, params:|
+      allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityService).to receive(:new) do |params:, **|
         captured = params
         instance_double(
           Wijaya::Batteries::ErpLeadSidebar::LeadActivityService,

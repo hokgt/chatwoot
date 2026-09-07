@@ -322,7 +322,7 @@ RSpec.describe Wijaya::Marine::Hooks do
     # Req 7 — the core private messaging_window is unavailable/raises: HandoffWindow fails closed
     # (treats the window as not expired), so the marker stays terminal and nothing is scheduled.
     it 'fails closed when the core messaging window computation raises: marker stays active, no schedule' do
-      allow_any_instance_of(Conversations::MessageWindowService).to receive(:messaging_window).and_raise(StandardError.new('boom')) # rubocop:disable RSpec/AnyInstance
+      allow_any_instance_of(Conversations::MessageWindowService).to receive(:messaging_window).and_raise(StandardError.new('boom'))
       message = incoming_at(anchor + 50.hours)
       expect(Marine::Conversation::ResponseBuilderJob).not_to receive(:perform_later)
 
@@ -356,7 +356,7 @@ RSpec.describe Wijaya::Marine::Hooks do
   describe 'handoff reset is inbound-only (no timer caller)' do
     it 'invokes HandoffStateStore#reset! from the inbound hook alone' do
       app_root = Rails.root.join('custom/wijaya/batteries/marine_ai/app')
-      callers = Dir.glob(app_root.join('**/*.rb')).select { |file| File.read(file).match?(/\.reset!/) }
+      callers = Dir.glob(app_root.join('**/*.rb')).select { |file| File.read(file).include?('.reset!') }
       relative = callers.map { |file| Pathname.new(file).relative_path_from(Rails.root).to_s }
 
       expect(relative).to contain_exactly('custom/wijaya/batteries/marine_ai/app/services/wijaya/marine/hooks.rb')

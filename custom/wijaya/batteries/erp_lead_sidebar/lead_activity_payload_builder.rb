@@ -40,21 +40,19 @@ module Wijaya::Batteries::ErpLeadSidebar
       { 'doc' => document }
     end
 
-    def validate! # rubocop:disable Metrics/CyclomaticComplexity,Metrics/AbcSize
+    def validate! # rubocop:disable Metrics/CyclomaticComplexity,Metrics/AbcSize,Metrics/PerceivedComplexity
       errors = []
       errors << 'submission_id is invalid' unless @submission_id.match?(UUID_REGEX)
       errors << 'linked ERP Lead is required' if @parent.strip.empty?
       errors << 'date is required' if date.empty?
       errors << 'date must be a valid YYYY-MM-DD' if date.present? && !valid_iso_date?(date)
       errors << 'lead_activity is required' if lead_activity.empty?
-      errors << 'lead_activity is not a known Lead Activity' if lead_activity.present? && !@valid_activities.include?(lead_activity)
+      errors << 'lead_activity is not a known Lead Activity' if lead_activity.present? && @valid_activities.exclude?(lead_activity)
       errors << 'follow_up must be No or Yes' unless FOLLOW_UP_VALUES.include?(follow_up)
 
       if follow_up == 'Yes'
         errors << 'follow_up_date must be a valid YYYY-MM-DD' if follow_up_date.present? && !valid_iso_date?(follow_up_date)
-        if follow_up_activity.present? && !@valid_activities.include?(follow_up_activity)
-          errors << 'follow_up_activity is not a known Lead Activity'
-        end
+        errors << 'follow_up_activity is not a known Lead Activity' if follow_up_activity.present? && @valid_activities.exclude?(follow_up_activity)
       end
 
       raise ValidationError, errors.join(', ') if errors.any?
