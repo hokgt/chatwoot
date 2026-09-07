@@ -15,6 +15,12 @@
 # response whose content type is video/*. Everything here is best-effort: any
 # failure returns nil so the message + referral still persist and the UI falls
 # back to thumbnail + Watch ad.
+#
+# `include ::UrlHelper` runs at class-definition (require) time. This file is
+# `require_relative`d standalone from ads_tracking/hooks.rb before Rails autoloading
+# has resolved lib/, so require the helper explicitly to keep the class boot-safe.
+require Rails.root.join('lib/url_helper').to_s
+
 module Wijaya
   module Batteries
     module AdsTracking
