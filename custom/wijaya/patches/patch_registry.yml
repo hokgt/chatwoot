@@ -936,6 +936,8 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/controllers/documents_sop_controller_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_family_repository_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/connection_spec.rb
+      # Reload-safe sibling-resolution regression for the whole Marine::Catalog tree.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/namespace_resolution_spec.rb
       # Phase 1 — Deterministic Catalog Data Layer specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/variant_repository_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/price_repository_spec.rb

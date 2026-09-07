@@ -74,9 +74,17 @@ RSpec.describe 'Marine Playground four-turn catalog acceptance', type: :request 
       echo
     end
     allow(echo).to receive(:call) { @echoed }
+    # Domain boundary guard ALLOWS — the production "in-domain, allowed" decision — so every
+    # catalog turn reaches the orchestrator. Its provider classification (#chat) is otherwise
+    # unstubbed on the base_service double; stubbing the guard keeps this spec focused on catalog
+    # grounding rather than the domain gate (which has its own specs).
+    allow(Marine::Circuit::DomainBoundaryGuard).to receive(:new).and_return(
+      instance_double(Marine::Circuit::DomainBoundaryGuard, call: nil)
+    )
     # Provider intent extraction: one stub, branching on the current customer turn embedded in the prompt.
+    # `**` absorbs the `temperature:` kwarg IntentExtractor#complete now passes.
     allow(Marine::Llm::BaseService).to receive(:new).and_return(base_service)
-    allow(base_service).to receive(:complete) do |prompt:, system: nil| # rubocop:disable Lint/UnusedBlockArgument
+    allow(base_service).to receive(:complete) do |prompt:, system: nil, **| # rubocop:disable Lint/UnusedBlockArgument
       { ok: true, message: intent_for(prompt.to_s), error: nil }
     end
     clear_enqueued_jobs

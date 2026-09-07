@@ -41,14 +41,14 @@ module Marine
       # bounded transient retry lives in #attempt; only that small allowlist survives, and
       # only for the same idempotent read-only SELECT, so no side effect is ever repeated.
       def select(sql, params = [])
-        raise Errors::CatalogUnavailableError unless single_select?(sql)
+        raise Marine::Catalog::Errors::CatalogUnavailableError unless single_select?(sql)
 
         attempt(sql, params, retries: MAX_RETRIES)
-      rescue Errors::CatalogError
+      rescue Marine::Catalog::Errors::CatalogError
         raise
       rescue StandardError => e
         log_internal(e)
-        raise Errors::CatalogUnavailableError
+        raise Marine::Catalog::Errors::CatalogUnavailableError
       end
 
       # One fully-owned open -> SELECT -> close cycle. On a transient connectivity error,
@@ -80,10 +80,10 @@ module Marine
       # can never leak (select never receives it), then the original error is re-raised for
       # the caller to sanitize.
       def open
-        conn = PG.connect(**Config.connection_params)
+        conn = PG.connect(**Marine::Catalog::Config.connection_params)
         conn.exec('SET default_transaction_read_only = on')
-        conn.exec("SET statement_timeout = #{Config::STATEMENT_TIMEOUT_MS}")
-        conn.exec("SET lock_timeout = #{Config::LOCK_TIMEOUT_MS}")
+        conn.exec("SET statement_timeout = #{Marine::Catalog::Config::STATEMENT_TIMEOUT_MS}")
+        conn.exec("SET lock_timeout = #{Marine::Catalog::Config::LOCK_TIMEOUT_MS}")
         conn
       rescue StandardError
         safe_close(conn)

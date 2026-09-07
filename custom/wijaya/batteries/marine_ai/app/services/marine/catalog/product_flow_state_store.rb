@@ -358,7 +358,7 @@ module Marine
       # set and a forged/unknown entry can never widen it.
       def requested_intents(value)
         normalized = self.class.normalize_expected_attributes(value).map(&:downcase)
-        IntentExtractor::SUPPORTED_PRODUCT_INTENTS.select { |intent| normalized.include?(intent) }
+        Marine::Catalog::IntentExtractor::SUPPORTED_PRODUCT_INTENTS.select { |intent| normalized.include?(intent) }
       end
 
       # The bounded clarification-progression metadata, each field strictly validated (enum /

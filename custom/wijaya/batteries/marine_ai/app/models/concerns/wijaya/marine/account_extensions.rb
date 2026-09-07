@@ -23,7 +23,13 @@ module Wijaya::Marine::AccountExtensions
   end
 
   def increment_marine_response_usage
-    increment_custom_attribute('marine_responses_usage')
+    # `increment_custom_attribute` is an Enterprise-only Account method (plan usage/limits).
+    # Prefer it when present so Enterprise behaviour is unchanged; in the CE/FOSS build it is
+    # absent, but `custom_attributes` is a core column, so increment the counter directly.
+    return increment_custom_attribute('marine_responses_usage') if respond_to?(:increment_custom_attribute)
+
+    merged = custom_attributes.merge('marine_responses_usage' => custom_attributes['marine_responses_usage'].to_i + 1)
+    update_column(:custom_attributes, merged) # rubocop:disable Rails/SkipsModelValidations
   end
 
   def marine_preferences

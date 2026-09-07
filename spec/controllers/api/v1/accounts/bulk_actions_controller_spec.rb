@@ -33,10 +33,12 @@ RSpec.describe 'Api::V1::Accounts::BulkActionsController', type: :request do
 
     context 'when it is an authenticated user' do
       let!(:agent) { create(:user, account: account, role: :agent) }
-      let!(:supervisor_role) { create(:custom_role, account: account, permissions: ['conversation_manage']) }
+      # CustomRole (Enterprise-only) grants the agent Manage-All so it can bulk-act. In CE
+      # an ordinary agent already manages all conversations natively, so this is skipped.
+      let(:supervisor_role) { create(:custom_role, account: account, permissions: ['conversation_manage']) }
 
       before do
-        agent.account_users.find_by!(account: account).update!(custom_role: supervisor_role)
+        agent.account_users.find_by!(account: account).update!(custom_role: supervisor_role) if ChatwootApp.enterprise?
         Conversation.all.find_each { |conversation| create(:inbox_member, inbox: conversation.inbox, user: agent) }
       end
 
@@ -48,7 +50,7 @@ RSpec.describe 'Api::V1::Accounts::BulkActionsController', type: :request do
         expect(response).to have_http_status(:unprocessable_entity)
       end
 
-      it 'returns forbidden when a non Manage All custom role bulk assigns conversations' do
+      it 'returns forbidden when a non Manage All custom role bulk assigns conversations', :enterprise do
         participating_role = create(:custom_role, account: account, permissions: ['conversation_participating_manage'])
         agent.account_users.find_by!(account: account).update!(custom_role: participating_role)
 

@@ -108,12 +108,12 @@ module Marine
       # dependency injection stays fully testable without a long parameter list.
       def initialize(intent_extractor: nil, repositories: {}, variant_resolver: nil, reply_renderer: nil)
         @intent_extractor = intent_extractor
-        @family_repository = repositories[:family] || ProductFamilyRepository.new
-        @variant_repository = repositories[:variant] || VariantRepository.new
-        @price_repository = repositories[:price] || PriceRepository.new
-        @stock_repository = repositories[:stock] || StockRepository.new
-        @variant_resolver = variant_resolver || VariantResolver.new(variant_repository: @variant_repository)
-        @reply_renderer = reply_renderer || ReplyRenderer.new
+        @family_repository = repositories[:family] || Marine::Catalog::ProductFamilyRepository.new
+        @variant_repository = repositories[:variant] || Marine::Catalog::VariantRepository.new
+        @price_repository = repositories[:price] || Marine::Catalog::PriceRepository.new
+        @stock_repository = repositories[:stock] || Marine::Catalog::StockRepository.new
+        @variant_resolver = variant_resolver || Marine::Catalog::VariantResolver.new(variant_repository: @variant_repository)
+        @reply_renderer = reply_renderer || Marine::Catalog::ReplyRenderer.new
       end
 
       # Full path: extract intent from raw customer text (via the INJECTED extractor,
@@ -189,7 +189,7 @@ module Marine
       # A later runtime phase injects an account-aware extractor; the lazy default
       # keeps Phase 4 self-contained (extraction is only reached via #process).
       def intent_extractor
-        @intent_extractor ||= IntentExtractor.new
+        @intent_extractor ||= Marine::Catalog::IntentExtractor.new
       end
 
       # A candidate-only continuation while AWAITING_VARIANT: the customer is supplying the child
@@ -502,14 +502,14 @@ module Marine
         # the customer-facing descriptor, the progression identity, and the persisted
         # expected_attributes all use the same bounded/deduplicated shape — a pathological
         # repository list can never make occurrence 1 and its persisted occurrence 2 differ.
-        attribute_names = ProductFlowStateStore.normalize_expected_attributes(variant_repository.attribute_names(family[:code]))
+        attribute_names = Marine::Catalog::ProductFlowStateStore.normalize_expected_attributes(variant_repository.attribute_names(family[:code]))
         clarify = reply_renderer.clarify_variant(attribute_names)
-        progression = clarification_progression(kind: ProductFlowStateStore::CLARIFICATION_KIND_VARIANT,
+        progression = clarification_progression(kind: Marine::Catalog::ProductFlowStateStore::CLARIFICATION_KIND_VARIANT,
                                                 family: family[:code], expected: attribute_names, flow: flow)
         return build(:handoff, reply: clarify) if progression[:handoff]
 
         changes = clarification_changes(family_changes(family, intent).merge('expected_attributes' => attribute_names).merge(pending_pair_changes),
-                                        ProductFlowStateStore::CLARIFICATION_KIND_VARIANT, progression[:count])
+                                        Marine::Catalog::ProductFlowStateStore::CLARIFICATION_KIND_VARIANT, progression[:count])
         if catalog_already_sent?(flow, continuing) || truthy(intent[:multiple_numeric_candidates]) || new_candidates?(intent)
           build(:clarify_variant, reply: clarify, operation: state_op, changes: changes)
         else
@@ -529,12 +529,12 @@ module Marine
         candidates = clarify_family_candidates(identifier)
         reply = reply_renderer.clarify_family(candidates)
         family_codes = candidate_family_codes(candidates)
-        progression = clarification_progression(kind: ProductFlowStateStore::CLARIFICATION_KIND_FAMILY,
+        progression = clarification_progression(kind: Marine::Catalog::ProductFlowStateStore::CLARIFICATION_KIND_FAMILY,
                                                 family: flow['validated_family'], family_codes: family_codes, flow: flow)
         return build(:handoff, reply: reply) if progression[:handoff]
 
         base = { 'current_intent' => intent[:intent], 'clarification_family_codes' => family_codes }.merge(pending_pair_changes)
-        changes = clarification_changes(base, ProductFlowStateStore::CLARIFICATION_KIND_FAMILY, progression[:count])
+        changes = clarification_changes(base, Marine::Catalog::ProductFlowStateStore::CLARIFICATION_KIND_FAMILY, progression[:count])
         build(:clarify_family, reply: reply, operation: flow_active?(flow) ? :update : :start, changes: changes)
       end
 
@@ -573,7 +573,7 @@ module Marine
       # durable slot identity — the same codes surfaced in the clarify_family reply, normalized
       # through the store's trust boundary so it round-trips identically with the persisted field.
       def candidate_family_codes(candidates)
-        ProductFlowStateStore.normalize_expected_attributes(candidates.pluck(:code))
+        Marine::Catalog::ProductFlowStateStore.normalize_expected_attributes(candidates.pluck(:code))
       end
 
       # Continuation switch detection for a NOISY-but-present mention. Classifies the DISTINCT
@@ -813,7 +813,7 @@ module Marine
       def normalize_requested(raw, scalar)
         list = Array(raw).filter_map { |item| item.to_s.strip.downcase.presence }
         list = [scalar.to_s.strip.downcase] if list.empty? && scalar
-        supported = IntentExtractor::SUPPORTED_PRODUCT_INTENTS
+        supported = Marine::Catalog::IntentExtractor::SUPPORTED_PRODUCT_INTENTS
         supported.select { |intent| list.include?(intent) }.first(MAX_REQUESTED_INTENTS)
       end
 
@@ -829,7 +829,7 @@ module Marine
       end
 
       def flow_active?(flow)
-        flow['status'] == ProductFlowStateStore::STATUS_ACTIVE
+        flow['status'] == Marine::Catalog::ProductFlowStateStore::STATUS_ACTIVE
       end
 
       # --- clarification progression (Phase 3) ------------------------------------
@@ -871,9 +871,9 @@ module Marine
       # toward the occurrence-3 handoff.
       def same_unresolved_slot?(flow, kind, expected, family_codes)
         case kind
-        when ProductFlowStateStore::CLARIFICATION_KIND_VARIANT
+        when Marine::Catalog::ProductFlowStateStore::CLARIFICATION_KIND_VARIANT
           normalized_identity_set(flow['expected_attributes']) == normalized_identity_set(expected)
-        when ProductFlowStateStore::CLARIFICATION_KIND_FAMILY
+        when Marine::Catalog::ProductFlowStateStore::CLARIFICATION_KIND_FAMILY
           normalized_identity_set(flow['clarification_family_codes']) == normalized_identity_set(family_codes)
         else
           true
@@ -896,7 +896,7 @@ module Marine
       # the progression to occurrence 1), while a genuinely changed set still differs. The store's
       # canonical persistence/descriptor order is left untouched.
       def normalized_identity_set(value)
-        ProductFlowStateStore.normalize_expected_attributes(Array(value)).sort
+        Marine::Catalog::ProductFlowStateStore.normalize_expected_attributes(Array(value)).sort
       end
 
       # Attach the bounded clarification metadata (enum kind + bounded count) to a clarify
@@ -935,7 +935,7 @@ module Marine
         return nil unless value.is_a?(String)
 
         category = value.strip.downcase
-        IntentExtractor::UNSUPPORTED_REQUEST_CATEGORIES.include?(category) ? category : nil
+        Marine::Catalog::IntentExtractor::UNSUPPORTED_REQUEST_CATEGORIES.include?(category) ? category : nil
       end
 
       def symbolize(intent)

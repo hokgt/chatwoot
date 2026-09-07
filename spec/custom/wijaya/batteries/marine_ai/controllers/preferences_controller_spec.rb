@@ -17,7 +17,9 @@ RSpec.describe 'Api::V1::Accounts::Marine::Preferences', type: :request do
   let(:supervisor) { create(:user) }
 
   before do
-    create(:account_user, user: supervisor, account: account, role: :agent, custom_role: custom_role)
+    # CustomRole is Enterprise-only (stripped in CE); the custom-role examples below are
+    # tagged :enterprise, so this supervisor fixture is only needed when enterprise/ is present.
+    create(:account_user, user: supervisor, account: account, role: :agent, custom_role: custom_role) if ChatwootApp.enterprise?
   end
 
   def json_response
@@ -40,7 +42,7 @@ RSpec.describe 'Api::V1::Accounts::Marine::Preferences', type: :request do
       end
     end
 
-    context 'when it is a custom-role agent (supervisor/marketing/sales)' do
+    context 'when it is a custom-role agent (supervisor/marketing/sales)', :enterprise do
       it 'is not authorized' do
         get "/api/v1/accounts/#{account.id}/marine/preferences",
             headers: supervisor.create_new_auth_token, as: :json
@@ -68,7 +70,7 @@ RSpec.describe 'Api::V1::Accounts::Marine::Preferences', type: :request do
       end
     end
 
-    context 'when it is a custom-role agent' do
+    context 'when it is a custom-role agent', :enterprise do
       it 'is not authorized' do
         put "/api/v1/accounts/#{account.id}/marine/preferences",
             params: { marine_features: { feature_faq: true } },

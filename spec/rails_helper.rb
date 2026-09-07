@@ -66,6 +66,13 @@ RSpec.configure do |config|
   # https://relishapp.com/rspec/rspec-rails/docs
   config.infer_spec_type_from_file_location!
 
+  # Enterprise-capability gate: examples tagged `:enterprise` exercise features whose
+  # models/policies live under `enterprise/` (e.g. CustomRole) and cannot run in the
+  # CE/FOSS build, which strips `enterprise/` before the suite. Excluding them there
+  # keeps CE green without weakening Enterprise coverage — the same tagged examples
+  # still run whenever `enterprise/` is present (`ChatwootApp.enterprise?` is true).
+  config.filter_run_excluding(:enterprise) unless ChatwootApp.enterprise?
+
   # Filter lines from Rails gems in backtraces.
   config.filter_rails_from_backtrace!
   # arbitrary gems may also be filtered via:

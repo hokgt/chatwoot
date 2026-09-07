@@ -46,7 +46,9 @@ RSpec.describe 'Wijaya native seams fail open when Core::Hooks is undefined' do
       )
       # The Enterprise override wraps trigger_templates (super) with a Captain-response
       # step; stub its predicate off so this spec stays focused on the native templates.
-      allow(service).to receive(:should_process_captain_response?).and_return(false)
+      # In the CE/FOSS build that override (and the method) is absent and never invoked,
+      # so the stub is only applied where the capability exists.
+      allow(service).to receive(:should_process_captain_response?).and_return(false) if service.respond_to?(:should_process_captain_response?)
     end
 
     it 'runs the native templates (Marine never claims) when the constant is undefined' do

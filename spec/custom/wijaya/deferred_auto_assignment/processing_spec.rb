@@ -73,7 +73,10 @@ RSpec.describe Wijaya::Batteries::DeferredAutoAssignment::InboxProcessor, type: 
       expect(marker_for(conversation)).to be_present
     end
 
-    it 'keeps the marker active when an online agent has no assignment capacity' do
+    # Assignment-capacity filtering (member_ids_with_assignment_capacity) is implemented only in
+    # the Enterprise Inbox override; the CE/FOSS build never excludes an over-capacity agent, so
+    # this scenario can only be exercised when enterprise/ is present.
+    it 'keeps the marker active when an online agent has no assignment capacity', :enterprise do
       agent = make_agent
       # Native capacity gate: the inbox caps assignments at 1 and the agent already owns an
       # open conversation, so member_ids_with_assignment_capacity excludes them. The agent is

@@ -41,7 +41,7 @@ RSpec.describe 'Conversation Assignment API', type: :request do
       let(:team) { create(:team, account: account) }
 
       before do
-        agent.account_users.find_by!(account: account).update!(custom_role: supervisor_role)
+        agent.account_users.find_by!(account: account).update!(custom_role: supervisor_role) if ChatwootApp.enterprise?
         create(:inbox_member, inbox: conversation.inbox, user: agent)
       end
 
@@ -94,7 +94,7 @@ RSpec.describe 'Conversation Assignment API', type: :request do
       end
     end
 
-    context 'with custom role assignment permissions' do
+    context 'with custom role assignment permissions', :enterprise do
       let(:assignee) { create(:user, account: account, role: :agent) }
       let(:sales_role) { create(:custom_role, account: account, name: 'Sales', permissions: ['conversation_participating_manage']) }
       let(:marketing_role) { create(:custom_role, account: account, name: 'Marketing', permissions: ['conversation_participating_manage']) }
@@ -204,7 +204,7 @@ RSpec.describe 'Conversation Assignment API', type: :request do
       let(:supervisor_role) { create(:custom_role, account: account, permissions: ['conversation_manage']) }
 
       before do
-        agent.account_users.find_by!(account: account).update!(custom_role: supervisor_role)
+        agent.account_users.find_by!(account: account).update!(custom_role: supervisor_role) if ChatwootApp.enterprise?
         create(:inbox_member, inbox: conversation.inbox, user: agent)
         conversation.update!(assignee: agent)
       end
@@ -231,7 +231,7 @@ RSpec.describe 'Conversation Assignment API', type: :request do
       let(:supervisor_role) { create(:custom_role, account: account, permissions: ['conversation_manage']) }
 
       before do
-        agent.account_users.find_by!(account: account).update!(custom_role: supervisor_role)
+        agent.account_users.find_by!(account: account).update!(custom_role: supervisor_role) if ChatwootApp.enterprise?
         conversation.update!(team: team)
         create(:inbox_member, inbox: conversation.inbox, user: agent)
       end

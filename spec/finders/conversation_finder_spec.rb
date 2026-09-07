@@ -293,7 +293,7 @@ describe ConversationFinder do # rubocop:disable RSpec/MultipleDescribes
   end
 end
 
-RSpec.describe ConversationFinder, 'custom role conversation visibility' do # rubocop:disable RSpec/DescribeMethod
+RSpec.describe ConversationFinder, 'custom role conversation visibility', :enterprise do # rubocop:disable RSpec/DescribeMethod
   let(:account) { create(:account) }
   let(:agent) { create(:user, account: account, role: :agent) }
   let(:other_agent) { create(:user, account: account, role: :agent) }

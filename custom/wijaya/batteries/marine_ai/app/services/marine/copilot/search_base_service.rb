@@ -34,7 +34,11 @@ class Marine::Copilot::SearchBaseService
   def contacts_accessible?
     return true if user.blank?
     return false if account_user.blank?
-    return account_user.custom_role.permissions.include?('contact_manage') if account_user.custom_role.present?
+
+    # `custom_role` is an Enterprise-only AccountUser association, absent in the CE/FOSS
+    # build; `try` yields nil there so access falls back to the native admin/agent check.
+    custom_role = account_user.try(:custom_role)
+    return custom_role.permissions.include?('contact_manage') if custom_role.present?
 
     account_user.administrator? || account_user.agent?
   end

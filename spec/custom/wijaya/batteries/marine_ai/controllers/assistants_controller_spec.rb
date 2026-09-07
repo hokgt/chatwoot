@@ -249,7 +249,9 @@ RSpec.describe 'Api::V1::Accounts::Marine::Assistants', type: :request do
     let(:supervisor) { create(:user) }
 
     before do
-      create(:account_user, user: supervisor, account: account, role: :agent, custom_role: custom_role)
+      # CustomRole is Enterprise-only (stripped in CE); the custom-role example below is
+      # tagged :enterprise, so this supervisor fixture is only needed when enterprise/ is present.
+      create(:account_user, user: supervisor, account: account, role: :agent, custom_role: custom_role) if ChatwootApp.enterprise?
     end
 
     context 'when it is a plain agent' do
@@ -261,7 +263,7 @@ RSpec.describe 'Api::V1::Accounts::Marine::Assistants', type: :request do
       end
     end
 
-    context 'when it is a custom-role agent (supervisor/marketing/sales)' do
+    context 'when it is a custom-role agent (supervisor/marketing/sales)', :enterprise do
       it 'is not authorized to update guardrails/guidelines' do
         put "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}",
             params: { assistant: { guardrails: ['No profanity'] } },
