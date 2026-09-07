@@ -39,23 +39,14 @@ class CustomRole < ApplicationRecord
     knowledge_base_manage
   ].freeze
 
-  # WIJAYA_CUSTOM_START custom_roles_rbac
-  CONVERSATION_PERMISSIONS = Wijaya::Batteries::CustomRoles::Hooks::CONVERSATION_PERMISSIONS
-  # WIJAYA_CUSTOM_END custom_roles_rbac
-
   validates :name, presence: true
   validate :permissions_are_known
-  validate :exactly_one_conversation_permission
 
   private
 
   # WIJAYA_CUSTOM_START custom_roles_rbac
   def permissions_are_known
     Wijaya::Batteries::CustomRoles::Hooks.validate_known_permissions!(self, PERMISSIONS)
-  end
-
-  def exactly_one_conversation_permission
-    Wijaya::Batteries::CustomRoles::Hooks.validate_exactly_one_conversation_permission!(self)
   end
   # WIJAYA_CUSTOM_END custom_roles_rbac
 end
