@@ -1,7 +1,4 @@
 require_relative '../../../../custom/wijaya/batteries/ads_tracking/hooks'
-# WIJAYA_CUSTOM_START meta_ads_team_routing
-require_relative '../../../../custom/wijaya/batteries/meta_ads_team_routing/hooks'
-# WIJAYA_CUSTOM_END meta_ads_team_routing
 
 class Messages::Instagram::BaseMessageBuilder < Messages::Messenger::MessageBuilder
   attr_reader :messaging
@@ -141,26 +138,25 @@ class Messages::Instagram::BaseMessageBuilder < Messages::Messenger::MessageBuil
   def build_conversation
     @contact_inbox ||= contact.contact_inboxes.find_by!(source_id: message_source_id)
     # WIJAYA_CUSTOM_START meta_ads_team_routing
+    # Upstream: Conversation.create!(conversation_params.merge(contact_inbox_id:, additional_attributes:)).
+    # Route the exact native params through the generic fail-open dispatcher when it is loaded;
+    # if the core hooks constant is undefined or the dispatch fails, the params passed to create
+    # equal the native params.
     new_conversation_params = conversation_params.merge(
       contact_inbox_id: @contact_inbox.id,
       additional_attributes: additional_conversation_attributes
     )
-    apply_meta_ads_team_routing!(new_conversation_params)
+    if defined?(Wijaya::Batteries::Core::Hooks)
+      new_conversation_params = Wijaya::Batteries::Core::Hooks.dispatch(
+        :meta_ads_team_routing, :apply_team_routing!,
+        default: new_conversation_params,
+        account: @inbox.account, inbox: @inbox, channel: :instagram,
+        referral: @messaging[:referral], conversation_params: new_conversation_params
+      )
+    end
     Conversation.create!(new_conversation_params)
     # WIJAYA_CUSTOM_END meta_ads_team_routing
   end
-
-  # WIJAYA_CUSTOM_START meta_ads_team_routing
-  def apply_meta_ads_team_routing!(new_conversation_params)
-    Wijaya::Batteries::MetaAdsTeamRouting::Hooks.apply_team_routing!(
-      account: @inbox.account,
-      inbox: @inbox,
-      channel: :instagram,
-      referral: @messaging[:referral],
-      conversation_params: new_conversation_params
-    )
-  end
-  # WIJAYA_CUSTOM_END meta_ads_team_routing
 
   def additional_conversation_attributes
     {}

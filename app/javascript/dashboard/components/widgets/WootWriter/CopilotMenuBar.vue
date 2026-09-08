@@ -8,6 +8,9 @@ import Button from 'dashboard/components-next/button/Button.vue';
 import DropdownBody from 'next/dropdown-menu/base/DropdownBody.vue';
 
 import Icon from 'next/icon/Icon.vue';
+// WIJAYA_CUSTOM_START marine_ai
+import { filterMarineCopilotMenu } from '@wijaya/marine_ai/frontend/copilotMenu';
+// WIJAYA_CUSTOM_END marine_ai
 
 const props = defineProps({
   hasSelection: {
@@ -28,10 +31,12 @@ const props = defineProps({
     type: Number,
     default: null,
   },
+  // WIJAYA_CUSTOM_START marine_ai
   isMarineConversation: {
     type: Boolean,
     default: false,
   },
+  // WIJAYA_CUSTOM_END marine_ai
 });
 
 const emit = defineEmits(['executeCopilotAction']);
@@ -140,21 +145,17 @@ const generalMenuItems = computed(() => {
     });
   }
 
-  // WIJAYA_CUSTOM_START marine_ai
-  // Marine natural-language query is intentionally scoped to the Marine page for
-  // a later commit, so do not open the global Captain Copilot panel for
-  // Marine-linked conversations. Draft/improve/summarize actions still route to
-  // Marine through useCaptain.
-  if (!props.isMarineConversation) {
-    items.push({
-      label: t('INTEGRATION_SETTINGS.OPEN_AI.REPLY_OPTIONS.ASK_COPILOT'),
-      key: 'ask_copilot',
-      icon: 'i-fluent-circle-sparkle-24-regular',
-    });
-  }
-  // WIJAYA_CUSTOM_END marine_ai
+  items.push({
+    label: t('INTEGRATION_SETTINGS.OPEN_AI.REPLY_OPTIONS.ASK_COPILOT'),
+    key: 'ask_copilot',
+    icon: 'i-fluent-circle-sparkle-24-regular',
+  });
 
-  return items;
+  // WIJAYA_CUSTOM_START marine_ai
+  return filterMarineCopilotMenu(items, {
+    isMarineConversation: props.isMarineConversation,
+  });
+  // WIJAYA_CUSTOM_END marine_ai
 });
 
 const menuRef = useTemplateRef('menuRef');

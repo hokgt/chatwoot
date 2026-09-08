@@ -2,12 +2,18 @@
 
 require_relative 'routing_service'
 
+# Thin hook surface called from Chatwoot core channel builders/services right before
+# a brand-new Conversation is created. Returns a new conversation_params hash with
+# team_id injected; the caller's hash is never mutated. Safe no-op (returns an
+# equivalent copy) for organic traffic or when team_id is already present.
+# Nested (not compact `module Wijaya::Batteries::MetaAdsTeamRouting::Hooks`) so the
+# unqualified `RoutingService` reference below resolves lexically: nested declarations
+# put every parent (…::MetaAdsTeamRouting) into Module.nesting, so the sibling constant
+# is found. A compact form leaves only …::Hooks in the nesting, so `RoutingService`
+# raises NameError at call time and the core dispatcher silently fails open.
 module Wijaya
   module Batteries
     module MetaAdsTeamRouting
-      # Thin hook surface called from Chatwoot core channel builders/services right before
-      # a brand-new Conversation is created. Mutates conversation_params in place, injecting
-      # only team_id. Safe no-op for organic traffic or when team_id is already present.
       module Hooks
         module_function
 

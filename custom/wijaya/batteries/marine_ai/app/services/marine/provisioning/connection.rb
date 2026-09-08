@@ -36,7 +36,6 @@ module Marine
         conn&.close
       end
 
-      # rubocop:disable Metrics/ParameterLists
       def connect(dbname:, user:, password:, host: Config.admin_host, port: Config.admin_port)
         conn = PG.connect(
           host: host,
@@ -52,7 +51,6 @@ module Marine
       ensure
         conn&.close
       end
-      # rubocop:enable Metrics/ParameterLists
 
       def apply_timeouts(conn)
         conn.exec("SET statement_timeout = #{Config::STATEMENT_TIMEOUT_MS}")

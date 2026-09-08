@@ -116,9 +116,6 @@ class Conversation < ApplicationRecord
   has_many :notifications, as: :primary_actor, dependent: :destroy_async
   has_many :attachments, through: :messages
   has_many :reporting_events, dependent: :destroy_async
-  # WIJAYA_CUSTOM_START erp_lead_sidebar
-  has_many :wijaya_erp_lead_drafts, dependent: :destroy, class_name: 'Wijaya::ErpLeadDraft'
-  # WIJAYA_CUSTOM_END erp_lead_sidebar
 
   before_save :ensure_snooze_until_reset
   before_create :determine_conversation_status
@@ -127,6 +124,14 @@ class Conversation < ApplicationRecord
   after_update_commit :execute_after_update_commit_callbacks
   after_create_commit :notify_conversation_creation
   after_create_commit :load_attributes_created_by_db_triggers
+  # WIJAYA_CUSTOM_START deferred_auto_assignment
+  # After a brand-new conversation commits (its creation-time native auto-assignment has
+  # already run in the same transaction), let the battery durably mark it for deferred
+  # assignment iff it genuinely found no eligible online agent. Creation-only + post-commit,
+  # so a later manual/SPV unassignment never reaches here. Fail-open: a missing/erroring
+  # battery leaves native behavior exactly as upstream.
+  after_create_commit :wijaya_register_deferred_auto_assignment
+  # WIJAYA_CUSTOM_END deferred_auto_assignment
   before_destroy :set_unread_count_deletion_data
   after_destroy_commit :notify_conversation_deletion
 
@@ -246,6 +251,17 @@ class Conversation < ApplicationRecord
 
   private
 
+  # WIJAYA_CUSTOM_START deferred_auto_assignment
+  def wijaya_register_deferred_auto_assignment
+    return unless defined?(Wijaya::Batteries::Core::Hooks)
+
+    Wijaya::Batteries::Core::Hooks.dispatch(
+      :deferred_auto_assignment, :register_unassigned_on_create,
+      default: nil, conversation: self
+    )
+  end
+  # WIJAYA_CUSTOM_END deferred_auto_assignment
+
   def execute_after_update_commit_callbacks
     handle_resolved_status_change
     notify_status_change
@@ -341,11 +357,6 @@ class Conversation < ApplicationRecord
     }.each do |event, condition|
       condition.call && dispatcher_dispatch(event, status_change)
     end
-    # WIJAYA_CUSTOM_START marine_ai
-    if defined?(Wijaya::Marine::Hooks) && saved_change_to_status? && resolved?
-      Wijaya::Marine::Hooks.after_conversation_resolved(self)
-    end
-    # WIJAYA_CUSTOM_END marine_ai
   end
 
   def dispatcher_dispatch(event_name, changed_attributes = nil)

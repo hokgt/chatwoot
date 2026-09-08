@@ -41,6 +41,13 @@ class AccountUser < ApplicationRecord
   after_create_commit :notify_creation, :create_notification_setting
   after_destroy :notify_deletion, :remove_user_from_account
   after_save :update_presence_in_redis, if: :saved_change_to_availability?
+  # WIJAYA_CUSTOM_START deferred_auto_assignment
+  # An actual availability transition to online (from offline/busy) can make this agent the
+  # first eligible one for conversations that were waiting on a deferred marker. Run after
+  # commit so a rolled-back change never enqueues work; the battery filters the exact
+  # transition and coalesces per inbox. Fail-open via the core dispatcher.
+  after_update_commit :wijaya_process_deferred_on_availability, if: :saved_change_to_availability?
+  # WIJAYA_CUSTOM_END deferred_auto_assignment
 
   validates :user_id, uniqueness: { scope: :account_id }
 
@@ -87,6 +94,18 @@ class AccountUser < ApplicationRecord
   def update_presence_in_redis
     OnlineStatusTracker.set_status(account.id, user.id, availability)
   end
+
+  # WIJAYA_CUSTOM_START deferred_auto_assignment
+  def wijaya_process_deferred_on_availability
+    return unless defined?(Wijaya::Batteries::Core::Hooks)
+
+    Wijaya::Batteries::Core::Hooks.dispatch(
+      :deferred_auto_assignment, :on_agent_available,
+      default: nil, account_id: account_id, user_id: user_id,
+      previous_availability: saved_change_to_availability&.first, current_availability: availability
+    )
+  end
+  # WIJAYA_CUSTOM_END deferred_auto_assignment
 end
 
 AccountUser.prepend_mod_with('AccountUser')

@@ -2,6 +2,54 @@
 # Keep this file updated for every core hook and custom battery touchpoint.
 
 patches:
+  - id: wijaya_core
+    name: Wijaya Batteries Core Loader
+    battery: custom/wijaya/batteries/core
+    description: >
+      Single generic integration point for all Wijaya feature batteries. One core
+      initializer (config/initializers/wijaya.rb) requires the generic core loader,
+      which discovers every custom/wijaya/batteries/<feature>/loader.rb, requires it
+      (each self-registers), and runs each feature loader's setup! fail-open at boot.
+      Replaces the retired per-feature config/initializers/wijaya_*.rb files. The core
+      loader owns no feature logic; every feature battery owns its own loader.rb.
+
+      The core also owns two generic integration primitives consumed by native hot-path
+      hooks: (1) Wijaya::Batteries::Core::Hooks — a fail-open dispatcher that resolves a
+      feature hook module, invokes a named hook, rescues StandardError AND ScriptError
+      (broken/half-loaded batteries), and returns the caller-supplied native default (so a
+      missing/disabled/erroring battery never changes native behavior). Every native touch
+      point additionally guards the dispatch behind `defined?(Wijaya::Batteries::Core::Hooks)`
+      so that when the battery system never booted (constant undefined) the seam uses/returns
+      its exact upstream default and never raises NameError. (2) Wijaya::Batteries::Routes — a single route
+      registrar drawn by one consolidated `Wijaya::Batteries::Routes.draw(self)` call in
+      config/routes.rb (WIJAYA_CUSTOM wijaya_routes marker), replacing the retired
+      per-feature marine_ai/meta_ads_team_routing/erp_lead_sidebar/marine_ai_provisioning
+      route blocks. core/routes.rb owns only generic orchestration (static battery ->
+      module map + isolated, fail-open require+draw for StandardError AND ScriptError);
+      each battery's endpoint definitions live in its own routes.rb.
+    custom_files:
+      - custom/wijaya/batteries/core/loader.rb
+      - custom/wijaya/batteries/core/hooks.rb
+      - custom/wijaya/batteries/core/routes.rb
+      # Per-battery route modules drawn in isolation by core/routes.rb.
+      - custom/wijaya/batteries/marine_ai/routes.rb
+      - custom/wijaya/batteries/meta_ads_team_routing/routes.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/routes.rb
+      # Inventory of every native hook touchpoint: purpose, flow, native default,
+      # fail-open/closed behavior, risk, and necessity for each battery seam.
+      - custom/wijaya/batteries/HOOKS.md
+    core_hook_touchpoints:
+      - config/initializers/wijaya.rb
+      - config/routes.rb
+      # Tailwind content array includes battery frontend paths so i-lucide/i-woot
+      # icon classes used only in battery files are generated in compiled CSS.
+      - tailwind.config.js
+    tests:
+      - spec/custom/wijaya/batteries/core/hooks_spec.rb
+      # Proves every native seam falls back to its exact upstream default when the
+      # core Hooks constant is undefined (battery system not booted).
+      - spec/custom/wijaya/batteries/core/native_seam_fail_open_spec.rb
+
   - id: ads_tracking_ctwa_referral
     name: Ads Tracking / CTWA referral attribution
     battery: custom/wijaya/batteries/ads_tracking
@@ -11,8 +59,10 @@ patches:
       the first inbound message bubble.
     custom_files:
       - custom/wijaya/batteries/ads_tracking/referral_parser.rb
+      - custom/wijaya/batteries/ads_tracking/referral_video_fetcher.rb
       - custom/wijaya/batteries/ads_tracking/hooks.rb
       - custom/wijaya/batteries/ads_tracking/frontend/AdsReferral.vue
+      - custom/wijaya/batteries/ads_tracking/frontend/referralAttachments.js
     core_hook_touchpoints:
       - app/services/whatsapp/incoming_message_base_service.rb
       - app/builders/messages/facebook/message_builder.rb
@@ -20,7 +70,11 @@ patches:
       - lib/integrations/facebook/message_parser.rb
       - app/javascript/dashboard/components-next/message/Message.vue
     tests:
-      - spec/services/meta_ads_referral_parser_spec.rb
+      - spec/custom/wijaya/batteries/ads_tracking/referral_parser_spec.rb
+      - spec/custom/wijaya/batteries/ads_tracking/referral_video_fetcher_spec.rb
+      - spec/custom/wijaya/batteries/ads_tracking/hooks_spec.rb
+      - custom/wijaya/batteries/ads_tracking/frontend/AdsReferral.spec.js
+      - custom/wijaya/batteries/ads_tracking/frontend/referralAttachments.spec.js
       - spec/services/whatsapp/incoming_message_whatsapp_cloud_service_spec.rb
       - spec/builders/messages/facebook/message_builder_spec.rb
       - spec/builders/messages/instagram/message_builder_spec.rb
@@ -51,13 +105,19 @@ patches:
       - app/javascript/dashboard/routes/dashboard/settings/customRoles/Index.vue
       - app/javascript/dashboard/routes/dashboard/settings/customRoles/component/CustomRoleModal.vue
       - app/javascript/dashboard/routes/dashboard/settings/customRoles/customRole.routes.js
+      - app/javascript/dashboard/store/modules/conversations/helpers.js
+      - app/javascript/dashboard/store/modules/customRole.js
       - app/models/account_user.rb
       - app/services/conversations/permission_filter_service.rb
+      - enterprise/app/controllers/enterprise/api/v1/accounts/agents_controller.rb
       - enterprise/app/models/custom_role.rb
       - enterprise/app/models/enterprise/account_user.rb
       - enterprise/app/policies/enterprise/conversation_policy.rb
       - enterprise/app/services/enterprise/conversations/permission_filter_service.rb
     tests:
+      - custom/wijaya/batteries/custom_roles/frontend/specs/permissions.spec.js
+      - spec/custom/wijaya/batteries/custom_roles/hooks_spec.rb
+      - app/javascript/dashboard/store/modules/conversations/specs/helpers.spec.js
       - spec/controllers/api/v1/accounts/bulk_actions_controller_spec.rb
       - spec/controllers/api/v1/accounts/conversations/assignments_controller_spec.rb
       - spec/controllers/api/v1/accounts/conversations/messages_controller_spec.rb
@@ -95,28 +155,175 @@ patches:
       - custom/wijaya/batteries/meta_ads_team_routing/routing_rule.rb
       - custom/wijaya/batteries/meta_ads_team_routing/routing_service.rb
       - custom/wijaya/batteries/meta_ads_team_routing/hooks.rb
-      - app/controllers/api/v1/accounts/wijaya/meta_ads_team_routing_rules_controller.rb
+      - custom/wijaya/batteries/meta_ads_team_routing/app/controllers/api/v1/accounts/wijaya/meta_ads_team_routing_rules_controller.rb
       - db/migrate/20260702000000_create_wijaya_meta_ads_team_routing_rules.rb
-      - app/javascript/dashboard/api/metaAdsRouting.js
-      - app/javascript/dashboard/store/modules/metaAdsRouting.js
-      - app/javascript/dashboard/routes/dashboard/settings/wijaya/wijaya.routes.js
-      - app/javascript/dashboard/routes/dashboard/settings/wijaya/Index.vue
-      - app/javascript/dashboard/routes/dashboard/settings/wijaya/RoutingRuleModal.vue
-      - app/javascript/dashboard/i18n/locale/en/wijayaMetaAdsRouting.json
+      - custom/wijaya/batteries/meta_ads_team_routing/frontend/api/metaAdsRouting.js
+      - custom/wijaya/batteries/meta_ads_team_routing/frontend/store/metaAdsRouting.js
+      - custom/wijaya/batteries/meta_ads_team_routing/frontend/routes/wijaya.routes.js
+      - custom/wijaya/batteries/meta_ads_team_routing/frontend/routes/Index.vue
+      - custom/wijaya/batteries/meta_ads_team_routing/frontend/routes/RoutingRuleModal.vue
+      - custom/wijaya/batteries/meta_ads_team_routing/frontend/i18n/wijayaMetaAdsRouting.json
+      # Settings sidebar entry builder — native Sidebar.vue delegates to this so the
+      # menu item + label stay battery-owned (label reads META_ADS_ROUTING.SIDEBAR_LABEL).
+      - custom/wijaya/batteries/meta_ads_team_routing/frontend/sidebar/metaAdsRoutingSidebarItem.js
     core_hook_touchpoints:
       - app/services/whatsapp/incoming_message_base_service.rb
       - app/builders/messages/facebook/message_builder.rb
       - app/builders/messages/instagram/base_message_builder.rb
-      - config/initializers/wijaya_meta_ads_team_routing.rb
-      - config/routes.rb
+      # Routes consolidated into the wijaya_core registrar (config/routes.rb wijaya_routes marker).
       - app/javascript/dashboard/store/index.js
       - app/javascript/dashboard/routes/dashboard/settings/settings.routes.js
+      # Native sidebar delegates the settings entry via buildMetaAdsRoutingSidebarItem;
+      # the core settings.json META_ADS_ROUTING key was removed (string now battery-owned).
       - app/javascript/dashboard/components-next/sidebar/Sidebar.vue
       - app/javascript/dashboard/i18n/locale/en/index.js
-      - app/javascript/dashboard/i18n/locale/en/settings.json
+    loader_touchpoints:
+      # Feature loader self-registers with the generic core loader; the retired
+      # config/initializers/wijaya_meta_ads_team_routing.rb is replaced by this.
+      - custom/wijaya/batteries/meta_ads_team_routing/loader.rb
     tests:
       - spec/custom/wijaya/meta_ads_team_routing/routing_rule_spec.rb
       - spec/custom/wijaya/meta_ads_team_routing/routing_service_spec.rb
+      - spec/custom/wijaya/meta_ads_team_routing/team_routing_dispatch_spec.rb
+      - spec/custom/wijaya/meta_ads_team_routing/online_team_assignment_spec.rb
+
+
+  - id: automatic_assignment_activity
+    name: Automatic Assignment Activity Badge
+    battery: custom/wijaya/batteries/automatic_assignment_activity
+    description: >
+      Records a timeline activity ("Assigned to <Agent> by the System") for ALL native
+      automatic assignment. Legacy auto-assignment sets no actor at all, so upstream drops
+      the badge (the assignee activity is only written when a Current.user or
+      Current.executed_by is present): both actor-less legacy paths —
+      AssignmentHandler#ensure_assignee_is_from_team (before_save team routing, e.g. Meta
+      Ads Ad->Team) and AutoAssignmentHandler (after_save legacy inbox round-robin) —
+      funnel through AutoAssignment::AgentAssignmentService#find_assignee, where a single
+      fail-open dispatch stamps the exact Conversation instance carrying the assignment
+      callbacks with a :native mark. Assignment V2
+      (AutoAssignment::AssignmentService#claim_and_assign, run from the bulk job) instead
+      sets Current.executed_by to the inbox's own assignment policy/inbox, so upstream DOES
+      write a badge but reading "... by Default Policy" / "... by Automation System via
+      <policy>"; a second fail-open dispatch stamps the claimed row with a :v2 mark so the
+      actor is OVERRIDDEN with "the System". At activity-creation time
+      AssignmentHandler#process_assignment_activities asks the battery for the actor; it
+      returns the localized "the System" label when a mark is present AND no human
+      (Current.user) owns the change — for a :native mark it also defers to any real
+      automation actor (Current.executed_by), while a :v2 mark deliberately overrides the
+      policy actor the V2 service set for itself — then core records the single assignee
+      activity (skipping the team branch, so a routed conversation gets exactly one badge).
+      Manual/API assignment keeps its human actor; automation outside the auto-assignment
+      seams keeps its policy actor; a team routed with no eligible agent (or a lost V2 row
+      claim) leaves assignee nil and writes no false badge. Generic (not channel-specific),
+      so it also covers Meta Ads routed conversations. The mark is a per-instance ivar
+      consumed once on read, so no thread-global leak and no duplicate badge from
+      before-save/after-save recursion. Reuses the native activity message + Activity.vue
+      rendering, so there is no frontend change. The i18n label lives under
+      auto_assignment.system_actor in config/locales/en.yml (marker-scoped).
+    custom_files:
+      - custom/wijaya/batteries/automatic_assignment_activity/system_assignment.rb
+      - custom/wijaya/batteries/automatic_assignment_activity/hooks.rb
+      - custom/wijaya/batteries/automatic_assignment_activity/loader.rb
+    core_hook_touchpoints:
+      - app/services/auto_assignment/agent_assignment_service.rb
+      # Assignment V2 claim/update seam; :v2 mark overrides the self-set policy actor.
+      - app/services/auto_assignment/assignment_service.rb
+      - app/models/concerns/assignment_handler.rb
+      # i18n actor label ("the System"); additive locale key inside a marker block.
+      - config/locales/en.yml
+    loader_touchpoints:
+      # Feature loader self-registers with the generic core loader; the core hook
+      # dispatcher map (core/hooks.rb) resolves the battery's Hooks module by name.
+      - custom/wijaya/batteries/automatic_assignment_activity/loader.rb
+    tests:
+      - spec/custom/wijaya/automatic_assignment_activity/system_assignment_activity_spec.rb
+
+
+  - id: deferred_auto_assignment
+    name: Deferred Native Auto-Assignment
+    battery: custom/wijaya/batteries/deferred_auto_assignment
+    description: >
+      Retries native (legacy) auto-assignment for a brand-new conversation that genuinely
+      failed its creation-time immediate assignment because no eligible ONLINE agent existed.
+      It never replaces or redesigns immediate assignment: at conversation after_create_commit
+      a durable per-conversation marker (wijaya_deferred_assignments, unique conversation_id)
+      is created ONLY when the conversation is open, human- and bot-unassigned, on the LEGACY
+      path (Assignment V2 untouched), and native auto-assignment was applicable (team
+      conversation -> team.allow_auto_assign; otherwise inbox.enable_auto_assignment) — i.e.
+      it would have been assigned had an agent been online. No historical backfill and no
+      blanket scan of open unassigned conversations: the marker table is the entire work-list.
+      The conversation stays open with assignee_id nil (no new status), naturally visible in
+      Unassigned and All. Two triggers resume processing for exactly the agent's marked
+      inboxes: an actual AccountUser availability transition offline/busy -> online
+      (after_commit) and an actual User absent -> present RoomChannel presence transition
+      (detected before the presence refresh, so a repeated heartbeat never re-triggers). Work
+      is coalesced per inbox via a battery-OWNED Redis in-flight key (mirrors
+      AutoAssignment::AssignmentJob; never reads/writes/steals the Assignment V2 key). For
+      each marker the recheck + assignment run under a conversation row lock (SELECT ... FOR
+      UPDATE + reload): every native gate is re-evaluated, allowed ids are recomputed exactly
+      as the legacy flow (inbox capacity members, intersected with team members for a team
+      conversation, using the STORED team_id so Meta Ads routing is preserved and an online
+      inbox member outside the team is never selected), and the UNCHANGED native
+      AutoAssignment::AgentAssignmentService#find_assignee selects the agent. An explicit
+      compare-and-set predicate (open AND assignee_id NULL AND assignee_agent_bot_id NULL) is
+      re-checked immediately before the write, still under the row lock, and update! (never
+      update_all) preserves the native assignment callbacks/activity. Race semantics are only
+      what transaction ordering guarantees, not absolute priority: a manual assignment that
+      committed BEFORE we lock is seen on reload and skipped; a manual write that lands while
+      we hold the lock is serialized after us and, committing later, wins naturally over the
+      system write. The system assigns solely while the row is still open and unclaimed at the
+      instant of its write. Marker lifecycle is owned by the battery ConversationExtensions
+      concern attached to Conversation: a synchronous has_one dependent: :destroy removes the
+      child marker inline when the conversation is destroyed (core uses destroy_async /
+      DeleteObjectJob, which would otherwise raise an FK violation on a custom child table),
+      and an after_update_commit cleanup drops the marker the moment the conversation becomes
+      a human/agent-bot assignment or leaves the open status. Processing additionally destroys
+      the marker on assignment or on any residual ineligibility, and keeps it only when still
+      eligible but nobody is available yet (for a later trigger). Manual unassignment later
+      never re-creates a marker (registration is creation-only; cleanup only ever destroys).
+      All native touch points are tiny marker-wrapped calls through the fail-open core
+      dispatcher.
+    custom_files:
+      - custom/wijaya/batteries/deferred_auto_assignment/loader.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/conversation_extensions.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/marker.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/hooks.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/eligibility.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/registrar.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/trigger_service.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/inbox_processor.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/process_inbox_job.rb
+      - db/migrate/20260905000000_create_wijaya_deferred_assignments.rb
+    core_hook_touchpoints:
+      # Battery Hooks module resolved by name from the core dispatcher (core/hooks.rb map).
+      - custom/wijaya/batteries/core/hooks.rb
+      # Creation-only, post-commit registration seam.
+      - app/models/conversation.rb
+      # Availability offline/busy -> online trigger (after_commit).
+      - app/models/account_user.rb
+      # Absent -> present User presence trigger (transition detected at the seam).
+      - app/channels/room_channel.rb
+      # New inbox member -> bounded reprocessing of that inbox's markers (after_create_commit).
+      - app/models/inbox_member.rb
+      # New team member -> bounded reprocessing of that team's marked inboxes (after_create_commit).
+      - app/models/team_member.rb
+      # Generated schema touchpoint for the marker table.
+      - db/schema.rb
+    loader_touchpoints:
+      # Feature loader self-registers with the generic core loader, pushes the battery app/
+      # subtree (models/services/jobs) onto the Zeitwerk main autoloader, and (in to_prepare)
+      # requires + includes the ConversationExtensions concern into core Conversation.
+      - custom/wijaya/batteries/deferred_auto_assignment/loader.rb
+      # Battery-owned Conversation concern: marker has_one dependent: :destroy (synchronous
+      # FK-safe cleanup on conversation delete) + after_update_commit lifecycle cleanup.
+      - custom/wijaya/batteries/deferred_auto_assignment/conversation_extensions.rb
+    tests:
+      - spec/custom/wijaya/deferred_auto_assignment/registration_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/processing_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/lifecycle_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/triggers_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/presence_channel_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/remediation_spec.rb
 
 
   - id: erp_lead_sidebar
@@ -133,22 +340,108 @@ patches:
       - custom/wijaya/batteries/erp_lead_sidebar/lead_draft.rb
       - custom/wijaya/batteries/erp_lead_sidebar/payload_builder.rb
       - custom/wijaya/batteries/erp_lead_sidebar/sync_service.rb
+      # Shared DNS-rebinding-safe credentialed transport for every ERP request.
+      - custom/wijaya/batteries/erp_lead_sidebar/safe_http.rb
       - custom/wijaya/batteries/erp_lead_sidebar/refresh_service.rb
       - custom/wijaya/batteries/erp_lead_sidebar/options_service.rb
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/ErpLeadPanel.vue
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/fieldConfig.js
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/mappings.js
-      - app/controllers/api/v1/accounts/wijaya/erp_lead_drafts_controller.rb
-      - app/javascript/dashboard/api/wijayaErpLeadDrafts.js
+      - custom/wijaya/batteries/erp_lead_sidebar/app/controllers/api/v1/accounts/wijaya/erp_lead_drafts_controller.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/api/wijayaErpLeadDrafts.js
+      - custom/wijaya/batteries/erp_lead_sidebar/conversation_extensions.rb
       - db/migrate/20260706000000_create_wijaya_erp_lead_drafts.rb
+      # Account-scoped ERPNext connection settings (host + encrypted key/secret).
+      # Admin-only Settings page resolves per-account credentials (row authoritative
+      # over ENV), with origin-only + SSRF-guarded host validation and a sanitized
+      # connection test. Credentials are never echoed back to the client.
+      - custom/wijaya/batteries/erp_lead_sidebar/erp_setting.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/host_validator.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/connection_test_service.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/app/controllers/api/v1/accounts/wijaya/erp_settings_controller.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/api/wijayaErpSettings.js
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/i18n/wijayaErpSettings.json
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/sidebar/erpSettingsSidebarItem.js
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/routes/erpSettings.routes.js
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/routes/ErpSettings.vue
+      - db/migrate/20260712000000_create_wijaya_erp_settings.rb
+      # Manual Lead Activity form: an isolated tab inside the ERP Lead modal that
+      # inserts a single Lead Activity child row on explicit agent click. It never
+      # touches the Lead Details create/update/refresh/sync flow and never creates
+      # activities automatically. Its own runtime options source (Lead Activity
+      # Master), server-authoritative validation/normalization, and idempotent
+      # guarded insert live in these battery-owned files.
+      # person_in_charge is chosen MANUALLY by the agent from an account-scoped
+      # ERPNext User directory (lead_activity_person_directory.rb): the backend
+      # fetches the selectable enabled/non-Guest Users (value + label only, over
+      # Config + SafeHttp) and exact-revalidates any nonblank chosen value
+      # (exact User.name, enabled=1, not Guest) immediately before insert, so an
+      # invalid/disabled/deleted/Guest/stale value never reaches ERP. It is NOT
+      # derived from the conversation assignee or any agent mapping.
+      # agent_erp_user_map.json is NOT the Lead Activity PIC source; it remains
+      # solely the Lead Details autofill mapping consumed by ErpLeadPanel.vue via
+      # frontend/mappings.js (committed empty; real mappings must stay
+      # source-controlled and may only be added by a future, explicitly approved
+      # code change, never hand-edited in a deployed copy).
+      - custom/wijaya/batteries/erp_lead_sidebar/agent_erp_user_map.json
+      - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_person_directory.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_options_service.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_payload_builder.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_service.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/app/controllers/api/v1/accounts/wijaya/lead_activities_controller.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/api/wijayaErpLeadActivities.js
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/LeadActivityForm.vue
+      # Strict real-calendar YYYY-MM-DD validation shared by the form (mirrors the
+      # backend Date.iso8601 round-trip); extracted so it is directly unit-testable.
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/dateValidation.js
     core_hook_touchpoints:
-      - config/initializers/wijaya_erp_lead_sidebar.rb
-      - config/routes.rb
-      - app/models/conversation.rb
+      # Generated schema touchpoint for the account-scoped ERP settings table.
+      - db/schema.rb
+      # Routes consolidated into the wijaya_core registrar (config/routes.rb wijaya_routes marker).
+      # The ERP has_one association is attached to Conversation via a battery concern
+      # (erp_lead_sidebar/conversation_extensions.rb) in the loader's to_prepare block,
+      # so app/models/conversation.rb carries no markers.
       - app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue
+      # Native sidebar delegates the ERPNext settings entry via buildErpSettingsSidebarItem;
+      # settings.routes.js spreads the battery route; i18n index.js merges the battery locale.
+      - app/javascript/dashboard/components-next/sidebar/Sidebar.vue
+      - app/javascript/dashboard/routes/dashboard/settings/settings.routes.js
+      - app/javascript/dashboard/i18n/locale/en/index.js
+    loader_touchpoints:
+      # Feature loader self-registers with the generic core loader; the retired
+      # config/initializers/wijaya_erp_lead_sidebar.rb is replaced by this.
+      - custom/wijaya/batteries/erp_lead_sidebar/loader.rb
     tests:
       - spec/custom/wijaya/erp_lead_sidebar/payload_builder_spec.rb
       - spec/custom/wijaya/erp_lead_sidebar/refresh_service_smoke.rb
+      # Zero-side-effect contract: opening/editing/syncing the sidebar while ERP is
+      # unconfigured persists no draft rows and issues no outbound ERP request.
+      - spec/custom/wijaya/erp_lead_sidebar/erp_lead_drafts_controller_spec.rb
+      # Client mirror: the panel autosaves/syncs nothing until the server confirms configured:true.
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/ErpLeadPanel.spec.js
+      # ERPNext connection settings coverage: model validations + encryption at rest,
+      # row-authoritative credential resolution, origin-only/SSRF host validation,
+      # sanitized connection test, admin-only request contract, and the settings page
+      # credential-preserving payload contract.
+      - spec/custom/wijaya/erp_lead_sidebar/erp_setting_spec.rb
+      - spec/custom/wijaya/erp_lead_sidebar/config_spec.rb
+      - spec/custom/wijaya/erp_lead_sidebar/host_validator_spec.rb
+      - spec/custom/wijaya/erp_lead_sidebar/connection_test_service_spec.rb
+      - spec/custom/wijaya/erp_lead_sidebar/safe_http_spec.rb
+      - spec/custom/wijaya/erp_lead_sidebar/erp_settings_controller_spec.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/ErpSettings.spec.js
+      # Manual Lead Activity coverage: strict payload build/validation, isolated
+      # options + timezone default date, guarded idempotent insert (lock/retry/
+      # outcome cache, no PUT/DELETE), manual person_in_charge selection with
+      # exact ERP User revalidation before insert (422 invalid / 502 directory
+      # outage, zero insert on either), the nested endpoint conversation-policy
+      # guards, and the isolated form's explicit-click submit + state handling.
+      - spec/custom/wijaya/erp_lead_sidebar/lead_activity_payload_builder_spec.rb
+      - spec/custom/wijaya/erp_lead_sidebar/lead_activity_options_service_spec.rb
+      - spec/custom/wijaya/erp_lead_sidebar/lead_activity_service_spec.rb
+      - spec/custom/wijaya/erp_lead_sidebar/lead_activities_controller_spec.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/LeadActivityForm.spec.js
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/dateValidation.spec.js
 
   - id: development_version
     name: Wijaya Internal Development Versioning
@@ -156,21 +449,58 @@ patches:
     description: >
       Independent semantic versioning for Wijaya custom development, starting at
       v0.1.0 and decoupled from official Chatwoot versioning. Stores the version
-      and changelog in-tree so it survives upstream updates, exposes it to the
-      frontend globalConfig via a minimal dashboard_controller hook, and renders
-      it on General Settings alongside the official Chatwoot version and build SHA.
+      and changelog in-tree so it survives upstream updates, exposes it to the page
+      bootstrap (window.globalConfig.WIJAYA_DEV_VERSION) via a minimal
+      dashboard_controller hook, and renders it on General Settings via a Battery Vue
+      component alongside the official Chatwoot version and build SHA. The native
+      shared globalConfig store is untouched (restored to upstream); the Battery
+      component reads window.globalConfig.WIJAYA_DEV_VERSION directly.
     custom_files:
       - custom/wijaya/batteries/development_version/version.yml
       - custom/wijaya/batteries/development_version/CHANGELOG.md
       - custom/wijaya/batteries/development_version/hooks.rb
       - custom/wijaya/batteries/development_version/scripts/bump_version.rb
       - custom/wijaya/batteries/development_version/README.md
+      # Battery-owned build label component mounted by native BuildInfo.vue.
+      - custom/wijaya/batteries/development_version/frontend/BuildVersion.vue
     core_hook_touchpoints:
       - app/controllers/dashboard_controller.rb
-      - app/javascript/shared/store/globalConfig.js
       - app/javascript/dashboard/routes/dashboard/settings/account/components/BuildInfo.vue
     tests:
       - spec/custom/wijaya/development_version_hooks_spec.rb
+
+
+  - id: persistent_agent_presence
+    name: Persistent Agent Presence Heartbeat
+    battery: custom/wijaya/batteries/persistent_agent_presence
+    description: >
+      Keeps an authenticated agent continuously ONLINE while their Chatwoot tab or
+      window stays open, even when it is unfocused or backgrounded. Upstream drives
+      the RoomChannel `update_presence` ping from a main-thread recursive setTimeout
+      (PRESENCE_INTERVAL 20s). Browsers throttle main-thread timers in hidden tabs
+      (Chrome intensive throttling wakes them ~once/minute after 5 minutes hidden),
+      so the ping lands past the backend PRESENCE_DURATION window (20s,
+      lib/online_status_tracker.rb) and the agent silently drops out of presence,
+      excluding them from online-only auto-assignment. The battery moves the ping
+      onto a dedicated Web Worker timer, which avoids that ordinary main-thread
+      hidden-tab throttling. Because the backend check is strict
+      (`connected_time > now - window`) on integer seconds, the worker heartbeats at
+      half the supplied window (~10s for the default 20s window, floored at 1ms) so a
+      slightly late ping still lands inside the window. It falls back to the upstream
+      recursive-setTimeout at the full upstream cadence when Web Workers are
+      unavailable, so presence never regresses below upstream. A worker is not exempt
+      from every suspension: a fully frozen, discarded, or killed page/process cannot
+      heartbeat, so tab close, logout, crash, network loss, or a frozen/discarded tab
+      stop the pings and the native Redis presence window expires the agent — TTL
+      remains the dead-client safety net. No backend, assignment, or online-only
+      semantics are changed.
+    custom_files:
+      - custom/wijaya/batteries/persistent_agent_presence/frontend/createPresenceHeartbeat.js
+    core_hook_touchpoints:
+      - app/javascript/shared/helpers/BaseActionCableConnector.js
+    tests:
+      - custom/wijaya/batteries/persistent_agent_presence/frontend/specs/createPresenceHeartbeat.spec.js
+      - custom/wijaya/batteries/persistent_agent_presence/frontend/specs/BaseActionCableConnector.integration.spec.js
 
 
   - id: test_database_safety
@@ -202,260 +532,545 @@ patches:
 
   - id: marine_ai
     name: Marine AI
-    battery: custom/wijaya/marine
+    battery: custom/wijaya/batteries/marine_ai
     description: >
       Independent Wijaya AI assistant inspired by Chatwoot Captain AI v4.15.1.
       Provides Marine Cell knowledge storage, Marine Charge response generation,
       and Marine Terminal/Circuit human handoff without Chatwoot Hub, Abacus,
       premium license, enterprise plan, or captain_integration gates.
     custom_files:
-      - custom/wijaya/marine/loader.rb
-      - custom/wijaya/marine/app/models/marine/assistant.rb
-      - custom/wijaya/marine/app/models/marine/document.rb
-      - custom/wijaya/marine/app/models/marine/assistant_response.rb
-      - custom/wijaya/marine/app/models/marine_inbox.rb
-      - custom/wijaya/marine/app/jobs/marine/conversation/response_builder_job.rb
-      - custom/wijaya/marine/app/jobs/marine/documents/response_builder_job.rb
-      - custom/wijaya/marine/app/jobs/marine/llm/update_embedding_job.rb
-      - custom/wijaya/marine/app/services/marine/cell/knowledge_base_service.rb
-      - custom/wijaya/marine/app/services/marine/cell/retriever.rb
-      - custom/wijaya/marine/app/services/marine/cell/retrieval_result.rb
-      - custom/wijaya/marine/app/services/marine/cell/citation_builder.rb
-      - custom/wijaya/marine/app/services/marine/charge/response_generator.rb
-      - custom/wijaya/marine/app/services/marine/charge/greeting_context.rb
-      - custom/wijaya/marine/app/services/marine/charge/confidence_scorer.rb
-      - custom/wijaya/marine/app/services/marine/circuit/handoff_service.rb
-      - custom/wijaya/marine/app/services/marine/llm/assistant_chat_service.rb
-      - custom/wijaya/marine/app/services/marine/llm/embedding_service.rb
-      - custom/wijaya/marine/app/services/marine/llm/config.rb
-      - custom/wijaya/marine/app/services/marine/llm/provider_config.rb
-      - custom/wijaya/marine/app/services/marine/llm/connection_test_service.rb
-      - custom/wijaya/marine/app/services/marine/llm/base_service.rb
-      - custom/wijaya/marine/app/services/marine/llm/prompt_renderer.rb
-      - custom/wijaya/marine/app/services/marine/llm/json_response_parser.rb
-      - custom/wijaya/marine/app/services/marine/llm/language_detector.rb
-      - custom/wijaya/marine/app/services/marine/llm/translate_query_service.rb
-      - custom/wijaya/marine/app/services/marine/llm/translate_response_service.rb
-      - custom/wijaya/marine/app/services/wijaya/marine/hooks.rb
-      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistants_controller.rb
-      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/documents_controller.rb
+      - custom/wijaya/batteries/marine_ai/loader.rb
+      - custom/wijaya/batteries/marine_ai/app/models/marine/assistant.rb
+      - custom/wijaya/batteries/marine_ai/app/models/marine/document.rb
+      - custom/wijaya/batteries/marine_ai/app/models/marine/assistant_response.rb
+      - custom/wijaya/batteries/marine_ai/app/models/marine_inbox.rb
+      # Marine namespace module + model concerns attached to native Account/Inbox/User
+      # via the loader's to_prepare block (account/inbox/user_extensions). conversation_extensions
+      # is listed separately below; these self-register with no native markers.
+      - custom/wijaya/batteries/marine_ai/app/models/marine.rb
+      - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/account_extensions.rb
+      - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/inbox_extensions.rb
+      - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/user_extensions.rb
+      - custom/wijaya/batteries/marine_ai/app/jobs/marine/conversation/response_builder_job.rb
+      - custom/wijaya/batteries/marine_ai/app/jobs/marine/documents/response_builder_job.rb
+      - custom/wijaya/batteries/marine_ai/app/jobs/marine/llm/update_embedding_job.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/cell/knowledge_base_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/cell/retriever.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/cell/retrieval_result.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/cell/citation_builder.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/charge/response_generator.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/charge/greeting_context.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/charge/grounded_wording_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/charge/fact_preservation_validator.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/charge/confidence_scorer.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/charge/control_leak_inspector.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/handoff_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/domain_boundary_guard.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/domain_security_decision_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/catalog_domain_reference.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/boundary_reply_composer.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/boundary_reply_validator.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/llm/assistant_chat_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/llm/embedding_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/llm/config.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/llm/provider_config.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/llm/connection_test_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/llm/base_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/llm/prompt_renderer.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/llm/json_response_parser.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/llm/language_detector.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/llm/translate_query_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/llm/translate_response_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/wijaya/marine/hooks.rb
+      - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/conversation_extensions.rb
+      - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/assistants_controller.rb
+      - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/documents_controller.rb
       # Commit 1B — Product Catalog backend (upload storage + read-only family repo)
-      - custom/wijaya/marine/app/services/marine/documents/errors.rb
-      - custom/wijaya/marine/app/services/marine/documents/upload_validator.rb
-      - custom/wijaya/marine/app/services/marine/documents/serializer.rb
-      - custom/wijaya/marine/app/services/marine/documents/product_catalog_service.rb
-      - custom/wijaya/marine/app/services/marine/catalog/errors.rb
-      - custom/wijaya/marine/app/services/marine/catalog/config.rb
-      - custom/wijaya/marine/app/services/marine/catalog/connection.rb
-      - custom/wijaya/marine/app/services/marine/catalog/product_family_repository.rb
-      - custom/wijaya/marine/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
-      - custom/wijaya/marine/docs/product_catalog_db.md
+      - custom/wijaya/batteries/marine_ai/app/services/marine/documents/errors.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/documents/upload_validator.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/documents/serializer.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/documents/sync_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/documents/product_catalog_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/errors.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/config.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/connection.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_family_repository.rb
+      # Phase 1 — Deterministic Catalog Data Layer: generic variant resolution, general
+      # selling User Price lookup, and binary stock-availability status (numeric stock
+      # never leaves PostgreSQL). Read-only, parameterized, bounded, fail-closed.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/variant_repository.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_repository.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/stock_repository.rb
+      # Phase 2 — Contextual Product Intent Understanding: LLM-backed extractor that
+      # turns customer text + bounded context + a safe state summary into a strict,
+      # normalized, allowlisted intent hash. Candidate-only, no repository/DB access,
+      # no state mutation; every LLM failure collapses to a safe unknown result.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/intent_extractor.rb
+      # Phase 3 — Product Flow State, Processing Claim, and Eligibility primitives.
+      # Battery-contained, not yet wired to hooks/jobs/orchestration. State lives in
+      # a Marine-owned namespace inside Conversation/Message additional_attributes
+      # (wijaya_marine_ai.product_flow_v1 / processing_claim_v1); all mutations run
+      # under a row lock that reloads latest, preserves every sibling, replaces only
+      # the Marine namespace, and are strictly allowlisted/bounded (no raw stock,
+      # quantity, price, SQL, error, or LLM content). Eligibility is a read-only,
+      # side-effect-free canonical human-takeover decision over public fields.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_flow_state_store.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/conversation/processing_claim.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/conversation/eligibility.rb
+      # Phase 2 (conversation) — Canonical bounded conversation context + interaction-phase
+      # detection. Read-only, in-memory: eligible PRIOR public incoming/outgoing turns
+      # (bounded/ordered/truncated) plus the separately bounded current trigger (excluded by
+      # id, capped at the 4,000-char input limit), and an opening/follow-up phase exposed as
+      # structured metadata only. Integrated at the Agent::Runner boundary so product-intent
+      # and RAG ground on the same history and receive the trigger exactly once.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/conversation/context_builder.rb
+      # Handoff idempotency — battery-owned handoff lifecycle marker (wijaya_marine_ai.
+      # handoff_v1). Makes Marine::Circuit::HandoffService idempotent/concurrency-safe and
+      # feeds Eligibility's terminal active_handoff reason so a handed-off conversation stays
+      # silent for the applicable channel messaging window. The marker is cleared (reset!)
+      # only when a new inbound turn opens a fresh window (see handoff_window.rb) so a handoff
+      # never blocks Marine forever; a timer never clears it, so window expiry emits nothing.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/handoff_state_store.rb
+      # Handoff lifecycle window — channel-aware evaluation of whether the messaging window
+      # that governed an active handoff has lapsed by the time a new inbound turn arrived.
+      # Reuses core Conversations::MessageWindowService for the authoritative channel duration
+      # (no duplicated Meta timing); fails closed (no window policy / no prior inbound => not
+      # expired). Pure read; drives Wijaya::Marine::Hooks#reset_expired_handoff.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/handoff_window.rb
+      # Phase 4 — Product Decision and State Machine Orchestrator. Integration domain
+      # layer BEFORE any runtime side effect: combines untrusted Phase 2 intent, the
+      # deterministic Phase 1 repositories, the Phase 3 canonical flow snapshot, and
+      # context-aware catalog reasoning into a strict, frozen action plan + state-operation
+      # plan. No Message/Attachment/provider/DB-write side effect; never calls a
+      # ProductFlowStateStore mutation (returns a start/update/none plan for a later phase);
+      # reply content is structured deterministic descriptors (no raw stock/warehouse/SQL/
+      # error, no arbitrary LLM text). Not wired to any runtime hook/job.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/variant_resolver.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_renderer.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_query_orchestrator.rb
+      # Pure, side-effect-free presenter for the deterministic English product/catalog TEXT
+      # (extracted from ResponseBuilderJob). The single source of truth for that wording, shared
+      # by the trigger-bound job and the source-less PlaygroundPreview so the two never drift.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_presenter.rb
+      # Source-less Product Catalog PREVIEW for the Assistant Playground: runs the SAME
+      # deterministic orchestrator with an empty flow snapshot + bounded history, renders via
+      # ReplyPresenter, localizes via ReplyLocalizer. Read-only, non-delivering, no persistence;
+      # returns nil to fall through to RAG for a non-product turn or any failure.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/playground_preview.rb
+      # Opaque, signed, expiring, account/assistant-scoped TRANSPORT for the source-less Playground's
+      # ephemeral product-flow state (MessageVerifier off secret_key_base). Round-tripped through the
+      # browser and verified server-side; carries only the ProductFlowStateStore-normalized/allowlisted
+      # planning snapshot, never persisted to any DB/Redis/session. Tamper/expiry/foreign-scope fail closed.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/playground_state_token.rb
+      # Delivery-only localizer for customer-facing product/catalog text: detects the
+      # latest customer's language (shared LanguageDetector, trigger message first, bounded
+      # context fallback) and rewrites the deterministic English reply via the shared
+      # TranslateResponseService. Generic/data-driven (no per-language phrase maps); never
+      # raises and degrades to the original English on unknown/unconfigured/failed
+      # translation; never alters family/document selection or one-catalog-per-flow markers.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_localizer.rb
+      # D7 — generic opaque placeholder masking of a product reply's IMMUTABLE fact values (family/
+      # variant code, currency, UOM, price amount, composite-part facts) before the untrusted
+      # localization/naturalization LLM sees the text, with byte-exact restoration and strict
+      # fail-closed placeholder inventory validation afterwards. Display-label fields (family/candidate
+      # name, attribute names) are deliberately left translatable (semantic-governed). Used by
+      # ReplyLocalizer so configured-language delivery no longer requires a display label literally.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/fact_placeholder_mask.rb
+      # Cohesive plan-envelope helper mixed into the orchestrator: builds the frozen
+      # action/state-change plan payloads and deep-freezes them (no repository/provider/
+      # state access), keeping the orchestrator on decision/state-machine logic.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/plan_builder.rb
+      # Phase 6 — fact-protected natural wording for deterministic product TEXT replies. The
+      # deterministic localized reply stays the authoritative fallback; a generated candidate is
+      # delivered ONLY when a deterministic protected-fact/value checker AND a separate semantic
+      # FactPreservationValidator both accept the exact final text. Generic/data-driven: an
+      # explicit action+kind allowlist, protected display-value presence (alphanumeric-boundary
+      # literal match) + token-inventory equality, and generation grounded ONLY on the fallback +
+      # Phase 2 bounded context under the reused Phase 4 opening/follow-up greeting policy. Any
+      # uncertainty returns nil (caller delivers the exact deterministic fallback / factless handoff);
+      # a pure stock reply first spends a bounded MAX_STOCK_ATTEMPTS resample across EVERY non-accepted
+      # branch (malformed/blank or greeting-enforced-blank generation, bare restatement, deterministic
+      # fact/code rejection, wrong/unreadable language, semantic rejection/uncertainty) under the
+      # non-deterministic provider before failing closed — each retry fully re-gated, never relaxed.
+      # send_catalog/handoff/excluded descriptors are never naturalized. Precomputed lock-free by
+      # ResponseBuilderJob.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_fact_protection_validator.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/grounded_product_wording_service.rb
+      # Shared, surface-agnostic dynamic response boundary for a pure binary STOCK reply. Centralizes
+      # the fact-protected natural rephrase AND the strict fail-closed customer-language DELIVER/HANDOFF
+      # decision (previously only in ResponseBuilderJob) so the trigger-bound conversation and the
+      # source-less PlaygroundPreview reach the SAME business conclusion for the same catalog/context/
+      # language state — neither claims availability while the other hands off. Pure over its inputs
+      # (no DB/flow/state read or write); each surface supplies the already-localized fallback + a lazy
+      # localized-acknowledgement producer and consumes the returned Decision via its own adapter.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/stock_reply_composer.rb
+      # Phase 7 — context-aware natural wording for a product HANDOFF acknowledgement. An
+      # unsupported request (warehouse location, delivery to a customer-supplied destination,
+      # shipping cost) or an exact-quantity question hands off; instead of the generic branded
+      # default line, ResponseBuilderJob precomputes (lock-free) a deterministic factless,
+      # localized acknowledgement and — only if it survives an output-shape gate, greeting
+      # enforcement, a deterministic no-new-fact-token guard, and the separate semantic
+      # FactPreservationValidator — a natural same-language rephrase grounded ONLY on that
+      # acknowledgement plus Phase 2 bounded context. Asserts no fact, so it may acknowledge the
+      # request/destination without turning it into a delivery/cost/quantity claim.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/grounded_handoff_wording_service.rb
+      # Phase 6 — Native Product Catalog attachment delivery. Read-only deterministic
+      # selection of the single usable primary catalog document for a validated family,
+      # and a native outgoing Message + one Attachment that reuses the existing document
+      # source_file blob (no re-upload/OCR/conversion, no provider call); the trigger-bound
+      # ResponseBuilderJob delivers it on a send_catalog turn (one catalog per flow, text
+      # fallback when none usable) and marks catalog_sent only after the Message is created.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/documents/product_catalog_selector.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/conversation/product_message_delivery_service.rb
+      - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
+      - custom/wijaya/batteries/marine_ai/docs/product_catalog_db.md
+      # Phase 7 — Cross-flow hardening: Marine-owned release-readiness report distinguishing
+      # verified source contracts from the unavailable operational/runtime gates, plus the
+      # rollback posture (Phase 6 -> Phase 5, no destructive JSON cleanup, async job deferred).
+      - custom/wijaya/batteries/marine_ai/docs/product_catalog_release_readiness.md
       # Commit 1C — SOP extraction + OCR foundation (safe command runner, PDF/image
       # extraction with page-level OCR fallback, SOP create service + async job, and the
       # battery-owned OCR runtime derivative image).
-      - custom/wijaya/marine/app/services/marine/documents/command_runner.rb
-      - custom/wijaya/marine/app/services/marine/documents/create_sop_service.rb
-      - custom/wijaya/marine/app/services/marine/documents/sop/extraction_service.rb
-      - custom/wijaya/marine/app/services/marine/documents/sop/pdf_extractor.rb
-      - custom/wijaya/marine/app/services/marine/documents/sop/image_ocr_service.rb
-      - custom/wijaya/marine/app/services/marine/documents/sop/text_normalizer.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/documents/command_runner.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/documents/create_sop_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/documents/sop/extraction_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/documents/sop/pdf_extractor.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/documents/sop/image_ocr_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/documents/sop/text_normalizer.rb
       # Commit 1D — deterministic SOP chunk indexing into document-backed knowledge entries.
-      - custom/wijaya/marine/app/services/marine/documents/sop/chunker.rb
-      - custom/wijaya/marine/app/jobs/marine/documents/process_job.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/documents/sop/chunker.rb
+      - custom/wijaya/batteries/marine_ai/app/jobs/marine/documents/process_job.rb
       - custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing
       - custom/wijaya/batteries/marine_ai/deploy/install_sop_processing_dependencies.sh
-      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
-      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
-      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/preferences_controller.rb
-      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/llm_settings_controller.rb
-      - custom/wijaya/marine/app/policies/marine/assistant_policy.rb
-      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/tasks_controller.rb
-      - custom/wijaya/marine/app/policies/marine/tasks_policy.rb
-      - custom/wijaya/marine/app/services/marine/copilot/base_service.rb
-      - custom/wijaya/marine/app/services/marine/copilot/conversation_context_builder.rb
-      - custom/wijaya/marine/app/services/marine/copilot/reply_suggestion_service.rb
-      - custom/wijaya/marine/app/services/marine/copilot/summary_service.rb
-      - custom/wijaya/marine/app/services/marine/copilot/rewrite_service.rb
-      - custom/wijaya/marine/app/services/marine/copilot/translate_service.rb
-      - custom/wijaya/marine/app/services/marine/copilot/follow_up_service.rb
-      - custom/wijaya/marine/app/services/marine/memory/contact_notes_service.rb
-      - custom/wijaya/marine/app/jobs/marine/memory/generate_contact_notes_job.rb
-      - custom/wijaya/marine/app/models/marine/custom_tool.rb
-      - custom/wijaya/marine/app/models/concerns/marine/toolable.rb
-      - custom/wijaya/marine/app/models/concerns/marine/safe_endpoint_validatable.rb
-      - custom/wijaya/marine/app/services/marine/tools/http_tool.rb
-      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/custom_tools_controller.rb
-      - custom/wijaya/marine/app/policies/marine/custom_tool_policy.rb
-      - custom/wijaya/marine/app/models/marine/scenario.rb
-      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/scenarios_controller.rb
-      - custom/wijaya/marine/app/policies/marine/scenario_policy.rb
-      - custom/wijaya/marine/app/models/marine/copilot_thread.rb
-      - custom/wijaya/marine/app/models/marine/copilot_message.rb
-      - custom/wijaya/marine/app/services/marine/copilot/search_base_service.rb
-      - custom/wijaya/marine/app/services/marine/copilot/search_conversations_service.rb
-      - custom/wijaya/marine/app/services/marine/copilot/get_conversation_service.rb
-      - custom/wijaya/marine/app/services/marine/copilot/search_contacts_service.rb
-      - custom/wijaya/marine/app/services/marine/copilot/get_contact_service.rb
-      - custom/wijaya/marine/app/services/marine/copilot/query_service.rb
-      - custom/wijaya/marine/app/services/marine/agent/scenario_selector.rb
-      - custom/wijaya/marine/app/services/marine/agent/runner.rb
-      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/copilot_threads_controller.rb
-      - custom/wijaya/marine/app/controllers/api/v1/accounts/marine/copilot_messages_controller.rb
-      - custom/wijaya/marine/app/policies/marine/copilot_thread_policy.rb
-      - custom/wijaya/marine/app/policies/marine/copilot_message_policy.rb
+      # Battery overlay: dedicated marine_sop_worker service (isolated queue + SOP
+      # hardening) + optional read-only catalog secret, kept out of base compose.
+      - custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop.yml
+      - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
+      - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
+      - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/preferences_controller.rb
+      - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/llm_settings_controller.rb
+      - custom/wijaya/batteries/marine_ai/app/policies/marine/assistant_policy.rb
+      - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/tasks_controller.rb
+      - custom/wijaya/batteries/marine_ai/app/policies/marine/tasks_policy.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/base_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/conversation_context_builder.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/reply_suggestion_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/summary_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/rewrite_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/translate_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/follow_up_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/memory/contact_notes_service.rb
+      - custom/wijaya/batteries/marine_ai/app/jobs/marine/memory/generate_contact_notes_job.rb
+      - custom/wijaya/batteries/marine_ai/app/models/marine/custom_tool.rb
+      - custom/wijaya/batteries/marine_ai/app/models/concerns/marine/toolable.rb
+      - custom/wijaya/batteries/marine_ai/app/models/concerns/marine/safe_endpoint_validatable.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/tools/http_tool.rb
+      - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/custom_tools_controller.rb
+      - custom/wijaya/batteries/marine_ai/app/policies/marine/custom_tool_policy.rb
+      - custom/wijaya/batteries/marine_ai/app/models/marine/scenario.rb
+      - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/scenarios_controller.rb
+      - custom/wijaya/batteries/marine_ai/app/policies/marine/scenario_policy.rb
+      - custom/wijaya/batteries/marine_ai/app/models/marine/copilot_thread.rb
+      - custom/wijaya/batteries/marine_ai/app/models/marine/copilot_message.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/search_base_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/search_conversations_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/get_conversation_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/search_contacts_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/get_contact_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/query_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/agent/scenario_selector.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/agent/runner.rb
+      - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/copilot_threads_controller.rb
+      - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/copilot_messages_controller.rb
+      - custom/wijaya/batteries/marine_ai/app/policies/marine/copilot_thread_policy.rb
+      - custom/wijaya/batteries/marine_ai/app/policies/marine/copilot_message_policy.rb
       - db/migrate/20260709010000_create_marine_custom_tools.rb
       - db/migrate/20260709020000_create_marine_scenarios.rb
       - db/migrate/20260709030000_create_marine_copilot_tables.rb
-      - app/javascript/dashboard/api/marine/copilotThreads.js
-      - app/javascript/dashboard/api/marine/copilotMessages.js
-      - app/javascript/dashboard/routes/dashboard/marine/copilot/Index.vue
-      - app/javascript/dashboard/api/marine/scenarios.js
-      - app/javascript/dashboard/api/marine/customTools.js
-      - app/javascript/dashboard/routes/dashboard/marine/composables/useMarineCustomTools.js
-      - app/javascript/dashboard/routes/dashboard/marine/tools/components/ParamRow.vue
-      - app/javascript/dashboard/routes/dashboard/marine/tools/components/AuthConfig.vue
-      - app/javascript/dashboard/routes/dashboard/marine/tools/components/CustomToolForm.vue
-      - app/javascript/dashboard/routes/dashboard/marine/tools/components/CustomToolCard.vue
-      - app/javascript/dashboard/routes/dashboard/marine/tools/components/CreateCustomToolDialog.vue
-      - app/javascript/dashboard/api/marine/tasks.js
-      - app/javascript/dashboard/api/marine/assistant.js
-      - app/javascript/dashboard/api/marine/response.js
-      - app/javascript/dashboard/api/marine/document.js
-      - app/javascript/dashboard/api/marine/inboxes.js
-      - app/javascript/dashboard/api/marine/preferences.js
-      - app/javascript/dashboard/api/marine/llmSettings.js
-      - app/javascript/dashboard/routes/dashboard/marine/llm-settings/Index.vue
-      - app/javascript/dashboard/i18n/locale/en/marine.json
+      - custom/wijaya/batteries/marine_ai/frontend/api/copilotThreads.js
+      - custom/wijaya/batteries/marine_ai/frontend/api/copilotMessages.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/copilot/Index.vue
+      - custom/wijaya/batteries/marine_ai/frontend/api/scenarios.js
+      - custom/wijaya/batteries/marine_ai/frontend/api/customTools.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/composables/useMarineCustomTools.js
+      - custom/wijaya/batteries/marine_ai/frontend/api/tasks.js
+      - custom/wijaya/batteries/marine_ai/frontend/api/assistant.js
+      - custom/wijaya/batteries/marine_ai/frontend/api/response.js
+      - custom/wijaya/batteries/marine_ai/frontend/api/document.js
+      - custom/wijaya/batteries/marine_ai/frontend/api/inboxes.js
+      - custom/wijaya/batteries/marine_ai/frontend/api/preferences.js
+      - custom/wijaya/batteries/marine_ai/frontend/api/llmSettings.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/llm-settings/Index.vue
+      - custom/wijaya/batteries/marine_ai/frontend/i18n/marine.json
+      # Marine backend locale is battery-owned; loader registers this on the i18n load path.
+      - custom/wijaya/batteries/marine_ai/config/locales/en.yml
       - db/migrate/20260708010000_create_wijaya_marine_tables.rb
       - db/migrate/20260708010001_create_wijaya_marine_inboxes.rb
       - db/migrate/20260710000000_add_source_kind_to_marine_documents.rb
-      - app/javascript/dashboard/routes/dashboard/marine/Index.vue
-      - app/javascript/dashboard/routes/dashboard/marine/marine.routes.js
-      - app/javascript/dashboard/routes/dashboard/marine/pages/AssistantsIndexPage.vue
-      - app/javascript/dashboard/routes/dashboard/marine/composables/useMarineAssistants.js
-      - app/javascript/dashboard/routes/dashboard/marine/components/MarinePageShell.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/MarinePageLayout.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/MarineSettingsHeader.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantBasicSettingsForm.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantSystemSettingsForm.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantControlItems.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/MarineDeleteDialog.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantPlayground.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/MarineMessageList.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/MarineAssistantSwitcher.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/MarineDocumentCard.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/CreateDocumentDialog.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/Index.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/marine.routes.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/pages/AssistantsIndexPage.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/composables/useMarineAssistants.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarinePageShell.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarinePageLayout.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarineSettingsHeader.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarineAssistantBasicSettingsForm.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarineAssistantSystemSettingsForm.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarineAssistantControlItems.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarineDeleteDialog.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarineAssistantPlayground.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarineMessageList.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarineAssistantSwitcher.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarineDocumentCard.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/CreateDocumentDialog.vue
       # Product Catalog UI — bounded product-family picker (Wijaya-owned, battery frontend).
       - custom/wijaya/batteries/marine_ai/frontend/MarineProductFamilySelect.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/DocumentPageEmptyState.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/MarineResponseCard.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/CreateResponseDialog.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/ResponsePageEmptyState.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/MarineInboxCard.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/ConnectInboxDialog.vue
-      - app/javascript/dashboard/routes/dashboard/marine/components/InboxPageEmptyState.vue
-      - app/javascript/dashboard/routes/dashboard/marine/responses/Index.vue
-      - app/javascript/dashboard/routes/dashboard/marine/documents/Index.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/DocumentPageEmptyState.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarineResponseCard.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/CreateResponseDialog.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/ResponsePageEmptyState.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarineInboxCard.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/ConnectInboxDialog.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/InboxPageEmptyState.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/responses/Index.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/documents/Index.vue
       # Commit 1E — framework-free SOP UI helpers (validation, active-work, poll backoff).
-      - app/javascript/dashboard/routes/dashboard/marine/helpers/documentHelpers.js
-      - app/javascript/dashboard/routes/dashboard/marine/scenarios/Index.vue
-      - app/javascript/dashboard/routes/dashboard/marine/playground/Index.vue
-      - app/javascript/dashboard/routes/dashboard/marine/inboxes/Index.vue
-      - app/javascript/dashboard/routes/dashboard/marine/tools/Index.vue
-      - app/javascript/dashboard/routes/dashboard/marine/settings/Index.vue
-      - app/javascript/dashboard/routes/dashboard/settings/marine/Index.vue
-      - app/javascript/dashboard/routes/dashboard/settings/marine/marine.routes.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/helpers/documentHelpers.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/scenarios/Index.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/playground/Index.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/inboxes/Index.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/settings/Index.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/settings-marine/Index.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/settings-marine/marine.routes.js
+      # Captain-seam adapters imported by the native useCaptain.js / CopilotMenuBar.vue
+      # marker blocks (own all Marine routing/menu-filter logic), plus the battery-owned
+      # settings sidebar section builder imported by the native Sidebar.vue seam.
+      - custom/wijaya/batteries/marine_ai/frontend/useMarineCaptain.js
+      - custom/wijaya/batteries/marine_ai/frontend/copilotMenu.js
+      - custom/wijaya/batteries/marine_ai/frontend/sidebar/marineSidebarSection.js
+      # Scenario / guardrails / guidelines management UI (wired via marine.routes.js).
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarineAddNewScenariosDialog.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/MarineScenariosCard.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/ScenarioPageEmptyState.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/guardrails/Index.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/guidelines/Index.vue
     core_hook_touchpoints:
-      - config/initializers/wijaya_marine_ai.rb
-      - config/routes.rb
-      - config/installation_config.yml
-      - config/locales/en.yml
-      # Commit 1C — dedicated marine_sop_worker service (isolated queue + SOP hardening).
-      - docker-compose.production.yaml
-      - app/controllers/super_admin/app_configs_controller.rb
+      # Config ownership moved to the battery: core installation_config.yml,
+      # config/locales/en.yml and super_admin app_configs_controller.rb no longer
+      # seed/allowlist/localize Marine — the battery owns those via first_or_initialize
+      # defaults and its own config/locales/en.yml (registered by the loader).
+      # Routes consolidated into the wijaya_core registrar (config/routes.rb wijaya_routes marker).
       - app/services/message_templates/hook_execution_service.rb
-      - app/models/conversation.rb
+      # Marine resolved-conversation callback attached via a battery concern
+      # (marine_ai/.../concerns/wijaya/marine/conversation_extensions.rb) in the
+      # loader's to_prepare block, so app/models/conversation.rb carries no markers.
       - app/views/api/v1/models/_inbox.json.jbuilder
       - app/javascript/dashboard/routes/dashboard/dashboard.routes.js
       - app/javascript/dashboard/routes/dashboard/settings/settings.routes.js
       - app/javascript/dashboard/composables/useCaptain.js
       - app/javascript/dashboard/components/widgets/WootWriter/CopilotMenuBar.vue
+      # Threads isMarineConversation into CopilotMenuBar for the Marine composer.
+      - app/javascript/dashboard/components/widgets/WootWriter/ReplyTopPanel.vue
       - app/javascript/dashboard/components-next/sidebar/Sidebar.vue
       - app/javascript/dashboard/i18n/locale/en/index.js
+    loader_touchpoints:
+      # Feature loader self-registers with the generic core loader; the retired
+      # config/initializers/wijaya_marine_ai.rb is replaced by this.
+      - custom/wijaya/batteries/marine_ai/loader.rb
     tests:
-      - spec/custom/wijaya/marine/account_extensions_spec.rb
-      - spec/custom/wijaya/marine/llm/config_spec.rb
-      - spec/custom/wijaya/marine/llm/provider_config_spec.rb
-      - spec/custom/wijaya/marine/llm/connection_test_service_spec.rb
-      - spec/custom/wijaya/marine/controllers/llm_settings_controller_spec.rb
-      - spec/custom/wijaya/marine/llm/base_service_spec.rb
-      - spec/custom/wijaya/marine/llm/prompt_renderer_spec.rb
-      - spec/custom/wijaya/marine/llm/json_response_parser_spec.rb
-      - spec/custom/wijaya/marine/llm/language_detector_spec.rb
-      - spec/custom/wijaya/marine/llm/translate_query_service_spec.rb
-      - spec/custom/wijaya/marine/llm/translate_response_service_spec.rb
-      - spec/custom/wijaya/marine/llm/embedding_service_spec.rb
-      - spec/custom/wijaya/marine/llm/update_embedding_job_spec.rb
-      - spec/custom/wijaya/marine/cell/retriever_spec.rb
-      - spec/custom/wijaya/marine/cell/retrieval_result_spec.rb
-      - spec/custom/wijaya/marine/cell/citation_builder_spec.rb
-      - spec/custom/wijaya/marine/charge/confidence_scorer_spec.rb
-      - spec/custom/wijaya/marine/charge/response_generator_spec.rb
-      - spec/custom/wijaya/marine/conversation/response_builder_job_spec.rb
-      - spec/custom/wijaya/marine/copilot/reply_suggestion_service_spec.rb
-      - spec/custom/wijaya/marine/copilot/summary_service_spec.rb
-      - spec/custom/wijaya/marine/copilot/rewrite_service_spec.rb
-      - spec/custom/wijaya/marine/copilot/translate_service_spec.rb
-      - spec/custom/wijaya/marine/copilot/follow_up_service_spec.rb
-      - spec/custom/wijaya/marine/memory/contact_notes_service_spec.rb
-      - spec/custom/wijaya/marine/memory/generate_contact_notes_job_spec.rb
-      - spec/custom/wijaya/marine/hooks_spec.rb
-      - spec/custom/wijaya/marine/controllers/tasks_controller_spec.rb
-      - spec/custom/wijaya/marine/models/custom_tool_spec.rb
-      - spec/custom/wijaya/marine/models/document_spec.rb
-      - spec/custom/wijaya/marine/documents/upload_validator_spec.rb
-      - spec/custom/wijaya/marine/documents/product_catalog_service_spec.rb
-      - spec/custom/wijaya/marine/documents/active_storage_analysis_guard_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/account_extensions_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/llm/config_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/llm/provider_config_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/llm/connection_test_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/controllers/llm_settings_controller_spec.rb
+      # RBAC regression: administrator-only Marine Inboxes + Settings (preferences)
+      # management endpoints reject non-admins (plain agent + custom-role agent).
+      - spec/custom/wijaya/batteries/marine_ai/controllers/inboxes_controller_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/controllers/preferences_controller_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/llm/base_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/llm/prompt_renderer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/llm/json_response_parser_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/llm/language_detector_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/llm/translate_query_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/llm/translate_response_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/llm/embedding_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/llm/update_embedding_job_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/cell/retriever_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/cell/retrieval_result_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/cell/citation_builder_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/confidence_scorer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/response_generator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/response_generator_hours_grounding_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/grounded_wording_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/fact_preservation_validator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/control_leak_inspector_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/response_generator_confidentiality_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/conversation/response_builder_job_spec.rb
+      # D6 — full trigger-bound job-path proof: one inbound price+stock turn -> one composite message.
+      - spec/custom/wijaya/batteries/marine_ai/conversation/product_multi_intent_job_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/copilot/reply_suggestion_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/copilot/summary_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/copilot/rewrite_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/copilot/translate_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/copilot/follow_up_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/memory/contact_notes_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/memory/generate_contact_notes_job_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/hooks_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/controllers/tasks_controller_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/models/custom_tool_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/models/document_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/documents/upload_validator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/documents/product_catalog_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/documents/active_storage_analysis_guard_spec.rb
       # Commit 1C — SOP extraction + OCR foundation
-      - spec/custom/wijaya/marine/documents/command_runner_spec.rb
-      - spec/custom/wijaya/marine/documents/sop/text_normalizer_spec.rb
-      - spec/custom/wijaya/marine/documents/sop/pdf_extractor_spec.rb
-      - spec/custom/wijaya/marine/documents/sop/image_ocr_service_spec.rb
-      - spec/custom/wijaya/marine/documents/create_sop_service_spec.rb
-      - spec/custom/wijaya/marine/documents/process_job_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/documents/command_runner_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/documents/sop/text_normalizer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/documents/sop/pdf_extractor_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/documents/sop/image_ocr_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/documents/create_sop_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/documents/process_job_spec.rb
       # Commit 1D — SOP chunk/index pipeline regression coverage.
-      - spec/custom/wijaya/marine/documents/response_builder_job_spec.rb
-      - spec/custom/wijaya/marine/documents/sop/chunker_spec.rb
-      - spec/custom/wijaya/marine/documents/sop/extraction_smoke_spec.rb
-      - spec/custom/wijaya/marine/controllers/documents_sop_controller_spec.rb
-      - spec/custom/wijaya/marine/catalog/product_family_repository_spec.rb
-      - spec/custom/wijaya/marine/catalog/connection_spec.rb
-      - spec/custom/wijaya/marine/controllers/documents_controller_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/documents/response_builder_job_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/documents/sop/chunker_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/documents/sop/extraction_smoke_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/controllers/documents_sop_controller_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_family_repository_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/connection_spec.rb
+      # Reload-safe sibling-resolution regression for the whole Marine::Catalog tree.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/namespace_resolution_spec.rb
+      # Phase 1 — Deterministic Catalog Data Layer specs.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/variant_repository_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/price_repository_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/stock_repository_spec.rb
+      # Phase 2 — Contextual Product Intent Understanding spec.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/intent_extractor_spec.rb
+      # Phase 3 — Product Flow State, Processing Claim, and Eligibility specs.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/conversation/eligibility_spec.rb
+      # Phase 2 (conversation) — Canonical context builder + interaction-phase spec.
+      - spec/custom/wijaya/batteries/marine_ai/conversation/context_builder_spec.rb
+      # Handoff idempotency — HandoffStateStore marker + service idempotency/rollback specs.
+      - spec/custom/wijaya/batteries/marine_ai/circuit/handoff_state_store_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/circuit/handoff_service_spec.rb
+      # Handoff lifecycle window — channel-aware boundary expiry + inbound-driven re-engagement
+      # (fresh window clears the marker; within-window stays silent; expiry emits nothing).
+      - spec/custom/wijaya/batteries/marine_ai/circuit/handoff_window_spec.rb
+      # Textilindo domain / security boundary — shared post-product/pre-RAG gate: semantic
+      # classifier, dynamic refusal generator, independent refusal validator, and the shared guard.
+      - spec/custom/wijaya/batteries/marine_ai/circuit/domain_security_decision_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/circuit/catalog_domain_reference_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/circuit/boundary_reply_composer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/circuit/boundary_reply_validator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/circuit/domain_boundary_guard_spec.rb
+      # Phase 4 — Product Decision and State Machine Orchestrator specs.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/variant_resolver_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/reply_renderer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_query_orchestrator_spec.rb
+      # D6 — supported multi-intent (price+stock) composite reply: extractor set, orchestrator
+      # composite/precedence/persistence, renderer/presenter, fact-protection, signed round-trip.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_multi_intent_spec.rb
+      # Shared deterministic product-text presenter spec.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/reply_presenter_spec.rb
+      # Source-less Playground catalog preview spec (read-only, non-delivering, fail-safe).
+      - spec/custom/wijaya/batteries/marine_ai/catalog/playground_preview_spec.rb
+      # Signed ephemeral Playground state-token spec: round-trip, tamper/expiry/foreign-scope fail-closed.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/playground_state_token_spec.rb
+      # Delivery-only product-reply localizer spec.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/reply_localizer_spec.rb
+      # D7 — FactPlaceholderMask spec: immutable-fact masking/exact restoration, display labels left
+      # translatable, and fail-closed rejection of dropped/duplicated/unknown/malformed placeholders.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/fact_placeholder_mask_spec.rb
+      # Phase 6 — fact-protected natural product wording: deterministic protected-fact checker
+      # (action/kind matrix, protected-value + token-inventory rejection, price/stock outcome,
+      # malformed shapes) and the two-gate wording service (deterministic-before-semantic,
+      # fail-closed, no facts/history logged).
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_fact_protection_validator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/grounded_product_wording_service_spec.rb
+      # Shared StockReplyComposer: unit coverage of the fail-closed DELIVER/HANDOFF decision — the ONLY
+      # delivered stock text is an accepted DYNAMIC natural candidate; every non-accepted path (rejected
+      # candidate, codeless/ineligible descriptor, unknown/source/known target, degraded localization)
+      # fails closed to the factless handoff (visible in-language vs silent acknowledgement) and never
+      # ships the deterministic stock sentence — plus the conversation<->Playground stock parity spec
+      # proving identical business conclusions (dynamic deliver, or the same factless handoff).
+      - spec/custom/wijaya/batteries/marine_ai/catalog/stock_reply_composer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/stock_reply_parity_spec.rb
+      # Phase 7 — context-aware natural product-handoff acknowledgement service + regression
+      # coverage for quantity-inquiry routing, price/catalog grounded context, and language
+      # consistency (see marine_ai_natural_reply_regression_spec).
+      - spec/custom/wijaya/batteries/marine_ai/catalog/grounded_handoff_wording_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/conversation/marine_ai_natural_reply_regression_spec.rb
+      # Phase 6 — Native Product Catalog attachment delivery specs.
+      - spec/custom/wijaya/batteries/marine_ai/documents/product_catalog_selector_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/conversation/product_message_delivery_service_spec.rb
+      # Phase 7 — Cross-flow hardening: aggregate security + regression invariants that
+      # span the orchestrator, renderer, repositories, and native delivery job (approved-
+      # tables-only, single-SELECT, no numeric stock, no direct provider/channel egress,
+      # adversarial-field/customer-text safety, exhaustive fact-safe text map, safe
+      # outgoing metadata). Each proves a whole-path contract no single unit spec does.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_security_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_regression_spec.rb
+      # Full trigger-bound runtime-path regression: real IntentExtractor -> orchestrator
+      # (data-driven family recovery) -> state store -> selector/delivery -> localizer,
+      # with only the provider/CLD3/outbound-job boundaries stubbed.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_runtime_path_spec.rb
+      # Conversation 102 regression: family recovery over a realistic catalog corpus — a noisy
+      # mention of a family beyond the first-page item_code prefix resolves, and a generic
+      # catalog request no longer dumps an arbitrary whole-catalog slice as clarify examples.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/family_recovery_corpus_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/controllers/documents_controller_spec.rb
       - spec/factories/marine/document.rb
-      - spec/custom/wijaya/marine/controllers/custom_tools_controller_spec.rb
-      - spec/custom/wijaya/marine/models/scenario_spec.rb
-      - spec/custom/wijaya/marine/controllers/scenarios_controller_spec.rb
-      - spec/custom/wijaya/marine/models/copilot_thread_spec.rb
-      - spec/custom/wijaya/marine/models/copilot_message_spec.rb
-      - spec/custom/wijaya/marine/copilot/query_service_spec.rb
-      - spec/custom/wijaya/marine/agent/scenario_selector_spec.rb
-      - spec/custom/wijaya/marine/agent/runner_spec.rb
-      - spec/custom/wijaya/marine/copilot/search_conversations_service_spec.rb
-      - spec/custom/wijaya/marine/copilot/search_contacts_service_spec.rb
-      - spec/custom/wijaya/marine/controllers/copilot_threads_controller_spec.rb
-      - spec/custom/wijaya/marine/controllers/copilot_messages_controller_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/controllers/custom_tools_controller_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/models/scenario_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/controllers/scenarios_controller_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/models/copilot_thread_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/models/copilot_message_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/copilot/query_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/agent/scenario_selector_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/agent/runner_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/agent/runner_domain_boundary_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/agent/faq_precedence_spec.rb
+      # Playground preview — multi-turn context forwarding, bounded/allowlisted history,
+      # authorization, and non-delivering isolation (no Conversation/Message side effects).
+      - spec/custom/wijaya/batteries/marine_ai/controllers/assistants_controller_spec.rb
+      # Four-turn Playground catalog acceptance: signed state token round-trip, catalog-grounded
+      # (card / already-shared / truthful clarify) never RAG "unavailable", tamper fail-closed, no side effects.
+      - spec/custom/wijaya/batteries/marine_ai/controllers/playground_catalog_acceptance_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/copilot/search_conversations_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/copilot/search_contacts_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/controllers/copilot_threads_controller_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/controllers/copilot_messages_controller_spec.rb
       - app/javascript/dashboard/composables/spec/useCaptain.spec.js
       # Commit 1E — SOP document UI: API create workflow coverage.
-      - app/javascript/dashboard/api/specs/marine/document.spec.js
+      - custom/wijaya/batteries/marine_ai/frontend/api/specs/document.spec.js
+      # Playground preview UI — multi-turn history, assistant-switch isolation, late-response
+      # race discard, duplicate-submit guard, and fail-closed error state.
+      - custom/wijaya/batteries/marine_ai/frontend/api/specs/assistant.spec.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/specs/MarineAssistantPlayground.spec.js
+      # Read-only, non-downloadable catalog preview card render (allowlisted metadata, no link/button).
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/specs/MarineMessageList.spec.js
       # Commit 1E — confidentiality serializer + extracted-helper/UI regression coverage.
-      - spec/custom/wijaya/marine/documents/serializer_spec.rb
-      - spec/custom/wijaya/marine/documents/sync_service_spec.rb
-      - app/javascript/dashboard/routes/dashboard/marine/helpers/specs/documentHelpers.spec.js
-      - app/javascript/dashboard/routes/dashboard/marine/helpers/specs/chunkCountI18n.spec.js
-      - app/javascript/dashboard/routes/dashboard/marine/components/specs/CreateDocumentDialog.spec.js
+      - spec/custom/wijaya/batteries/marine_ai/documents/serializer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/documents/sync_service_spec.rb
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/helpers/specs/documentHelpers.spec.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/helpers/specs/chunkCountI18n.spec.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/specs/CreateDocumentDialog.spec.js
       # Product Catalog UI regression coverage.
-      - app/javascript/dashboard/routes/dashboard/marine/components/specs/MarineProductFamilySelect.spec.js
-      - app/javascript/dashboard/routes/dashboard/marine/components/specs/MarineDocumentCard.spec.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/specs/MarineProductFamilySelect.spec.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/components/specs/MarineDocumentCard.spec.js
+      # Captain-seam adapter + Copilot menu filter regression coverage (non-Marine
+      # fallthrough preserved; Marine routing owned by the battery adapter).
+      - custom/wijaya/batteries/marine_ai/frontend/specs/useMarineCaptain.spec.js
+      - custom/wijaya/batteries/marine_ai/frontend/specs/CopilotMenuBar.spec.js
+      # RBAC regression: administrator-only Marine sidebar entries (Inboxes / AI
+      # Provider / Settings) and their route metadata restrict non-administrators.
+      - custom/wijaya/batteries/marine_ai/frontend/specs/marineSidebarSection.spec.js
+      - custom/wijaya/batteries/marine_ai/frontend/specs/marine.routes.spec.js
+      # Product-knowledge grounding regression: a non-transactional attribute question with an
+      # unresolvable family defers to grounded KB (orchestrator :not_product) instead of a generic
+      # family clarification, and the RAG grounding block leads with the top query-matched approved
+      # records so a fact in a lower-ranked record still reaches the model in full.
+      - spec/custom/wijaya/batteries/marine_ai/product_knowledge_grounding_spec.rb
 
   - id: marine_ai_provisioning
     name: Marine AI PostgreSQL Provisioning UI
@@ -495,23 +1110,25 @@ patches:
       - custom/wijaya/batteries/marine_ai/frontend/MarineProvisioningCredentialsDialog.vue
       - custom/wijaya/batteries/marine_ai/frontend/i18n/en.json
     core_hook_touchpoints:
-      - config/routes.rb
-      - app/javascript/dashboard/routes/dashboard/marine/settings/Index.vue
+      # Provisioning routes consolidated into the wijaya_core registrar
+      # (config/routes.rb wijaya_routes marker).
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/settings/Index.vue
     loader_touchpoints:
       # Custom infrastructure (no WIJAYA markers). The Marine loader pushes the
-      # provisioning battery's app/ subtree onto the Zeitwerk main autoloader.
-      - custom/wijaya/marine/loader.rb
+      # marine_ai battery app/ subtree (which now includes provisioning) onto the
+      # Zeitwerk main autoloader.
+      - custom/wijaya/batteries/marine_ai/loader.rb
     tests:
-      - spec/custom/wijaya/marine/provisioning/identifier_validator_spec.rb
-      - spec/custom/wijaya/marine/provisioning/config_spec.rb
-      - spec/custom/wijaya/marine/provisioning/state_store_spec.rb
-      - spec/custom/wijaya/marine/provisioning/error_sanitizer_spec.rb
-      - spec/custom/wijaya/marine/provisioning/provision_service_spec.rb
-      - spec/custom/wijaya/marine/provisioning/privilege_service_spec.rb
-      - spec/custom/wijaya/marine/provisioning/catalog_service_spec.rb
-      - spec/custom/wijaya/marine/provisioning/provisioning_policy_spec.rb
-      - spec/custom/wijaya/marine/provisioning/connection_spec.rb
-      - spec/custom/wijaya/marine/provisioning/audit_spec.rb
-      - spec/custom/wijaya/marine/controllers/provisioning_controller_spec.rb
-      - app/javascript/dashboard/routes/dashboard/marine/settings/specs/MarineProvisioningSection.spec.js
-      - app/javascript/dashboard/routes/dashboard/marine/settings/specs/MarineProvisioningCredentialsDialog.spec.js
+      - spec/custom/wijaya/batteries/marine_ai/provisioning/identifier_validator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/provisioning/config_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/provisioning/state_store_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/provisioning/error_sanitizer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/provisioning/provision_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/provisioning/privilege_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/provisioning/catalog_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/provisioning/provisioning_policy_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/provisioning/connection_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/provisioning/audit_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/controllers/provisioning_controller_spec.rb
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/settings/specs/MarineProvisioningSection.spec.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/settings/specs/MarineProvisioningCredentialsDialog.spec.js

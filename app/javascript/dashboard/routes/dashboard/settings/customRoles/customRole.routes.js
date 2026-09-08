@@ -1,6 +1,6 @@
 import { FEATURE_FLAGS } from '../../../../featureFlags';
 // WIJAYA_CUSTOM_START custom_roles_rbac
-import { customRoleInstallationTypes } from '../../../../../../../custom/wijaya/batteries/custom_roles/frontend/permissions';
+import { customRoleInstallationTypes } from '@wijaya/custom_roles/frontend/permissions';
 // WIJAYA_CUSTOM_END custom_roles_rbac
 import { frontendURL } from 'dashboard/helper/URLHelper';
 

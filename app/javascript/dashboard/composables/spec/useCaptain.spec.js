@@ -8,14 +8,14 @@ import { useAccount } from 'dashboard/composables/useAccount';
 import { useConfig } from 'dashboard/composables/useConfig';
 import { useI18n } from 'vue-i18n';
 import TasksAPI from 'dashboard/api/captain/tasks';
-import MarineTasksAPI from 'dashboard/api/marine/tasks';
+import MarineTasksAPI from '@wijaya/marine_ai/frontend/api/tasks';
 
 vi.mock('dashboard/composables/store');
 vi.mock('dashboard/composables/useAccount');
 vi.mock('dashboard/composables/useConfig');
 vi.mock('vue-i18n');
 vi.mock('dashboard/api/captain/tasks');
-vi.mock('dashboard/api/marine/tasks');
+vi.mock('@wijaya/marine_ai/frontend/api/tasks');
 vi.mock('dashboard/helper/AnalyticsHelper/index', async importOriginal => {
   const actual = await importOriginal();
   return {
@@ -174,6 +174,52 @@ describe('useCaptain', () => {
     expect(TasksAPI.rewrite).toHaveBeenCalled();
   });
 
+  it('routes translate to native Captain rewrite for non-Marine conversations', async () => {
+    TasksAPI.rewrite.mockResolvedValue({
+      data: { message: 'Translated by Captain', follow_up_context: null },
+    });
+
+    const { processEvent } = useCaptain();
+    const result = await processEvent('translate', 'Hello world', {
+      targetLanguage: 'id',
+    });
+
+    expect(TasksAPI.rewrite).toHaveBeenCalledWith(
+      {
+        content: 'Hello world',
+        operation: 'translate',
+        conversationId: '123',
+      },
+      undefined
+    );
+    expect(MarineTasksAPI.translate).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      message: 'Translated by Captain',
+      followUpContext: null,
+    });
+  });
+
+  it('routes translate_reply to native Captain rewrite for non-Marine conversations', async () => {
+    TasksAPI.rewrite.mockResolvedValue({
+      data: { message: 'Reply translated by Captain' },
+    });
+
+    const { processEvent } = useCaptain();
+    await processEvent('translate_reply', 'Hello world', {
+      targetLanguage: 'id',
+    });
+
+    expect(TasksAPI.rewrite).toHaveBeenCalledWith(
+      {
+        content: 'Hello world',
+        operation: 'translate_reply',
+        conversationId: '123',
+      },
+      undefined
+    );
+    expect(MarineTasksAPI.translate).not.toHaveBeenCalled();
+  });
+
   describe('Marine routing', () => {
     beforeEach(() => {
       useMapGetter.mockImplementation(getter => {
@@ -276,6 +322,32 @@ describe('useCaptain', () => {
       expect(result).toEqual({
         message: 'Halo dunia',
         followUpContext: { id: 'm3' },
+      });
+    });
+
+    it('routes processEvent translate to Marine tasks for Marine-linked inboxes', async () => {
+      MarineTasksAPI.translate.mockResolvedValue({
+        data: { message: 'Halo dunia', follow_up_context: { id: 'm6' } },
+      });
+
+      const { processEvent } = useCaptain();
+      const result = await processEvent('translate', 'Hello world', {
+        targetLanguage: 'id',
+      });
+
+      expect(MarineTasksAPI.translate).toHaveBeenCalledWith(
+        {
+          content: 'Hello world',
+          targetLanguage: 'id',
+          sourceLanguage: undefined,
+          conversationId: '123',
+        },
+        undefined
+      );
+      expect(TasksAPI.rewrite).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        message: 'Halo dunia',
+        followUpContext: { id: 'm6' },
       });
     });
 

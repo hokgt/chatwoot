@@ -2,9 +2,6 @@
 # https://docs.360dialog.com/whatsapp-api/whatsapp-api/media
 # https://developers.facebook.com/docs/whatsapp/api/media/
 require_relative '../../../custom/wijaya/batteries/ads_tracking/hooks'
-# WIJAYA_CUSTOM_START meta_ads_team_routing
-require_relative '../../../custom/wijaya/batteries/meta_ads_team_routing/hooks'
-# WIJAYA_CUSTOM_END meta_ads_team_routing
 
 class Whatsapp::IncomingMessageBaseService
   include ::Whatsapp::IncomingMessageServiceHelpers
@@ -106,7 +103,15 @@ class Whatsapp::IncomingMessageBaseService
     create_message(message, source_id: message[:id])
     attach_files
     attach_location if message_type == 'location'
+    # WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+    referral_video_attachment = Wijaya::Batteries::AdsTracking::Hooks.build_referral_video_attachment(
+      message: @message, channel: :whatsapp, outgoing_echo: outgoing_echo
+    )
+    # WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
     @message.save!
+    # WIJAYA_CUSTOM_START ads_tracking_ctwa_referral
+    Wijaya::Batteries::AdsTracking::Hooks.associate_referral_video!(message: @message, attachment: referral_video_attachment)
+    # WIJAYA_CUSTOM_END ads_tracking_ctwa_referral
   end
 
   def set_contact
@@ -128,23 +133,22 @@ class Whatsapp::IncomingMessageBaseService
     return if @conversation
 
     # WIJAYA_CUSTOM_START meta_ads_team_routing
+    # Upstream: @conversation = ::Conversation.create!(conversation_params).
+    # Route the exact native params through the generic fail-open dispatcher when it is loaded;
+    # if the core hooks constant is undefined or the dispatch fails, the params passed to create
+    # equal the native params.
     new_conversation_params = conversation_params
-    apply_meta_ads_team_routing!(new_conversation_params)
+    if defined?(Wijaya::Batteries::Core::Hooks)
+      new_conversation_params = Wijaya::Batteries::Core::Hooks.dispatch(
+        :meta_ads_team_routing, :apply_team_routing!,
+        default: new_conversation_params,
+        account: @inbox.account, inbox: @inbox, channel: :whatsapp,
+        referral: messages_data.first[:referral], conversation_params: new_conversation_params
+      )
+    end
     @conversation = ::Conversation.create!(new_conversation_params)
     # WIJAYA_CUSTOM_END meta_ads_team_routing
   end
-
-  # WIJAYA_CUSTOM_START meta_ads_team_routing
-  def apply_meta_ads_team_routing!(new_conversation_params)
-    Wijaya::Batteries::MetaAdsTeamRouting::Hooks.apply_team_routing!(
-      account: @inbox.account,
-      inbox: @inbox,
-      channel: :whatsapp,
-      referral: messages_data.first[:referral],
-      conversation_params: new_conversation_params
-    )
-  end
-  # WIJAYA_CUSTOM_END meta_ads_team_routing
 
   def attach_files
     return if %w[text button interactive location contacts].include?(message_type)

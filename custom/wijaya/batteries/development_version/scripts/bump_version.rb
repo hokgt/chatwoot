@@ -66,7 +66,7 @@ new_version =
   end
 
 if dry_run
-  puts "DRY RUN (no files changed)"
+  puts 'DRY RUN (no files changed)'
   puts "old version: v#{current}"
   puts "new version: v#{new_version}"
   exit 0

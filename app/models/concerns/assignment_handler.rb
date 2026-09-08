@@ -42,6 +42,19 @@ module AssignmentHandler
 
   def process_assignment_activities
     user_name = Current.user.name if Current.user.present?
+    # WIJAYA_CUSTOM_START automatic_assignment_activity
+    # Native auto-assignment leaves no actor, so upstream skips the badge. When the
+    # battery confirms this assignee change was system-performed (and no human/automation
+    # actor owns it), record the single "Assigned to X by the System" assignee activity
+    # and skip the team branch so a routed conversation gets exactly one badge.
+    if defined?(Wijaya::Batteries::Core::Hooks)
+      system_actor = Wijaya::Batteries::Core::Hooks.dispatch(
+        :automatic_assignment_activity, :system_assignment_actor,
+        default: nil, conversation: self, user_name: user_name
+      )
+      return create_assignee_change_activity(system_actor) if system_actor
+    end
+    # WIJAYA_CUSTOM_END automatic_assignment_activity
     if saved_change_to_team_id?
       create_team_change_activity(user_name)
     elsif saved_change_to_assignee_id?

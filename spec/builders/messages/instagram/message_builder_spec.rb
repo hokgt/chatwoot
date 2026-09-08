@@ -56,14 +56,15 @@ describe Messages::Instagram::MessageBuilder do
       expect(message.content).to eq('This is the first message from the customer')
     end
 
-
     context 'when Instagram referral data is present on the first message payload' do
       it 'stores normalized ads_referral on the first inbound message' do
         messaging = dm_params[:entry][0]['messaging'][0]
         messaging[:referral] = { source: 'ADS', type: 'OPEN_THREAD', ref: 'ig-ref', ad_id: 'ig-ad-1' }
         create_instagram_contact_for_sender(messaging['sender']['id'], instagram_inbox)
         described_class.new(messaging, instagram_inbox).perform
-        expect(instagram_inbox.messages.first.content_attributes['ads_referral']).to include('channel' => 'instagram', 'source_id' => 'ig-ad-1', 'source_type' => 'ad', 'ref' => 'ig-ref', 'headline' => nil, 'image_url' => nil, 'video_url' => nil)
+        referral = instagram_inbox.messages.first.content_attributes['ads_referral']
+        expect(referral).to include('channel' => 'instagram', 'source_id' => 'ig-ad-1', 'source_type' => 'ad',
+                                    'ref' => 'ig-ref', 'headline' => nil, 'image_url' => nil, 'video_url' => nil)
       end
 
       it 'does not write ads_referral on subsequent inbound messages' do

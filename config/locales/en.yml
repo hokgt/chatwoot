@@ -428,10 +428,6 @@ en:
     custom_tool:
       slug_generation_failed: 'Unable to generate unique slug after 5 attempts'
       limit_exceeded: 'You can create a maximum of %{limit} custom tools per account'
-  marine:
-    custom_tool:
-      slug_generation_failed: 'Unable to generate unique slug after 5 attempts'
-      limit_exceeded: 'You can create a maximum of %{limit} custom tools per account'
   public_portal:
     search:
       search_placeholder: Search for article by title or body...
@@ -529,6 +525,10 @@ en:
   auto_assignment:
     default_policy_name: 'Default Policy'
     policy_actor: 'Automation System via %{policy_name}'
+    # WIJAYA_CUSTOM_START automatic_assignment_activity
+    # Actor label for native auto-assignment timeline badges ("Assigned to X by the System").
+    system_actor: 'the System'
+    # WIJAYA_CUSTOM_END automatic_assignment_activity
   automation:
     system_name: 'Automation System'
   crm:

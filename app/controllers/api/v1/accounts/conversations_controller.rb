@@ -187,6 +187,7 @@ class Api::V1::Accounts::ConversationsController < Api::V1::Accounts::BaseContro
   def assign_conversation
     # WIJAYA_CUSTOM_START custom_roles_rbac
     return unless Wijaya::Batteries::CustomRoles::Hooks.can_manage_all_conversations?(Current.account_user)
+
     # WIJAYA_CUSTOM_END custom_roles_rbac
 
     @conversation.assignee = current_user
@@ -195,7 +196,15 @@ class Api::V1::Accounts::ConversationsController < Api::V1::Accounts::BaseContro
 
   def conversation
     @conversation ||= Current.account.conversations.find_by!(display_id: params[:id])
+    # WIJAYA_CUSTOM_START custom_roles_rbac
+    use_explicit_forbidden = Wijaya::Batteries::CustomRoles::Hooks.explicit_conversation_forbidden_response?(
+      account_user: Current.account_user,
+      action_name: action_name
+    )
+    return authorize(@conversation, :show?) unless use_explicit_forbidden
+
     render_conversation_forbidden unless policy(@conversation).show?
+    # WIJAYA_CUSTOM_END custom_roles_rbac
   end
 
   def render_conversation_forbidden

@@ -12,7 +12,7 @@ import {
   splitConversationPermission,
   buildCustomRolePermissions,
   nonConversationPermissions,
-} from '../../../../../../../../custom/wijaya/batteries/custom_roles/frontend/permissions';
+} from '@wijaya/custom_roles/frontend/permissions';
 // WIJAYA_CUSTOM_END custom_roles_rbac
 
 import Button from 'dashboard/components-next/button/Button.vue';
@@ -70,8 +70,11 @@ const populateEditForm = () => {
   name.value = props.selectedRole.name || '';
   description.value = props.selectedRole.description || '';
   // WIJAYA_CUSTOM_START custom_roles_rbac
-  const splitPermissions = splitConversationPermission(props.selectedRole.permissions || []);
-  selectedConversationPermission.value = splitPermissions.selectedConversationPermission;
+  const splitPermissions = splitConversationPermission(
+    props.selectedRole.permissions || []
+  );
+  selectedConversationPermission.value =
+    splitPermissions.selectedConversationPermission;
   selectedPermissions.value = splitPermissions.selectedPermissions;
   // WIJAYA_CUSTOM_END custom_roles_rbac
 };

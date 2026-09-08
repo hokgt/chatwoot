@@ -2,26 +2,26 @@
 
 require 'uri'
 
+# Fail-safe isolation for the RAILS_ENV=test database.
+#
+# Incident background: `docker compose run ... -e RAILS_ENV=test base ...`
+# inherited POSTGRES_DATABASE=chatwoot_production from the Compose env_file, so
+# test tasks migrated / attempted db:test:purge against production. PostgreSQL
+# blocked the purge, but test isolation must now be fail-closed.
+#
+# This battery is pure Ruby with NO database connection. It is invoked from the
+# smallest possible hook in config/database.yml (the test: section) so it runs
+# before ActiveRecord ever connects. In the test environment it:
+#   * ignores the generic POSTGRES_DATABASE for test DB selection,
+#   * uses POSTGRES_TEST_DATABASE (default chatwoot_test),
+#   * rejects any name/URL that is not clearly test-only,
+#   * neutralizes a generic DATABASE_URL so it cannot silently win, and
+#   * fails closed with a sanitized message and a nonzero exit.
+#
+# It never alters production/development database selection: outside the test
+# environment resolve! is a no-op that returns the historical default.
 module Wijaya
   module Batteries
-    # Fail-safe isolation for the RAILS_ENV=test database.
-    #
-    # Incident background: `docker compose run ... -e RAILS_ENV=test base ...`
-    # inherited POSTGRES_DATABASE=chatwoot_production from the Compose env_file, so
-    # test tasks migrated / attempted db:test:purge against production. PostgreSQL
-    # blocked the purge, but test isolation must now be fail-closed.
-    #
-    # This battery is pure Ruby with NO database connection. It is invoked from the
-    # smallest possible hook in config/database.yml (the test: section) so it runs
-    # before ActiveRecord ever connects. In the test environment it:
-    #   * ignores the generic POSTGRES_DATABASE for test DB selection,
-    #   * uses POSTGRES_TEST_DATABASE (default chatwoot_test),
-    #   * rejects any name/URL that is not clearly test-only,
-    #   * neutralizes a generic DATABASE_URL so it cannot silently win, and
-    #   * fails closed with a sanitized message and a nonzero exit.
-    #
-    # It never alters production/development database selection: outside the test
-    # environment resolve! is a no-op that returns the historical default.
     module TestDatabaseSafety
       # Raised by the pure resolver when the requested test database is unsafe.
       # The message is always sanitized: it contains only a field label, a generic
@@ -75,7 +75,7 @@ module Wijaya
         # UnsafeTestDatabaseError. Performs NO database connection and NO process
         # exit, so it is fully unit-testable. `env` is any Hash-like (defaults to
         # the real ENV).
-        def safe_test_database_name(env = ENV)
+        def safe_test_database_name(env = ENV) # rubocop:disable Metrics/CyclomaticComplexity
           # 1. Preferred explicit test URL. Still validated.
           return database_name_from_url!(env['TEST_DATABASE_URL'], label: 'TEST_DATABASE_URL') if present?(env['TEST_DATABASE_URL'])
 
@@ -112,7 +112,7 @@ module Wijaya
           raise unsafe("#{label} is malformed or is missing a database name") if parsed.nil?
           raise unsafe("#{label} must use a postgres:// or postgresql:// scheme") unless ALLOWED_URL_SCHEMES.include?(parsed.scheme.to_s.downcase)
 
-          database = parsed.path.to_s.sub(%r{\A/}, '')
+          database = parsed.path.to_s.delete_prefix('/')
           raise unsafe("#{label} is malformed or is missing a database name") if database.empty?
           raise unsafe("#{label} database #{sanitize(database)} is not a clearly test-only database name") unless test_only?(database)
 

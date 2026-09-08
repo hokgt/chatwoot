@@ -27,7 +27,7 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder do
     payload = described_class.new(valid_fields).payload
 
     expect(payload).to include(
-      doctype: 'Lead',
+      :doctype => 'Lead',
       'lead_owner' => 'user@example.com',
       'first_name' => 'Sr Modesta PM',
       'whatsapp_no' => '+6281238392959',
@@ -43,6 +43,20 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder do
     expect(payload).not_to have_key('custom_market_customer')
     expect(payload).not_to have_key('custom_jenis_pakaian')
     expect(payload).not_to have_key('campaign_name')
+  end
+
+  it 'accepts every current status value' do
+    Wijaya::Batteries::ErpLeadSidebar::Config::STATUS_VALUES.each do |status|
+      payload = described_class.new(valid_fields.merge('status' => status)).payload
+      expect(payload['status']).to eq(status)
+    end
+  end
+
+  it 'rejects removed legacy status values' do
+    %w[Open Opportunity].each do |status|
+      expect { described_class.new(valid_fields.merge('status' => status)).payload }
+        .to raise_error(Wijaya::Batteries::ErpLeadSidebar::ValidationError, /status is not allowed/)
+    end
   end
 
   it 'requires industry on dev-tex' do

@@ -11,7 +11,9 @@ import {
   ref,
   watch,
 } from 'vue';
-import ErpLeadDraftsAPI from 'dashboard/api/wijayaErpLeadDrafts';
+import ErpLeadDraftsAPI from '@wijaya/erp_lead_sidebar/frontend/api/wijayaErpLeadDrafts';
+import LeadActivityForm from './LeadActivityForm.vue';
+import NextButton from 'dashboard/components-next/button/Button.vue';
 import {
   STATUS_OPTIONS,
   MARKET_CUSTOMER_OPTIONS,
@@ -32,6 +34,27 @@ const props = defineProps({
   currentChat: { type: Object, default: () => ({}) },
   contact: { type: Object, default: () => ({}) },
 });
+
+// The ContactPanel only mounts <ErpLeadPanel/>; the battery renders a compact
+// trigger button and hosts the full form inside a standard modal. Modal
+// visibility is the ONLY thing toggled here — all form state lives in this
+// setup scope (see `fields`/refs below), so closing/reopening never resets it.
+const panelTitle = 'ERP Lead';
+const isModalOpen = ref(false);
+const openModal = () => {
+  isModalOpen.value = true;
+};
+
+// Two isolated views inside the same modal. 'details' is the default and hosts
+// the unchanged Lead Details create/update flow; 'activity' mounts the fully
+// separate LeadActivityForm (v-if, so its runtime options only fetch when the
+// tab is opened). Reset to 'details' on conversation switch.
+const activeTab = ref('details');
+
+// When ERP is unconfigured the backend never persists a draft on open; mirror
+// that on the client by disabling all autosave so opening the panel creates zero
+// draft rows. Fail closed: stays false until the server confirms configuration.
+const configured = ref(false);
 
 const fields = reactive({
   lead_owner: '',
@@ -78,13 +101,19 @@ const withCurrent = (value, options) =>
 // Local searchable dropdown so agents can type-to-filter long ERP option lists
 // (Source/Campaign/Industry/Territory) instead of scrolling a native select.
 // Kept inline as a render-function component to stay within this single-file
-// customization: props/emits mirror a native select (v-model + change).
+// customization: props/emits mirror a native select (v-model + change). The
+// id/describedby/invalid props are display-only association hooks so the field
+// label, helper text and error can be wired to the input for assistive tech;
+// they never affect selection behaviour.
 const SearchableSelect = defineComponent({
   name: 'SearchableSelect',
   props: {
     modelValue: { type: String, default: '' },
     options: { type: Array, default: () => [] },
     placeholder: { type: String, default: 'Search…' },
+    id: { type: String, default: '' },
+    describedby: { type: String, default: '' },
+    invalid: { type: Boolean, default: false },
   },
   emits: ['update:modelValue', 'change'],
   setup(selectProps, { emit }) {
@@ -165,6 +194,11 @@ const SearchableSelect = defineComponent({
         h('input', {
           class: 'input',
           type: 'text',
+          id: selectProps.id || undefined,
+          role: 'combobox',
+          'aria-expanded': open.value ? 'true' : 'false',
+          'aria-describedby': selectProps.describedby || undefined,
+          'aria-invalid': selectProps.invalid ? 'true' : undefined,
           value: open.value ? query.value : selectProps.modelValue,
           placeholder: selectProps.modelValue || selectProps.placeholder,
           onFocus: openMenu,
@@ -337,6 +371,7 @@ const loadDraft = async () => {
     erpLeadId.value = data.erp_lead_id || '';
     refreshMessage.value = data.message || '';
     conflict.value = Boolean(data.conflict);
+    configured.value = data.configured !== false;
     if (data.last_error) error.value = data.last_error;
     // Only autosave the generated autofill for a brand-new draft. Opening an
     // existing (incl. ERP-refreshed) draft must NOT mark it dirty.
@@ -371,6 +406,9 @@ const saveDraft = async () => {
 };
 
 const scheduleSave = (delay = 500) => {
+  // Never autosave while ERP is unconfigured: this keeps opening/editing the
+  // panel from creating draft rows until the ERP connection is set up.
+  if (!configured.value) return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveDraft, delay);
 };
@@ -389,10 +427,14 @@ const validationErrors = computed(() => {
 });
 
 const canSync = computed(
-  () => validationErrors.value.length === 0 && !syncing.value
+  () =>
+    configured.value && validationErrors.value.length === 0 && !syncing.value
 );
 
 const createLead = async () => {
+  // Never sync while ERP is unconfigured: guard before saveDraft so no draft
+  // row is persisted and no ERP request is issued from an unconfigured install.
+  if (!configured.value) return;
   await saveDraft();
   if (!canSync.value) return;
   syncing.value = true;
@@ -424,198 +466,501 @@ const createLead = async () => {
   }
 };
 
-watch(() => props.conversationId, loadDraft, { immediate: true });
+// ---------------------------------------------------------------------------
+// Display-only presentation derived from the existing state refs. None of the
+// computeds below mutate state, change validation logic, or reprioritise the
+// underlying refs — they only decide how the current state is rendered.
+// ---------------------------------------------------------------------------
+
+const STATUS_TONES = {
+  info: 'bg-n-slate-3 text-n-slate-12',
+  success: 'bg-n-teal-3 text-n-teal-11',
+  warning: 'bg-n-amber-3 text-n-amber-11',
+  danger: 'bg-n-ruby-3 text-n-ruby-11',
+};
+
+// One compact synchronization-status line. Priority is a rendering choice only:
+// a single contextual message replaces the previously stacked banners, and the
+// success case shows the ERP Lead id exactly once (never a "created" chip plus a
+// duplicate success banner).
+const leadStatus = computed(() => {
+  if (loading.value)
+    return {
+      tone: 'info',
+      text: 'Loading the ERP Lead linked to this conversation…',
+    };
+  if (syncing.value)
+    return {
+      tone: 'info',
+      text: erpLeadId.value
+        ? 'Updating the Lead in ERP…'
+        : 'Creating the Lead in ERP…',
+    };
+  if (error.value) return { tone: 'danger', text: error.value };
+  if (conflict.value) return { tone: 'warning', text: refreshMessage.value };
+  if (syncStatus.value === 'synced' && erpLeadId.value)
+    return {
+      tone: 'success',
+      text: refreshMessage.value || `Synced with ERP Lead ${erpLeadId.value}.`,
+    };
+  if (refreshMessage.value) return { tone: 'info', text: refreshMessage.value };
+  if (erpLeadId.value)
+    return { tone: 'info', text: `Linked to ERP Lead ${erpLeadId.value}.` };
+  return { tone: 'info', text: '' };
+});
+
+const tabHelper = computed(() =>
+  activeTab.value === 'activity'
+    ? 'Manually record a new activity for the linked Lead.'
+    : 'View and update the ERP Lead linked to this conversation.'
+);
+
+// Field-level validation copy reuses the exact same conditions/messages as
+// `validationErrors`, so it can render next to the affected field without
+// changing what makes the form valid.
+const statusError = computed(() => {
+  if (!fields.status) return 'Status is required.';
+  if (!STATUS_OPTIONS.includes(fields.status))
+    return 'Status value is not allowed.';
+  return '';
+});
+const industryError = computed(() =>
+  !fields.industry ? 'Industry is required before Create Lead.' : ''
+);
+const nameError = computed(() =>
+  !fields.first_name && !fields.company_name
+    ? 'First Name or Organization Name is required.'
+    : ''
+);
+
+const primaryLabel = computed(() => {
+  if (syncing.value) return erpLeadId.value ? 'Updating…' : 'Creating…';
+  if (syncStatus.value === 'failed')
+    return erpLeadId.value ? 'Retry Update Lead' : 'Retry Create Lead in ERP';
+  return erpLeadId.value ? 'Update Lead' : 'Create Lead in ERP';
+});
+
+const footerActionHint = computed(() =>
+  erpLeadId.value
+    ? 'Pushes your changes to the linked ERP Lead in ERPNext.'
+    : 'Creates a new Lead in ERPNext from these details.'
+);
+
+const disabledReason = computed(() => {
+  if (syncing.value) return '';
+  if (!configured.value)
+    return 'Connect ERP in settings to enable creating or updating leads.';
+  if (validationErrors.value.length)
+    return 'Complete the required fields marked * before continuing.';
+  return '';
+});
+
+const draftStatusText = computed(() => {
+  if (!configured.value)
+    return 'ERP is not configured, so changes are not saved yet.';
+  if (saving.value) return 'Saving draft…';
+  if (savedAt.value) return `Draft saved ${savedAt.value}`;
+  return 'Draft is saved locally before sync.';
+});
+
+// On conversation switch, close/reset the modal and load the new conversation
+// exactly once. Toggling the modal alone never re-runs this, so in-conversation
+// close/reopen preserves the in-memory form state.
+watch(
+  () => props.conversationId,
+  () => {
+    isModalOpen.value = false;
+    activeTab.value = 'details';
+    loadDraft();
+  },
+  { immediate: true }
+);
 // WIJAYA_CUSTOM_END erp_lead_sidebar
 </script>
 
 <template>
   <!-- eslint-disable vue/no-bare-strings-in-template, @intlify/vue-i18n/no-raw-text -->
   <!-- WIJAYA_CUSTOM_START erp_lead_sidebar -->
-  <div class="flex flex-col gap-3 p-3 text-sm">
-    <div v-if="loading" class="text-n-slate-11">Loading ERP Lead draft…</div>
+  <div class="px-2 pb-3">
+    <NextButton
+      :label="panelTitle"
+      icon="i-lucide-building-2"
+      faded
+      slate
+      sm
+      class="w-full"
+      @click="openModal"
+    />
+    <woot-modal v-model:show="isModalOpen" size="medium" :on-close="() => {}">
+      <woot-modal-header :header-title="panelTitle" />
+      <div class="flex max-h-[80vh] flex-col text-sm">
+        <!-- Guidance: what this modal is for. -->
+        <p class="shrink-0 px-6 pt-3 text-xs text-n-slate-11">
+          Manage the ERP Lead linked to this conversation — review its details,
+          keep it in sync with ERPNext, and log activities against it.
+        </p>
 
-    <template v-else>
-      <div v-if="erpLeadId" class="rounded-md bg-n-teal-3 text-n-teal-11 p-2">
-        ERP Lead created: <strong>{{ erpLeadId }}</strong>
-      </div>
-      <div v-if="conflict" class="rounded-md bg-n-amber-3 text-n-amber-11 p-2">
-        {{ refreshMessage }}
-      </div>
-      <div
-        v-else-if="refreshMessage"
-        class="rounded-md bg-n-teal-3 text-n-teal-11 p-2"
-      >
-        {{ refreshMessage }}
-      </div>
-      <div v-if="error" class="rounded-md bg-n-ruby-3 text-n-ruby-11 p-2">
-        {{ error }}
-      </div>
-
-      <label class="flex flex-col gap-1">
-        <span>Lead Owner</span>
-        <input
-          v-model="fields.lead_owner"
-          class="input"
-          type="text"
-          @input="scheduleSave()"
-        />
-      </label>
-
-      <label class="flex flex-col gap-1">
-        <span>First Name</span>
-        <input
-          v-model="fields.first_name"
-          class="input"
-          type="text"
-          @input="scheduleSave()"
-        />
-      </label>
-
-      <label class="flex flex-col gap-1">
-        <span>Organization Name</span>
-        <input
-          v-model="fields.company_name"
-          class="input"
-          type="text"
-          @input="scheduleSave()"
-        />
-      </label>
-
-      <label class="flex flex-col gap-1">
-        <span>WhatsApp</span>
-        <input
-          v-model="fields.whatsapp_no"
-          class="input"
-          type="text"
-          @input="
-            fields.mobile_no = fields.whatsapp_no;
-            scheduleSave();
-          "
-        />
-      </label>
-
-      <label class="flex flex-col gap-1">
-        <span>Mobile No</span>
-        <input :value="fields.whatsapp_no" class="input" type="text" readonly />
-        <span class="text-xs text-n-slate-10">
-          Always sent with the same value as WhatsApp.
-        </span>
-      </label>
-
-      <label class="flex flex-col gap-1">
-        <span>Status</span>
-        <select v-model="fields.status" class="input" @change="scheduleSave(0)">
-          <option
-            v-for="option in STATUS_OPTIONS"
-            :key="option"
-            :value="option"
+        <!-- Accessible tablist for the two isolated views. -->
+        <div
+          role="tablist"
+          aria-label="ERP Lead sections"
+          class="flex shrink-0 gap-1 border-b border-n-weak px-6 pt-2"
+        >
+          <button
+            id="erp-tab-details"
+            type="button"
+            role="tab"
+            :aria-selected="activeTab === 'details' ? 'true' : 'false'"
+            aria-controls="erp-tabpanel-details"
+            class="rounded-t border-b-2 px-3 py-2 font-medium outline-none focus-visible:ring-2 focus-visible:ring-n-brand"
+            :class="
+              activeTab === 'details'
+                ? 'border-n-brand text-n-slate-12'
+                : 'border-transparent text-n-slate-10 hover:text-n-slate-11'
+            "
+            @click="activeTab = 'details'"
           >
-            {{ option }}
-          </option>
-        </select>
-      </label>
+            Lead Details
+          </button>
+          <button
+            id="erp-tab-activity"
+            type="button"
+            role="tab"
+            :aria-selected="activeTab === 'activity' ? 'true' : 'false'"
+            aria-controls="erp-tabpanel-activity"
+            class="rounded-t border-b-2 px-3 py-2 font-medium outline-none focus-visible:ring-2 focus-visible:ring-n-brand"
+            :class="
+              activeTab === 'activity'
+                ? 'border-n-brand text-n-slate-12'
+                : 'border-transparent text-n-slate-10 hover:text-n-slate-11'
+            "
+            @click="activeTab = 'activity'"
+          >
+            Lead Activity
+          </button>
+        </div>
 
-      <label class="flex flex-col gap-1">
-        <span>Source</span>
-        <SearchableSelect
-          v-model="fields.utm_source"
-          :options="withCurrent(fields.utm_source, sourceOptions)"
-          @change="scheduleSave(0)"
-        />
-      </label>
+        <!-- Contextual helper for the active tab. -->
+        <p class="shrink-0 px-6 pt-2 text-xs text-n-slate-11">
+          {{ tabHelper }}
+        </p>
 
-      <label class="flex flex-col gap-1">
-        <span>Campaign</span>
-        <SearchableSelect
-          v-model="fields.utm_campaign"
-          :options="withCurrent(fields.utm_campaign, campaignOptions)"
-          @change="scheduleSave(0)"
-        />
-      </label>
-
-      <label class="flex flex-col gap-1">
-        <span>Industry <span class="text-n-ruby-10">*</span></span>
-        <SearchableSelect
-          v-model="fields.industry"
-          :options="withCurrent(fields.industry, industryOptions)"
-          @change="scheduleSave(0)"
-        />
-      </label>
-
-      <label class="flex flex-col gap-1">
-        <span>Territory</span>
-        <SearchableSelect
-          v-model="fields.territory"
-          :options="withCurrent(fields.territory, territoryOptions)"
-          @change="scheduleSave(0)"
-        />
-      </label>
-
-      <div class="flex flex-col gap-2">
-        <strong>Market Customer</strong>
-        <label
-          v-for="[label, key] in MARKET_CUSTOMER_OPTIONS"
-          :key="key"
-          class="flex items-center gap-2"
+        <!-- Activity tab: the form owns its own scroll body + footer, so it must
+             not be wrapped in another overflow scroller here. -->
+        <div
+          v-if="activeTab === 'activity'"
+          id="erp-tabpanel-activity"
+          role="tabpanel"
+          aria-labelledby="erp-tab-activity"
+          class="flex min-h-0 flex-1 flex-col pt-2"
         >
-          <input
-            v-model="fields[key]"
-            type="checkbox"
-            @change="scheduleSave(0)"
+          <LeadActivityForm
+            :conversation-id="conversationId"
+            :current-chat="currentChat"
+            :erp-lead-id="erpLeadId"
+            :configured="configured"
           />
-          <span>{{ label }}</span>
-        </label>
-      </div>
+        </div>
 
-      <div class="flex flex-col gap-2">
-        <strong>Jenis Pakaian</strong>
-        <label
-          v-for="[label, key] in JENIS_PAKAIAN_OPTIONS"
-          :key="key"
-          class="flex items-center gap-2"
+        <!-- Details tab: compact status region, a single scroll body, and a
+             stable non-scrolling footer sibling below it. -->
+        <div
+          v-else
+          id="erp-tabpanel-details"
+          role="tabpanel"
+          aria-labelledby="erp-tab-details"
+          class="flex min-h-0 flex-1 flex-col"
         >
-          <input
-            v-model="fields[key]"
-            type="checkbox"
-            @change="scheduleSave(0)"
-          />
-          <span>{{ label }}</span>
-        </label>
-      </div>
+          <div
+            v-if="leadStatus.text"
+            class="mx-6 mt-3 shrink-0 rounded-md p-2 text-xs"
+            :class="STATUS_TONES[leadStatus.tone]"
+            role="status"
+            aria-live="polite"
+          >
+            {{ leadStatus.text }}
+          </div>
 
-      <ul v-if="validationErrors.length" class="list-disc pl-4 text-n-ruby-10">
-        <li v-for="item in validationErrors" :key="item">{{ item }}</li>
-      </ul>
+          <div
+            class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pt-3 pb-6"
+          >
+            <p class="text-xs text-n-slate-10">
+              Fields marked <span class="text-n-ruby-10">*</span> are required;
+              all others are optional.
+            </p>
 
-      <button
-        class="button button-primary"
-        :disabled="!canSync"
-        @click="createLead"
-      >
-        {{
-          syncing
-            ? erpLeadId
-              ? 'Updating…'
-              : 'Creating…'
-            : syncStatus === 'failed'
-              ? erpLeadId
-                ? 'Retry Update Lead'
-                : 'Retry Create Lead'
-              : erpLeadId
-                ? 'Update Lead'
-                : 'Create Lead'
-        }}
-      </button>
-      <div class="text-xs text-n-slate-10">
-        {{
-          saving
-            ? 'Saving draft…'
-            : savedAt
-              ? `Draft saved ${savedAt}`
-              : 'Draft is saved locally before sync.'
-        }}
+            <section
+              class="flex flex-col gap-3 rounded-lg border border-n-weak bg-n-solid-1 p-4"
+            >
+              <h3
+                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+              >
+                Informasi Lead
+              </h3>
+              <div class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+                <label class="flex flex-col gap-1" for="erp-lead-owner">
+                  <span>Lead Owner</span>
+                  <input
+                    id="erp-lead-owner"
+                    v-model="fields.lead_owner"
+                    class="input"
+                    type="text"
+                    @input="scheduleSave()"
+                  />
+                </label>
+
+                <label class="flex flex-col gap-1" for="erp-first-name">
+                  <span>First Name</span>
+                  <input
+                    id="erp-first-name"
+                    v-model="fields.first_name"
+                    class="input"
+                    type="text"
+                    :aria-invalid="nameError ? 'true' : undefined"
+                    aria-describedby="erp-name-help"
+                    @input="scheduleSave()"
+                  />
+                </label>
+
+                <label
+                  class="flex flex-col gap-1 sm:col-span-2"
+                  for="erp-company-name"
+                >
+                  <span>Organization Name</span>
+                  <input
+                    id="erp-company-name"
+                    v-model="fields.company_name"
+                    class="input"
+                    type="text"
+                    :aria-invalid="nameError ? 'true' : undefined"
+                    aria-describedby="erp-name-help"
+                    @input="scheduleSave()"
+                  />
+                  <span
+                    id="erp-name-help"
+                    class="text-xs"
+                    :class="nameError ? 'text-n-ruby-10' : 'text-n-slate-10'"
+                  >
+                    {{
+                      nameError ||
+                      'Provide at least a First Name or an Organization Name.'
+                    }}
+                  </span>
+                </label>
+              </div>
+            </section>
+
+            <section
+              class="flex flex-col gap-3 rounded-lg border border-n-weak bg-n-solid-1 p-4"
+            >
+              <h3
+                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+              >
+                Kontak
+              </h3>
+              <div class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+                <label class="flex flex-col gap-1" for="erp-whatsapp">
+                  <span>WhatsApp</span>
+                  <input
+                    id="erp-whatsapp"
+                    v-model="fields.whatsapp_no"
+                    class="input"
+                    type="text"
+                    @input="
+                      fields.mobile_no = fields.whatsapp_no;
+                      scheduleSave();
+                    "
+                  />
+                </label>
+
+                <label class="flex flex-col gap-1" for="erp-mobile">
+                  <span>Mobile No</span>
+                  <input
+                    id="erp-mobile"
+                    :value="fields.whatsapp_no"
+                    class="input"
+                    type="text"
+                    readonly
+                    aria-describedby="erp-mobile-help"
+                  />
+                  <span id="erp-mobile-help" class="text-xs text-n-slate-10">
+                    Read-only — mirrors WhatsApp automatically and is always
+                    sent with the same value.
+                  </span>
+                </label>
+              </div>
+            </section>
+
+            <section
+              class="flex flex-col gap-3 rounded-lg border border-n-weak bg-n-solid-1 p-4"
+            >
+              <h3
+                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+              >
+                Sumber dan Klasifikasi
+              </h3>
+              <div class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
+                <label class="flex flex-col gap-1" for="erp-status">
+                  <span>Status <span class="text-n-ruby-10">*</span></span>
+                  <select
+                    id="erp-status"
+                    v-model="fields.status"
+                    class="input"
+                    aria-required="true"
+                    :aria-invalid="statusError ? 'true' : undefined"
+                    :aria-describedby="
+                      statusError ? 'erp-status-help' : undefined
+                    "
+                    @change="scheduleSave(0)"
+                  >
+                    <option
+                      v-for="option in STATUS_OPTIONS"
+                      :key="option"
+                      :value="option"
+                    >
+                      {{ option }}
+                    </option>
+                  </select>
+                  <span
+                    v-if="statusError"
+                    id="erp-status-help"
+                    class="text-xs text-n-ruby-10"
+                  >
+                    {{ statusError }}
+                  </span>
+                </label>
+
+                <label class="flex flex-col gap-1" for="erp-source">
+                  <span>Source</span>
+                  <SearchableSelect
+                    id="erp-source"
+                    v-model="fields.utm_source"
+                    :options="withCurrent(fields.utm_source, sourceOptions)"
+                    @change="scheduleSave(0)"
+                  />
+                </label>
+
+                <label class="flex flex-col gap-1" for="erp-campaign">
+                  <span>Campaign</span>
+                  <SearchableSelect
+                    id="erp-campaign"
+                    v-model="fields.utm_campaign"
+                    :options="withCurrent(fields.utm_campaign, campaignOptions)"
+                    @change="scheduleSave(0)"
+                  />
+                </label>
+
+                <label class="flex flex-col gap-1" for="erp-industry">
+                  <span>Industry <span class="text-n-ruby-10">*</span></span>
+                  <SearchableSelect
+                    id="erp-industry"
+                    v-model="fields.industry"
+                    :options="withCurrent(fields.industry, industryOptions)"
+                    :invalid="Boolean(industryError)"
+                    :describedby="industryError ? 'erp-industry-help' : ''"
+                    @change="scheduleSave(0)"
+                  />
+                  <span
+                    v-if="industryError"
+                    id="erp-industry-help"
+                    class="text-xs text-n-ruby-10"
+                  >
+                    {{ industryError }}
+                  </span>
+                </label>
+
+                <label class="flex flex-col gap-1" for="erp-territory">
+                  <span>Territory</span>
+                  <SearchableSelect
+                    id="erp-territory"
+                    v-model="fields.territory"
+                    :options="withCurrent(fields.territory, territoryOptions)"
+                    @change="scheduleSave(0)"
+                  />
+                </label>
+              </div>
+            </section>
+
+            <section
+              class="flex flex-col gap-3 rounded-lg border border-n-weak bg-n-solid-1 p-4"
+            >
+              <h3
+                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+              >
+                Market Customer
+              </h3>
+              <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                <label
+                  v-for="[label, key] in MARKET_CUSTOMER_OPTIONS"
+                  :key="key"
+                  class="flex items-center gap-2"
+                >
+                  <input
+                    v-model="fields[key]"
+                    type="checkbox"
+                    @change="scheduleSave(0)"
+                  />
+                  <span>{{ label }}</span>
+                </label>
+              </div>
+            </section>
+
+            <section
+              class="flex flex-col gap-3 rounded-lg border border-n-weak bg-n-solid-1 p-4"
+            >
+              <h3
+                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+              >
+                Jenis Pakaian
+              </h3>
+              <div class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                <label
+                  v-for="[label, key] in JENIS_PAKAIAN_OPTIONS"
+                  :key="key"
+                  class="flex items-center gap-2"
+                >
+                  <input
+                    v-model="fields[key]"
+                    type="checkbox"
+                    @change="scheduleSave(0)"
+                  />
+                  <span>{{ label }}</span>
+                </label>
+              </div>
+            </section>
+          </div>
+
+          <!-- Non-scrolling footer: a sibling below the scroll body, not sticky
+               inside it, so it can never cover the fields. -->
+          <div
+            class="flex shrink-0 flex-col gap-2 border-t border-n-weak bg-n-alpha-2 px-6 py-3"
+          >
+            <ul
+              v-if="validationErrors.length"
+              class="list-disc pl-4 text-xs text-n-ruby-10"
+              role="alert"
+            >
+              <li v-for="item in validationErrors" :key="item">{{ item }}</li>
+            </ul>
+
+            <NextButton
+              :label="primaryLabel"
+              :is-loading="syncing"
+              :disabled="!canSync"
+              color="blue"
+              class="w-full"
+              @click="createLead"
+            />
+
+            <p class="text-xs text-n-slate-11">{{ footerActionHint }}</p>
+            <p v-if="disabledReason" class="text-xs text-n-amber-11">
+              {{ disabledReason }}
+            </p>
+            <p class="text-xs text-n-slate-10">{{ draftStatusText }}</p>
+          </div>
+        </div>
       </div>
-    </template>
+    </woot-modal>
   </div>
   <!-- WIJAYA_CUSTOM_END erp_lead_sidebar -->
 </template>

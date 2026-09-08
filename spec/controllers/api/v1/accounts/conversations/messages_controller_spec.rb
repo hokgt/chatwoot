@@ -108,7 +108,7 @@ RSpec.describe 'Conversation Messages API', type: :request do
       end
     end
 
-    context 'when an agent has conversation_participating_manage custom role' do
+    context 'when an agent has conversation_participating_manage custom role', :enterprise do
       let(:agent) { create(:user, account: account, role: :agent) }
       let(:custom_role) { create(:custom_role, account: account, permissions: ['conversation_participating_manage']) }
       let(:params) { { content: 'restricted-scope-message', private: true } }

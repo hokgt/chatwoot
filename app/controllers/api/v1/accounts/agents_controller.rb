@@ -88,7 +88,8 @@ class Api::V1::Accounts::AgentsController < Api::V1::Accounts::BaseController
 
   def new_agent_params
     # WIJAYA_CUSTOM_START custom_roles_rbac
-    params.require(:agent).permit(*Wijaya::Batteries::CustomRoles::Hooks.permitted_agent_attributes([:email, :name, :role, :availability, :auto_offline]))
+    params.require(:agent).permit(*Wijaya::Batteries::CustomRoles::Hooks.permitted_agent_attributes([:email, :name, :role, :availability,
+                                                                                                     :auto_offline]))
     # WIJAYA_CUSTOM_END custom_roles_rbac
   end
 

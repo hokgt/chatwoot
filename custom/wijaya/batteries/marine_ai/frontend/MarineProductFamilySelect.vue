@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { debounce } from '@chatwoot/utils';
-import MarineDocumentAPI from 'dashboard/api/marine/document';
+import MarineDocumentAPI from '@wijaya/marine_ai/frontend/api/document';
 
 // Bounded product-family picker: a debounced, case-insensitive search over the canonical
 // families exposed by the read-only product_families endpoint plus a click-to-select list.

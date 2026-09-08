@@ -8,7 +8,7 @@ import CustomRolePaywall from './component/CustomRolePaywall.vue';
 import Button from 'dashboard/components-next/button/Button.vue';
 import { computed, onMounted, ref } from 'vue';
 // WIJAYA_CUSTOM_START custom_roles_rbac
-import { customRolesBehindPaywall } from '../../../../../../../custom/wijaya/batteries/custom_roles/frontend/permissions';
+import { customRolesBehindPaywall } from '@wijaya/custom_roles/frontend/permissions';
 // WIJAYA_CUSTOM_END custom_roles_rbac
 import { useI18n } from 'vue-i18n';
 import { useStore, useMapGetter } from 'dashboard/composables/store';

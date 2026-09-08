@@ -6,6 +6,9 @@ import { copyTextToClipboard } from 'shared/helpers/clipboard';
 import { useI18n } from 'vue-i18n';
 
 import semver from 'semver';
+// WIJAYA_CUSTOM_START development_version
+import WijayaBuildVersion from '@wijaya/development_version/frontend/BuildVersion.vue';
+// WIJAYA_CUSTOM_END development_version
 
 const { t } = useI18n();
 const { currentAccount } = useAccount();
@@ -28,10 +31,6 @@ const gitSha = computed(() => {
   return globalConfig.value.gitSha.substring(0, 7);
 });
 
-// WIJAYA_CUSTOM_START development_version
-const wijayaDevVersion = computed(() => globalConfig.value.wijayaDevVersion);
-// WIJAYA_CUSTOM_END development_version
-
 const copyGitSha = () => {
   copyTextToClipboard(globalConfig.value.gitSha);
 };
@@ -49,9 +48,7 @@ const copyGitSha = () => {
     <div class="divide-x divide-n-slate-9">
       <span class="px-2">{{ `v${globalConfig.appVersion}` }}</span>
       <!-- WIJAYA_CUSTOM_START development_version -->
-      <span v-if="wijayaDevVersion" class="px-2">
-        {{ `Wijaya Dev v${wijayaDevVersion}` }}
-      </span>
+      <WijayaBuildVersion />
       <!-- WIJAYA_CUSTOM_END development_version -->
       <span
         v-tooltip="t('COMPONENTS.CODE.BUTTON_TEXT')"

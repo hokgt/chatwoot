@@ -35,6 +35,14 @@ const tailwindConfig = {
     './app/javascript/dashboard/components-next/**/*.js',
     './app/javascript/dashboard/routes/dashboard/**/**/*.js',
     './app/views/**/*.erb',
+    // WIJAYA_CUSTOM_START core
+    // Battery frontend files use i-lucide/i-woot icon classes that Tailwind must
+    // scan to generate the corresponding CSS. Without these content paths, icons
+    // defined only in battery files (e.g. i-lucide-ship-wheel in the Marine AI
+    // sidebar) are invisible because their CSS classes are never emitted.
+    './custom/wijaya/batteries/**/*.vue',
+    './custom/wijaya/batteries/**/*.js',
+    // WIJAYA_CUSTOM_END core
   ],
   theme: {
     extend: {

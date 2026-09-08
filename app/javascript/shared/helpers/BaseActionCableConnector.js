@@ -1,4 +1,7 @@
 import { createConsumer } from '@rails/actioncable';
+// WIJAYA_CUSTOM_START persistent_agent_presence
+import { createPersistentPresenceHeartbeat } from '@wijaya/persistent_agent_presence/frontend/createPresenceHeartbeat';
+// WIJAYA_CUSTOM_END persistent_agent_presence
 
 const PRESENCE_INTERVAL = 20000;
 const RECONNECT_INTERVAL = 1000;
@@ -38,13 +41,12 @@ class BaseActionCableConnector {
     this.events = {};
     this.reconnectTimer = null;
     this.isAValidEvent = () => true;
-    this.triggerPresenceInterval = () => {
-      setTimeout(() => {
-        this.subscription.updatePresence();
-        this.triggerPresenceInterval();
-      }, presenceInterval);
-    };
-    this.triggerPresenceInterval();
+    // WIJAYA_CUSTOM_START persistent_agent_presence
+    this.stopPresenceHeartbeat = createPersistentPresenceHeartbeat(
+      () => this.subscription.updatePresence(),
+      presenceInterval
+    );
+    // WIJAYA_CUSTOM_END persistent_agent_presence
   }
 
   checkConnection() {
@@ -81,6 +83,9 @@ class BaseActionCableConnector {
   onDisconnected = () => {};
 
   disconnect() {
+    // WIJAYA_CUSTOM_START persistent_agent_presence
+    this.stopPresenceHeartbeat?.();
+    // WIJAYA_CUSTOM_END persistent_agent_presence
     this.consumer.disconnect();
   }
 

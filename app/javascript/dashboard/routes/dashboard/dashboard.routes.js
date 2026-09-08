@@ -10,7 +10,7 @@ import helpcenterRoutes from './helpcenter/helpcenter.routes';
 import campaignsRoutes from './campaigns/campaigns.routes';
 import { routes as captainRoutes } from './captain/captain.routes';
 // WIJAYA_CUSTOM_START marine_ai
-import { routes as marineRoutes } from './marine/marine.routes';
+import { routes as marineRoutes } from '@wijaya/marine_ai/frontend/routes/marine/marine.routes';
 // WIJAYA_CUSTOM_END marine_ai
 import AppContainer from './Dashboard.vue';
 import Suspended from './suspended/Index.vue';
