@@ -178,8 +178,8 @@ RSpec.describe 'ERP Lead owner sync', type: :model do
   describe 'ERP failure' do
     let(:put_ok) { false }
 
-    it 'keeps the Chatwoot assignment committed and marks the draft failed with a safe error' do
-      draft = draft_with
+    it 'keeps assignee B committed and records the intended owner B in the failed draft for retry' do
+      draft = draft_with(fields: { 'lead_owner' => 'previous-owner-a@example.com' }, sync_status: 'synced')
       assign_committed(agent_b.id)
 
       run_job
@@ -188,7 +188,47 @@ RSpec.describe 'ERP Lead owner sync', type: :model do
       draft.reload
       expect(draft.sync_status).to eq('failed')
       expect(draft.last_error).to eq('ERPNext lead owner sync failed')
-      expect(draft.fields['lead_owner']).to be_nil
+      # The draft-driven sidebar retry must resend the intended new owner B, not the
+      # previous owner A that was there before the failed sync.
+      expect(draft.fields['lead_owner']).to eq(erp_user)
+    end
+  end
+
+  describe 'ERP User-directory validation outage' do
+    it 'marks the draft failed with the intended owner B (same as a PUT failure)' do
+      allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory)
+        .to receive(:valid?).and_raise(Wijaya::Batteries::ErpLeadSidebar::SyncError, 'directory outage')
+      draft = draft_with(fields: { 'lead_owner' => 'previous-owner-a@example.com' }, sync_status: 'synced')
+      assign_committed(agent_b.id)
+
+      run_job
+
+      expect(requests).to be_empty
+      expect(conversation.reload.assignee_id).to eq(agent_b.id)
+      draft.reload
+      expect(draft.sync_status).to eq('failed')
+      expect(draft.last_error).to eq('ERPNext lead owner sync failed')
+      expect(draft.fields['lead_owner']).to eq(erp_user)
+    end
+
+    it 'does not overwrite the draft owner once the conversation has moved on to C' do
+      draft = draft_with(fields: { 'lead_owner' => 'previous-owner-a@example.com' }, sync_status: 'synced')
+      assign_committed(agent_b.id)
+
+      # Deterministically model the B -> C reassignment committing before the B job
+      # persists its failure: the directory-outage seam raises SyncError, and as it
+      # does the conversation is already committed to C. The failure re-check under
+      # the row lock must then decline to write, preserving the prior owner.
+      allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).to receive(:valid?) do
+        assign_committed(agent_c.id)
+        raise Wijaya::Batteries::ErpLeadSidebar::SyncError, 'directory outage'
+      end
+
+      run_job(expected_assignee_id: agent_b.id)
+
+      draft.reload
+      expect(draft.fields['lead_owner']).to eq('previous-owner-a@example.com')
+      expect(draft.sync_status).to eq('synced')
     end
   end
 

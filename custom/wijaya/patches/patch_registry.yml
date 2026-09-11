@@ -472,8 +472,11 @@ patches:
       synced to this owner -> no redundant PUT, while a failed draft still retries) before an
       owner-ONLY PUT to the already linked Lead (never a create or find-by-phone). On any ERP
       outage/non-2xx/timeout the Chatwoot assignment stays committed and the draft is marked
-      failed with a generic, non-secret error for later retry. Assignment selection (team,
-      inbox, availability, capacity, rate-limit, policy, locking, ordering) is never touched.
+      failed with a generic, non-secret error AND the intended new owner, persisted under the
+      same row lock with a repeated staleness re-check so a stale B failure can never clobber a
+      later C — the sidebar's draft-driven retry then resends the intended owner, not the prior
+      one. Assignment selection (team, inbox, availability, capacity, rate-limit, policy,
+      locking, ordering) is never touched.
     custom_files:
       - custom/wijaya/batteries/erp_lead_owner_sync/loader.rb
       - custom/wijaya/batteries/erp_lead_owner_sync/conversation_extensions.rb

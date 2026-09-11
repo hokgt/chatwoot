@@ -22,7 +22,9 @@ require 'erb'
 #   * Already synced to this owner    -> :noop, no PUT (idempotent across dup jobs);
 #     a 'failed' draft still retries because its status is not 'synced'.
 #   * ERP outage / non-2xx / timeout  -> SyncError -> draft marked 'failed' with a
-#     generic, non-secret error; the Chatwoot assignment stays committed.
+#     generic, non-secret error and the intended new owner, under the same row lock
+#     + staleness re-check, so the sidebar's draft-driven retry resends the intended
+#     owner and a stale B failure can't clobber a later C; assignment stays committed.
 #
 # Nested module style so the fully-qualified sibling-battery constants resolve.
 module Wijaya
@@ -47,7 +49,6 @@ module Wijaya
           apply_owner!
         rescue Wijaya::Batteries::ErpLeadSidebar::SyncError
           mark_failed
-          :failed
         end
 
         private
@@ -89,8 +90,23 @@ module Wijaya
           @draft.sync_status == 'synced' && @draft.fields['lead_owner'].to_s == @target_owner
         end
 
+        # Persist the failure under the same row lock and staleness re-check the PUT
+        # ran under, so a B job that failed cannot clobber the draft once the
+        # conversation has moved on to C. The intended new owner (target_owner) is
+        # written into the draft alongside the failed status so the sidebar's
+        # draft-driven retry resends B rather than the previous owner A.
         def mark_failed
-          @draft.update!(sync_status: 'failed', last_error: 'ERPNext lead owner sync failed')
+          @conversation.with_lock do
+            @draft.reload
+            next :stale unless @conversation.assignee_id == @expected_assignee_id
+
+            @draft.update!(
+              fields: @draft.fields.merge('lead_owner' => @target_owner),
+              sync_status: 'failed',
+              last_error: 'ERPNext lead owner sync failed'
+            )
+            :failed
+          end
         end
 
         def lead_uri
