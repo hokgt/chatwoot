@@ -15,10 +15,7 @@ module Wijaya
         def register_unassigned_on_create(conversation)
           return unless Eligibility.deferrable?(conversation)
 
-          Marker.find_or_create_by!(conversation_id: conversation.id) do |marker|
-            marker.account_id = conversation.account_id
-            marker.inbox_id = conversation.inbox_id
-          end
+          register_marker(conversation)
 
           # Close the trigger-before-marker race: an agent who became reachable AFTER the
           # creation-time assignment attempt but BEFORE this marker existed would have found no
@@ -52,13 +49,49 @@ module Wijaya
           Conversation.where(account_id: account_id, id: conversation_ids).find_each do |conversation|
             next unless Eligibility.deferrable?(conversation)
 
-            Marker.find_or_create_by!(conversation_id: conversation.id) do |marker|
-              marker.account_id = conversation.account_id
-              marker.inbox_id = conversation.inbox_id
-            end
+            register_marker(conversation)
             affected_inbox_ids << conversation.inbox_id
           end
           affected_inbox_ids.uniq.each { |inbox_id| ProcessInboxJob.enqueue_for_inbox(inbox_id) }
+        end
+
+        # Historical backfill entry point (operator-invoked, one-time). For an EXPLICIT,
+        # account-scoped allowlist of conversation ids that became open + unassigned BEFORE the
+        # deletion bridge existed, mark each still-eligible one and enqueue the coalesced
+        # per-inbox pass — sharing register_marker and the existing ProcessInboxJob pipeline with
+        # the agent-deletion bridge. It differs from that bridge in exactly one way: a
+        # conversation that ALREADY carries a marker is SKIPPED entirely (no re-mark, no enqueue),
+        # because an existing marker means the live pipeline already owns it — the historical
+        # backfill only ever adopts markerless conversations. The remaining per-id gate is the
+        # shared Eligibility.deferrable? recheck (open, human- and bot-unassigned, legacy path,
+        # native auto-assignment applicable), evaluated here and re-evaluated under the row lock
+        # in InboxProcessor. Cross-account ids are impossible to act on because the scope is
+        # pinned to account_id (they simply never match); the caller (HistoricalBackfill)
+        # additionally rejects them distinctly before enqueue. Idempotent: the existing-marker
+        # skip plus the unique conversation_id in register_marker mean a retried BackfillJob or a
+        # re-submitted id never double-marks, and an already-marked/assigned/resolved id is a
+        # safe no-op. Never a blanket scan — the allowlist is the entire work-list.
+        def register_unassigned_historical(account_id, conversation_ids)
+          affected_inbox_ids = []
+          Conversation.where(account_id: account_id, id: conversation_ids).find_each do |conversation|
+            next if Marker.exists?(conversation_id: conversation.id)
+            next unless Eligibility.deferrable?(conversation)
+
+            register_marker(conversation)
+            affected_inbox_ids << conversation.inbox_id
+          end
+          affected_inbox_ids.uniq.each { |inbox_id| ProcessInboxJob.enqueue_for_inbox(inbox_id) }
+        end
+
+        # Shared marker registration used by every entry point (creation, deletion bridge,
+        # historical backfill). find_or_create_by! keyed on the unique conversation_id, so it is
+        # idempotent across retries and re-dispatches. Extracted verbatim from the original
+        # inline call sites — the marking behavior is unchanged.
+        def register_marker(conversation)
+          Marker.find_or_create_by!(conversation_id: conversation.id) do |marker|
+            marker.account_id = conversation.account_id
+            marker.inbox_id = conversation.inbox_id
+          end
         end
       end
     end
