@@ -200,6 +200,13 @@ Style/ClassAndModuleChildren:
     - 'custom/wijaya/batteries/erp_lead_sidebar/lead_activity_person_directory.rb'
     - 'custom/wijaya/batteries/erp_lead_sidebar/lead_activity_payload_builder.rb'
     - 'custom/wijaya/batteries/erp_lead_sidebar/lead_activity_service.rb'
+    # WIJAYA: erp_lead_owner_sync battery. loader.rb is required directly before its Wijaya
+    # parent exists; the service/job/mapping are Zeitwerk-autoloaded but stay nested and
+    # uniform with the sibling erp_lead_sidebar battery whose constants they reference.
+    - 'custom/wijaya/batteries/erp_lead_owner_sync/loader.rb'
+    - 'custom/wijaya/batteries/erp_lead_owner_sync/app/services/wijaya/batteries/erp_lead_owner_sync/owner_mapping.rb'
+    - 'custom/wijaya/batteries/erp_lead_owner_sync/app/services/wijaya/batteries/erp_lead_owner_sync/owner_sync_service.rb'
+    - 'custom/wijaya/batteries/erp_lead_owner_sync/app/jobs/wijaya/batteries/erp_lead_owner_sync/owner_sync_job.rb'
     - 'custom/wijaya/batteries/custom_roles/hooks.rb'
     - 'custom/wijaya/batteries/ads_tracking/hooks.rb'
     - 'custom/wijaya/batteries/ads_tracking/referral_parser.rb'

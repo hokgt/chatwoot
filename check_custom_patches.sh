@@ -249,6 +249,17 @@ for file in \
   require_marker "$file" "WIJAYA_CUSTOM_END erp_lead_sidebar"
 done
 
+# erp_lead_owner_sync: no core markers — the post-commit assignee-change seam is attached
+# entirely via the battery ConversationExtensions concern (loader to_prepare), so
+# app/models/conversation.rb carries nothing. Verify the battery files + specs only.
+require_file custom/wijaya/batteries/erp_lead_owner_sync/loader.rb
+require_file custom/wijaya/batteries/erp_lead_owner_sync/conversation_extensions.rb
+require_file custom/wijaya/batteries/erp_lead_owner_sync/app/services/wijaya/batteries/erp_lead_owner_sync/owner_mapping.rb
+require_file custom/wijaya/batteries/erp_lead_owner_sync/app/services/wijaya/batteries/erp_lead_owner_sync/owner_sync_service.rb
+require_file custom/wijaya/batteries/erp_lead_owner_sync/app/jobs/wijaya/batteries/erp_lead_owner_sync/owner_sync_job.rb
+require_file spec/custom/wijaya/erp_lead_owner_sync/owner_sync_spec.rb
+require_file spec/custom/wijaya/erp_lead_owner_sync/assignment_integration_spec.rb
+
 # enterprise_extension_compat
 require_marker "config/initializers/01_inject_enterprise_edition_module.rb" "WIJAYA_CUSTOM_START enterprise_extension_compat"
 require_marker "config/initializers/01_inject_enterprise_edition_module.rb" "WIJAYA_CUSTOM_END enterprise_extension_compat"

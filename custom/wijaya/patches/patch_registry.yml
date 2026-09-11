@@ -443,6 +443,59 @@ patches:
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/LeadActivityForm.spec.js
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/dateValidation.spec.js
 
+  - id: erp_lead_owner_sync
+    name: ERPNext Lead Owner Sync on Assignment
+    battery: custom/wijaya/batteries/erp_lead_owner_sync
+    description: >
+      Keeps the linked ERPNext Lead's lead_owner in step with the Chatwoot conversation
+      assignee, entirely after the fact and without redesigning assignment. A battery
+      ConversationExtensions concern (attached to core Conversation via the loader's
+      to_prepare include, so app/models/conversation.rb carries NO owner-sync code) runs an
+      after_update_commit seam: the moment a conversation's assignee_id change to a PRESENT
+      agent commits — Assignment V2's claim_and_assign update! and a genuine manual
+      reassignment alike — it enqueues OwnerSyncJob with the committed assignee id. It never
+      fires for a change to nil (Agents::DestroyJob clears assignee_id with update_all, which
+      skips callbacks; an unassign is filtered out regardless) and never when assignee_id did
+      not change, and it only enqueues when the conversation already has a linked
+      Wijaya::ErpLeadDraft with a present erp_lead_id. The enqueue is fail-open, so a sync
+      error can never roll back or block the committed assignment. OwnerSyncJob is idempotent
+      and stale-safe: it captures the committed assignee as expected_assignee_id and returns
+      without touching ERP if the conversation has since moved to a different (or no) assignee
+      (the B -> C guard), if no draft / blank erp_lead_id, or if the agent has no ERP User
+      mapping (OwnerMapping resolves ONLY by stable Chatwoot user id from the shared
+      erp_lead_sidebar/agent_erp_user_map.json — no name/email fallback — so an unmapped agent
+      leaves the existing owner untouched). OwnerSyncService reuses the erp_lead_sidebar
+      per-account Config, credentialed SafeHttp transport and the live
+      LeadActivityPersonDirectory User validator: it validates the mapped value is a real ERP
+      User (a definite false skips and preserves the prior owner; an ERP outage raises), then
+      under a conversation row lock re-checks the expected assignee and idempotency (already
+      synced to this owner -> no redundant PUT, while a failed draft still retries) before an
+      owner-ONLY PUT to the already linked Lead (never a create or find-by-phone). On any ERP
+      outage/non-2xx/timeout the Chatwoot assignment stays committed and the draft is marked
+      failed with a generic, non-secret error for later retry. Assignment selection (team,
+      inbox, availability, capacity, rate-limit, policy, locking, ordering) is never touched.
+    custom_files:
+      - custom/wijaya/batteries/erp_lead_owner_sync/loader.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/conversation_extensions.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/app/services/wijaya/batteries/erp_lead_owner_sync/owner_mapping.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/app/services/wijaya/batteries/erp_lead_owner_sync/owner_sync_service.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/app/jobs/wijaya/batteries/erp_lead_owner_sync/owner_sync_job.rb
+    core_hook_touchpoints:
+      # No core edits: the post-commit assignee-change seam is attached entirely via the
+      # battery ConversationExtensions concern (loader to_prepare), so app/models/conversation.rb
+      # carries no markers. The already-linked ERP draft is read through the has_one that the
+      # erp_lead_sidebar battery defines on Conversation.
+      []
+    loader_touchpoints:
+      # Feature loader self-registers with the generic core loader, pushes the battery app/
+      # subtree (services + job) onto the Zeitwerk main autoloader, and (in to_prepare)
+      # requires + includes the ConversationExtensions concern into core Conversation.
+      - custom/wijaya/batteries/erp_lead_owner_sync/loader.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/conversation_extensions.rb
+    tests:
+      - spec/custom/wijaya/erp_lead_owner_sync/owner_sync_spec.rb
+      - spec/custom/wijaya/erp_lead_owner_sync/assignment_integration_spec.rb
+
   - id: development_version
     name: Wijaya Internal Development Versioning
     battery: custom/wijaya/batteries/development_version
