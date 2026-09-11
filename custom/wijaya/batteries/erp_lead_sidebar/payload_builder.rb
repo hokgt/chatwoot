@@ -2,8 +2,14 @@
 
 module Wijaya::Batteries::ErpLeadSidebar
   class PayloadBuilder
+    # lead_owner is intentionally NOT here: the sidebar full Lead create/update never
+    # emits an owner. The ERP Lead owner is set exclusively by the erp_lead_owner_sync
+    # battery AFTER the Lead is linked, from the conversation's committed assignee email
+    # and only after it is validated as a real enabled non-Guest ERP User. Keeping owner
+    # out of this list guarantees no unvalidated browser/name/manual value can ever reach
+    # ERP through the sidebar payload, even if a stale draft still carries fields['lead_owner'].
     DIRECT_FIELDS = %w[
-      lead_owner first_name company_name whatsapp_no mobile_no status
+      first_name company_name whatsapp_no mobile_no status
       utm_source industry territory utm_campaign
     ].freeze
 

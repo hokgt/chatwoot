@@ -16,8 +16,10 @@ require 'erb'
 #
 # Safety contract:
 #   * Unconfigured account            -> :skipped, no PUT, owner + draft unchanged.
-#   * Definite invalid mapping value  -> :invalid, no PUT, owner + draft unchanged
-#     (LeadActivityPersonDirectory.valid? returns false for a real "no such User").
+#   * Definite invalid owner email    -> :failed, no PUT, draft marked failed (retryable)
+#     with the intended owner email (LeadActivityPersonDirectory.valid? returns false for a
+#     real "no such User"). Assignment stays committed; the sidebar's draft-driven retry
+#     resends once the ERP User exists.
 #   * Stale after a rapid B -> C swap -> :stale, no PUT (row-lock re-check).
 #   * Already synced to this owner    -> :noop, no PUT (idempotent across dup jobs);
 #     a 'failed' draft still retries because its status is not 'synced'.
@@ -41,10 +43,10 @@ module Wijaya
 
         def perform
           return :skipped unless config.erp_configured?(@account)
-          # A definite "no such User" (false) is an invalid mapping: skip and preserve
-          # the existing owner. An ERP outage raises SyncError (handled below), which is
-          # deliberately distinct from a definite false.
-          return :invalid unless person_directory.valid?(@account, @target_owner)
+          # A definite "no such User" (false) is an invalid owner email: record a retryable
+          # failure carrying the intended email (no PUT), so a later retry resends once the
+          # ERP User exists. An ERP outage raises SyncError (also -> mark_failed below).
+          return mark_invalid unless person_directory.valid?(@account, @target_owner)
 
           apply_owner!
         rescue Wijaya::Batteries::ErpLeadSidebar::SyncError
@@ -52,6 +54,15 @@ module Wijaya
         end
 
         private
+
+        # Definite invalid ERP User: no ERP write. Log safely (no email, no ERP body) and
+        # persist the retryable failure with the intended owner under the same row-lock +
+        # staleness re-check mark_failed uses, so a stale invalid result can't clobber a
+        # newer assignee either.
+        def mark_invalid
+          Rails.logger.warn('[Wijaya] erp_lead_owner_sync target owner is not a valid ERP User; recorded for retry')
+          mark_failed
+        end
 
         # The lock serializes concurrent jobs for the same conversation and lets the
         # stale + idempotency checks read committed state before any PUT. put_owner!

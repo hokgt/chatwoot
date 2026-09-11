@@ -20,7 +20,6 @@ import {
   JENIS_PAKAIAN_OPTIONS,
 } from './fieldConfig';
 import {
-  AGENT_TO_ERP_USER,
   SOURCE_MAPPING,
   CAMPAIGN_MAPPING,
   INDUSTRY_OPTIONS,
@@ -57,7 +56,6 @@ const activeTab = ref('details');
 const configured = ref(false);
 
 const fields = reactive({
-  lead_owner: '',
   first_name: '',
   company_name: '',
   whatsapp_no: '',
@@ -320,21 +318,17 @@ const sourceFromMapping = () => {
   return channel ? SOURCE_MAPPING[channel] || '' : '';
 };
 
-const leadOwnerFromMapping = () => {
-  const id = assignee.value.id;
-  const name = assignee.value.name;
-  return (
-    AGENT_TO_ERP_USER[id] ||
-    AGENT_TO_ERP_USER[name] ||
-    assignee.value.email ||
-    ''
-  );
-};
+// Read-only display of the Lead Owner. The owner is NOT an editable/saved field and
+// is never taken from a name/id mapping or free-text input: it is the current
+// conversation assignee's email, shown purely for the agent's reference. The actual ERP
+// Lead owner is set server-side by the erp_lead_owner_sync battery after the Lead links,
+// from this same committed assignee email and only after ERP-User validation. It is
+// deliberately absent from `fields`, `buildAutofill` and the saved payload.
+const leadOwnerDisplay = computed(() => assignee.value.email || '');
 
 const buildAutofill = () => {
   const phone = contactPhone.value || '';
   return {
-    lead_owner: leadOwnerFromMapping(),
     first_name: contactName.value || '',
     company_name: '',
     whatsapp_no: phone,
@@ -702,11 +696,19 @@ watch(
                   <span>Lead Owner</span>
                   <input
                     id="erp-lead-owner"
-                    v-model="fields.lead_owner"
+                    :value="leadOwnerDisplay"
                     class="input"
                     type="text"
-                    @input="scheduleSave()"
+                    readonly
+                    aria-readonly="true"
+                    aria-describedby="erp-lead-owner-help"
                   />
+                  <span
+                    id="erp-lead-owner-help"
+                    class="text-xs text-n-slate-10"
+                  >
+                    Set automatically from the assigned agent.
+                  </span>
                 </label>
 
                 <label class="flex flex-col gap-1" for="erp-first-name">

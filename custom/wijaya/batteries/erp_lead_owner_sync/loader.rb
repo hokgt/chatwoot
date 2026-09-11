@@ -27,6 +27,7 @@ module Wijaya
         def setup!
           register_autoload_paths!
           attach_conversation_extensions!
+          attach_lead_draft_extensions!
         end
 
         def register_autoload_paths!
@@ -51,6 +52,23 @@ module Wijaya
             Conversation.include(extensions) unless extensions >= Conversation
           rescue StandardError, ScriptError => e
             Rails.logger.error("[Wijaya] erp_lead_owner_sync extension attach failed: #{e.class}")
+          end
+        end
+
+        # Critical Case B: reconcile the owner when the erp_lead_sidebar draft first links its
+        # ERP Lead (assignment may have happened before any Lead existed). The draft model is
+        # OWNED by the erp_lead_sidebar battery and required inside ITS to_prepare, whose order
+        # relative to this one is not guaranteed; require the model here too (idempotent) so the
+        # constant exists before we mix in the post-commit seam.
+        def attach_lead_draft_extensions!
+          root = ROOT
+          Rails.application.config.to_prepare do
+            require Rails.root.join('custom/wijaya/batteries/erp_lead_sidebar/lead_draft').to_s
+            require root.join('lead_draft_extensions').to_s
+            extensions = Wijaya::Batteries::ErpLeadOwnerSync::LeadDraftExtensions
+            Wijaya::ErpLeadDraft.include(extensions) unless extensions >= Wijaya::ErpLeadDraft
+          rescue StandardError, ScriptError => e
+            Rails.logger.error("[Wijaya] erp_lead_owner_sync lead-draft extension attach failed: #{e.class}")
           end
         end
       end

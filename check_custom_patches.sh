@@ -18,6 +18,21 @@ require_marker() {
     missing=1
   fi
 }
+# Every line mentioning a custom-owned local must sit INSIDE a feature marker block, so
+# re-applying only the marker regions can never leave a dangling reference (NameError).
+# Structural check — does not match the full file.
+require_local_only_in_markers() {
+  local file="$1" feature="$2" local_name="$3"
+  [[ -f "$file" ]] || return 0
+  awk -v feat="$feature" -v name="$local_name" -v file="$file" '
+    $0 ~ ("WIJAYA_CUSTOM_START " feat "$") { inblock=1; next }
+    $0 ~ ("WIJAYA_CUSTOM_END " feat "$") { inblock=0; next }
+    index($0, name) && !inblock {
+      print "LEAKED custom local " name " outside " feat " marker in " file ": " $0 > "/dev/stderr"; rc=1
+    }
+    END { exit (rc ? 1 : 0) }
+  ' "$file" || missing=1
+}
 
 require_file custom/wijaya/patches/patch_registry.yml
 
@@ -169,6 +184,7 @@ require_file spec/custom/wijaya/deferred_auto_assignment/lifecycle_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/triggers_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/presence_channel_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/remediation_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/agent_deletion_bridge_spec.rb
 # Battery Hooks module is resolved by name from the core dispatcher map.
 require_marker custom/wijaya/batteries/core/hooks.rb "deferred_auto_assignment:"
 
@@ -177,10 +193,13 @@ for file in \
   app/models/account_user.rb \
   app/channels/room_channel.rb \
   app/models/inbox_member.rb \
-  app/models/team_member.rb; do
+  app/models/team_member.rb \
+  app/jobs/agents/destroy_job.rb; do
   require_marker "$file" "WIJAYA_CUSTOM_START deferred_auto_assignment"
   require_marker "$file" "WIJAYA_CUSTOM_END deferred_auto_assignment"
 done
+# The agent-deletion bridge's captured-ids local must never leak outside its marker blocks.
+require_local_only_in_markers app/jobs/agents/destroy_job.rb deferred_auto_assignment wijaya_unassigned_conversation_ids
 
 # erp_lead_sidebar
 require_file custom/wijaya/batteries/erp_lead_sidebar/config.rb
@@ -215,8 +234,6 @@ require_file db/migrate/20260712000000_create_wijaya_erp_settings.rb
 require_file db/schema.rb
 # Manual Lead Activity form (isolated tab): own runtime options source, strict
 # server-side validation/normalization, and an idempotent guarded insert.
-# Shared agent -> ERP User mapping source read by BOTH backend + frontend.
-require_file custom/wijaya/batteries/erp_lead_sidebar/agent_erp_user_map.json
 require_file custom/wijaya/batteries/erp_lead_sidebar/lead_activity_person_directory.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/lead_activity_options_service.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/lead_activity_payload_builder.rb
@@ -254,11 +271,12 @@ done
 # app/models/conversation.rb carries nothing. Verify the battery files + specs only.
 require_file custom/wijaya/batteries/erp_lead_owner_sync/loader.rb
 require_file custom/wijaya/batteries/erp_lead_owner_sync/conversation_extensions.rb
-require_file custom/wijaya/batteries/erp_lead_owner_sync/app/services/wijaya/batteries/erp_lead_owner_sync/owner_mapping.rb
+require_file custom/wijaya/batteries/erp_lead_owner_sync/lead_draft_extensions.rb
 require_file custom/wijaya/batteries/erp_lead_owner_sync/app/services/wijaya/batteries/erp_lead_owner_sync/owner_sync_service.rb
 require_file custom/wijaya/batteries/erp_lead_owner_sync/app/jobs/wijaya/batteries/erp_lead_owner_sync/owner_sync_job.rb
 require_file spec/custom/wijaya/erp_lead_owner_sync/owner_sync_spec.rb
 require_file spec/custom/wijaya/erp_lead_owner_sync/assignment_integration_spec.rb
+require_file spec/custom/wijaya/erp_lead_owner_sync/lead_link_reconcile_spec.rb
 
 # enterprise_extension_compat
 require_marker "config/initializers/01_inject_enterprise_edition_module.rb" "WIJAYA_CUSTOM_START enterprise_extension_compat"

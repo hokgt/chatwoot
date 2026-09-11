@@ -2,22 +2,23 @@
 
 require 'rails_helper'
 
-# Unit contract for the ERP Lead owner sync job/service/mapping. Outbound ERP is
-# mocked throughout (SafeHttp + the User validator + Config); no real ERP is
-# contacted and no persistent ERP record is created.
+# Unit contract for the ERP Lead owner sync job/service. Outbound ERP is mocked
+# throughout (SafeHttp + the User validator + Config); no real ERP is contacted and no
+# persistent ERP record is created. The ERP owner is the committed assignee's Chatwoot
+# email — never a name, never a substituted user, and never gated by an id map.
 RSpec.describe 'ERP Lead owner sync', type: :model do
   let(:account) { create(:account) }
   let(:inbox) { create(:inbox, account: account) }
   let(:contact) { create(:contact, account: account) }
   let(:contact_inbox) { create(:contact_inbox, contact: contact, inbox: inbox) }
-  let(:agent_b) { create(:user, account: account, role: :agent) }
-  let(:agent_c) { create(:user, account: account, role: :agent) }
+  let(:agent_b) { create(:user, account: account, role: :agent, email: 'erp-user-b@example.com') }
+  let(:agent_c) { create(:user, account: account, role: :agent, email: 'erp-user-c@example.com') }
+  let(:erp_user) { agent_b.email }
+  let(:requests) { [] }
+  let(:put_ok) { true }
   let(:conversation) do
     create(:conversation, account: account, inbox: inbox, contact: contact, contact_inbox: contact_inbox)
   end
-  let(:erp_user) { 'erp-user-b@example.com' }
-  let(:requests) { [] }
-  let(:put_ok) { true }
 
   def draft_with(overrides = {})
     Wijaya::ErpLeadDraft.create!(
@@ -33,7 +34,6 @@ RSpec.describe 'ERP Lead owner sync', type: :model do
       erp_api_secret: 'secret'
     )
     allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).to receive(:valid?).and_return(true)
-    allow(Wijaya::Batteries::ErpLeadOwnerSync::OwnerMapping).to receive(:erp_user_for).and_return(erp_user)
 
     allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request) do |method:, uri:, body: nil, **|
       requests << { method: method, uri: uri, body: body }
@@ -56,7 +56,7 @@ RSpec.describe 'ERP Lead owner sync', type: :model do
   end
 
   describe 'successful committed nil -> Agent B assignment' do
-    it 'PUTs only the owner to the linked lead and marks the draft synced' do
+    it 'PUTs only the owner (the assignee email) to the linked lead and marks the draft synced' do
       draft = draft_with
       assign_committed(agent_b.id)
 
@@ -65,12 +65,38 @@ RSpec.describe 'ERP Lead owner sync', type: :model do
       expect(requests.length).to eq(1)
       expect(requests.first[:method]).to eq(:put)
       expect(requests.first[:uri].to_s).to eq('https://erp.example.com/api/resource/Lead/LEAD-0001')
-      expect(JSON.parse(requests.first[:body])).to eq('lead_owner' => erp_user)
+      expect(JSON.parse(requests.first[:body])).to eq('lead_owner' => agent_b.email)
 
       draft.reload
       expect(draft.sync_status).to eq('synced')
-      expect(draft.fields['lead_owner']).to eq(erp_user)
+      expect(draft.fields['lead_owner']).to eq(agent_b.email)
       expect(draft.last_error).to be_nil
+    end
+  end
+
+  describe 'owner resolution is the assignee email' do
+    it 'sends the assignee email and never the agent display name' do
+      draft_with
+      # A distinct, non-email display name that must never leak into the ERP owner value.
+      agent_b.update!(name: 'Budi The Agent')
+      assign_committed(agent_b.id)
+
+      run_job
+
+      expect(JSON.parse(requests.first[:body])).to eq('lead_owner' => agent_b.email)
+      expect(requests.first[:body]).not_to include(agent_b.name)
+    end
+
+    it 'sends nothing but the assignee email as the owner (no id/name mapping exists)' do
+      # There is no id/name map any more: resolution is email-only, so the PUT happens purely
+      # from the assignee email with nothing else consulted.
+      draft_with
+      assign_committed(agent_b.id)
+
+      run_job
+
+      expect(requests.length).to eq(1)
+      expect(JSON.parse(requests.first[:body])).to eq('lead_owner' => agent_b.email)
     end
   end
 
@@ -95,19 +121,8 @@ RSpec.describe 'ERP Lead owner sync', type: :model do
     end
   end
 
-  describe 'mapping' do
-    it 'skips and preserves the prior owner when the agent is unmapped' do
-      allow(Wijaya::Batteries::ErpLeadOwnerSync::OwnerMapping).to receive(:erp_user_for).and_return(nil)
-      draft = draft_with(fields: { 'lead_owner' => 'previous-owner@example.com' }, sync_status: 'synced')
-      assign_committed(agent_b.id)
-
-      run_job
-
-      expect(requests).to be_empty
-      expect(draft.reload.fields['lead_owner']).to eq('previous-owner@example.com')
-    end
-
-    it 'skips and preserves the prior owner when the mapped value is not a real ERP User' do
+  describe 'invalid ERP User' do
+    it 'keeps the assignment, issues no ERP PUT, and records a retryable failure with the intended email' do
       allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).to receive(:valid?).and_return(false)
       draft = draft_with(fields: { 'lead_owner' => 'previous-owner@example.com' }, sync_status: 'synced')
       assign_committed(agent_b.id)
@@ -115,30 +130,11 @@ RSpec.describe 'ERP Lead owner sync', type: :model do
       run_job
 
       expect(requests).to be_empty
-      expect(draft.reload.fields['lead_owner']).to eq('previous-owner@example.com')
-    end
-  end
-
-  describe 'OwnerMapping keying' do
-    subject(:mapping) { Wijaya::Batteries::ErpLeadOwnerSync::OwnerMapping }
-
-    # The outer before stubs erp_user_for for the job/service specs; exercise the
-    # real resolver here.
-    before { allow(mapping).to receive(:erp_user_for).and_call_original }
-
-    def stub_map(hash)
-      allow(File).to receive(:read).and_call_original
-      allow(File).to receive(:read).with(mapping::MAP_PATH).and_return(hash.to_json)
-    end
-
-    it 'resolves by the stable Chatwoot user id' do
-      stub_map(agent_b.id.to_s => erp_user)
-      expect(mapping.erp_user_for(agent_b)).to eq(erp_user)
-    end
-
-    it 'never falls back to a name/email keyed entry' do
-      stub_map(agent_b.name => erp_user, agent_b.email => erp_user)
-      expect(mapping.erp_user_for(agent_b)).to be_nil
+      expect(conversation.reload.assignee_id).to eq(agent_b.id)
+      draft.reload
+      expect(draft.sync_status).to eq('failed')
+      expect(draft.last_error).to eq('ERPNext lead owner sync failed')
+      expect(draft.fields['lead_owner']).to eq(agent_b.email)
     end
   end
 
@@ -190,7 +186,7 @@ RSpec.describe 'ERP Lead owner sync', type: :model do
       expect(draft.last_error).to eq('ERPNext lead owner sync failed')
       # The draft-driven sidebar retry must resend the intended new owner B, not the
       # previous owner A that was there before the failed sync.
-      expect(draft.fields['lead_owner']).to eq(erp_user)
+      expect(draft.fields['lead_owner']).to eq(agent_b.email)
     end
   end
 
@@ -208,7 +204,7 @@ RSpec.describe 'ERP Lead owner sync', type: :model do
       draft.reload
       expect(draft.sync_status).to eq('failed')
       expect(draft.last_error).to eq('ERPNext lead owner sync failed')
-      expect(draft.fields['lead_owner']).to eq(erp_user)
+      expect(draft.fields['lead_owner']).to eq(agent_b.email)
     end
 
     it 'does not overwrite the draft owner once the conversation has moved on to C' do

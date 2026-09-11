@@ -20,6 +20,12 @@
 #   on_team_member_added(account_id:, team_id:)    TeamMember after_create — a newly added team
 #                                                  agent may be the first eligible one; processes
 #                                                  waiting markers on that team's inboxes.
+#   on_agent_deletion_unassigned(account_id:, conversation_ids:)
+#                                                  Agents::DestroyJob (post-commit) — the exact
+#                                                  conversations an agent deletion just cleared
+#                                                  are re-run through native auto-assignment:
+#                                                  each eligible one is marked + processed, so it
+#                                                  is reassigned now or waits for a later trigger.
 #
 # All heavy lifting lives in the service objects; this surface only translates a native call
 # into a battery action. Every method is safe to fail: the core dispatcher rescues anything.
@@ -52,6 +58,10 @@ module Wijaya
 
         def on_team_member_added(account_id:, team_id:)
           TriggerService.enqueue_for_team(account_id: account_id, team_id: team_id)
+        end
+
+        def on_agent_deletion_unassigned(account_id:, conversation_ids:)
+          Registrar.register_unassigned_after_agent_deletion(account_id, conversation_ids)
         end
       end
     end

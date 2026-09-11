@@ -90,5 +90,19 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       expect(response).to have_http_status(:success)
       expect(response.parsed_body['configured']).to be(true)
     end
+
+    # The owner is never an accepted draft input: it is set server-side post-link from the
+    # validated assignee email. An untrusted lead_owner in the PATCH body must be dropped
+    # by strong params and never persisted onto the draft.
+    it 'never persists an untrusted lead_owner from the update body' do
+      patch update_path,
+            params: { fields: { first_name: 'Bob', lead_owner: 'attacker@evil.example' } },
+            headers: auth, as: :json
+
+      expect(response).to have_http_status(:success)
+      draft = Wijaya::ErpLeadDraft.find_by(conversation: conversation)
+      expect(draft.fields).not_to have_key('lead_owner')
+      expect(draft.fields['first_name']).to eq('Bob')
+    end
   end
 end

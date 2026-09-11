@@ -10,8 +10,11 @@
 #     without touching ERP — a later job owns the newer owner (the B -> C guard).
 #   * With no linked ErpLeadDraft or a blank erp_lead_id it returns without creating
 #     any draft or ERP data.
-#   * With no ERP User mapping for the agent it returns, leaving the existing owner
-#     untouched (OwnerMapping resolves by stable Chatwoot user id, no name fallback).
+#   * The ERP owner is the committed assignee's Chatwoot email (stripped, exact) — the
+#     authoritative identity that matches the ERPNext User.name (login/email) on this
+#     deployment. Never the agent's display name and never a substituted user. A blank
+#     email returns without touching ERP; OwnerSyncService still validates the email is a
+#     real enabled non-Guest ERP User before any write.
 # All remaining validation, locking, idempotency and failure handling live in
 # OwnerSyncService.
 module Wijaya
@@ -28,7 +31,7 @@ module Wijaya
           draft = conversation.wijaya_erp_lead_draft
           return if draft.nil? || draft.erp_lead_id.blank?
 
-          target_owner = OwnerMapping.erp_user_for(conversation.assignee)
+          target_owner = conversation.assignee&.email.to_s.strip.presence
           return if target_owner.blank?
 
           OwnerSyncService.new(

@@ -24,6 +24,7 @@ module Wijaya::Batteries::ErpLeadSidebar
       raise SyncError, 'ERPNext connection is not configured' unless Config.erp_configured?(@account)
 
       payload = PayloadBuilder.new(@draft.fields).payload
+      first_link = @draft.erp_lead_id.blank?
 
       lead_name =
         if @draft.erp_lead_id.present?
@@ -33,7 +34,16 @@ module Wijaya::Batteries::ErpLeadSidebar
           matched.present? ? sync_existing(matched, payload) : create_new(payload)
         end
 
-      @draft.update!(erp_lead_id: lead_name, sync_status: 'synced', last_error: nil, last_payload: payload)
+      attrs = { erp_lead_id: lead_name, sync_status: 'synced', last_error: nil, last_payload: payload }
+      # First link only: the ERP Lead owner is owned exclusively by the erp_lead_owner_sync
+      # battery's post-link OwnerSyncJob, which keys its idempotency on fields['lead_owner'].
+      # The payload above already never sends an owner (see PayloadBuilder::DIRECT_FIELDS), so
+      # drop any untrusted/legacy owner the draft still carries here — otherwise a stale value
+      # matching the new assignee email could make the post-link owner sync a false no-op and
+      # the Lead would keep no owner. A later full update (erp_lead_id already present) leaves a
+      # legitimately synced owner intact.
+      attrs[:fields] = @draft.fields.except('lead_owner') if first_link
+      @draft.update!(**attrs)
       { erp_lead_id: lead_name, payload: payload }
     end
 

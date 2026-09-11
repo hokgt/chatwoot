@@ -281,8 +281,20 @@ patches:
       the marker on assignment or on any residual ineligibility, and keeps it only when still
       eligible but nobody is available yet (for a later trigger). Manual unassignment later
       never re-creates a marker (registration is creation-only; cleanup only ever destroys).
-      All native touch points are tiny marker-wrapped calls through the fail-open core
-      dispatcher.
+      Beyond creation, one more registration path exists: when Agents::DestroyJob deletes an
+      agent it clears that agent's assignee_id via update_all (callbacks skipped), leaving those
+      conversations open + unassigned with no marker; a post-commit bridge (IDs collected inside
+      the unassignment transaction, dispatched only after it commits) hands exactly those
+      account-scoped conversations to the battery, which marks each still-eligible one
+      (idempotent per unique conversation_id, so a retried deletion never double-marks) and
+      enqueues the same coalesced per-inbox pass — reassigning an eligible online agent now via
+      the unchanged native selector, or leaving the marker to wait for a later trigger. No
+      account-wide scan. A normal job retry is a safe no-op (the agent owns nothing by then) and
+      the unique conversation_id makes even a same-id redispatch non-duplicating; the sole
+      irreducible gap is a SIGKILL after the commit but before the post-commit dispatch (left
+      unmarked deliberately — see the registrar comment for why marking in-transaction or an
+      account-wide scan were both rejected). All native touch points are tiny marker-wrapped
+      calls through the fail-open core dispatcher.
     custom_files:
       - custom/wijaya/batteries/deferred_auto_assignment/loader.rb
       - custom/wijaya/batteries/deferred_auto_assignment/conversation_extensions.rb
@@ -307,6 +319,10 @@ patches:
       - app/models/inbox_member.rb
       # New team member -> bounded reprocessing of that team's marked inboxes (after_create_commit).
       - app/models/team_member.rb
+      # Agent deletion bridge: after the unassignment transaction commits, the exact
+      # conversations this deletion cleared are handed to the battery for re-assignment
+      # (collected inside the transaction, dispatched post-commit; no account-wide scan).
+      - app/jobs/agents/destroy_job.rb
       # Generated schema touchpoint for the marker table.
       - db/schema.rb
     loader_touchpoints:
@@ -324,6 +340,7 @@ patches:
       - spec/custom/wijaya/deferred_auto_assignment/triggers_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/presence_channel_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/remediation_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/agent_deletion_bridge_spec.rb
 
 
   - id: erp_lead_sidebar
@@ -378,12 +395,10 @@ patches:
       # (exact User.name, enabled=1, not Guest) immediately before insert, so an
       # invalid/disabled/deleted/Guest/stale value never reaches ERP. It is NOT
       # derived from the conversation assignee or any agent mapping.
-      # agent_erp_user_map.json is NOT the Lead Activity PIC source; it remains
-      # solely the Lead Details autofill mapping consumed by ErpLeadPanel.vue via
-      # frontend/mappings.js (committed empty; real mappings must stay
-      # source-controlled and may only be added by a future, explicitly approved
-      # code change, never hand-edited in a deployed copy).
-      - custom/wijaya/batteries/erp_lead_sidebar/agent_erp_user_map.json
+      # (The former agent_erp_user_map.json agent -> ERP User mapping has been removed:
+      # the ERP Lead owner is never derived from an id/name mapping. Lead Details no longer
+      # sends an owner; the owner is set by the erp_lead_owner_sync battery from the
+      # committed assignee email after the Lead links — see that patch below.)
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_person_directory.rb
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_options_service.rb
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_payload_builder.rb
@@ -458,29 +473,40 @@ patches:
       skips callbacks; an unassign is filtered out regardless) and never when assignee_id did
       not change, and it only enqueues when the conversation already has a linked
       Wijaya::ErpLeadDraft with a present erp_lead_id. The enqueue is fail-open, so a sync
-      error can never roll back or block the committed assignment. OwnerSyncJob is idempotent
+      error can never roll back or block the committed assignment. The owner is the committed
+      assignee's Chatwoot email (stripped, exact) — the authoritative identity that matches the
+      ERPNext User.name (login/email) on this deployment — never the agent's display name and
+      never a substituted user; a blank email leaves the existing owner untouched. There is no
+      id map: resolution is email-only, so an empty/absent mapping never blocks the sync.
+      Critical Case B — assignment can happen BEFORE any ERP Lead exists, so the
+      assignee-change seam finds no erp_lead_id and returns; a second battery seam
+      (LeadDraftExtensions, mixed into the erp_lead_sidebar Wijaya::ErpLeadDraft model via the
+      loader to_prepare) observes the moment the existing erp_lead_sidebar SyncService/controller
+      path first sets erp_lead_id (create or relink — assignment alone never creates a Lead) and
+      enqueues the same OwnerSyncJob with the conversation's CURRENT committed assignee, so the
+      email becomes lead_owner right after linkage; a reassignment racing the Lead create is
+      reconciled by the same expected-assignee/idempotency guards. OwnerSyncJob is idempotent
       and stale-safe: it captures the committed assignee as expected_assignee_id and returns
       without touching ERP if the conversation has since moved to a different (or no) assignee
-      (the B -> C guard), if no draft / blank erp_lead_id, or if the agent has no ERP User
-      mapping (OwnerMapping resolves ONLY by stable Chatwoot user id from the shared
-      erp_lead_sidebar/agent_erp_user_map.json — no name/email fallback — so an unmapped agent
-      leaves the existing owner untouched). OwnerSyncService reuses the erp_lead_sidebar
-      per-account Config, credentialed SafeHttp transport and the live
-      LeadActivityPersonDirectory User validator: it validates the mapped value is a real ERP
-      User (a definite false skips and preserves the prior owner; an ERP outage raises), then
-      under a conversation row lock re-checks the expected assignee and idempotency (already
-      synced to this owner -> no redundant PUT, while a failed draft still retries) before an
-      owner-ONLY PUT to the already linked Lead (never a create or find-by-phone). On any ERP
-      outage/non-2xx/timeout the Chatwoot assignment stays committed and the draft is marked
-      failed with a generic, non-secret error AND the intended new owner, persisted under the
-      same row lock with a repeated staleness re-check so a stale B failure can never clobber a
-      later C — the sidebar's draft-driven retry then resends the intended owner, not the prior
-      one. Assignment selection (team, inbox, availability, capacity, rate-limit, policy,
-      locking, ordering) is never touched.
+      (the B -> C guard), if no draft / blank erp_lead_id, or if the assignee has a blank email.
+      OwnerSyncService reuses the erp_lead_sidebar per-account Config, credentialed SafeHttp
+      transport and the live LeadActivityPersonDirectory User validator: it validates the email
+      is a real enabled non-Guest ERP User (a definite false records a RETRYABLE failure carrying
+      the intended assignee email with NO ERP write — it does NOT preserve the prior owner — so a
+      later draft-driven retry resends once the ERP User exists; an ERP outage raises), then under
+      a conversation row lock re-checks the
+      expected assignee and idempotency (already synced to this owner -> no redundant PUT, while
+      a failed draft still retries) before an owner-ONLY PUT to the already linked Lead (never a
+      create or find-by-phone). On any ERP outage/non-2xx/timeout the Chatwoot assignment stays
+      committed and the draft is marked failed with a generic, non-secret error AND the intended
+      new owner, persisted under the same row lock with a repeated staleness re-check so a stale
+      B failure can never clobber a later C — the sidebar's draft-driven retry then resends the
+      intended owner, not the prior one. Assignment selection (team, inbox, availability,
+      capacity, rate-limit, policy, locking, ordering) is never touched.
     custom_files:
       - custom/wijaya/batteries/erp_lead_owner_sync/loader.rb
       - custom/wijaya/batteries/erp_lead_owner_sync/conversation_extensions.rb
-      - custom/wijaya/batteries/erp_lead_owner_sync/app/services/wijaya/batteries/erp_lead_owner_sync/owner_mapping.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/lead_draft_extensions.rb
       - custom/wijaya/batteries/erp_lead_owner_sync/app/services/wijaya/batteries/erp_lead_owner_sync/owner_sync_service.rb
       - custom/wijaya/batteries/erp_lead_owner_sync/app/jobs/wijaya/batteries/erp_lead_owner_sync/owner_sync_job.rb
     core_hook_touchpoints:
@@ -492,12 +518,15 @@ patches:
     loader_touchpoints:
       # Feature loader self-registers with the generic core loader, pushes the battery app/
       # subtree (services + job) onto the Zeitwerk main autoloader, and (in to_prepare)
-      # requires + includes the ConversationExtensions concern into core Conversation.
+      # requires + includes the ConversationExtensions concern into core Conversation and the
+      # LeadDraftExtensions concern into the erp_lead_sidebar Wijaya::ErpLeadDraft model.
       - custom/wijaya/batteries/erp_lead_owner_sync/loader.rb
       - custom/wijaya/batteries/erp_lead_owner_sync/conversation_extensions.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/lead_draft_extensions.rb
     tests:
       - spec/custom/wijaya/erp_lead_owner_sync/owner_sync_spec.rb
       - spec/custom/wijaya/erp_lead_owner_sync/assignment_integration_spec.rb
+      - spec/custom/wijaya/erp_lead_owner_sync/lead_link_reconcile_spec.rb
 
   - id: development_version
     name: Wijaya Internal Development Versioning

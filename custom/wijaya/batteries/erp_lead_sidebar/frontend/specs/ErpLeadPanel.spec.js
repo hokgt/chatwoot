@@ -177,10 +177,50 @@ describe('ErpLeadPanel modal presentation', () => {
     expect(wrapper.find('.woot-modal-header h2').text()).toBe('ERP Lead');
     // Form fields are now present inside the modal.
     expect(wrapper.find('input').exists()).toBe(true);
-    const leadOwner = wrapper
-      .findAll('input')
-      .find(i => i.element.value === 'owner@example.com');
-    expect(leadOwner).toBeTruthy();
+  });
+
+  // The Lead Owner is read-only and reflects the current assignee email only — never a
+  // stored fields.lead_owner, an id/name mapping, or free-text input, and it never autosaves.
+  it('renders the owner read-only from the assignee email, ignoring any stored/mapped value', async () => {
+    // Server returns a stored fields.lead_owner AND the assignee carries a display name and
+    // id; none of those may become the owner value or be editable.
+    showSpy.mockResolvedValue({
+      data: {
+        configured: true,
+        fields: { lead_owner: 'stored-owner@example.com', first_name: 'Bob' },
+      },
+    });
+    const wrapper = mount(ErpLeadPanel, {
+      props: {
+        conversationId: 42,
+        currentChat: {
+          meta: {
+            assignee: {
+              id: 7,
+              name: 'Budi The Agent',
+              email: 'agent@example.com',
+            },
+          },
+        },
+      },
+      global: {
+        stubs: { WootModal, WootModalHeader, NextButton, LeadActivityForm },
+      },
+    });
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    const owner = wrapper.find('#erp-lead-owner');
+    expect(owner.attributes('readonly')).toBeDefined();
+    // Shows the assignee email, not the stored fields value and not the display name.
+    expect(owner.element.value).toBe('agent@example.com');
+    expect(owner.element.value).not.toBe('stored-owner@example.com');
+    expect(owner.element.value).not.toBe('Budi The Agent');
+    // No autosave is wired to the owner input.
+    await owner.setValue('typed@evil.example');
+    await owner.trigger('input');
+    expect(saveSpy).not.toHaveBeenCalled();
   });
 
   it('requests the wider supported WootModal size', async () => {

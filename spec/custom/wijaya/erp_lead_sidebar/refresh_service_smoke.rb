@@ -29,7 +29,7 @@ module Wijaya
 
       class PayloadBuilder
         DIRECT_FIELDS = %w[
-          lead_owner first_name company_name whatsapp_no mobile_no status
+          first_name company_name whatsapp_no mobile_no status
           utm_source industry territory utm_campaign
         ].freeze
       end
