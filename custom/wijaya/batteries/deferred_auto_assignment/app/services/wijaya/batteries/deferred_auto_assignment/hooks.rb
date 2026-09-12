@@ -26,6 +26,13 @@
 #                                                  are re-run through native auto-assignment:
 #                                                  each eligible one is marked + processed, so it
 #                                                  is reassigned now or waits for a later trigger.
+#   record_agent_deletion_provenance(account_id:, prior_assignee_id:, conversation_ids:)
+#                                                  Agents::DestroyJob (IN-transaction) — record
+#                                                  durable, structured provenance for the exact
+#                                                  conversations this deletion clears, ATOMICALLY
+#                                                  with the unassignment (savepoint-isolated), so
+#                                                  a crash before the post-commit dispatch is
+#                                                  reconcilable later. Never rolls back the delete.
 #
 # All heavy lifting lives in the service objects; this surface only translates a native call
 # into a battery action. Every method is safe to fail: the core dispatcher rescues anything.
@@ -62,6 +69,10 @@ module Wijaya
 
         def on_agent_deletion_unassigned(account_id:, conversation_ids:)
           Registrar.register_unassigned_after_agent_deletion(account_id, conversation_ids)
+        end
+
+        def record_agent_deletion_provenance(account_id:, prior_assignee_id:, conversation_ids:)
+          ProvenanceRecorder.record_agent_deletion(account_id, prior_assignee_id, conversation_ids)
         end
       end
     end

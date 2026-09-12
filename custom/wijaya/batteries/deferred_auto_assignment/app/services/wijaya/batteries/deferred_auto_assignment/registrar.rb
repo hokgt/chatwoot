@@ -72,6 +72,27 @@ module Wijaya
         # re-submitted id never double-marks, and an already-marked/assigned/resolved id is a
         # safe no-op. Never a blanket scan — the allowlist is the entire work-list.
         def register_unassigned_historical(account_id, conversation_ids)
+          adopt_markerless(account_id, conversation_ids)
+        end
+
+        # Provenance-backed entry point for the automatic one-time reconciliation (Reconciler).
+        # The Reconciler has already established, from durable structured provenance, that each id
+        # was assigned to a human agent who was subsequently deleted and is currently deferrable;
+        # this narrowly named entry point marks + enqueues exactly those account-scoped ids through
+        # the SAME shared pipeline as every other path — no direct assignee write, no new engine.
+        # It shares adopt_markerless with the historical path: an already-marked id is skipped (the
+        # live pipeline owns it), the per-id Eligibility.deferrable? recheck is re-run here and again
+        # under the row lock in InboxProcessor, and the unique conversation_id keeps a retried run
+        # from double-marking.
+        def register_unassigned_from_provenance(account_id, conversation_ids)
+          adopt_markerless(account_id, conversation_ids)
+        end
+
+        # Shared body for the markerless-adoption paths (historical allowlist + provenance
+        # reconciliation): for each account-scoped id, skip if it already carries a marker (the
+        # live pipeline owns it), recheck Eligibility.deferrable?, then mark the still-eligible ones
+        # via the idempotent find_or_create and enqueue one coalesced pass per affected inbox.
+        def adopt_markerless(account_id, conversation_ids)
           affected_inbox_ids = []
           Conversation.where(account_id: account_id, id: conversation_ids).find_each do |conversation|
             next if Marker.exists?(conversation_id: conversation.id)

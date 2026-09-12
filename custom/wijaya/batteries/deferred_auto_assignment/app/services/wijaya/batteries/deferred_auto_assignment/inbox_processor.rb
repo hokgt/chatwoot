@@ -50,25 +50,44 @@ module Wijaya
         end
 
         # Returns true to KEEP the marker (still eligible, nobody available yet), false to drop
-        # it (assigned or no longer eligible). Runs inside the caller's row lock.
+        # it (assigned or no longer eligible). Runs inside the caller's row lock. Emits a
+        # content-free outcome log per marker (conversation id only) so the deferred/agent-deletion
+        # and reconciliation flows have accurate, non-misleading observability of the actual
+        # assignment result (this is where "assigned / no eligible agent / marker retained" is
+        # truthfully known — the Reconciler only owns registration counts).
         def try_assign(conversation)
-          return false unless Eligibility.deferrable?(conversation)
+          unless Eligibility.deferrable?(conversation)
+            log_outcome(conversation, 'dropped_ineligible')
+            return false
+          end
 
           allowed_agent_ids = Eligibility.allowed_agent_ids(conversation)
           assignee = AutoAssignment::AgentAssignmentService.new(
             conversation: conversation, allowed_agent_ids: allowed_agent_ids
           ).find_assignee
-          return true if assignee.nil?
+          if assignee.nil?
+            log_outcome(conversation, 'no_eligible_agent_marker_retained')
+            return true
+          end
 
           # Final compare-and-set immediately before the write, still holding the FOR UPDATE
           # row lock: assign only while this locked+reloaded row is still open and unclaimed by
           # a human or an agent bot. update! (not update_all) preserves the native assignment
           # callbacks/events, including the automatic_assignment_activity marker that
           # find_assignee just set, so the normal "assigned by the System" activity still fires.
-          return false unless assignable_now?(conversation)
+          unless assignable_now?(conversation)
+            log_outcome(conversation, 'dropped_claimed')
+            return false
+          end
 
           conversation.update!(assignee: assignee)
+          log_outcome(conversation, 'assigned')
           false
+        end
+
+        # Content-free: conversation id and outcome only, never message bodies.
+        def log_outcome(conversation, outcome)
+          Rails.logger.info("[Wijaya] deferred assignment conversation=#{conversation.id} outcome=#{outcome}")
         end
 
         # The conditional predicate for the final write: id match is implicit (same locked

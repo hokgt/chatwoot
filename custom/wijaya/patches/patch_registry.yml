@@ -302,22 +302,58 @@ patches:
       unmarked deliberately — see the registrar comment for why marking in-transaction or an
       account-wide scan were both rejected). All native touch points are tiny marker-wrapped
       calls through the fail-open core dispatcher.
+      Durable structured provenance closes that crash gap and enables SAFE AUTOMATIC historical
+      reconciliation. A wijaya_deferred_assignment_provenance tombstone (account, conversation,
+      inbox, PRIOR human agent id, event kind + time, reconciled_at cursor) is recorded ATOMICALLY
+      inside the DestroyJob unassignment transaction via a second in-transaction hook — but
+      savepoint-isolated (requires_new: true) and routed through the fail-open dispatcher, so a
+      provenance error can never roll back the user deletion. prior_assignee_id carries NO foreign
+      key (a cascading FK would erase the provenance when the agent User is deleted, which is the
+      whole scenario); account/conversation/inbox FKs cascade because nothing is left to reassign
+      once those are gone. No message content, no credentials. A one-time automatic reconciliation
+      (Reconciler) is triggered by a migration that enqueues ReconciliationJob (mirroring the
+      established EnqueueValidateOpenaiHooksJob convention) — recorded once in schema_migrations, no
+      recurring blanket scan. It scans ONLY unreconciled provenance rows (never all unassigned
+      conversations) in bounded batches, guarded by a wijaya_deferred_reconciliation_runs ledger
+      (unique generation = persisted run/cutoff/completion state) so a retry/re-enqueue resumes the
+      same run. Per row it fails closed: it registers (through the narrowly named provenance-backed
+      Registrar.register_unassigned_from_provenance entry, which shares the exact marker ->
+      ProcessInboxJob -> InboxProcessor -> native selector -> update! -> ERP owner-sync pipeline and
+      NEVER writes assignee_id directly) ONLY a conversation that is structurally proven a
+      deleted-agent orphan (event is agent_deletion, prior human agent no longer an account member)
+      AND currently deferrable AND markerless AND same-account AND created before the cutoff; any
+      uncertainty is ambiguous/skipped and every examined row is stamped reconciled_at so it is
+      never rescanned. The historical allowlist apply (HistoricalBackfill/BackfillOperator) is
+      DEPRECATED as the required path — automatic reconciliation needs no manual ids; the read-only
+      discovery/dry-run remains as operator diagnostics. Conversations unassigned by a deletion that
+      predates provenance carry NO provenance row and are never guessed from free-text activity —
+      they cannot be recovered automatically without an external authoritative source (see
+      BACKFILL.md). InboxProcessor emits a content-free per-marker outcome log (assigned /
+      no-eligible-agent-marker-retained / dropped) so assignment outcomes are observable without
+      the Reconciler fabricating async counts it cannot know.
     custom_files:
       - custom/wijaya/batteries/deferred_auto_assignment/loader.rb
       - custom/wijaya/batteries/deferred_auto_assignment/conversation_extensions.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/marker.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/deletion_provenance.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/reconciliation_run.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/hooks.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/eligibility.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/registrar.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/trigger_service.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/inbox_processor.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/process_inbox_job.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/provenance_recorder.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/reconciler.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/reconciliation_job.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_discovery.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_backfill.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/backfill_job.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/backfill_operator.rb
       - custom/wijaya/batteries/deferred_auto_assignment/bin/historical_backfill.rb
       - db/migrate/20260905000000_create_wijaya_deferred_assignments.rb
+      - db/migrate/20260912000000_create_wijaya_deferred_assignment_provenance.rb
+      - db/migrate/20260912000001_enqueue_deferred_assignment_reconciliation.rb
     core_hook_touchpoints:
       # Battery Hooks module resolved by name from the core dispatcher (core/hooks.rb map).
       - custom/wijaya/batteries/core/hooks.rb
@@ -353,6 +389,8 @@ patches:
       - spec/custom/wijaya/deferred_auto_assignment/presence_channel_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/remediation_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/agent_deletion_bridge_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/provenance_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/reconciliation_spec.rb
 
 
   - id: erp_lead_sidebar

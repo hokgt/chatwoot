@@ -12,6 +12,9 @@ class Agents::DestroyJob < ApplicationJob
       # WIJAYA_CUSTOM_START deferred_auto_assignment
       # Capture the exact conversations this deletion will clear, before the update_all below.
       wijaya_unassigned_conversation_ids = user.assigned_conversations.where(account: account).ids
+      # Record durable provenance ATOMICALLY within this transaction (savepoint-isolated,
+      # fail-open) so a crash before the post-commit dispatch below stays reconcilable.
+      wijaya_record_agent_deletion_provenance(account, user, wijaya_unassigned_conversation_ids)
       # WIJAYA_CUSTOM_END deferred_auto_assignment
       unassign_conversations(account, user)
     end
@@ -32,6 +35,18 @@ class Agents::DestroyJob < ApplicationJob
     Wijaya::Batteries::Core::Hooks.dispatch(
       :deferred_auto_assignment, :on_agent_deletion_unassigned,
       default: nil, account_id: account.id, conversation_ids: conversation_ids
+    )
+  end
+
+  # In-transaction provenance recording. The battery hook is savepoint-isolated and the core
+  # dispatcher rescues everything, so a provenance failure can never roll back the user deletion.
+  def wijaya_record_agent_deletion_provenance(account, user, conversation_ids)
+    return if conversation_ids.blank?
+    return unless defined?(Wijaya::Batteries::Core::Hooks)
+
+    Wijaya::Batteries::Core::Hooks.dispatch(
+      :deferred_auto_assignment, :record_agent_deletion_provenance,
+      default: nil, account_id: account.id, prior_assignee_id: user.id, conversation_ids: conversation_ids
     )
   end
   # WIJAYA_CUSTOM_END deferred_auto_assignment
