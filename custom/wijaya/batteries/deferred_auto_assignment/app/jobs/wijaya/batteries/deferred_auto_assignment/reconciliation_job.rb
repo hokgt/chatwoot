@@ -1,10 +1,12 @@
 # frozen_string_literal: true
 
-# One-time background worker for the automatic historical reconciliation. Enqueued exactly once
-# by the EnqueueDeferredAssignmentReconciliation migration (mirroring the established
-# EnqueueValidateOpenaiHooksJob convention), it delegates to the Reconciler, which is guarded by
-# the ReconciliationRun ledger (unique generation) so a normal ActiveJob retry or a duplicate
-# enqueue resumes the same run rather than starting a second scan. It scans only durable
+# Background worker for automatic reconciliation. Two callers enqueue it: the one-time
+# EnqueueDeferredAssignmentReconciliationAfterSchema migration at deploy (mirroring the established
+# EnqueueValidateOpenaiHooksJob convention) with the historical cutoff, and the recurring
+# RecoveryDrainerJob with a fresh generation + short safety-age cutoff to drain crash-gap
+# provenance the one-time run's fixed cutoff can never reach. It delegates to the Reconciler, which
+# is guarded by the ReconciliationRun ledger (unique generation) so a normal ActiveJob retry or a
+# duplicate enqueue resumes the same run rather than starting a second scan. It scans only durable
 # provenance rows in bounded batches; it never scans all unassigned conversations and never
 # assigns directly.
 module Wijaya
@@ -22,8 +24,11 @@ module Wijaya
         # re-enqueue later without rescanning completed batches.
         retry_on StandardError, wait: :polynomially_longer, attempts: 5
 
-        def perform(generation:)
-          Reconciler.run(generation: generation)
+        # +cutoff+ (an optional Time; nil for the one-time migration run => full history) bounds the
+        # provenance scan; the recurring RecoveryDrainerJob passes now - SAFETY_AGE. It is persisted
+        # as the run's cutoff_at on first create, so a retry/resume reuses the original bound.
+        def perform(generation:, cutoff: nil)
+          Reconciler.run(generation: generation, cutoff: cutoff)
         end
       end
     end

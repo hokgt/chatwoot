@@ -378,6 +378,7 @@ patches:
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/provenance_recorder.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/reconciler.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/reconciliation_job.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/recovery_drainer_job.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_discovery.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_backfill.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/backfill_job.rb
@@ -407,6 +408,8 @@ patches:
       - app/jobs/agents/destroy_job.rb
       # Generated schema touchpoint for the marker table.
       - db/schema.rb
+      # Low-frequency crash-gap recovery drainer cron entry (provenance-scoped, self-gating).
+      - config/schedule.yml
     loader_touchpoints:
       # Feature loader self-registers with the generic core loader, pushes the battery app/
       # subtree (models/services/jobs) onto the Zeitwerk main autoloader, and (in to_prepare)
@@ -425,6 +428,7 @@ patches:
       - spec/custom/wijaya/deferred_auto_assignment/agent_deletion_bridge_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/provenance_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/reconciliation_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/recovery_drainer_spec.rb
 
 
   - id: erp_lead_sidebar

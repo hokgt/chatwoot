@@ -74,3 +74,16 @@ remove_orphan_conversations_job:
   cron: '0 */12 * * *'
   class: 'Internal::RemoveOrphanConversationsJob'
   queue: housekeeping
+
+# WIJAYA_CUSTOM_START deferred_auto_assignment
+# executed hourly (at minute 15)
+# Low-frequency crash-gap RECOVERY DRAINER (durable-outbox fallback, NOT the primary deletion
+# mechanism). It queries ONLY unreconciled deferred-assignment deletion-provenance tombstones —
+# never a blanket scan of Unassigned conversations — and, only when a straggler exists, enqueues the
+# existing ReconciliationJob to adopt it through the unchanged native pipeline. Self-gating: no
+# provenance, no run. Permitted as a scheduled job precisely because it is provenance-scoped.
+wijaya_deferred_assignment_recovery_drainer_job:
+  cron: '15 * * * *'
+  class: 'Wijaya::Batteries::DeferredAutoAssignment::RecoveryDrainerJob'
+  queue: scheduled_jobs
+# WIJAYA_CUSTOM_END deferred_auto_assignment

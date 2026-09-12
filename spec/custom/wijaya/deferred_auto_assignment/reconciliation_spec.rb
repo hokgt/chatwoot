@@ -592,22 +592,27 @@ RSpec.describe 'Deferred auto-assignment historical reconciliation', type: :mode
     end
   end
 
-  # Supervisor defect B: FOR UPDATE SKIP LOCKED alone does not stop a second same-generation job from
+  # Supervisor defect B (corrected): FOR UPDATE SKIP LOCKED alone does not stop a second job from
   # observing no unlocked rows (while the owner holds the last batch), completing the run, and then
   # the owner rolling back — permanently abandoning rows. The whole run is now serialized under a
-  # generation-scoped advisory lock: a worker that cannot take the lock never scans, dispatches, or
-  # finalizes, so it can never complete a run another worker still owns.
-  describe 'single-run serialization (a duplicate cannot complete a run another worker owns)' do
-    it 'does not scan, dispatch, or finalize while the generation lock is held elsewhere, and a retry completes it' do
+  # single GLOBAL advisory lock (not per-generation), so the one-time migration run and every
+  # recurring drainer run are strictly serialized. A job that cannot take the lock RAISES
+  # (LockContention) rather than returning a successful no-op: it never scans, dispatches, or
+  # finalizes while another run owns the lock, AND it never strands its own run row 'running' —
+  # ReconciliationJob's retry_on re-enqueues it so its generation is eventually processed.
+  describe 'single-run serialization (a contending job raises for retry, never completes/strands a run)' do
+    it 'raises LockContention without scanning/dispatching/finalizing, and a retry completes it' do
       make_agent
       conversation, = orphan_with_provenance
       @online = []
 
-      # First call: "worker A" owns the lock (acquire fails). Second call (retry): the lock is free.
-      allow(reconciler).to receive(:acquire_generation_lock).and_return(false, true)
-      allow(reconciler).to receive(:release_generation_lock)
+      # First call: another run owns the global lock (acquire fails). Second call (retry): it is free.
+      allow(reconciler).to receive(:acquire_global_lock).and_return(false, true)
+      allow(reconciler).to receive(:release_global_lock)
 
-      blocked = reconciler.run(generation: 'gen-lock')
+      expect { reconciler.run(generation: 'gen-lock') }.to raise_error(reconciler::LockContention)
+
+      blocked = run_model.find_by(generation: 'gen-lock')
       expect(blocked.completed?).to be(false)
       expect(blocked.status).to eq('running')
       expect(blocked.scanned).to eq(0)
@@ -615,7 +620,7 @@ RSpec.describe 'Deferred auto-assignment historical reconciliation', type: :mode
       expect(provenance_row(conversation).reconciled_at).to be_nil
       expect(marker_for(conversation)).to be_nil
 
-      # Worker A released the lock (completed or uncommitted-failed); the retry serializes and finishes.
+      # The lock frees; the retry_on-driven re-enqueue serializes and finishes — no stranded run.
       resumed = run_reconciliation(generation: 'gen-lock')
       expect(resumed.completed?).to be(true)
       expect(resumed.scanned).to eq(1)

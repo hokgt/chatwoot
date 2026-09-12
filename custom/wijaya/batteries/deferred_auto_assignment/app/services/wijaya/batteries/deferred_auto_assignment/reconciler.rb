@@ -1,8 +1,6 @@
 # frozen_string_literal: true
 
-require 'zlib'
-
-# Automatic, one-time historical reconciliation for the deferred auto-assignment battery.
+# Automatic reconciliation for the deferred auto-assignment battery.
 #
 # It scans ONLY the durable structured provenance rows (never all unassigned conversations),
 # in bounded batches, and for each conversation that is STRUCTURALLY PROVEN to have been assigned
@@ -19,13 +17,23 @@ require 'zlib'
 # untouched) and a retried/duplicate job for the same generation RESUMES from the remaining
 # unreconciled rows without losing or double-counting work.
 #
+# Two callers reach this: the one-time migration run (a fixed historical cutoff, generation =
+# the enqueue migration's version) and the recurring RecoveryDrainerJob (a fresh generation +
+# a short safety-age cutoff each cycle). The drainer is the durable-outbox/crash-gap fallback for
+# provenance recorded AFTER the migration ran — see RecoveryDrainerJob and BACKFILL.md. The normal
+# Agents::DestroyJob -> Registrar bridge remains the PRIMARY future deletion path, unchanged.
+#
 # Single-run serialization + durable dispatch (correctness): the entire scan + dispatch + finalize
-# runs under a PostgreSQL SESSION advisory lock scoped to the generation, so at most ONE job for a
-# generation is ever inside it. FOR UPDATE SKIP LOCKED then only ever guards against an unexpected
-# stray process (defense in depth), never the normal path. A duplicate that cannot take the lock
-# returns the still-RUNNING ledger without scanning, dispatching, or finalizing — it can NEVER mark
-# a run completed while another worker still owns (and may roll back) the tail of the scan. The
-# coalesced ProcessInboxJob is NOT enqueued per batch; instead, after all batches are scanned, the
+# runs under a single GLOBAL PostgreSQL SESSION advisory lock (a fixed key, NOT scoped to the
+# generation), so at most ONE reconciliation of ANY generation is ever inside it — the migration
+# run and every drainer run are strictly serialized and can never race each other's run rows. FOR
+# UPDATE SKIP LOCKED then only ever guards against an unexpected stray process (defense in depth),
+# never the normal path. A job that cannot take the lock RAISES (LockContention) instead of
+# returning a successful no-op: ReconciliationJob's bounded retry_on re-enqueues it so its
+# generation is eventually processed once the lock frees, rather than stranding its run row
+# permanently 'running' (which a silent running return would do — nothing else would retry it). It
+# can NEVER mark a run completed while another worker still owns (and may roll back) the tail of the
+# scan. The coalesced ProcessInboxJob is NOT enqueued per batch; instead, after all batches are scanned, the
 # reconciliation-stamped markers themselves are the durable outbox and every still-present one for
 # the generation is (re-)dispatched, then the run is finalized. A crash/raise between a batch commit
 # and dispatch therefore strands nothing: a retry re-dispatches every still-present generation
@@ -57,32 +65,48 @@ module Wijaya
         BATCH_SIZE = 200
 
         # A fixed classid that namespaces THIS battery's PostgreSQL advisory locks (the two-int
-        # pg_advisory_lock form), so a generation lock can never collide with an unrelated advisory
-        # lock elsewhere in the app. Arbitrary constant ("WIJA"), well within a signed int4.
+        # pg_advisory_lock form), so the reconciliation lock can never collide with an unrelated
+        # advisory lock elsewhere in the app. Arbitrary constant ("WIJA"), well within a signed int4.
         ADVISORY_NAMESPACE = 0x77494a41
 
+        # A single fixed key (in the battery's advisory namespace) shared by ALL generations, making
+        # the lock GLOBAL to the reconciliation feature rather than per-generation: at most one
+        # reconciliation run of any generation executes at a time (see module doc, requirement: two
+        # different generations must never race/strand each other's 'running' run rows).
+        GLOBAL_LOCK_KEY = 0
+
+        # Raised when the global reconciliation lock is already held by another run. It is a
+        # StandardError so ReconciliationJob's retry_on re-enqueues, giving safe eventual processing
+        # instead of a successful no-op that would leave this run row permanently 'running'.
+        class LockContention < StandardError; end
+
         # Runs (or resumes) the reconciliation for +generation+. Returns the run ledger row.
+        # +cutoff+ is the exclusive upper bound on provenance event_at (and conversation created_at):
+        # the one-time migration run passes nil (=> now, all history); the recurring RecoveryDrainerJob
+        # passes now - SAFETY_AGE so it only ever picks up crash-gap stragglers, never rows the live
+        # bridge is still handling. It is persisted as cutoff_at on first create, so a resume reuses it.
         #
-        # Serialization: the whole scan + dispatch + finalize executes under a session advisory lock
-        # scoped to the generation, so only ONE job runs it at a time. A duplicate/concurrent job that
-        # cannot take the lock returns the still-RUNNING ledger WITHOUT finalizing (see module doc);
-        # it never completes a run another worker still owns. The lock auto-releases if the owner's DB
+        # Serialization: the whole scan + dispatch + finalize executes under a GLOBAL session advisory
+        # lock, so only ONE reconciliation runs at a time. A job that cannot take the lock RAISES
+        # LockContention (see module doc) so retry_on re-enqueues it — it never returns a successful
+        # no-op that would strand its run row 'running'. The lock auto-releases if the owner's DB
         # session dies, so a later re-enqueue safely resumes.
-        def run(generation:)
-          run_row, resumed = start_run(generation)
+        def run(generation:, cutoff: nil)
+          run_row, resumed = start_run(generation, cutoff)
           return run_row if run_row.completed?
-          # Could not serialize: another worker owns this generation. Do NOT finalize — return the
-          # current (running) ledger; the owner (or a later retry, once the lock frees) completes it.
-          return run_row.reload unless acquire_generation_lock(generation)
+          # Could not serialize: another generation's run owns the global lock. RAISE so the bounded
+          # retry_on re-enqueues this generation; it is processed once the lock frees. Never a silent
+          # no-op — that would leave this run row permanently 'running' with nothing to retry it.
+          raise LockContention, "reconciliation lock busy (generation=#{generation})" unless acquire_global_lock
 
           begin
             reconcile_locked(run_row, resumed)
           ensure
-            release_generation_lock(generation)
+            release_global_lock
           end
         end
 
-        # Body executed while holding the generation advisory lock. Re-reads the ledger first so a run
+        # Body executed while holding the global advisory lock. Re-reads the ledger first so a run
         # the previous owner completed while we were locked out is a no-op here too.
         #
         # Retry / resume safety: rows are NOT stamped reconciled and counters are NOT bumped until
@@ -110,41 +134,35 @@ module Wijaya
           finalize(run_row)
         end
 
-        # Non-blocking acquire of the generation's session advisory lock on the current connection.
-        # Returns true iff THIS session now holds it. Non-blocking (pg_try_advisory_lock) so a
-        # duplicate job never parks a worker for the whole run; it simply defers to the owner and
-        # returns. A crashed owner's lock is released automatically when its DB session ends.
-        def acquire_generation_lock(generation)
+        # Non-blocking acquire of the GLOBAL reconciliation session advisory lock on the current
+        # connection. Returns true iff THIS session now holds it. Non-blocking (pg_try_advisory_lock)
+        # so a contending job never parks a worker for the whole run; it defers (raises) to the owner.
+        # A crashed owner's lock is released automatically when its DB session ends.
+        def acquire_global_lock
           ActiveRecord::Base.connection.select_value(
-            "SELECT pg_try_advisory_lock(#{ADVISORY_NAMESPACE}, #{advisory_key(generation)})"
+            "SELECT pg_try_advisory_lock(#{ADVISORY_NAMESPACE}, #{GLOBAL_LOCK_KEY})"
           )
         end
 
-        # Releases the generation's session advisory lock on the current connection. Always run in an
-        # ensure; a safe no-op if this session does not hold it.
-        def release_generation_lock(generation)
+        # Releases the GLOBAL reconciliation session advisory lock on the current connection. Always
+        # run in an ensure; a safe no-op if this session does not hold it.
+        def release_global_lock
           ActiveRecord::Base.connection.select_value(
-            "SELECT pg_advisory_unlock(#{ADVISORY_NAMESPACE}, #{advisory_key(generation)})"
+            "SELECT pg_advisory_unlock(#{ADVISORY_NAMESPACE}, #{GLOBAL_LOCK_KEY})"
           )
-        end
-
-        # Stable signed 32-bit key derived from the generation string (advisory keys are int4 in the
-        # two-argument form). CRC32 is deterministic and process-independent; shifting into signed
-        # range keeps it a valid int4.
-        def advisory_key(generation)
-          Zlib.crc32(generation.to_s) - (2**31)
         end
 
         # find_or_create keyed on the unique generation so a duplicate/retried job resumes the SAME
         # run rather than starting a second engine (find_or_create_by! also absorbs the
         # concurrent-create race — the loser re-finds the winner's row). previously_new_record?
         # distinguishes a fresh start (resumed=false) from a resume of an existing run (resumed=true).
-        def start_run(generation)
+        # cutoff_at is fixed at first create (nil => now), so a resume keeps the original bound.
+        def start_run(generation, cutoff)
           now = Time.current
           run = ReconciliationRun.find_or_create_by!(generation: generation) do |row|
             row.status = ReconciliationRun::RUNNING
             row.started_at = now
-            row.cutoff_at = now
+            row.cutoff_at = cutoff || now
           end
           [run, !run.previously_new_record?]
         end
@@ -155,7 +173,7 @@ module Wijaya
         end
 
         # The claim query for one batch: FOR UPDATE SKIP LOCKED (the same primitive the native
-        # AutoAssignment::AssignmentService uses). The generation advisory lock already guarantees a
+        # AutoAssignment::AssignmentService uses). The global advisory lock already guarantees a
         # single runner, so this is defense in depth: even if a stray process bypassed the advisory
         # lock, it would lock disjoint rows and never double-process the same provenance row rather
         # than blocking.
@@ -226,7 +244,7 @@ module Wijaya
           end
         end
 
-        # Durable outbox dispatch (runs after ALL scan batches, inside the generation lock). The
+        # Durable outbox dispatch (runs after ALL scan batches, inside the global lock). The
         # reconciliation-stamped markers ARE the outbox: every still-present marker for this
         # generation is a conversation that was adopted but not yet resolved, so we (re-)enqueue a
         # coalesced ProcessInboxJob for each distinct inbox. This closes the durability gap where a

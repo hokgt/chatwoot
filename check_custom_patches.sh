@@ -182,6 +182,7 @@ require_file custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/ba
 require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/provenance_recorder.rb
 require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/reconciler.rb
 require_file custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/reconciliation_job.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/recovery_drainer_job.rb
 require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_discovery.rb
 require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_backfill.rb
 require_file custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/backfill_job.rb
@@ -202,6 +203,7 @@ require_file spec/custom/wijaya/deferred_auto_assignment/presence_channel_spec.r
 require_file spec/custom/wijaya/deferred_auto_assignment/remediation_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/agent_deletion_bridge_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/historical_backfill_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/recovery_drainer_spec.rb
 # Battery Hooks module is resolved by name from the core dispatcher map.
 require_marker custom/wijaya/batteries/core/hooks.rb "deferred_auto_assignment:"
 
@@ -211,7 +213,8 @@ for file in \
   app/channels/room_channel.rb \
   app/models/inbox_member.rb \
   app/models/team_member.rb \
-  app/jobs/agents/destroy_job.rb; do
+  app/jobs/agents/destroy_job.rb \
+  config/schedule.yml; do
   require_marker "$file" "WIJAYA_CUSTOM_START deferred_auto_assignment"
   require_marker "$file" "WIJAYA_CUSTOM_END deferred_auto_assignment"
 done

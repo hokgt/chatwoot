@@ -1,10 +1,19 @@
-# Deferred Auto-Assignment — Historical Reconciliation (design + operator guide)
+# Deferred Auto-Assignment — Reconciliation (design + operator guide)
 
 Reassigns conversations that lost their human assignee when an agent was **deleted**, when the
 live post-commit agent-deletion bridge did not complete (e.g. a crash between the unassignment
 commit and the dispatch). It is **additive**: the live new-conversation path, the agent-deletion
 bridge, eligibility, the native selector, capacity/presence/round-robin, locks, and ERP owner
 sync are all unchanged.
+
+There are **two** reconciliation entry points, both scanning **only** durable provenance and both
+ending at the exact same native pipeline — neither is the primary future deletion mechanism (that
+stays `Agents::DestroyJob -> Registrar`, unchanged):
+
+1. **One-time initial reconciliation** (a migration at deploy) — the historical-backlog mechanism,
+   run **exactly once** with a fixed cutoff.
+2. **Recurring recovery drainer** (a low-frequency cron) — a durable-outbox / crash-gap **fallback**
+   for provenance recorded **after** the one-time run, which its fixed cutoff can never reach.
 
 ## Evidence conclusion (why this is provenance-driven, not heuristic)
 
@@ -35,7 +44,7 @@ can never roll back the user deletion) for each cleared conversation:
   is left to reassign once those are gone.
 - **No message content, no credentials** are ever stored.
 
-## Automatic one-time reconciliation
+## Automatic one-time (initial) reconciliation
 
 A migration (`20260912000003_enqueue_deferred_assignment_reconciliation_after_schema`) enqueues
 `ReconciliationJob` exactly once at deploy — the same convention as
@@ -49,12 +58,16 @@ moved to `…000003` so it runs **after** `…000002` adds the columns the corre
 - is guarded by a `wijaya_deferred_reconciliation_runs` ledger keyed on a unique **generation**
   (the persisted run/cutoff/completion state) so a retry/re-enqueue **resumes** the same run
   instead of starting a second engine;
-- runs the **entire scan + dispatch + finalize under a PostgreSQL SESSION advisory lock scoped to
-  the generation**, so only **one** job is ever inside it. A duplicate/concurrent job that cannot
-  take the lock returns the still-`running` ledger **without** scanning, dispatching, or
-  finalizing — it can **never** mark a run `completed` while another worker still owns (and may roll
-  back) the tail of the scan. The lock auto-releases if the owner's DB session dies, so a later
-  re-enqueue safely resumes;
+- runs the **entire scan + dispatch + finalize under a single GLOBAL PostgreSQL SESSION advisory
+  lock** (a fixed key, **not** scoped to the generation), so only **one** reconciliation of **any**
+  generation is ever inside it — the one-time run and every recurring drainer run are strictly
+  serialized and can never race each other's `running` run rows. A job that cannot take the lock
+  **raises** `Reconciler::LockContention` (a `StandardError`) so `ReconciliationJob`'s bounded
+  `retry_on` re-enqueues it and its generation is eventually processed once the lock frees — it
+  **never** returns a successful no-op, which would strand its run row permanently `running` (nothing
+  else would retry it). It can **never** mark a run `completed` while another worker still owns (and
+  may roll back) the tail of the scan. The lock auto-releases if the owner's DB session dies, so a
+  later re-enqueue safely resumes;
 - claims each batch with **`FOR UPDATE SKIP LOCKED`** (defense in depth behind the advisory lock)
   and, in **one transaction**, classifies + registers + stamps `reconciled_at` + adds the batch's
   counts to the run row — so a row is stamped (and counted) **only after its disposition has
@@ -170,11 +183,51 @@ is effectively a no-op here; the machinery is correct for any future re-deploy o
 accumulate a crash-gap provenance row going forward. Pre-feature deletions carry no provenance and
 are never inferred from activity text.
 
+## Recurring recovery drainer (crash-gap fallback — distinct from the one-time run)
+
+The one-time initial reconciliation runs **exactly once** with a **fixed cutoff** (the deploy
+moment), so any provenance recorded **after** it is excluded **forever**. A future agent deletion
+that hits the one irreducible crash-gap — a SIGKILL **after** the unassignment transaction commits
+(the provenance tombstone is durable) but **before** the post-commit `Registrar` dispatch — would
+therefore be **stranded permanently** with only the one-time migration in place.
+
+`Wijaya::Batteries::DeferredAutoAssignment::RecoveryDrainerJob` closes that gap. It is a
+**low-frequency scheduled fallback, NOT the primary future deletion mechanism** — the normal
+`Agents::DestroyJob -> Registrar` bridge remains primary and behaviorally unchanged. On each tick it:
+
+- scans **only** unreconciled `DeletionProvenance` tombstones (`reconciled_at IS NULL`) whose
+  `event_at` is **older than a short safety age** (`SAFETY_AGE = 15.minutes`), so it never races the
+  live post-commit bridge and only ever picks up a genuine crash-gap straggler — it **never** scans
+  the conversations table or all Unassigned conversations;
+- **self-gates**: if no such tombstone exists it does **nothing** — no `ReconciliationRun` row and no
+  `ReconciliationJob` is created (an empty system stays completely quiet);
+- when a straggler exists, enqueues the **exact existing** `ReconciliationJob` with a **fresh
+  generation** (bucketed to the minute) and that safety-age cutoff. From there it is the **identical**
+  path as the one-time run: `Reconciler -> Registrar.register_unassigned_from_provenance -> Marker ->
+  ProcessInboxJob -> InboxProcessor -> native AgentAssignmentService -> conversation.update! ->
+  existing ERP owner-sync callback`. **No direct `assignee_id` write, no second engine.**
+
+**Bounded, idempotent, concurrency-safe.** Two duplicate/overlapping cron invocations in the same
+minute enqueue the **same** generation; the ledger's unique `generation` plus the **global** advisory
+lock collapse them to a single run (the loser raises → retries → no-ops on the already-completed
+run). A later legitimate tick gets a fresh generation but finds the rows already stamped
+`reconciled_at`, so it scans (near) nothing. Every provenance row the live bridge already handled is
+re-checked and stamped reconciled as **skipped**/**ambiguous** on the first drain that reaches it —
+harmless and one-time. Run counters and marker outcome accounting are the **same** truthful ledger as
+the one-time run.
+
+**Scheduler touchpoint.** A single `config/schedule.yml` entry
+(`wijaya_deferred_assignment_recovery_drainer_job`, hourly, inside `WIJAYA_CUSTOM` markers) drives it.
+This is permitted as a scheduled job **precisely because it queries provenance tombstones**, not a
+blanket Unassigned scan. It is covered by `check_custom_patches.sh` and the patch registry.
+
 ## Limitation: pre-provenance legacy cases cannot be recovered automatically
 
 Conversations that lost their assignee to a deletion that happened **before** this battery started
-recording provenance have **no provenance row**. They are invisible to the reconciler and are
-**never** guessed from free-text activity. This includes the current open-unassigned backlog. Such
+recording provenance have **no provenance row**. They are invisible to **both** the one-time
+reconciliation **and** the recurring recovery drainer (each scans only durable provenance) and are
+**never** guessed from free-text activity — they remain **unrecoverable and untouched**. This
+includes the current open-unassigned backlog of pre-feature rows without immutable provenance. Such
 cases can only be recovered by supplying an **external authoritative source** (a database backup, an
 audit export, or an operator who can vouch for the exact prior assignee) — see the deprecated manual
 tooling below. There is no safe automatic way to reconstruct them from the live database alone.
