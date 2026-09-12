@@ -36,6 +36,7 @@ RSpec.describe 'Deferred auto-assignment historical backfill', type: :model do
   end
 
   before do
+    account.disable_features!(:assignment_v2) # legacy battery path; assignment_v2 now defaults on
     @online = []
     allow(OnlineStatusTracker).to receive(:get_available_users) { @online.index_with { 'online' } }
     allow(AutoAssignment::InboxRoundRobinService).to receive(:new).and_return(round_robin_picker)

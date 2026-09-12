@@ -18,6 +18,7 @@ RSpec.describe 'Deferred auto-assignment deletion provenance', type: :model do
   let(:contact_inbox) { create(:contact_inbox, contact: contact, inbox: inbox) }
 
   before do
+    account.disable_features!(:assignment_v2) # legacy battery path; assignment_v2 now defaults on
     # Keep the post-commit reassignment pipeline inert; this spec is about provenance recording.
     allow(Wijaya::Batteries::DeferredAutoAssignment::ProcessInboxJob).to receive(:enqueue_for_inbox)
     allow(AutoAssignment::AssignmentJob).to receive(:enqueue_for_inbox)

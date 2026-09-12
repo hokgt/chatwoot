@@ -15,6 +15,7 @@ RSpec.describe 'Deferred auto-assignment marker lifecycle', type: :model do
   let(:contact_inbox) { create(:contact_inbox, contact: contact, inbox: inbox) }
 
   before do
+    account.disable_features!(:assignment_v2) # legacy battery path; assignment_v2 now defaults on
     # Nobody online, so a fresh conversation is created open+unassigned and marked.
     allow(OnlineStatusTracker).to receive(:get_available_users).and_return({})
     allow(AutoAssignment::AssignmentJob).to receive(:enqueue_for_inbox)
