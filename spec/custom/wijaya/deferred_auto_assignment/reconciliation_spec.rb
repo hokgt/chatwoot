@@ -663,6 +663,50 @@ RSpec.describe 'Deferred auto-assignment historical reconciliation', type: :mode
     end
   end
 
+  # Supervisor defect D: resolve_and_record must read the marker's generation/previous disposition
+  # INSIDE its transaction, under a SELECT ... FOR UPDATE lock — never from a stale pre-transaction
+  # read. Otherwise a no-agent pass that transitions the marker nil -> NO_ELIGIBLE_AGENT (bumping that
+  # counter) in the window between the stale read and the delete would leave resolve passing the stale
+  # previous=nil to record_outcome(ASSIGNED), so BOTH no_eligible_agent AND assigned end at 1 for one
+  # conversation — two live buckets, violating latest-unique-disposition semantics.
+  #
+  # This is a deterministic interleaving: the suite runs each example inside one transactional-fixture
+  # connection, so we model the race by committing the competing record_waiting exactly in that window.
+  # Wrapping Marker.transaction fires the racing pass AFTER resolve_and_record is entered but BEFORE its
+  # own transaction body runs (where the fixed code takes the lock and reads previous). The fixed code
+  # then re-reads previous=NO_ELIGIBLE_AGENT under the lock and nets it out; a regression that captured
+  # previous before the transaction would instead double-bucket, failing this test.
+  describe 'concurrency: a no_eligible_agent transition racing resolve-to-assigned cannot double-count' do
+    let(:plain_conversation) do
+      Conversation.create!(account: account, inbox: inbox, contact: contact, contact_inbox: contact_inbox).tap do |c|
+        marker_model.where(conversation_id: c.id).delete_all
+      end
+    end
+
+    it 'leaves assigned=1, no_eligible_agent=0, and the marker absent (never both buckets)' do
+      run = run_model.create!(generation: 'gen-race', status: 'running', started_at: Time.current, cutoff_at: Time.current)
+      marker_model.create!(account: account, inbox: inbox, conversation: plain_conversation,
+                           reconciliation_generation: 'gen-race')
+
+      injected = false
+      allow(marker_model).to receive(:transaction).and_wrap_original do |orig, *args, &block|
+        unless injected
+          injected = true
+          # The racing no-agent pass commits its nil -> no_eligible_agent transition (and bumps that
+          # counter) in the window after resolve_and_record is entered but before it locks the marker.
+          marker_model.record_waiting(plain_conversation.id)
+        end
+        orig.call(*args, &block)
+      end
+
+      marker_model.resolve_and_record(plain_conversation.id, run_model::ASSIGNED)
+
+      expect(marker_model.where(conversation_id: plain_conversation.id).count).to eq(0) # marker absent
+      expect(run.reload.assigned).to eq(1)
+      expect(run.no_eligible_agent).to eq(0) # transitioned down, not left alongside assigned
+    end
+  end
+
   describe 'ReconciliationJob delegates to the reconciler' do
     it 'runs the reconciler for the given generation' do
       make_agent

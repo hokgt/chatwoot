@@ -15,6 +15,17 @@
 # Lifecycle cleanup (destroy on conversation delete, on manual/bot assignment, on becoming
 # non-open) is owned by the battery's ConversationExtensions concern, not by core.
 #
+# Lock order (deadlock-free): resolve_and_record / record_waiting take SELECT ... FOR UPDATE on the
+# marker row, then update the ReconciliationRun ledger row — i.e. marker -> run. The InboxProcessor's
+# ASSIGNED path is the ONLY caller holding another lock when it calls resolve_and_record: it is
+# already inside conversation.with_lock, so its full order is conversation -> marker -> run. Every
+# other caller (InboxProcessor#record_result's no_eligible_agent/dropped resolution, and the
+# ConversationExtensions after_update_commit cleanup) acquires the marker lock with NO conversation
+# lock held — record_result runs after with_lock releases, and the cleanup fires post-commit. So no
+# caller ever takes marker-before-conversation, and the Reconciler never FOR-UPDATEs a marker (it only
+# INSERTs new ones and updates the run row); the single global order conversation -> marker -> run has
+# no cycle.
+#
 # Nested (not compact `class Wijaya::Batteries::DeferredAutoAssignment::Marker`) to match the
 # sibling battery files, whose unqualified cross-references resolve lexically; kept uniform.
 module Wijaya
@@ -43,13 +54,22 @@ module Wijaya
         # raises, the delete rolls back and the marker survives for a later, complete resolution.
         # When invoked inside a caller-supplied transaction (e.g. the InboxProcessor row lock) this
         # is a savepoint, still atomic with the assignment.
+        #
+        # RACE-SAFE: the marker row is locked SELECT ... FOR UPDATE and its generation/previous
+        # disposition are (re-)read INSIDE the transaction, AFTER the lock is acquired — never from a
+        # stale pre-transaction find_by. Without the lock a concurrent record_waiting could move the
+        # marker nil -> NO_ELIGIBLE_AGENT (bumping that counter) in the window between our read and our
+        # delete; we would then delete the row but pass a stale previous=nil to record_outcome, leaving
+        # no_eligible_agent=1 AND assigned=1 for one conversation — two live buckets, violating the
+        # latest-unique-disposition invariant. Reading previous under the lock guarantees record_outcome
+        # decrements whatever bucket the marker actually holds now, so exactly one bucket survives.
         def self.resolve_and_record(conversation_id, outcome)
-          marker = find_by(conversation_id: conversation_id)
-          return if marker.nil?
-
-          generation = marker.reconciliation_generation
-          previous = marker.reconciliation_outcome
           transaction do
+            marker = lock.find_by(conversation_id: conversation_id)
+            next if marker.nil?
+
+            generation = marker.reconciliation_generation
+            previous = marker.reconciliation_outcome
             deleted = where(conversation_id: conversation_id).delete_all
             ReconciliationRun.record_outcome(generation, outcome, previous) if deleted.positive?
           end
@@ -65,14 +85,18 @@ module Wijaya
         # would read NO_ELIGIBLE_AGENT while the run counter never incremented, and every later pass
         # would return early seeing no transition. Wrapping both means a failed ledger update rolls
         # the marker's outcome back so the next pass re-attempts the whole transition cleanly.
+        #
+        # RACE-SAFE: as with resolve_and_record, the marker is locked SELECT ... FOR UPDATE and its
+        # generation/previous disposition are re-read INSIDE the transaction after the lock, so a
+        # racing resolve/record cannot slip a state change between the read and the conditional write.
         def self.record_waiting(conversation_id)
-          marker = find_by(conversation_id: conversation_id)
-          return if marker.nil? || marker.reconciliation_generation.blank?
-
-          previous = marker.reconciliation_outcome
-          return if previous == ReconciliationRun::NO_ELIGIBLE_AGENT
-
           transaction do
+            marker = lock.find_by(conversation_id: conversation_id)
+            next if marker.nil? || marker.reconciliation_generation.blank?
+
+            previous = marker.reconciliation_outcome
+            next if previous == ReconciliationRun::NO_ELIGIBLE_AGENT
+
             # rubocop:disable Rails/SkipsModelValidations
             updated = where(conversation_id: conversation_id, reconciliation_outcome: previous)
                       .update_all(reconciliation_outcome: ReconciliationRun::NO_ELIGIBLE_AGENT, updated_at: Time.current)
