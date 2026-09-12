@@ -20,23 +20,27 @@
 #   on_team_member_added(account_id:, team_id:)    TeamMember after_create — a newly added team
 #                                                  agent may be the first eligible one; processes
 #                                                  waiting markers on that team's inboxes.
+#   unassign_deleted_agent_conversations(account_id:, user_id:, deletion_key:)
+#                                                  Agents::DestroyJob (IN-transaction) — row-lock
+#                                                  (FOR UPDATE) the deleted agent's still-assigned
+#                                                  conversations inside the enclosing transaction,
+#                                                  clear exactly the rows still owned by the agent,
+#                                                  record best-effort savepoint-isolated provenance
+#                                                  for precisely those rows, and RETURN the exact
+#                                                  cleared ids for the post-commit bridge. deletion_key
+#                                                  (the DestroyJob job_id) keys the provenance occurrence
+#                                                  so a retry dedupes while a later re-add/re-deletion of
+#                                                  the same conversation+agent records a distinct row.
+#                                                  Provenance is best-effort, NOT guaranteed: a recorder
+#                                                  failure raises through the fail-open dispatcher (native
+#                                                  default returned), so the deletion still commits with
+#                                                  that tombstone simply absent (see AgentDeletionUnassignment).
 #   on_agent_deletion_unassigned(account_id:, conversation_ids:)
 #                                                  Agents::DestroyJob (post-commit) — the exact
 #                                                  conversations an agent deletion just cleared
 #                                                  are re-run through native auto-assignment:
 #                                                  each eligible one is marked + processed, so it
 #                                                  is reassigned now or waits for a later trigger.
-#   record_agent_deletion_provenance(account_id:, prior_assignee_id:, conversation_ids:, deletion_key:)
-#                                                  Agents::DestroyJob (IN-transaction) — record
-#                                                  best-effort structured provenance for the exact
-#                                                  conversations this deletion clears, savepoint-
-#                                                  isolated + fail-open, so a crash before the post-
-#                                                  commit dispatch is reconcilable later. deletion_key
-#                                                  (the DestroyJob job_id) keys the occurrence so a
-#                                                  retry dedupes while a later re-add/re-deletion of
-#                                                  the same conversation+agent records a distinct row.
-#                                                  Best-effort, NOT guaranteed: a recorder failure
-#                                                  never rolls back the delete (tombstone simply absent).
 #
 # All heavy lifting lives in the service objects; this surface only translates a native call
 # into a battery action. Every method is safe to fail: the core dispatcher rescues anything.
@@ -71,12 +75,12 @@ module Wijaya
           TriggerService.enqueue_for_team(account_id: account_id, team_id: team_id)
         end
 
-        def on_agent_deletion_unassigned(account_id:, conversation_ids:)
-          Registrar.register_unassigned_after_agent_deletion(account_id, conversation_ids)
+        def unassign_deleted_agent_conversations(account_id:, user_id:, deletion_key:)
+          AgentDeletionUnassignment.unassign(account_id: account_id, user_id: user_id, deletion_key: deletion_key)
         end
 
-        def record_agent_deletion_provenance(account_id:, prior_assignee_id:, conversation_ids:, deletion_key:)
-          ProvenanceRecorder.record_agent_deletion(account_id, prior_assignee_id, conversation_ids, deletion_key: deletion_key)
+        def on_agent_deletion_unassigned(account_id:, conversation_ids:)
+          Registrar.register_unassigned_after_agent_deletion(account_id, conversation_ids)
         end
       end
     end

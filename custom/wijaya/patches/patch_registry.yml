@@ -304,16 +304,25 @@ patches:
       calls through the fail-open core dispatcher.
       Durable structured provenance closes that crash gap and enables SAFE AUTOMATIC historical
       reconciliation. A wijaya_deferred_assignment_provenance tombstone (account, conversation,
-      inbox, PRIOR human agent id, event kind + time, reconciled_at cursor) is recorded ATOMICALLY
-      inside the DestroyJob unassignment transaction via a second in-transaction hook — but
-      savepoint-isolated (requires_new: true) and routed through the fail-open dispatcher, so a
-      provenance error can never roll back the user deletion. prior_assignee_id carries NO foreign
+      inbox, PRIOR human agent id, event kind + time, reconciled_at cursor) is recorded by the
+      battery AgentDeletionUnassignment service for exactly the rows it cleared under the FOR UPDATE
+      lock, inside the DestroyJob unassignment transaction. Capture is deliberately BEST-EFFORT, NOT
+      guaranteed: the recorder wraps its writes in a SAVEPOINT (requires_new: true) and the whole
+      unassignment hook is routed through the fail-open dispatcher, so a provenance error can never
+      roll back the user deletion — but it also means a recorder failure leaves the deletion
+      committed with that tombstone simply ABSENT (that conversation then unrecoverable by
+      reconciliation). A SUCCESSFUL write is transactional (it commits atomically with the clear);
+      an unsuccessful one is silently skipped. prior_assignee_id carries NO foreign
       key (a cascading FK would erase the provenance when the agent User is deleted, which is the
       whole scenario); account/conversation/inbox FKs cascade because nothing is left to reassign
-      once those are gone. No message content, no credentials. A one-time automatic reconciliation
-      (Reconciler) is triggered by a migration that enqueues ReconciliationJob (mirroring the
-      established EnqueueValidateOpenaiHooksJob convention) — recorded once in schema_migrations, no
-      recurring blanket scan. It scans ONLY unreconciled provenance rows (never all unassigned
+      once those are gone. No message content, no credentials. The one-time automatic reconciliation
+      (Reconciler) is not triggered by an in-migration Redis enqueue: migration 000003 INSERTs a
+      DURABLE PERSISTED RUN INTENT (a wijaya_deferred_reconciliation_runs row, status 'running',
+      started_at NULL, cutoff_at = the deploy instant), idempotent on the unique generation. The
+      recurring hourly RecoveryDrainerJob is the coordinator: each tick it (re-)enqueues
+      ReconciliationJob for every incomplete run, so the one-time run is retried until it truthfully
+      completes — surviving a Redis outage or an old Sidekiq worker in the deploy window, because the
+      run always executes later under new code with the full schema. It scans ONLY unreconciled provenance rows (never all unassigned
       conversations) in bounded batches, guarded by a wijaya_deferred_reconciliation_runs ledger
       (unique generation = persisted run/cutoff/completion state) so a retry/re-enqueue resumes the
       same run. Per row it fails closed: it registers (through the narrowly named provenance-backed
@@ -355,14 +364,20 @@ patches:
       full required set: scanned / identified / registered / skipped / ambiguous / assigned /
       no_eligible_agent / dropped / failed / retries; a run marked completed means only that
       scan+dispatch were accepted — the async outcome counters keep transitioning afterwards.
-      ReconciliationJob uses a bounded retry_on (attempts: 5) — no unbounded custom loop. The
-      one-time enqueue was MOVED out of 000001 (now a no-op) into 000003 so it runs AFTER 000002
-      creates the columns the corrected job requires, closing the deploy window where an old Sidekiq
-      could consume the job against an incomplete schema. Deploy order (old Sidekiq must not consume
-      the new job before new code runs): stop old Sidekiq, backup, build the new image, migrate with
-      the new image, start new rails/sidekiq (see BACKFILL.md). On this install the initial run scans
-      ZERO legacy rows (the provenance table is new); pre-feature deletions carry no provenance and
-      are never guessed.
+      ReconciliationJob uses a bounded retry_on (attempts: 5) — no unbounded custom loop. There is
+      NO in-migration Redis enqueue (a one-shot perform_later inside a migration is fragile: a Redis
+      outage or an old Sidekiq consuming the job before new code/schema is in place would silently
+      drop the only trigger). Instead the trigger was MOVED out of 000001 (now a no-op) into 000003,
+      which — running AFTER 000002 created the columns the corrected job requires — INSERTs a durable
+      persisted run intent (a wijaya_deferred_reconciliation_runs row, status 'running', started_at
+      NULL, cutoff_at = the deploy instant), idempotent on the unique generation. The recurring
+      hourly RecoveryDrainerJob coordinator (config/schedule.yml) re-enqueues ReconciliationJob for
+      every incomplete run each tick, so the one-time run is retried until it truthfully completes —
+      surviving Redis downtime and old-worker timing without a fragile once-only enqueue. Deploy
+      order still applies (old Sidekiq must not run the new job against an incomplete schema): stop
+      old Sidekiq, backup, build the new image, migrate with the new image, start new rails/sidekiq
+      (see BACKFILL.md). On this install the initial run scans ZERO legacy rows (the provenance table
+      is new); pre-feature deletions carry no provenance and are never guessed.
     custom_files:
       - custom/wijaya/batteries/deferred_auto_assignment/loader.rb
       - custom/wijaya/batteries/deferred_auto_assignment/conversation_extensions.rb
@@ -375,6 +390,7 @@ patches:
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/trigger_service.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/inbox_processor.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/process_inbox_job.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/agent_deletion_unassignment.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/provenance_recorder.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/reconciler.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/reconciliation_job.rb

@@ -186,6 +186,7 @@ Style/ClassAndModuleChildren:
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/hooks.rb'
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/eligibility.rb'
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/registrar.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/agent_deletion_unassignment.rb'
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/trigger_service.rb'
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/inbox_processor.rb'
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/deletion_provenance.rb'

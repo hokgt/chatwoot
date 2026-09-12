@@ -39,6 +39,7 @@ RSpec.describe Agents::DestroyJob do
   describe 'manual reassignment / ownership-change race' do
     let(:provenance_model) { Wijaya::Batteries::DeferredAutoAssignment::DeletionProvenance }
     let(:marker_model) { Wijaya::Batteries::DeferredAutoAssignment::Marker }
+    let(:unassignment_service) { Wijaya::Batteries::DeferredAutoAssignment::AgentDeletionUnassignment }
     let(:contact) { create(:contact, account: account) }
     let(:contact_inbox) { create(:contact_inbox, contact: contact, inbox: inbox) }
 
@@ -61,7 +62,9 @@ RSpec.describe Agents::DestroyJob do
 
     it 'row-locks the deleted agent’s conversations with FOR UPDATE' do
       agent = make_agent
-      expect(agent.assigned_conversations.where(account: account).lock.to_sql).to include('FOR UPDATE')
+      # The battery service locks exactly this relation (account + still-assigned to the agent).
+      relation = Conversation.where(account_id: account.id, assignee_id: agent.id).lock
+      expect(relation.to_sql).to include('FOR UPDATE')
     end
 
     it 'never records/clears/adopts a conversation reassigned to a different agent in the lock window' do
@@ -71,14 +74,13 @@ RSpec.describe Agents::DestroyJob do
 
       # Model a manual reassignment that lands right AFTER the FOR UPDATE capture but BEFORE the
       # conditional clear: the deleted agent's own conversation moves to a different current assignee.
-      job = described_class.new
-      allow(job).to receive(:wijaya_lock_assigned_conversation_ids).and_wrap_original do |orig, acc, usr|
-        ids = orig.call(acc, usr)
+      allow(unassignment_service).to receive(:lock_assigned_conversation_ids).and_wrap_original do |orig, account_id, user_id|
+        ids = orig.call(account_id, user_id)
         conversation.update!(assignee: agent_b) if ids.include?(conversation.id)
         ids
       end
 
-      job.perform(account, agent_a)
+      described_class.perform_now(account, agent_a)
 
       expect(conversation.reload.assignee).to eq(agent_b)                          # not clobbered
       expect(provenance_model.where(conversation_id: conversation.id)).to be_empty # no FALSE provenance
@@ -98,6 +100,40 @@ RSpec.describe Agents::DestroyJob do
       expect(theirs.reload.assignee).to eq(agent_b)                               # untouched
       expect(provenance_model.where(conversation_id: theirs.id)).to be_empty       # not recorded
       expect(marker_model.find_by(conversation_id: theirs.id)).to be_nil           # not adopted
+    end
+  end
+
+  # WIJAYA deferred_auto_assignment — the heavy lock/clear/provenance logic lives in the battery
+  # service; the core job keeps only a tiny fail-open dispatch. When the battery hook is
+  # unavailable/fails, the dispatcher returns nil and the job falls back to the original native
+  # unassignment (still clearing the agent's conversations) WITHOUT dispatching any guessed
+  # post-commit ids to the reassignment bridge.
+  describe 'fail-open fallback when the battery is unavailable' do
+    let(:provenance_model) { Wijaya::Batteries::DeferredAutoAssignment::DeletionProvenance }
+    let(:unassignment_service) { Wijaya::Batteries::DeferredAutoAssignment::AgentDeletionUnassignment }
+    let(:contact) { create(:contact, account: account) }
+    let(:contact_inbox) { create(:contact_inbox, contact: contact, inbox: inbox) }
+
+    before { account.disable_features!(:assignment_v2) }
+
+    def make_agent
+      agent = create(:user, account: account, role: :agent)
+      create(:inbox_member, inbox: inbox, user: agent)
+      agent
+    end
+
+    it 'still unassigns natively and never dispatches guessed post-commit ids when the hook fails' do
+      agent = make_agent
+      conversation = Conversation.create!(account: account, inbox: inbox, contact: contact,
+                                          contact_inbox: contact_inbox, assignee: agent)
+      allow(unassignment_service).to receive(:unassign).and_raise(StandardError)
+      expect(Wijaya::Batteries::DeferredAutoAssignment::Registrar)
+        .not_to receive(:register_unassigned_after_agent_deletion)
+
+      expect { described_class.perform_now(account, agent) }.not_to raise_error
+
+      expect(conversation.reload.assignee_id).to be_nil                            # native fallback cleared it
+      expect(provenance_model.where(conversation_id: conversation.id)).to be_empty # no tombstone (best-effort)
     end
   end
 end

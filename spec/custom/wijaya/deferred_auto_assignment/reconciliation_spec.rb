@@ -785,6 +785,21 @@ RSpec.describe 'Deferred auto-assignment historical reconciliation', type: :mode
       expect_not_adopted(conversation, run_reconciliation)
     end
 
+    # Inbox routing (inbox A -> inbox B) is a manual routing transition that supersedes pending
+    # provenance exactly like a team change. This makes an eligible online agent available in inbox
+    # B, so the ONLY thing that can keep the conversation from being adopted is the supersession —
+    # proving saved_change_to_inbox_id? is honoured and the tombstone is never re-adopted afterwards.
+    it 'inbox-routing change (inbox A -> inbox B): superseded and never adopted' do
+      inbox_b = create(:inbox, account: account, enable_auto_assignment: true)
+      agent_b = create(:user, account: account, role: :agent)
+      create(:inbox_member, inbox: inbox_b, user: agent_b)
+      conversation, = orphan_with_provenance
+      conversation.update!(inbox: inbox_b) # intentional inbox routing change breaks the chain
+
+      @online = [agent_b.id.to_s] # an eligible online agent exists in inbox B
+      expect_not_adopted(conversation, run_reconciliation)
+    end
+
     it 'a genuine crash-gap orphan (no intervening transition) is STILL adopted' do
       agent = make_agent
       conversation, = orphan_with_provenance # cleared via update_all/update_column, no callback fired

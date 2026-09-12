@@ -10,15 +10,20 @@ class Agents::DestroyJob < ApplicationJob
       remove_user_from_teams(account, user)
       remove_user_from_inboxes(account, user)
       # WIJAYA_CUSTOM_START deferred_auto_assignment
-      # Row-lock (FOR UPDATE) the conversations still assigned to this user, clear ONLY those still
-      # owned by the user while the lock is held, and record best-effort provenance for EXACTLY the
-      # rows we cleared. A concurrent manual reassignment is serialized either fully before our lock
-      # (excluded from every step) or fully after our commit (it wins), so this deletion can never
-      # clear — nor write a tombstone for — a conversation it did not actually unassign. Only the
-      # exact cleared ids are dispatched post-commit. Provenance capture is best-effort/fail-open
-      # (see ProvenanceRecorder): a recorder failure leaves that tombstone absent while the deletion
-      # still commits — it is never guaranteed atomic completeness.
-      wijaya_unassigned_conversation_ids = wijaya_unassign_deleted_agent_conversations(account, user)
+      # Hand the deleted agent's still-assigned conversations to the battery: it row-locks them
+      # FOR UPDATE inside THIS transaction, clears exactly the rows still owned by the agent,
+      # records best-effort provenance, and returns the exact cleared ids for the post-commit
+      # bridge. If the battery is unavailable or its hook fails, the fail-open dispatcher returns
+      # nil; we then preserve native deletion semantics with the original unassignment and dispatch
+      # no (guessed) post-commit ids.
+      wijaya_unassigned_conversation_ids = Wijaya::Batteries::Core::Hooks.dispatch(
+        :deferred_auto_assignment, :unassign_deleted_agent_conversations,
+        default: nil, account_id: account.id, user_id: user.id, deletion_key: job_id
+      )
+      if wijaya_unassigned_conversation_ids.nil?
+        unassign_conversations(account, user)
+        wijaya_unassigned_conversation_ids = []
+      end
       # WIJAYA_CUSTOM_END deferred_auto_assignment
     end
     # WIJAYA_CUSTOM_START deferred_auto_assignment
@@ -31,28 +36,9 @@ class Agents::DestroyJob < ApplicationJob
   private
 
   # WIJAYA_CUSTOM_START deferred_auto_assignment
-  # Locks the deleted agent's still-assigned conversations FOR UPDATE, clears exactly the rows still
-  # owned by this user (a conditional compare-and-set that also defends against any write the lock
-  # could not have serialized), records best-effort provenance for precisely the cleared rows, and
-  # returns those ids. Returns [] when the agent owns nothing (a retried deletion is a safe no-op).
-  def wijaya_unassign_deleted_agent_conversations(account, user)
-    locked_ids = wijaya_lock_assigned_conversation_ids(account, user)
-    return [] if locked_ids.empty?
-
-    # rubocop:disable Rails/SkipsModelValidations
-    cleared_ids = Conversation.where(id: locked_ids, assignee_id: user.id).ids
-    Conversation.where(id: cleared_ids).update_all(assignee_id: nil) if cleared_ids.present?
-    # rubocop:enable Rails/SkipsModelValidations
-    wijaya_record_agent_deletion_provenance(account, user, cleared_ids)
-    cleared_ids
-  end
-
-  # FOR UPDATE on the conversations currently assigned to this user in this account; returns their
-  # ids. The lock is held for the remainder of the enclosing transaction (capture, clear, provenance).
-  def wijaya_lock_assigned_conversation_ids(account, user)
-    user.assigned_conversations.where(account: account).lock.ids
-  end
-
+  # Post-commit bridge: hand the exact cleared conversations to the deferred auto-assignment battery
+  # for re-assignment. Fail-open; retry/crash-window semantics are documented in the battery
+  # registrar. Skipped entirely when the battery cleared nothing or is unavailable.
   def wijaya_bridge_agent_deletion_auto_assignment(account, conversation_ids)
     return if conversation_ids.blank?
     return unless defined?(Wijaya::Batteries::Core::Hooks)
@@ -62,24 +48,15 @@ class Agents::DestroyJob < ApplicationJob
       default: nil, account_id: account.id, conversation_ids: conversation_ids
     )
   end
-
-  # In-transaction, BEST-EFFORT provenance recording. The battery hook is savepoint-isolated and the
-  # core dispatcher rescues everything, so a provenance failure can never roll back the user deletion
-  # — which also means capture is NOT guaranteed: on failure the deletion still commits and that
-  # tombstone is simply absent (unrecoverable), never an atomic all-or-nothing guarantee. The
-  # deletion job_id keys each tombstone so retries of THIS deletion dedupe, while a later re-add and
-  # re-deletion of the same conversation+agent records a distinct, independently reconcilable row.
-  def wijaya_record_agent_deletion_provenance(account, user, conversation_ids)
-    return if conversation_ids.blank?
-    return unless defined?(Wijaya::Batteries::Core::Hooks)
-
-    Wijaya::Batteries::Core::Hooks.dispatch(
-      :deferred_auto_assignment, :record_agent_deletion_provenance,
-      default: nil, account_id: account.id, prior_assignee_id: user.id,
-      conversation_ids: conversation_ids, deletion_key: job_id
-    )
-  end
   # WIJAYA_CUSTOM_END deferred_auto_assignment
+
+  # Native fail-open fallback (upstream behaviour): clear the deleted agent's conversation
+  # assignments when the deferred auto-assignment battery is unavailable or its hook fails.
+  def unassign_conversations(account, user)
+    # rubocop:disable Rails/SkipsModelValidations
+    user.assigned_conversations.where(account: account).in_batches.update_all(assignee_id: nil)
+    # rubocop:enable Rails/SkipsModelValidations
+  end
 
   def remove_user_from_inboxes(account, user)
     inboxes = account.inboxes.all

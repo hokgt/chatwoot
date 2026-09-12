@@ -78,6 +78,7 @@ module Wijaya::Batteries::DeferredAutoAssignment::ConversationExtensions
     (saved_change_to_assignee_id? && assignee_id.present?) ||
       (saved_change_to_assignee_agent_bot_id? && assignee_agent_bot_id.present?) ||
       saved_change_to_team_id? ||
+      saved_change_to_inbox_id? ||
       saved_change_to_status?
   end
 
