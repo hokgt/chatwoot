@@ -2,12 +2,16 @@
 
 require 'rails_helper'
 
-# Recovery drainer for the deferred auto-assignment battery. It is the durable-outbox / crash-gap
-# FALLBACK (NOT the primary future deletion mechanism, which stays Agents::DestroyJob -> Registrar):
-# a low-frequency, self-gating scan of ONLY unreconciled DeletionProvenance tombstones older than a
-# safety age, enqueuing the EXACT existing ReconciliationJob (with a fresh generation + safety-age
-# cutoff) to adopt any straggler through the unchanged native pipeline. It never scans all Unassigned
-# conversations, never writes assignee_id directly, and no-ops (no run, no job) when nothing is due.
+# Recovery drainer + run-intent COORDINATOR for the deferred auto-assignment battery. It is the
+# durable-outbox / crash-gap FALLBACK (NOT the primary future deletion mechanism, which stays
+# Agents::DestroyJob -> Registrar). It is itself ONE hourly scheduled cron occurrence, and each tick
+# selects AT MOST ONE persisted run intent and runs the Reconciler INLINE (a direct Reconciler.run
+# under the Reconciler's global advisory lock) — it NEVER hands off to a second Redis queue via
+# ReconciliationJob.perform_later/perform_now. It scans ONLY unreconciled DeletionProvenance
+# tombstones older than a safety age, never all Unassigned conversations, never writes assignee_id
+# directly, and no-ops (no run, no reconciliation) when nothing is due. Expected failures (global-lock
+# contention, a transient reconciliation error) are logged and swallowed so no independent, unbounded
+# retry tree forms; the next hourly tick is the bounded retry.
 RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
   let(:provenance_model) { Wijaya::Batteries::DeferredAutoAssignment::DeletionProvenance }
   let(:run_model) { Wijaya::Batteries::DeferredAutoAssignment::ReconciliationRun }
@@ -87,9 +91,10 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
     Redis::Alfred.delete(format(process_inbox_job::RERUN_KEY, inbox_id: conversation.inbox_id))
   end
 
-  # Run the drainer and cascade the reconciliation + per-inbox assignment it enqueues.
+  # Run the drainer (which reconciles INLINE) and cascade the per-inbox assignment it enqueues. Only
+  # ProcessInboxJob is enqueued now — the drainer no longer enqueues a ReconciliationJob at all.
   def run_drainer
-    perform_enqueued_jobs(only: [recon_job, process_inbox_job]) { drainer.perform_now }
+    perform_enqueued_jobs(only: [process_inbox_job]) { drainer.perform_now }
   end
 
   describe 'a post-commit crash-gap provenance row is later automatically recovered' do
@@ -124,10 +129,27 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
     end
   end
 
+  describe 'it reconciles INLINE, never enqueuing a second ReconciliationJob' do
+    it 'calls Reconciler.run directly and never enqueues ReconciliationJob' do
+      agent = make_agent
+      conversation, = crash_gap_orphan
+      @online = [agent.id.to_s]
+      expect(recon_job).not_to receive(:perform_later)
+      expect(recon_job).not_to receive(:perform_now)
+      expect(reconciler).to receive(:run).once.and_call_original
+
+      run_drainer
+
+      expect(conversation.reload.assignee).to eq(agent)
+      expect(run_model.count).to eq(1)
+    end
+  end
+
   describe 'self-gating: it never runs when nothing is due' do
-    it 'does nothing — no run, no ReconciliationJob — when there is no provenance at all' do
+    it 'does nothing — no run, no reconciliation — when there is no provenance and no incomplete run' do
       make_agent
       expect(provenance_model.count).to eq(0)
+      expect(reconciler).not_to receive(:run)
       expect(recon_job).not_to receive(:perform_later)
 
       expect { drainer.perform_now }.not_to change(run_model, :count)
@@ -136,6 +158,7 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
     it 'does not drain provenance younger than the safety age (never races the live bridge)' do
       make_agent
       crash_gap_orphan(event_at: 1.minute.ago) # inside the SAFETY_AGE window
+      expect(reconciler).not_to receive(:run)
       expect(recon_job).not_to receive(:perform_later)
 
       expect { drainer.perform_now }.not_to change(run_model, :count)
@@ -150,6 +173,7 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
       marker_model.where(conversation_id: intentional.id).delete_all
       @online = [make_agent.id.to_s]
 
+      expect(reconciler).not_to receive(:run)
       expect(recon_job).not_to receive(:perform_later)
       run_drainer
 
@@ -174,9 +198,10 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
       expect(run_model.first.registered).to eq(1)
     end
 
-    it 'collapses two same-generation reconciliations (concurrent same-minute ticks) into one run' do
-      # Two overlapping ticks in the same minute enqueue the SAME generation; the ledger + global
-      # lock collapse them so the row is registered exactly once, never twice.
+    it 'collapses two same-generation inline reconciliations (same-minute ticks) into one run' do
+      # Two overlapping ticks in the same minute find-or-create the SAME generation; the ledger's
+      # unique generation + the global advisory lock collapse them so the row is registered exactly
+      # once, never twice.
       agent = make_agent
       conversation, = crash_gap_orphan
       @online = [agent.id.to_s]
@@ -184,8 +209,8 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
       cutoff = 1.minute.from_now
 
       perform_enqueued_jobs(only: process_inbox_job) do
-        recon_job.perform_now(generation: gen, cutoff: cutoff)
-        recon_job.perform_now(generation: gen, cutoff: cutoff)
+        reconciler.run(generation: gen, cutoff: cutoff)
+        reconciler.run(generation: gen, cutoff: cutoff)
       end
 
       expect(conversation.reload.assignee).to eq(agent)
@@ -193,17 +218,63 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
       expect(run_model.find_by(generation: gen).registered).to eq(1) # not 2
       expect(marker_model.where(conversation_id: conversation.id).count).to eq(0)
     end
+
+    it 'a second same-minute tick does not create a duplicate recovery run row' do
+      # With a stalled reconciler the first tick opens ONE fresh recovery generation and leaves it
+      # running; the second tick in the same minute must resume that SAME run, never open a duplicate.
+      make_agent
+      crash_gap_orphan
+      allow(reconciler).to receive(:run) # stall: leave whatever run is opened incomplete
+
+      travel_to(Time.zone.local(2026, 9, 12, 10, 15, 30)) do
+        drainer.perform_now
+        drainer.perform_now
+      end
+
+      expect(run_model.where("generation LIKE 'recovery-%'").count).to eq(1)
+    end
   end
 
-  describe 'lock contention is recoverable, never a silent strand' do
-    it 'raises a retryable StandardError (LockContention) so ReconciliationJob.retry_on re-enqueues' do
+  describe 'inline failures never spawn an independent retry tree; the next tick is the bounded retry' do
+    it 'is a retryable StandardError so it can be rescued/retried, never a silent strand' do
       expect(reconciler::LockContention.ancestors).to include(StandardError)
+    end
+
+    it 'swallows LockContention (no raise, no ReconciliationJob enqueue); the run is left for the next tick' do
+      run = run_model.create!(generation: 'gen-locked', status: 'running', started_at: Time.current, cutoff_at: Time.current)
+      allow(reconciler).to receive(:run).and_raise(reconciler::LockContention.new('lock busy'))
+      expect(recon_job).not_to receive(:perform_later)
+
+      expect { drainer.perform_now }.not_to raise_error
+      expect(run.reload.status).to eq('running')
+    end
+
+    it 'swallows a transient reconciliation failure; a later tick resumes the SAME run and completes it' do
+      run = run_model.create!(generation: 'gen-intent-fail', status: 'running', started_at: nil, cutoff_at: Time.current)
+
+      calls = 0
+      allow(reconciler).to receive(:run).and_wrap_original do |orig, **kwargs|
+        calls += 1
+        raise StandardError, 'transient boom' if calls == 1
+
+        orig.call(**kwargs)
+      end
+
+      # First tick: the inline reconciliation fails. It must NOT re-raise (which would let ActiveJob's
+      # Sidekiq default retry spin an unbounded retry tree) and the durable intent must stay running.
+      expect { drainer.perform_now }.not_to raise_error
+      expect(run.reload.status).to eq('running')
+
+      # Later tick: the coordinator resumes the SAME intent inline and completes it.
+      perform_enqueued_jobs(only: [process_inbox_job]) { drainer.perform_now }
+      expect(run.reload.status).to eq('completed')
+      expect(run_model.where(generation: 'gen-intent-fail').count).to eq(1)
     end
   end
 
   # Blocker E: the one-time reconciliation is a DURABLE persisted run intent (the migration INSERTs a
   # 'running' run row with started_at NULL), NOT a one-shot Redis perform_later. The drainer is the
-  # coordinator: each tick it (re-)enqueues ReconciliationJob for every incomplete run until it
+  # coordinator: each tick it runs the Reconciler INLINE for the oldest incomplete run until it
   # truthfully completes, so the initial run cannot be lost to Redis downtime or old-worker timing.
   describe 'durable run-intent coordinator' do
     it 'resumes a persisted one-time run intent and completes it truthfully (scans zero, retries 0)' do
@@ -224,29 +295,9 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
       run_drainer
       expect(run_model.find_by(generation: 'gen-intent').status).to eq('completed')
 
+      expect(reconciler).not_to receive(:run)
       expect(recon_job).not_to receive(:perform_later)
       drainer.perform_now # the completed run is excluded from `incomplete`; no provenance to drain
-    end
-
-    it 'survives an enqueue failure: the persisted intent stays running and a later tick completes it' do
-      run = run_model.create!(generation: 'gen-intent-fail', status: 'running', started_at: nil, cutoff_at: Time.current)
-
-      calls = 0
-      allow(recon_job).to receive(:perform_later).and_wrap_original do |orig, **kwargs|
-        calls += 1
-        raise StandardError, 'redis down' if calls == 1
-
-        orig.call(**kwargs)
-      end
-
-      # First tick: the enqueue fails (Redis/timing). The durable intent must NOT be lost.
-      expect { drainer.perform_now }.to raise_error(StandardError, /redis down/)
-      expect(run.reload.status).to eq('running')
-
-      # Later tick: the enqueue works, the coordinator resumes the SAME intent and completes it.
-      perform_enqueued_jobs(only: [recon_job, process_inbox_job]) { drainer.perform_now }
-      expect(run.reload.status).to eq('completed')
-      expect(run_model.where(generation: 'gen-intent-fail').count).to eq(1)
     end
 
     it 'the persisted run intent has a unique generation, so it can never be duplicated' do
@@ -259,33 +310,39 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
     end
   end
 
-  # Amplification guard (blocker): each tick must resume AT MOST ONE incomplete run and must NOT open
-  # a new recovery generation while any incomplete run exists — otherwise a persistent failure would
-  # accumulate one fresh generation per tick on top of the stuck run(s), enqueuing them all repeatedly.
+  # Amplification guard (blocker): each tick must process AT MOST ONE persisted run intent inline and
+  # must NOT open a new recovery generation while any incomplete run exists — otherwise a persistent
+  # failure would accumulate one fresh generation per tick on top of the stuck run, and (previously)
+  # enqueue them all repeatedly onto the :low queue, each with its own retry tree.
   describe 'bounded per tick (amplification guard)' do
-    it 'keeps run/job growth flat under a persistent failure (one resume per tick, no new generation)' do
+    it 'keeps run growth flat under a persistently failing reconciler (one inline resume per tick, zero enqueues)' do
       make_agent
       crash_gap_orphan # unreconciled provenance older than the safety age (would otherwise be drainable)
       run_model.create!(generation: 'stuck', status: 'running', started_at: Time.current, cutoff_at: Time.current)
 
-      calls = 0
-      allow(recon_job).to receive(:perform_later) { calls += 1 } # persistent failure: the run never completes
+      generations = []
+      allow(reconciler).to receive(:run) do |generation:, **_|
+        generations << generation
+        raise StandardError, 'persistent failure' # never completes; drainer swallows
+      end
+      expect(recon_job).not_to receive(:perform_later) # NEVER hands off to the second queue
 
-      5.times { drainer.perform_now }
+      5.times { expect { drainer.perform_now }.not_to raise_error }
 
       expect(run_model.count).to eq(1)                              # no fresh recovery generation piled on
       expect(run_model.incomplete.pluck(:generation)).to eq(['stuck'])
-      expect(calls).to eq(5)                                        # exactly one resume per tick — bounded
+      expect(generations).to eq(%w[stuck stuck stuck stuck stuck]) # exactly one inline call per tick, always the stuck run
     end
 
     it 'a pending initial intent blocks opening a recovery generation even with drainable provenance' do
       make_agent
       crash_gap_orphan
       run_model.create!(generation: '20260912000003', status: 'running', started_at: nil, cutoff_at: Time.current)
-      allow(recon_job).to receive(:perform_later) # swallow so the intent stays incomplete
+      allow(reconciler).to receive(:run) # stall: leave the intent incomplete
 
       expect { drainer.perform_now }.not_to change(run_model, :count)
       expect(run_model.where("generation LIKE 'recovery-%'").count).to eq(0)
+      expect(reconciler).to have_received(:run).once.with(generation: '20260912000003', cutoff: anything)
     end
 
     it 'opens exactly one new recovery generation only once no incomplete run remains' do

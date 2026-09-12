@@ -84,16 +84,16 @@ row (`status = running`, `started_at = NULL`, full-history `cutoff_at`), **not**
 `perform_later`. Relying on an in-migration `perform_later` was fragile — a Redis outage, or an old
 Sidekiq worker consuming the job in the deploy window against an incomplete schema, could silently
 drop the only trigger. The **recurring `RecoveryDrainerJob` is the coordinator**: each tick it
-(re-)enqueues `ReconciliationJob` for **at most one** incomplete run until it truthfully completes
-(bounded — see the recovery-drainer section), so the one-time run executes later under new code with
-the full schema and cannot be lost to Redis/timing. The INSERT is idempotent (`WHERE NOT EXISTS` on
-the unique `generation`), so a re-run of the migration never creates a second intent, and the
+selects **at most one** incomplete run and runs the `Reconciler` **inline** (see the recovery-drainer
+section) until it truthfully completes (bounded), so the one-time run executes later under new code
+with the full schema and cannot be lost to Redis/timing. The INSERT is idempotent (`WHERE NOT EXISTS`
+on the unique `generation`), so a re-run of the migration never creates a second intent, and the
 ledger's unique `generation` keeps the run one-time. (The enqueue originally lived in `…000001`,
 which is now a **no-op**.) Because `…000003` was rewritten in place from the old Redis enqueue to
 this durable INSERT, an environment that had already recorded the OLD `…000003` would never re-run
 its rewritten `up`; the forward migration **`…000007`** idempotently ensures the same one-time run
 intent exists on those installs (`WHERE NOT EXISTS` on the same `generation`, no Redis). The
-`ReconciliationJob` runs the `Reconciler`, which:
+coordinator (and the retained `ReconciliationJob`, below) run the `Reconciler`, which:
 
 - scans **only** unreconciled provenance rows (never all unassigned conversations), in bounded
   batches;
@@ -195,11 +195,18 @@ assignee names.
 
 ### Retry / deploy safety
 
-`ReconciliationJob` uses a **bounded** `retry_on StandardError, attempts: 5` (consistent with the
-app's job conventions, e.g. `Captain::Documents::PerformSyncJob`) — **not** an unbounded custom
-loop. Each retry resumes the same generation from the still-unreconciled rows and increments
-`retries`; a failed attempt increments `failed`. After attempts are exhausted the run stays
-`running`, safe to re-enqueue later without rescanning completed batches.
+`ReconciliationJob` is **retained for legacy / manual / already-queued compatibility only** (an
+operator-invoked one-off resume, or an old job still on the `:low` queue from before this change) — it
+is **no longer enqueued by the coordinator**. When it does run it uses a **bounded** `retry_on
+StandardError, attempts: 5` (consistent with the app's job conventions, e.g.
+`Captain::Documents::PerformSyncJob`) — **not** an unbounded custom loop. Each retry resumes the same
+generation from the still-unreconciled rows and increments `retries`; a failed attempt increments
+`failed`. After attempts are exhausted the run stays `running`, safe to re-run later without
+rescanning completed batches.
+
+The **coordinator path does not use `ReconciliationJob` at all** — it runs the `Reconciler` **inline**
+(see the recovery-drainer section), so it carries **no** separate `retry_on` tree. Its bounded retry
+is simply the next hourly cron occurrence.
 
 **Migration set (version order).** `…000001` is a no-op (kept because it may already be recorded in
 `schema_migrations`); `…000002` adds the `reconciliation_generation` / `reconciliation_outcome`
@@ -249,37 +256,52 @@ therefore be **stranded permanently** with only the one-time migration in place.
 `Wijaya::Batteries::DeferredAutoAssignment::RecoveryDrainerJob` closes that gap **and** acts as the
 **durable-run-intent coordinator**. It is a **low-frequency scheduled fallback, NOT the primary
 future deletion mechanism** — the normal `Agents::DestroyJob -> Registrar` bridge remains primary and
-behaviorally unchanged. On each tick it **resumes at most one incomplete `ReconciliationRun`** (the
-oldest — the one-time migration intent, or any run left `running` by an exhausted retry) by
-re-enqueuing `ReconciliationJob` with the run's own persisted `cutoff_at` — so a persisted intent is
-retried until it truthfully completes. **If any incomplete run exists, the tick stops there and does
-NOT open a new generation** (the amplification guard). Only once **every** intent has completed does
-a tick drain crash-gap provenance:
+behaviorally unchanged. It is itself **one hourly scheduled cron occurrence**, and on each tick it
+selects **at most one** persisted run intent and runs the `Reconciler` **INLINE** (a direct
+`Reconciler.run` call under the Reconciler's own global advisory lock) — it **does NOT** call
+`ReconciliationJob.perform_later`/`perform_now`. Handing off to that second `:low` queue was the
+release blocker: while the queue was delayed/down each tick would enqueue **another**
+`ReconciliationJob` for the same work, accumulating duplicates each with its own `retry_on` tree, and
+a fresh generation could be enqueued before its run row was atomically claimed. Running inline
+collapses recovery to **exactly one queued unit per tick** (this cron occurrence) with no downstream
+retry tree.
+
+On each tick it **adopts at most one incomplete `ReconciliationRun`** (the oldest — the one-time
+migration intent, or any run left `running` by a crash / expected failure on a prior tick) and
+reconciles it inline with the run's **own persisted `generation`/`cutoff_at`** — so a persisted intent
+is retried until it truthfully completes. **If any incomplete run exists, the tick stops there and
+does NOT open a new generation** (the amplification guard). Only once **every** intent has completed
+does a tick open crash-gap recovery:
 
 - scans **only** unreconciled `DeletionProvenance` tombstones (`reconciled_at IS NULL`) whose
   `event_at` is **older than a short safety age** (`SAFETY_AGE = 15.minutes`), so it never races the
   live post-commit bridge and only ever picks up a genuine crash-gap straggler — it **never** scans
   the conversations table or all Unassigned conversations;
-- **self-gates**: if no such tombstone exists it does **nothing** — no `ReconciliationRun` row and no
-  `ReconciliationJob` is created (an empty system stays completely quiet);
-- when a straggler exists, enqueues the **exact existing** `ReconciliationJob` with a **fresh
-  generation** (bucketed to the minute) and that safety-age cutoff. From there it is the **identical**
-  path as the one-time run: `Reconciler -> Registrar.register_unassigned_from_provenance -> Marker ->
-  ProcessInboxJob -> InboxProcessor -> native AgentAssignmentService -> conversation.update! ->
-  existing ERP owner-sync callback`. **No direct `assignee_id` write, no second engine.**
+- **self-gates**: if no such tombstone exists (and no incomplete run) it does **nothing** — no
+  `ReconciliationRun` row is created and no reconciliation runs (an empty system stays completely
+  quiet);
+- when a straggler exists, it **durably `find_or_create`s exactly one fresh recovery run intent** (a
+  `generation` bucketed to the minute, persisted **before** any processing) and reconciles **that**
+  run inline. From there it is the **identical** path as the one-time run: `Reconciler ->
+  Registrar.register_unassigned_from_provenance -> Marker -> ProcessInboxJob -> InboxProcessor ->
+  native AgentAssignmentService -> conversation.update! -> existing ERP owner-sync callback`. **No
+  direct `assignee_id` write, no second engine.**
 
-**Bounded, idempotent, concurrency-safe.** Each tick resumes **at most one** incomplete run and
-opens **at most one** new generation, and never opens a new generation while any incomplete run
-exists — so a persistent registrar/DB/lock failure keeps run/job growth **flat** (one resume per
-tick) instead of accumulating one fresh generation per tick on top of a stuck run. Two
-duplicate/overlapping cron invocations in the same minute enqueue the **same** generation; the
-ledger's unique `generation` plus the **global** advisory lock collapse them to a single run (the
-loser raises → retries → no-ops on the already-completed run). A later legitimate tick gets a fresh
-generation but finds the rows already stamped
-`reconciled_at`, so it scans (near) nothing. Every provenance row the live bridge already handled is
-re-checked and stamped reconciled as **skipped**/**ambiguous** on the first drain that reaches it —
-harmless and one-time. Run counters and marker outcome accounting are the **same** truthful ledger as
-the one-time run.
+**Bounded, idempotent, concurrency-safe.** Each tick reconciles **at most one** run inline and opens
+**at most one** new generation, and never opens a new generation while any incomplete run exists — so
+a persistent registrar/DB/lock failure keeps run growth **flat** (one inline resume per tick) instead
+of accumulating one fresh generation per tick on top of a stuck run. Two overlapping ticks in the
+same minute `find_or_create` the **same** generation and collapse onto one row (`find_or_create_by!`
+absorbs the create race); the **global** advisory lock then serializes them and the loser raises
+`LockContention`, which the coordinator **swallows** (logged, not re-raised — re-raising would let
+ActiveJob's Sidekiq default retry spin a second, unbounded retry tree). A later legitimate tick either
+resumes the still-incomplete run or, once it has completed, finds the rows already stamped
+`reconciled_at` and scans (near) nothing. A transient reconciliation failure is likewise swallowed:
+the `Reconciler` leaves the run `running` with its committed batches intact, and the **next hourly
+tick is the bounded retry** — it resumes the same generation. Every provenance row the live bridge
+already handled is re-checked and stamped reconciled as **skipped**/**ambiguous** on the first drain
+that reaches it — harmless and one-time. Run counters and marker outcome accounting are the **same**
+truthful ledger as the one-time run.
 
 **Scheduler touchpoint.** A single `config/schedule.yml` entry
 (`wijaya_deferred_assignment_recovery_drainer_job`, hourly, inside `WIJAYA_CUSTOM` markers) drives it.

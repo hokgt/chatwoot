@@ -319,8 +319,9 @@ patches:
       (Reconciler) is not triggered by an in-migration Redis enqueue: migration 000003 INSERTs a
       DURABLE PERSISTED RUN INTENT (a wijaya_deferred_reconciliation_runs row, status 'running',
       started_at NULL, cutoff_at = the deploy instant), idempotent on the unique generation. The
-      recurring hourly RecoveryDrainerJob is the coordinator: each tick it (re-)enqueues
-      ReconciliationJob for every incomplete run, so the one-time run is retried until it truthfully
+      recurring hourly RecoveryDrainerJob is the coordinator: each tick it selects at most one
+      incomplete run and runs the Reconciler INLINE (a direct Reconciler.run under the global advisory
+      lock — it does NOT enqueue ReconciliationJob), so the one-time run is retried until it truthfully
       completes — surviving a Redis outage or an old Sidekiq worker in the deploy window, because the
       run always executes later under new code with the full schema. It scans ONLY unreconciled provenance rows (never all unassigned
       conversations) in bounded batches, guarded by a wijaya_deferred_reconciliation_runs ledger
@@ -364,15 +365,24 @@ patches:
       full required set: scanned / identified / registered / skipped / ambiguous / assigned /
       no_eligible_agent / dropped / failed / retries; a run marked completed means only that
       scan+dispatch were accepted — the async outcome counters keep transitioning afterwards.
-      ReconciliationJob uses a bounded retry_on (attempts: 5) — no unbounded custom loop. There is
+      ReconciliationJob is RETAINED for legacy/manual/already-queued compatibility only (no longer
+      enqueued by the coordinator); when run it uses a bounded retry_on (attempts: 5) — no unbounded
+      custom loop. The coordinator path carries NO retry_on tree: it runs the Reconciler inline, so
+      its only bounded retry is the next hourly cron occurrence. There is
       NO in-migration Redis enqueue (a one-shot perform_later inside a migration is fragile: a Redis
       outage or an old Sidekiq consuming the job before new code/schema is in place would silently
       drop the only trigger). Instead the trigger was MOVED out of 000001 (now a no-op) into 000003,
       which — running AFTER 000002 created the columns the corrected job requires — INSERTs a durable
       persisted run intent (a wijaya_deferred_reconciliation_runs row, status 'running', started_at
       NULL, cutoff_at = the deploy instant), idempotent on the unique generation. The recurring
-      hourly RecoveryDrainerJob coordinator (config/schedule.yml) re-enqueues ReconciliationJob for
-      every incomplete run each tick, so the one-time run is retried until it truthfully completes —
+      hourly RecoveryDrainerJob coordinator (config/schedule.yml) selects at most one persisted run
+      intent each tick and reconciles it INLINE (never enqueuing a second ReconciliationJob onto the
+      :low queue): an incomplete run is resumed with its own persisted generation/cutoff, and only once
+      none is incomplete does it durably find-or-create exactly one fresh recovery generation (minute
+      bucket) and reconcile it inline. Expected lock contention or a transient reconciliation failure
+      is logged and swallowed (never re-raised — that would spin a second unbounded retry tree via
+      ActiveJob's Sidekiq default retry); the run is left running and the next hourly tick resumes it.
+      So the one-time run is retried until it truthfully completes —
       surviving Redis downtime and old-worker timing without a fragile once-only enqueue. Deploy
       order still applies (old Sidekiq must not run the new job against an incomplete schema): stop
       old Sidekiq, backup, build the new image, migrate with the new image, start new rails/sidekiq
