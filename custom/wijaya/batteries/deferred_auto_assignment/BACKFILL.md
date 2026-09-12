@@ -37,24 +37,36 @@ can never roll back the user deletion) for each cleared conversation:
 
 ## Automatic one-time reconciliation
 
-A migration (`20260912000001_enqueue_deferred_assignment_reconciliation`) enqueues
+A migration (`20260912000003_enqueue_deferred_assignment_reconciliation_after_schema`) enqueues
 `ReconciliationJob` exactly once at deploy — the same convention as
 `EnqueueValidateOpenaiHooksJob`. It is recorded once in `schema_migrations`, so it is **not a
-recurring blanket scan**. The job runs the `Reconciler`, which:
+recurring blanket scan**. (The enqueue originally lived in `…000001`, which is now a **no-op**; it
+moved to `…000003` so it runs **after** `…000002` adds the columns the corrected job requires — see
+*Retry / deploy safety* below.) The job runs the `Reconciler`, which:
 
 - scans **only** unreconciled provenance rows (never all unassigned conversations), in bounded
   batches;
 - is guarded by a `wijaya_deferred_reconciliation_runs` ledger keyed on a unique **generation**
   (the persisted run/cutoff/completion state) so a retry/re-enqueue **resumes** the same run
   instead of starting a second engine;
-- claims each batch with **`FOR UPDATE SKIP LOCKED`** (the same primitive the native
-  `AutoAssignment::AssignmentService` uses) and, in **one transaction**, classifies + registers +
-  stamps `reconciled_at` + adds the batch's counts to the run row — so a row is stamped (and
-  counted) **only after its disposition has committed**. A failed batch rolls back wholesale (row
-  left unreconciled, counters untouched); a retried or duplicate job **resumes** from the remaining
-  unreconciled rows without losing or double-counting work, and two concurrent jobs lock **disjoint**
-  batches instead of colliding. The coalesced `ProcessInboxJob` is enqueued only **after** the batch
-  commits, so a rolled-back batch leaves neither a phantom marker nor a phantom job.
+- runs the **entire scan + dispatch + finalize under a PostgreSQL SESSION advisory lock scoped to
+  the generation**, so only **one** job is ever inside it. A duplicate/concurrent job that cannot
+  take the lock returns the still-`running` ledger **without** scanning, dispatching, or
+  finalizing — it can **never** mark a run `completed` while another worker still owns (and may roll
+  back) the tail of the scan. The lock auto-releases if the owner's DB session dies, so a later
+  re-enqueue safely resumes;
+- claims each batch with **`FOR UPDATE SKIP LOCKED`** (defense in depth behind the advisory lock)
+  and, in **one transaction**, classifies + registers + stamps `reconciled_at` + adds the batch's
+  counts to the run row — so a row is stamped (and counted) **only after its disposition has
+  committed**. A failed batch rolls back wholesale (row left unreconciled, counters untouched); a
+  retried or duplicate job **resumes** from the remaining unreconciled rows without losing or
+  double-counting work;
+- does **not** enqueue the coalesced `ProcessInboxJob` per batch. Instead the reconciliation-stamped
+  markers themselves are a **durable outbox**: after all batches are scanned, every still-present
+  marker for the generation is (re-)dispatched, then the run is finalized. A crash/raise **between a
+  batch commit and the enqueue** therefore strands nothing — a retry re-dispatches every
+  still-present generation marker, relying on the existing in-flight coalescing + `InboxProcessor`
+  idempotency.
 
 For each provenance row it **fails closed**:
 
@@ -111,9 +123,20 @@ assignment result is truthfully known — and correlated back to the run via a n
 therefore unchanged). The ledger represents the **latest unique disposition per identified
 conversation**: a repeated "no eligible agent" pass is **not** re-counted, and if a waiting orphan is
 later assigned (by the system) or dropped (manually/bot assigned or resolved between passes) the
-count **transitions** (`no_eligible_agent → assigned`/`dropped`) rather than double-counting. Every
-outcome is logged content-free (`conversation=<id> outcome=<...> reconciliation_generation=<gen>`) —
-never message bodies or assignee names.
+count **transitions** (`no_eligible_agent → assigned`/`dropped`) rather than double-counting. The
+marker's outcome/removal transition and the run counter transition are wrapped in **one transaction**
+at every call site (`Marker.resolve_and_record` / `Marker.record_waiting`), so a crash between them
+can never leave the marker and the counters diverged. Every outcome is logged content-free
+(`conversation=<id> outcome=<...> reconciliation_generation=<gen>`) — never message bodies or
+assignee names.
+
+> **What `completed` means.** A run row marked `completed` means only that the **scan + durable
+> dispatch** were accepted. The scan-time counters (`scanned` / `identified` / `registered` /
+> `skipped` / `ambiguous`) are final at that point, but the async outcome counters (`assigned` /
+> `no_eligible_agent` / `dropped`) keep **transitioning afterwards** as the `InboxProcessor` resolves
+> each still-waiting marker on later availability triggers. `completed` is therefore **not** a claim
+> that every adopted conversation has already been assigned — only that every one has been durably
+> registered and dispatched.
 
 ### Retry / deploy safety
 
@@ -123,13 +146,24 @@ loop. Each retry resumes the same generation from the still-unreconciled rows an
 `retries`; a failed attempt increments `failed`. After attempts are exhausted the run stays
 `running`, safe to re-enqueue later without rescanning completed batches.
 
-**Deploy order** (so an old Sidekiq cannot consume the new job before the new code runs):
+**Migration ordering.** The one-time enqueue is the **last** migration in the set. `…000001` is now
+a no-op (kept because it may already be recorded in `schema_migrations`); `…000002` adds the
+`reconciliation_generation` / `reconciliation_outcome` marker columns and the full run counter set;
+`…000003` enqueues `ReconciliationJob`. Because migrations run in version order, the job is queued
+only **after** every column the corrected job requires exists — so a worker consuming it can never
+hit an incomplete schema. The `generation` for the automatic run is `20260912000003` (the enqueue
+migration's version); one-time idempotent semantics are unchanged.
+
+**Deploy order** (so an old Sidekiq cannot consume the new job before the new code runs — run
+exactly in this order; do **not** run it as part of this change):
 
 1. **Stop the old Sidekiq workers.**
-2. **Run migrations using the new image** (`20260912000000`, `…000001`, `…000002`). The enqueue
-   migration (`…000001`) queues `ReconciliationJob`, and `…000002` adds the correlation columns and
-   the full counter set.
-3. **Start the new workers**, which pick up the job with the corrected code.
+2. **Back up the database.**
+3. **Build the new image** (with the corrected battery code).
+4. **Run migrations using the new image** (`20260912000000`, `…000001` no-op, `…000002`, `…000003`).
+   `…000002` adds the correlation columns and full counter set; `…000003` then queues
+   `ReconciliationJob`.
+5. **Start the new `rails` and `sidekiq`**, which pick up the job with the corrected code.
 
 On **this** install the initial run scans **zero** legacy rows (the provenance table is new), so it
 is effectively a no-op here; the machinery is correct for any future re-deploy or for deletions that

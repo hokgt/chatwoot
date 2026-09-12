@@ -1,22 +1,17 @@
 # WIJAYA_CUSTOM_START deferred_auto_assignment
-# One-time automatic historical reconciliation trigger. Mirrors the established Chatwoot
-# convention of a migration enqueuing a background job (see EnqueueValidateOpenaiHooksJob):
-# migrations run exactly once at deploy (release phase) and are recorded in schema_migrations,
-# giving a durable, non-recurring completion boundary — no recurring blanket scan on every boot.
+# Compatibility no-op (was: the one-time reconciliation enqueue).
 #
-# The enqueued ReconciliationJob scans ONLY the durable provenance rows (never all unassigned
-# conversations), in bounded batches, idempotently, guarded by the wijaya_deferred_reconciliation_runs
-# ledger keyed on this migration's version as the generation. Fail-open: if the optional battery
-# is absent the constant will not resolve, so the enqueue is guarded and the migration still
-# completes.
+# The enqueue originally lived here, BEFORE 20260912000002 added the correlation columns and the
+# full counter set that the corrected ReconciliationJob/Reconciler now require. During a deploy an
+# already-running Sidekiq worker could consume that job in the window after this migration ran but
+# before 20260912000002 completed, failing against an incomplete schema (missing
+# reconciliation_generation / identified / … columns). The enqueue has therefore been moved to
+# 20260912000003_enqueue_deferred_assignment_reconciliation_after_schema, which runs AFTER every
+# schema prerequisite. This migration is now an intentional no-op, kept in place because it may
+# already be recorded in schema_migrations on some environments; the one-time reconciliation
+# semantics are preserved by the unique generation on the new enqueue migration.
 class EnqueueDeferredAssignmentReconciliation < ActiveRecord::Migration[7.1]
-  GENERATION = '20260912000001'.freeze
-
-  def up
-    return unless defined?(Wijaya::Batteries::DeferredAutoAssignment::ReconciliationJob)
-
-    Wijaya::Batteries::DeferredAutoAssignment::ReconciliationJob.perform_later(generation: GENERATION)
-  end
+  def up; end
 
   def down; end
 end

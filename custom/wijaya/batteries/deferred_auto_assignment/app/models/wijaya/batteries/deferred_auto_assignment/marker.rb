@@ -36,35 +36,49 @@ module Wijaya
         # InboxProcessor assignment and the post-commit lifecycle cleanup) apply the ledger
         # transition at most once — the first to delete the row wins. A no-op when no marker exists.
         # Ordinary markers (generation nil) are simply deleted, exactly as before.
+        #
+        # ATOMIC: the marker delete and the ledger counter transition run in ONE transaction, so a
+        # crash/raise between them can never leave the marker gone while the run counter is
+        # untransitioned (or vice versa) — either both apply or neither does. If record_outcome
+        # raises, the delete rolls back and the marker survives for a later, complete resolution.
+        # When invoked inside a caller-supplied transaction (e.g. the InboxProcessor row lock) this
+        # is a savepoint, still atomic with the assignment.
         def self.resolve_and_record(conversation_id, outcome)
           marker = find_by(conversation_id: conversation_id)
           return if marker.nil?
 
           generation = marker.reconciliation_generation
           previous = marker.reconciliation_outcome
-          return if where(conversation_id: conversation_id).delete_all.zero?
-
-          ReconciliationRun.record_outcome(generation, outcome, previous)
+          transaction do
+            deleted = where(conversation_id: conversation_id).delete_all
+            ReconciliationRun.record_outcome(generation, outcome, previous) if deleted.positive?
+          end
         end
 
         # Record that a reconciliation-adopted, still-waiting marker found no eligible agent this
         # pass, KEEPING the marker for a later trigger. Counts the conversation as no_eligible_agent
         # exactly once (idempotent across repeated no-agent passes) via the persisted
         # reconciliation_outcome, and the conditional update is itself single-shot under concurrency.
+        #
+        # ATOMIC: the marker's outcome transition and the ledger counter transition run in ONE
+        # transaction. A crash/raise between them would otherwise permanently undercount — the marker
+        # would read NO_ELIGIBLE_AGENT while the run counter never incremented, and every later pass
+        # would return early seeing no transition. Wrapping both means a failed ledger update rolls
+        # the marker's outcome back so the next pass re-attempts the whole transition cleanly.
         def self.record_waiting(conversation_id)
           marker = find_by(conversation_id: conversation_id)
           return if marker.nil? || marker.reconciliation_generation.blank?
-          return if marker.reconciliation_outcome == ReconciliationRun::NO_ELIGIBLE_AGENT
 
-          # rubocop:disable Rails/SkipsModelValidations
-          updated = where(conversation_id: conversation_id, reconciliation_outcome: marker.reconciliation_outcome)
-                    .update_all(reconciliation_outcome: ReconciliationRun::NO_ELIGIBLE_AGENT, updated_at: Time.current)
-          # rubocop:enable Rails/SkipsModelValidations
-          return if updated.zero?
+          previous = marker.reconciliation_outcome
+          return if previous == ReconciliationRun::NO_ELIGIBLE_AGENT
 
-          ReconciliationRun.record_outcome(
-            marker.reconciliation_generation, ReconciliationRun::NO_ELIGIBLE_AGENT, marker.reconciliation_outcome
-          )
+          transaction do
+            # rubocop:disable Rails/SkipsModelValidations
+            updated = where(conversation_id: conversation_id, reconciliation_outcome: previous)
+                      .update_all(reconciliation_outcome: ReconciliationRun::NO_ELIGIBLE_AGENT, updated_at: Time.current)
+            # rubocop:enable Rails/SkipsModelValidations
+            ReconciliationRun.record_outcome(marker.reconciliation_generation, ReconciliationRun::NO_ELIGIBLE_AGENT, previous) if updated.positive?
+          end
         end
       end
     end

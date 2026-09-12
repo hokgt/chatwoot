@@ -331,24 +331,38 @@ patches:
       BACKFILL.md). InboxProcessor emits a content-free per-marker outcome log (assigned /
       no-eligible-agent-marker-retained / dropped) so assignment outcomes are observable without
       the Reconciler fabricating async counts it cannot know.
-      Correctness hardening (20260912000002): each batch is claimed FOR UPDATE SKIP LOCKED and, in
-      ONE transaction, classified + registered + stamped reconciled + counted, so a row is stamped
-      only AFTER its disposition commits — a failed batch rolls back wholesale and a retried/duplicate
-      job RESUMES the same generation from the remaining unreconciled rows without losing or
-      double-counting work (two concurrent jobs lock disjoint batches). Counters persist cumulatively
+      Correctness hardening (20260912000002/000003): each batch is claimed FOR UPDATE SKIP LOCKED
+      and, in ONE transaction, classified + registered + stamped reconciled + counted, so a row is
+      stamped only AFTER its disposition commits — a failed batch rolls back wholesale and a
+      retried/duplicate job RESUMES the same generation from the remaining unreconciled rows without
+      losing or double-counting work. The whole scan + dispatch + finalize runs under a PostgreSQL
+      SESSION advisory lock scoped to the generation, so only ONE job is ever inside it; a duplicate
+      that cannot take the lock returns the still-running ledger WITHOUT finalizing (it can never
+      complete a run another worker still owns and may roll back), and the lock auto-releases if that
+      owner's DB session dies. The coalesced ProcessInboxJob is NOT enqueued per batch — the
+      reconciliation-stamped markers are a durable outbox and every still-present one is
+      (re-)dispatched after the scan, then the run is finalized, so a crash between a batch commit and
+      the enqueue strands nothing (a retry re-dispatches idempotently). Counters persist cumulatively
       and idempotently on the run row (never a once-only finalize), and registered is the ACTUAL
       adopted count from the Registrar's re-check (a row raced to marked/assigned in between is
       reported skipped, never a false registered). A nullable reconciliation_generation +
       reconciliation_outcome on the marker (NULL for every ordinary marker, which stays unchanged)
       lets the shared InboxProcessor correlate the eventual assignment outcome back to its run and
       count assigned / no_eligible_agent / dropped as the LATEST unique disposition per conversation
-      (a repeated no-agent pass is not re-counted; a later assign/drop transitions the count). The run
-      ledger now carries the full required set: scanned / identified / registered / skipped /
-      ambiguous / assigned / no_eligible_agent / dropped / failed / retries. ReconciliationJob uses a
-      bounded retry_on (attempts: 5) — no unbounded custom loop. Deploy order (old Sidekiq must not
-      consume the new job before new code runs): stop old Sidekiq, migrate with the new image, start
-      new workers (see BACKFILL.md). On this install the initial run scans ZERO legacy rows (the
-      provenance table is new); pre-feature deletions carry no provenance and are never guessed.
+      (a repeated no-agent pass is not re-counted; a later assign/drop transitions the count); the
+      marker outcome/removal transition and the ledger counter transition are wrapped in ONE
+      transaction at every call site so they can never diverge on a crash. The run ledger carries the
+      full required set: scanned / identified / registered / skipped / ambiguous / assigned /
+      no_eligible_agent / dropped / failed / retries; a run marked completed means only that
+      scan+dispatch were accepted — the async outcome counters keep transitioning afterwards.
+      ReconciliationJob uses a bounded retry_on (attempts: 5) — no unbounded custom loop. The
+      one-time enqueue was MOVED out of 000001 (now a no-op) into 000003 so it runs AFTER 000002
+      creates the columns the corrected job requires, closing the deploy window where an old Sidekiq
+      could consume the job against an incomplete schema. Deploy order (old Sidekiq must not consume
+      the new job before new code runs): stop old Sidekiq, backup, build the new image, migrate with
+      the new image, start new rails/sidekiq (see BACKFILL.md). On this install the initial run scans
+      ZERO legacy rows (the provenance table is new); pre-feature deletions carry no provenance and
+      are never guessed.
     custom_files:
       - custom/wijaya/batteries/deferred_auto_assignment/loader.rb
       - custom/wijaya/batteries/deferred_auto_assignment/conversation_extensions.rb
@@ -373,6 +387,7 @@ patches:
       - db/migrate/20260912000000_create_wijaya_deferred_assignment_provenance.rb
       - db/migrate/20260912000001_enqueue_deferred_assignment_reconciliation.rb
       - db/migrate/20260912000002_add_deferred_reconciliation_correlation.rb
+      - db/migrate/20260912000003_enqueue_deferred_assignment_reconciliation_after_schema.rb
     core_hook_touchpoints:
       # Battery Hooks module resolved by name from the core dispatcher (core/hooks.rb map).
       - custom/wijaya/batteries/core/hooks.rb
