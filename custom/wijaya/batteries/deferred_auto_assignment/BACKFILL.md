@@ -84,11 +84,15 @@ row (`status = running`, `started_at = NULL`, full-history `cutoff_at`), **not**
 `perform_later`. Relying on an in-migration `perform_later` was fragile — a Redis outage, or an old
 Sidekiq worker consuming the job in the deploy window against an incomplete schema, could silently
 drop the only trigger. The **recurring `RecoveryDrainerJob` is the coordinator**: each tick it
-(re-)enqueues `ReconciliationJob` for every **incomplete** run until it truthfully completes, so the
-one-time run executes later under new code with the full schema and cannot be lost to Redis/timing.
-The INSERT is idempotent (`WHERE NOT EXISTS` on the unique `generation`), so a re-run of the
-migration never creates a second intent, and the ledger's unique `generation` keeps the run
-one-time. (The enqueue originally lived in `…000001`, which is now a **no-op**.) The
+(re-)enqueues `ReconciliationJob` for **at most one** incomplete run until it truthfully completes
+(bounded — see the recovery-drainer section), so the one-time run executes later under new code with
+the full schema and cannot be lost to Redis/timing. The INSERT is idempotent (`WHERE NOT EXISTS` on
+the unique `generation`), so a re-run of the migration never creates a second intent, and the
+ledger's unique `generation` keeps the run one-time. (The enqueue originally lived in `…000001`,
+which is now a **no-op**.) Because `…000003` was rewritten in place from the old Redis enqueue to
+this durable INSERT, an environment that had already recorded the OLD `…000003` would never re-run
+its rewritten `up`; the forward migration **`…000007`** idempotently ensures the same one-time run
+intent exists on those installs (`WHERE NOT EXISTS` on the same `generation`, no Redis). The
 `ReconciliationJob` runs the `Reconciler`, which:
 
 - scans **only** unreconciled provenance rows (never all unassigned conversations), in bounded
@@ -204,8 +208,14 @@ marker columns and the full run counter set; `…000003` persists the durable on
 `(conversation_id, prior_assignee_id, event, deletion_key)`; `…000005` is a **forward-only repair**
 of the marker foreign keys to `on_delete: :cascade` (reconciling the drift left by editing the
 already-applied `20260905000000` in place — never a history rewrite); `…000006` adds the
-`superseded_at` continuity column. All are additive/idempotent and never edit an applied migration
-as an upgrade substitute. The `generation` for the automatic run is `20260912000003`.
+`superseded_at` continuity column; `…000007` is the **forward repair** ensuring the durable one-time
+run intent exists on installs that recorded the OLD (pre-rewrite) `…000003` and would never re-run
+its rewritten `up` (idempotent `WHERE NOT EXISTS` on the same `generation`, no Redis); `…000008`
+installs the **`MarkerDropTrigger`** BEFORE DELETE trigger that keeps the run ledger's terminal
+counters truthful when a DB cascade removes a reconciliation-owned marker with **no** Rails callback
+(the shared trigger definition is also re-asserted idempotently on boot by the battery loader, since
+schema.rb cannot represent a trigger). All are additive/idempotent and never edit an applied
+migration as an upgrade substitute. The `generation` for the automatic run is `20260912000003`.
 
 Because the one-time run is a **persisted intent executed by the drainer coordinator** (not a Redis
 job queued inside the migration), it no longer depends on old-Sidekiq/Redis timing: it runs later
@@ -216,8 +226,9 @@ under new code with the full schema regardless.
 1. **Stop the old Sidekiq workers.**
 2. **Back up the database.**
 3. **Build the new image** (with the corrected battery code).
-4. **Run migrations using the new image** (`20260912000000` … `…000006`). `…000003` persists the
-   durable run intent; the remaining additive/repair migrations complete the schema.
+4. **Run migrations using the new image** (`20260912000000` … `…000008`). `…000003` persists the
+   durable run intent (`…000007` repairs it on installs that recorded the old `…000003`); `…000008`
+   installs the marker-drop trigger; the remaining additive/repair migrations complete the schema.
 5. **Start the new `rails` and `sidekiq`.** The scheduled `RecoveryDrainerJob` then resumes the
    persisted run intent (and drains any crash-gap provenance) under the corrected code.
 
@@ -237,10 +248,12 @@ therefore be **stranded permanently** with only the one-time migration in place.
 `Wijaya::Batteries::DeferredAutoAssignment::RecoveryDrainerJob` closes that gap **and** acts as the
 **durable-run-intent coordinator**. It is a **low-frequency scheduled fallback, NOT the primary
 future deletion mechanism** — the normal `Agents::DestroyJob -> Registrar` bridge remains primary and
-behaviorally unchanged. On each tick it first **resumes every incomplete `ReconciliationRun`** (the
-one-time migration intent, plus any run left `running` by an exhausted retry) by re-enqueuing
-`ReconciliationJob` with the run's own persisted `cutoff_at` — so a persisted intent is retried until
-it truthfully completes. Then it drains crash-gap provenance:
+behaviorally unchanged. On each tick it **resumes at most one incomplete `ReconciliationRun`** (the
+oldest — the one-time migration intent, or any run left `running` by an exhausted retry) by
+re-enqueuing `ReconciliationJob` with the run's own persisted `cutoff_at` — so a persisted intent is
+retried until it truthfully completes. **If any incomplete run exists, the tick stops there and does
+NOT open a new generation** (the amplification guard). Only once **every** intent has completed does
+a tick drain crash-gap provenance:
 
 - scans **only** unreconciled `DeletionProvenance` tombstones (`reconciled_at IS NULL`) whose
   `event_at` is **older than a short safety age** (`SAFETY_AGE = 15.minutes`), so it never races the
@@ -254,10 +267,14 @@ it truthfully completes. Then it drains crash-gap provenance:
   ProcessInboxJob -> InboxProcessor -> native AgentAssignmentService -> conversation.update! ->
   existing ERP owner-sync callback`. **No direct `assignee_id` write, no second engine.**
 
-**Bounded, idempotent, concurrency-safe.** Two duplicate/overlapping cron invocations in the same
-minute enqueue the **same** generation; the ledger's unique `generation` plus the **global** advisory
-lock collapse them to a single run (the loser raises → retries → no-ops on the already-completed
-run). A later legitimate tick gets a fresh generation but finds the rows already stamped
+**Bounded, idempotent, concurrency-safe.** Each tick resumes **at most one** incomplete run and
+opens **at most one** new generation, and never opens a new generation while any incomplete run
+exists — so a persistent registrar/DB/lock failure keeps run/job growth **flat** (one resume per
+tick) instead of accumulating one fresh generation per tick on top of a stuck run. Two
+duplicate/overlapping cron invocations in the same minute enqueue the **same** generation; the
+ledger's unique `generation` plus the **global** advisory lock collapse them to a single run (the
+loser raises → retries → no-ops on the already-completed run). A later legitimate tick gets a fresh
+generation but finds the rows already stamped
 `reconciled_at`, so it scans (near) nothing. Every provenance row the live bridge already handled is
 re-checked and stamped reconciled as **skipped**/**ambiguous** on the first drain that reaches it —
 harmless and one-time. Run counters and marker outcome accounting are the **same** truthful ledger as

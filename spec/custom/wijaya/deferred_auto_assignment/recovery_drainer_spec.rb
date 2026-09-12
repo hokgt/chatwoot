@@ -258,4 +258,46 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
       end.to raise_error(ActiveRecord::RecordInvalid)
     end
   end
+
+  # Amplification guard (blocker): each tick must resume AT MOST ONE incomplete run and must NOT open
+  # a new recovery generation while any incomplete run exists — otherwise a persistent failure would
+  # accumulate one fresh generation per tick on top of the stuck run(s), enqueuing them all repeatedly.
+  describe 'bounded per tick (amplification guard)' do
+    it 'keeps run/job growth flat under a persistent failure (one resume per tick, no new generation)' do
+      make_agent
+      crash_gap_orphan # unreconciled provenance older than the safety age (would otherwise be drainable)
+      run_model.create!(generation: 'stuck', status: 'running', started_at: Time.current, cutoff_at: Time.current)
+
+      calls = 0
+      allow(recon_job).to receive(:perform_later) { calls += 1 } # persistent failure: the run never completes
+
+      5.times { drainer.perform_now }
+
+      expect(run_model.count).to eq(1)                              # no fresh recovery generation piled on
+      expect(run_model.incomplete.pluck(:generation)).to eq(['stuck'])
+      expect(calls).to eq(5)                                        # exactly one resume per tick — bounded
+    end
+
+    it 'a pending initial intent blocks opening a recovery generation even with drainable provenance' do
+      make_agent
+      crash_gap_orphan
+      run_model.create!(generation: '20260912000003', status: 'running', started_at: nil, cutoff_at: Time.current)
+      allow(recon_job).to receive(:perform_later) # swallow so the intent stays incomplete
+
+      expect { drainer.perform_now }.not_to change(run_model, :count)
+      expect(run_model.where("generation LIKE 'recovery-%'").count).to eq(0)
+    end
+
+    it 'opens exactly one new recovery generation only once no incomplete run remains' do
+      conversation, = crash_gap_orphan
+      agent = make_agent
+      @online = [agent.id.to_s]
+      expect(run_model.incomplete).to be_empty
+
+      run_drainer
+
+      expect(run_model.where("generation LIKE 'recovery-%'").count).to eq(1)
+      expect(conversation.reload.assignee_id).to be_present
+    end
+  end
 end

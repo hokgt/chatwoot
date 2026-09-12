@@ -1,10 +1,14 @@
 # frozen_string_literal: true
 
-# Background worker for automatic reconciliation. Two callers enqueue it: the one-time
-# EnqueueDeferredAssignmentReconciliationAfterSchema migration at deploy (mirroring the established
-# EnqueueValidateOpenaiHooksJob convention) with the historical cutoff, and the recurring
-# RecoveryDrainerJob with a fresh generation + short safety-age cutoff to drain crash-gap
-# provenance the one-time run's fixed cutoff can never reach. It delegates to the Reconciler, which
+# Background worker for automatic reconciliation. It is NOT enqueued by a migration: the one-time
+# historical reconciliation is a DURABLE persisted run intent (a 'running' wijaya_deferred_
+# reconciliation_runs row the migration INSERTs, with a full-history cutoff), and the recurring
+# RecoveryDrainerJob coordinator is the sole enqueuer — each tick it (re-)enqueues at most one
+# incomplete run until it truthfully completes, and separately opens a fresh generation + short
+# safety-age cutoff to drain crash-gap provenance the one-time run's fixed cutoff can never reach.
+# Relying on the durable intent + coordinator (rather than a fragile perform_later inside the
+# migration) survives Redis downtime and an old worker consuming the job against an incomplete
+# schema. It delegates to the Reconciler, which
 # is guarded by the ReconciliationRun ledger (unique generation) so a normal ActiveJob retry or a
 # duplicate enqueue resumes the same run rather than starting a second scan. It scans only durable
 # provenance rows in bounded batches; it never scans all unassigned conversations and never

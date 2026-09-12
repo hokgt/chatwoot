@@ -393,6 +393,7 @@ patches:
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/agent_deletion_unassignment.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/provenance_recorder.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/reconciler.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/marker_drop_trigger.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/reconciliation_job.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/recovery_drainer_job.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_discovery.rb
@@ -414,6 +415,12 @@ patches:
       # Causal-continuity guard column (superseded_at) stamped in-transaction by the battery when an
       # intervening assignment/routing/state transition breaks the chain from the deletion.
       - db/migrate/20260912000006_add_deferred_provenance_superseded_at.rb
+      # Forward repair ensuring the durable one-time reconciliation run intent exists on installs that
+      # recorded the OLD (pre-rewrite) 20260912000003 and would never re-run its rewritten up.
+      - db/migrate/20260912000007_ensure_deferred_reconciliation_initial_run_intent.rb
+      # BEFORE DELETE trigger (shared MarkerDropTrigger) keeping the run ledger's terminal counters
+      # truthful when a DB cascade removes a reconciliation-owned marker with no Rails callback.
+      - db/migrate/20260912000008_install_deferred_marker_drop_trigger.rb
     core_hook_touchpoints:
       # Battery Hooks module resolved by name from the core dispatcher (core/hooks.rb map).
       - custom/wijaya/batteries/core/hooks.rb
@@ -454,6 +461,10 @@ patches:
       - spec/custom/wijaya/deferred_auto_assignment/provenance_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/reconciliation_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/recovery_drainer_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/run_intent_repair_migration_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/marker_cascade_counters_spec.rb
+      # schema.rb cannot carry the MarkerDropTrigger; this before(:suite) hook re-asserts it in test.
+      - spec/support/wijaya_deferred_marker_drop_trigger.rb
 
 
   - id: erp_lead_sidebar

@@ -193,6 +193,7 @@ Style/ClassAndModuleChildren:
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/reconciliation_run.rb'
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/provenance_recorder.rb'
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/reconciler.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/marker_drop_trigger.rb'
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/reconciliation_job.rb'
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/recovery_drainer_job.rb'
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_discovery.rb'
