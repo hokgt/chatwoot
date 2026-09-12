@@ -40,6 +40,16 @@ module Wijaya
 
         validates :conversation_id, uniqueness: true
 
+        # Terminal accounting for the has_one dependent: :destroy path. When a conversation is
+        # destroyed, its marker is removed via marker.destroy (NOT the delete_all that
+        # resolve_and_record / record_waiting use), so those ledger transitions are bypassed. This
+        # after_destroy runs INSIDE the destroy transaction and, for a reconciliation-owned marker,
+        # records the terminal DROPPED disposition — reversing whatever bucket the marker last held
+        # (reconciliation_outcome) exactly once — so a conversation/marker deletion can never leave a
+        # run counter stuck (e.g. permanently no_eligible_agent) or double-counted. It is a no-op for
+        # an ordinary marker (blank generation), and delete_all removals never fire it (no double count).
+        after_destroy :wijaya_record_terminal_disposition
+
         # Remove the marker for +conversation_id+ and, when it was adopted by a reconciliation
         # generation, record its terminal +outcome+ (ReconciliationRun::ASSIGNED / DROPPED) so the
         # run ledger reflects each identified conversation's latest, unique disposition. Single-shot
@@ -103,6 +113,18 @@ module Wijaya
             # rubocop:enable Rails/SkipsModelValidations
             ReconciliationRun.record_outcome(marker.reconciliation_generation, ReconciliationRun::NO_ELIGIBLE_AGENT, previous) if updated.positive?
           end
+        end
+
+        private
+
+        # See the after_destroy comment above. Atomic within the destroy transaction; single-shot
+        # (the marker row is gone once destroy commits, so it cannot fire twice for one occurrence).
+        def wijaya_record_terminal_disposition
+          return if reconciliation_generation.blank?
+
+          ReconciliationRun.record_outcome(
+            reconciliation_generation, ReconciliationRun::DROPPED, reconciliation_outcome
+          )
         end
       end
     end

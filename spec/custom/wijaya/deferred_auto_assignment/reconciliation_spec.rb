@@ -69,7 +69,8 @@ RSpec.describe 'Deferred auto-assignment historical reconciliation', type: :mode
     reset_clean_pre_feature_state(conversation)
     provenance_model.create!(
       account: account, conversation: conversation, inbox: inbox,
-      prior_assignee_id: prior.id, event: 'agent_deletion', event_at: event_at
+      prior_assignee_id: prior.id, event: 'agent_deletion', event_at: event_at,
+      deletion_key: "del-#{conversation.id}-#{prior.id}"
     )
     AccountUser.where(account_id: account.id, user_id: prior.id).delete_all if confirm_deleted
     [conversation, prior]
@@ -197,11 +198,11 @@ RSpec.describe 'Deferred auto-assignment historical reconciliation', type: :mode
       expect(run.scanned).to eq(0)
     end
 
-    it 'SKIPS an orphan that was manually assigned before reconciliation (never overwritten)' do
+    it 'SUPERSEDES (never adopts) an orphan manually assigned before reconciliation; the claim is never overwritten' do
       spv = make_agent
       other = make_agent
       conversation, = orphan_with_provenance
-      conversation.update!(assignee: spv) # a supervisor claimed it first
+      conversation.update!(assignee: spv) # a supervisor claimed it -> in-transaction supersession
 
       @online = [other.id.to_s]
       run = run_reconciliation
@@ -209,7 +210,8 @@ RSpec.describe 'Deferred auto-assignment historical reconciliation', type: :mode
       expect(conversation.reload.assignee).to eq(spv)
       expect(marker_for(conversation)).to be_nil
       expect(run.registered).to eq(0)
-      expect(run.skipped).to eq(1)
+      expect(run.scanned).to eq(0) # the superseded tombstone is excluded from the scan entirely
+      expect(provenance_row(conversation).superseded_at).to be_present
     end
 
     it 'SKIPS a resolved (non-open) orphan' do
@@ -249,7 +251,8 @@ RSpec.describe 'Deferred auto-assignment historical reconciliation', type: :mode
       marker_model.where(conversation_id: cross.id).delete_all # drop any creation-time marker
       # Provenance deliberately mislabels the account as ours.
       provenance_model.create!(account: account, conversation: cross, inbox: other_inbox,
-                               prior_assignee_id: 999_999, event: 'agent_deletion', event_at: 1.hour.ago)
+                               prior_assignee_id: 999_999, event: 'agent_deletion', event_at: 1.hour.ago,
+                               deletion_key: "del-cross-#{cross.id}")
 
       run = run_reconciliation
 
@@ -556,7 +559,8 @@ RSpec.describe 'Deferred auto-assignment historical reconciliation', type: :mode
       Redis::Alfred.delete(format(process_inbox_job::IN_FLIGHT_KEY, inbox_id: inbox2.id))
       Redis::Alfred.delete(format(process_inbox_job::RERUN_KEY, inbox_id: inbox2.id))
       provenance_model.create!(account: account, conversation: c2, inbox: inbox2,
-                               prior_assignee_id: prior2.id, event: 'agent_deletion', event_at: 1.hour.ago)
+                               prior_assignee_id: prior2.id, event: 'agent_deletion', event_at: 1.hour.ago,
+                               deletion_key: "del-#{c2.id}-#{prior2.id}")
       AccountUser.where(account_id: account.id, user_id: prior2.id).delete_all
 
       @online = [agent.id.to_s, agent2.id.to_s]
@@ -725,6 +729,124 @@ RSpec.describe 'Deferred auto-assignment historical reconciliation', type: :mode
 
       expect(run_model.find_by(generation: 'job-gen')).to be_present
       expect(conversation.reload.assignee_id).to be_present
+    end
+  end
+
+  # Blocker C: a pending tombstone must NEVER be adopted after an intervening intentional transition
+  # (manual/human/bot assignment, team/inbox routing, or close/reopen) — even once the conversation is
+  # open + assignee-nil again. The in-transaction supersession seam stamps superseded_at the instant
+  # such a transition commits, so the reconciler never scans/adopts it. The deletion-caused
+  # unassignment itself (update_all, callback-free) never supersedes its own tombstone.
+  describe 'causal continuity (superseded tombstones are never adopted)' do
+    def expect_not_adopted(conversation, run)
+      expect(conversation.reload.assignee_id).to be_nil
+      expect(marker_for(conversation)).to be_nil
+      expect(run.registered).to eq(0)
+      expect(run.scanned).to eq(0)
+      expect(provenance_row(conversation).superseded_at).to be_present
+    end
+
+    # These use no online agent, so the ONLY thing that could adopt the conversation is the
+    # reconciliation — proving supersession (not merely a lack of online agents) blocks it.
+    it 'assign -> unassign: never re-adopted' do
+      agent = make_agent
+      conversation, = orphan_with_provenance
+      conversation.update!(assignee: agent)   # intervening human assignment breaks the chain
+      conversation.update!(assignee_id: nil)  # then unassigned again -> open + nil, but superseded
+
+      expect_not_adopted(conversation, run_reconciliation)
+    end
+
+    it 'close -> reopen: never re-adopted' do
+      make_agent
+      conversation, = orphan_with_provenance
+      conversation.update!(status: :resolved) # intentional state transition
+      conversation.update!(status: :open)     # reopened -> open + nil, but superseded
+
+      expect_not_adopted(conversation, run_reconciliation)
+    end
+
+    it 'bot ownership -> unassigned: never re-adopted' do
+      make_agent
+      conversation, = orphan_with_provenance
+      agent_bot = create(:agent_bot, account: account)
+      conversation.update!(assignee_agent_bot_id: agent_bot.id) # bot took over
+      conversation.update!(assignee_agent_bot_id: nil)          # bot removed -> open + nil, superseded
+
+      expect_not_adopted(conversation, run_reconciliation)
+    end
+
+    it 'team-routing change: never adopted even though the conversation stays deferrable' do
+      team = create(:team, account: account, allow_auto_assign: true)
+      make_agent(team: team)
+      conversation, = orphan_with_provenance
+      conversation.update!(team: team) # intentional routing change breaks the chain
+
+      expect_not_adopted(conversation, run_reconciliation)
+    end
+
+    it 'a genuine crash-gap orphan (no intervening transition) is STILL adopted' do
+      agent = make_agent
+      conversation, = orphan_with_provenance # cleared via update_all/update_column, no callback fired
+
+      @online = [agent.id.to_s]
+      run = run_reconciliation
+
+      expect(conversation.reload.assignee).to eq(agent)
+      expect(run.registered).to eq(1)
+      expect(provenance_row(conversation).superseded_at).to be_nil
+    end
+  end
+
+  # Blocker D: a reconciliation-owned marker removed by has_one dependent: :destroy (conversation
+  # deletion) bypasses resolve_and_record. The Marker after_destroy must transactionally record a
+  # terminal DROPPED and reverse the prior latest disposition exactly once, without double-counting,
+  # and be a no-op for an ordinary (generation-less) marker.
+  describe 'terminal counter accounting on conversation/marker deletion' do
+    it 'reverses no_eligible_agent and records DROPPED exactly once when the conversation is destroyed' do
+      make_agent
+      conversation, = orphan_with_provenance
+      @online = []
+      run = run_reconciliation
+      expect(run.reload.no_eligible_agent).to eq(1)
+      expect(marker_for(conversation)).to be_present
+
+      conversation.destroy! # dependent: :destroy removes the marker via marker.destroy (not delete_all)
+
+      expect(marker_for(conversation)).to be_nil
+      expect(run.reload.no_eligible_agent).to eq(0) # prior disposition reversed
+      expect(run.dropped).to eq(1)                  # terminal DROPPED recorded exactly once
+      expect(run.assigned).to eq(0)
+    end
+
+    it 'records DROPPED for a registered marker that never got an async disposition yet' do
+      conversation, = orphan_with_provenance
+      run = run_model.create!(generation: 'gen-fresh-drop', status: 'running', started_at: Time.current,
+                              cutoff_at: Time.current, registered: 1)
+      registrar.register_unassigned_from_provenance(account.id, [conversation.id], generation: 'gen-fresh-drop')
+      expect(marker_for(conversation).reconciliation_outcome).to be_nil
+
+      conversation.destroy!
+
+      expect(run.reload.dropped).to eq(1)
+      expect(run.no_eligible_agent).to eq(0)
+    end
+
+    it 'does not touch any run ledger when an ordinary (generation-less) marker’s conversation is destroyed' do
+      run = run_model.create!(generation: 'gen-ordinary', status: 'running', started_at: Time.current,
+                              cutoff_at: Time.current, no_eligible_agent: 1)
+      plain = Conversation.create!(account: account, inbox: inbox, contact: contact, contact_inbox: contact_inbox)
+      marker_model.find_or_create_by!(conversation_id: plain.id) do |m|
+        m.account_id = account.id
+        m.inbox_id = inbox.id
+      end
+      expect(marker_for(plain).reconciliation_generation).to be_nil
+
+      plain.destroy!
+
+      expect(marker_for(plain)).to be_nil
+      expect(run.reload.no_eligible_agent).to eq(1) # untouched
+      expect(run.dropped).to eq(0)
     end
   end
 end

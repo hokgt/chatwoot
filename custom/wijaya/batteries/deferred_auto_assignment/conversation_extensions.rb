@@ -25,6 +25,12 @@
 #      agent's assignment capacity (it left "open", or its assignee changed/cleared), enqueue a
 #      coalesced, marker-gated pass for the inbox so a conversation still waiting on a marker can
 #      now be assigned to that freed agent. It never re-creates a marker and is fail-open.
+#
+#   4. after_update (in-transaction) provenance supersession — a durable causal-continuity guard:
+#      the instant an intentional assignment/bot/routing/status transition commits, any still-pending
+#      deletion-provenance tombstone for the conversation is marked superseded, atomically with that
+#      transition, so a reassigned-then-unassigned (or closed-then-reopened) conversation is never
+#      re-adopted by the reconciliation. The deletion's own callback-free update_all never triggers it.
 module Wijaya::Batteries::DeferredAutoAssignment::ConversationExtensions
   extend ActiveSupport::Concern
 
@@ -35,9 +41,45 @@ module Wijaya::Batteries::DeferredAutoAssignment::ConversationExtensions
 
     after_update_commit :wijaya_cleanup_deferred_marker_if_ineligible
     after_update_commit :wijaya_recover_deferred_capacity_on_release
+    # In-transaction (NOT after_commit) so the supersession commits atomically with the transition
+    # it observes — a durable, transactionally consistent causal-continuity guard.
+    after_update :wijaya_supersede_deletion_provenance_on_intervening_change
   end
 
   private
+
+  # Causal-continuity guard (does NOT depend on current assignee being nil): the instant an
+  # intentional transition — a human assignment, an agent-bot taking ownership, a team/inbox routing
+  # change, or a status transition (close/reopen) — commits on a conversation, mark any still-pending
+  # deletion-provenance tombstone for it SUPERSEDED, in the SAME transaction as that transition. The
+  # reconciliation scan excludes superseded tombstones, so a conversation whose current emptiness no
+  # longer traces to the agent deletion (it was reassigned/routed/reopened, THEN unassigned again) is
+  # never re-adopted. The deletion-caused unassignment itself uses update_all (callbacks skipped), so
+  # it never supersedes its own tombstone and a genuine crash-gap orphan (no intervening
+  # callback-firing transition) stays eligible. A tombstone already reconciled_at is left untouched
+  # (the reconciler/bridge owns it). The write is a validation/FK-free update_all, so on the rare DB
+  # failure the whole transaction rolls back with the transition (fail-closed), just like any other
+  # write in it — never a silent, best-effort miss.
+  def wijaya_supersede_deletion_provenance_on_intervening_change
+    return unless wijaya_deferred_provenance_continuity_broken?
+
+    # rubocop:disable Rails/SkipsModelValidations
+    Wijaya::Batteries::DeferredAutoAssignment::DeletionProvenance
+      .where(conversation_id: id, reconciled_at: nil, superseded_at: nil)
+      .update_all(superseded_at: Time.current)
+    # rubocop:enable Rails/SkipsModelValidations
+  end
+
+  # An intentional assignment/routing/state transition that breaks the causal chain from the
+  # deletion. A later manual unassignment back to nil is NOT itself a trigger — the PRIOR assignment
+  # already superseded the tombstone — so the "assign then unassign" and "close then reopen"
+  # sequences leave the tombstone superseded and unadoptable.
+  def wijaya_deferred_provenance_continuity_broken?
+    (saved_change_to_assignee_id? && assignee_id.present?) ||
+      (saved_change_to_assignee_agent_bot_id? && assignee_agent_bot_id.present?) ||
+      saved_change_to_team_id? ||
+      saved_change_to_status?
+  end
 
   def wijaya_cleanup_deferred_marker_if_ineligible
     return unless wijaya_deferred_marker_should_clear?

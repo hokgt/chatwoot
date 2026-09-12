@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_09_12_000003) do
+ActiveRecord::Schema[7.1].define(version: 2026_09_12_000006) do
   # These extensions should be enabled to support this database
   enable_extension "pg_stat_statements"
   enable_extension "pg_trgm"
@@ -1464,12 +1464,15 @@ ActiveRecord::Schema[7.1].define(version: 2026_09_12_000003) do
     t.datetime "reconciled_at"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "deletion_key", null: false
+    t.datetime "superseded_at"
     t.index ["account_id"], name: "idx_wijaya_deferred_prov_on_account"
-    t.index ["conversation_id", "prior_assignee_id", "event"], name: "idx_wijaya_deferred_prov_unique_event", unique: true
+    t.index ["conversation_id", "prior_assignee_id", "event", "deletion_key"], name: "idx_wijaya_deferred_prov_unique_occurrence", unique: true
     t.index ["conversation_id"], name: "idx_wijaya_deferred_prov_on_conversation"
     t.index ["inbox_id"], name: "idx_wijaya_deferred_prov_on_inbox"
     t.index ["prior_assignee_id"], name: "idx_wijaya_deferred_prov_on_prior_assignee"
     t.index ["reconciled_at"], name: "idx_wijaya_deferred_prov_on_reconciled_at"
+    t.index ["superseded_at"], name: "idx_wijaya_deferred_prov_on_superseded_at"
   end
 
   create_table "wijaya_deferred_assignments", force: :cascade do |t|

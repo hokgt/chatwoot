@@ -26,13 +26,17 @@
 #                                                  are re-run through native auto-assignment:
 #                                                  each eligible one is marked + processed, so it
 #                                                  is reassigned now or waits for a later trigger.
-#   record_agent_deletion_provenance(account_id:, prior_assignee_id:, conversation_ids:)
+#   record_agent_deletion_provenance(account_id:, prior_assignee_id:, conversation_ids:, deletion_key:)
 #                                                  Agents::DestroyJob (IN-transaction) — record
-#                                                  durable, structured provenance for the exact
-#                                                  conversations this deletion clears, ATOMICALLY
-#                                                  with the unassignment (savepoint-isolated), so
-#                                                  a crash before the post-commit dispatch is
-#                                                  reconcilable later. Never rolls back the delete.
+#                                                  best-effort structured provenance for the exact
+#                                                  conversations this deletion clears, savepoint-
+#                                                  isolated + fail-open, so a crash before the post-
+#                                                  commit dispatch is reconcilable later. deletion_key
+#                                                  (the DestroyJob job_id) keys the occurrence so a
+#                                                  retry dedupes while a later re-add/re-deletion of
+#                                                  the same conversation+agent records a distinct row.
+#                                                  Best-effort, NOT guaranteed: a recorder failure
+#                                                  never rolls back the delete (tombstone simply absent).
 #
 # All heavy lifting lives in the service objects; this surface only translates a native call
 # into a battery action. Every method is safe to fail: the core dispatcher rescues anything.
@@ -71,8 +75,8 @@ module Wijaya
           Registrar.register_unassigned_after_agent_deletion(account_id, conversation_ids)
         end
 
-        def record_agent_deletion_provenance(account_id:, prior_assignee_id:, conversation_ids:)
-          ProvenanceRecorder.record_agent_deletion(account_id, prior_assignee_id, conversation_ids)
+        def record_agent_deletion_provenance(account_id:, prior_assignee_id:, conversation_ids:, deletion_key:)
+          ProvenanceRecorder.record_agent_deletion(account_id, prior_assignee_id, conversation_ids, deletion_key: deletion_key)
         end
       end
     end

@@ -28,9 +28,15 @@ module Wijaya
         validates :prior_assignee_id, presence: true
         validates :event, presence: true
         validates :event_at, presence: true
+        # A per-deletion-occurrence idempotency key (the Agents::DestroyJob job_id): stable across
+        # retries of one deletion, distinct for a genuinely new deletion of the same conversation+agent.
+        validates :deletion_key, presence: true
 
-        # Rows still awaiting the one-time reconciliation.
-        scope :unreconciled, -> { where(reconciled_at: nil) }
+        # Rows still awaiting reconciliation: neither already reconciled NOR superseded. A tombstone
+        # is superseded the moment an intervening intentional transition (manual/bot assignment,
+        # team/inbox routing, close/reopen) breaks the causal chain from the deletion — see the battery
+        # ConversationExtensions in-transaction supersession seam — so it is never scanned or adopted.
+        scope :unreconciled, -> { where(reconciled_at: nil, superseded_at: nil) }
       end
     end
   end

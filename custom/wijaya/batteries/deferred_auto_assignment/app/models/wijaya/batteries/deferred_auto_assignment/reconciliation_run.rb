@@ -43,6 +43,12 @@ module Wijaya
 
         validates :generation, presence: true, uniqueness: true
 
+        # Runs that have NOT yet reached completion — durable work intents the RecoveryDrainerJob
+        # coordinator (re-)enqueues each tick until they truthfully complete. Covers the one-time
+        # reconciliation intent the migration persists (started_at NULL) and any run left 'running'
+        # by an exhausted retry, so no run intent is ever silently stranded.
+        scope :incomplete, -> { where(status: RUNNING) }
+
         def completed?
           status == COMPLETED
         end

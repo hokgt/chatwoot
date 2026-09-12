@@ -73,7 +73,8 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
     reset_clean_pre_feature_state(conversation)
     provenance_model.create!(
       account: account, conversation: conversation, inbox: inbox,
-      prior_assignee_id: prior.id, event: 'agent_deletion', event_at: event_at
+      prior_assignee_id: prior.id, event: 'agent_deletion', event_at: event_at,
+      deletion_key: "del-#{conversation.id}-#{prior.id}"
     )
     AccountUser.where(account_id: account.id, user_id: prior.id).delete_all # structurally confirm deletion
     [conversation, prior]
@@ -197,6 +198,64 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
   describe 'lock contention is recoverable, never a silent strand' do
     it 'raises a retryable StandardError (LockContention) so ReconciliationJob.retry_on re-enqueues' do
       expect(reconciler::LockContention.ancestors).to include(StandardError)
+    end
+  end
+
+  # Blocker E: the one-time reconciliation is a DURABLE persisted run intent (the migration INSERTs a
+  # 'running' run row with started_at NULL), NOT a one-shot Redis perform_later. The drainer is the
+  # coordinator: each tick it (re-)enqueues ReconciliationJob for every incomplete run until it
+  # truthfully completes, so the initial run cannot be lost to Redis downtime or old-worker timing.
+  describe 'durable run-intent coordinator' do
+    it 'resumes a persisted one-time run intent and completes it truthfully (scans zero, retries 0)' do
+      make_agent
+      # As persisted by the migration: never executed yet (started_at NULL), full-history cutoff.
+      run = run_model.create!(generation: '20260912000003', status: 'running', started_at: nil, cutoff_at: Time.current)
+
+      run_drainer
+
+      expect(run.reload.status).to eq('completed')
+      expect(run.scanned).to eq(0)             # no provenance on this install
+      expect(run.retries).to eq(0)             # first execution of a pre-persisted intent is NOT a retry
+      expect(run.started_at).to be_present      # coordinator stamped the actual execution start
+    end
+
+    it 'is idempotent: a completed run is never resumed on a later tick' do
+      run_model.create!(generation: 'gen-intent', status: 'running', started_at: nil, cutoff_at: Time.current)
+      run_drainer
+      expect(run_model.find_by(generation: 'gen-intent').status).to eq('completed')
+
+      expect(recon_job).not_to receive(:perform_later)
+      drainer.perform_now # the completed run is excluded from `incomplete`; no provenance to drain
+    end
+
+    it 'survives an enqueue failure: the persisted intent stays running and a later tick completes it' do
+      run = run_model.create!(generation: 'gen-intent-fail', status: 'running', started_at: nil, cutoff_at: Time.current)
+
+      calls = 0
+      allow(recon_job).to receive(:perform_later).and_wrap_original do |orig, **kwargs|
+        calls += 1
+        raise StandardError, 'redis down' if calls == 1
+
+        orig.call(**kwargs)
+      end
+
+      # First tick: the enqueue fails (Redis/timing). The durable intent must NOT be lost.
+      expect { drainer.perform_now }.to raise_error(StandardError, /redis down/)
+      expect(run.reload.status).to eq('running')
+
+      # Later tick: the enqueue works, the coordinator resumes the SAME intent and completes it.
+      perform_enqueued_jobs(only: [recon_job, process_inbox_job]) { drainer.perform_now }
+      expect(run.reload.status).to eq('completed')
+      expect(run_model.where(generation: 'gen-intent-fail').count).to eq(1)
+    end
+
+    it 'the persisted run intent has a unique generation, so it can never be duplicated' do
+      run_model.create!(generation: '20260912000003', status: 'running', started_at: nil, cutoff_at: Time.current)
+      # The unique generation (model validation + the backing unique index) guarantees one row per
+      # generation, so the migration's INSERT-if-not-exists can never create a second run intent.
+      expect do
+        run_model.create!(generation: '20260912000003', status: 'running', started_at: nil, cutoff_at: Time.current)
+      end.to raise_error(ActiveRecord::RecordInvalid)
     end
   end
 end

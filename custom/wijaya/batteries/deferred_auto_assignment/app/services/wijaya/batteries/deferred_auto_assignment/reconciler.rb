@@ -154,17 +154,23 @@ module Wijaya
 
         # find_or_create keyed on the unique generation so a duplicate/retried job resumes the SAME
         # run rather than starting a second engine (find_or_create_by! also absorbs the
-        # concurrent-create race — the loser re-finds the winner's row). previously_new_record?
-        # distinguishes a fresh start (resumed=false) from a resume of an existing run (resumed=true).
-        # cutoff_at is fixed at first create (nil => now), so a resume keeps the original bound.
+        # concurrent-create race — the loser re-finds the winner's row). cutoff_at is fixed at first
+        # create (nil => now), so a resume keeps the original bound.
+        #
+        # resumed is derived from started_at, NOT previously_new_record?, so a DURABLE run intent
+        # persisted ahead of time by the one-time reconciliation migration (a row created with
+        # started_at NULL, executed later by the RecoveryDrainerJob coordinator) counts its FIRST
+        # execution as a fresh start (resumed=false, retries stays 0), and only a genuine
+        # re-execution after it has already started counts as a retry.
         def start_run(generation, cutoff)
           now = Time.current
           run = ReconciliationRun.find_or_create_by!(generation: generation) do |row|
             row.status = ReconciliationRun::RUNNING
-            row.started_at = now
             row.cutoff_at = cutoff || now
           end
-          [run, !run.previously_new_record?]
+          resumed = run.started_at.present?
+          run.update!(started_at: now) if run.started_at.nil? && !run.completed?
+          [run, resumed]
         end
 
         # Only historical, not-yet-reconciled provenance rows (event strictly before the cutoff).

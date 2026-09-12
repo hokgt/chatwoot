@@ -1,8 +1,17 @@
 # frozen_string_literal: true
 
-# Low-frequency, self-gating RECOVERY DRAINER for the deferred auto-assignment battery.
+# Low-frequency RECOVERY DRAINER + run-intent COORDINATOR for the deferred auto-assignment battery.
 #
-# This is a durable-outbox / crash-gap FALLBACK, NOT the primary future deletion mechanism. The
+# Two responsibilities per tick:
+#   1. resume_incomplete_runs — the durable-outbox coordinator. (Re-)enqueue every incomplete
+#      ReconciliationRun until it truthfully completes. This is how the ONE-TIME historical
+#      reconciliation runs safely: its migration persists a 'running' run intent (no fragile Redis
+#      perform_later) and this resumes it under new code with the full schema, so Redis downtime or
+#      an old worker consuming the job against an incomplete schema can no longer lose it. It also
+#      recovers any run left 'running' by an exhausted ActiveJob retry.
+#   2. drain_crash_gap_provenance — the self-gating crash-gap fallback described below.
+#
+# The crash-gap fallback is NOT the primary future deletion mechanism. The
 # primary bridge remains unchanged: Agents::DestroyJob records provenance atomically inside the
 # unassignment transaction and, post-commit, hands the cleared conversations to
 # Registrar.register_unassigned_after_agent_deletion. The one irreducible gap is a process SIGKILL
@@ -42,8 +51,32 @@ module Wijaya
         SAFETY_AGE = 15.minutes
 
         def perform
+          resume_incomplete_runs
+          drain_crash_gap_provenance
+        end
+
+        private
+
+        # Durable-outbox coordinator: (re-)enqueue every incomplete run intent until it truthfully
+        # completes. This is what makes the one-time reconciliation robust WITHOUT a fragile
+        # perform_later inside the migration — the migration persists a 'running' run row (started_at
+        # NULL, full-history cutoff) and this resumes it here, under new code + full schema, surviving
+        # Redis downtime and old-worker timing. It also picks up any run left 'running' by an exhausted
+        # ActiveJob retry. Each resume reuses the run's OWN persisted cutoff_at; the ledger's unique
+        # generation + the Reconciler's global lock make a duplicate/overlapping enqueue idempotent
+        # (a completed run is excluded; an in-flight one collapses on the lock).
+        def resume_incomplete_runs
+          ReconciliationRun.incomplete.find_each do |run|
+            Rails.logger.info("[Wijaya] deferred recovery drainer resuming run generation=#{run.generation}")
+            ReconciliationJob.perform_later(generation: run.generation, cutoff: run.cutoff_at)
+          end
+        end
+
+        # Self-gating crash-gap drain: with no eligible unreconciled provenance, do nothing — no run
+        # row, no job (an empty/quiet system stays completely quiet). SAFETY_AGE keeps it from racing
+        # the live post-commit bridge.
+        def drain_crash_gap_provenance
           cutoff = Time.current - SAFETY_AGE
-          # Self-gate: with no eligible unreconciled provenance, do nothing — no run row, no job.
           return unless DeletionProvenance.unreconciled.exists?(event_at: ...cutoff)
 
           generation = "recovery-#{Time.current.utc.strftime('%Y%m%d%H%M')}"

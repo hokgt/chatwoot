@@ -93,15 +93,61 @@ RSpec.describe 'Deferred auto-assignment deletion provenance', type: :model do
       expect(provenance_for(conversation).count).to eq(1)
     end
 
-    it 'never double-records when the SAME ids are re-dispatched (unique event index)' do
+    it 'never double-records when the SAME deletion (same deletion_key) is re-dispatched' do
       agent = make_agent
       conversation = conversation_assigned_to(agent)
       conversation.update_column(:assignee_id, nil) # rubocop:disable Rails/SkipsModelValidations
 
-      recorder.record_agent_deletion(account.id, agent.id, [conversation.id])
-      recorder.record_agent_deletion(account.id, agent.id, [conversation.id])
+      recorder.record_agent_deletion(account.id, agent.id, [conversation.id], deletion_key: 'job-1')
+      recorder.record_agent_deletion(account.id, agent.id, [conversation.id], deletion_key: 'job-1')
 
       expect(provenance_for(conversation).count).to eq(1)
+    end
+  end
+
+  # Blocker B: distinct deletion occurrences of the same conversation+agent must NOT be collapsed by
+  # the uniqueness key; a retry of one occurrence dedupes, a genuinely later removal records anew.
+  describe 'per-deletion-occurrence idempotency key (deletion_key)' do
+    it 'dedupes retries of the SAME deletion but records a DISTINCT later delete/re-add/delete' do
+      agent = make_agent
+      conversation = conversation_assigned_to(agent)
+      conversation.update_column(:assignee_id, nil) # rubocop:disable Rails/SkipsModelValidations
+
+      # First deletion occurrence + its retry (same job_id) => one row.
+      recorder.record_agent_deletion(account.id, agent.id, [conversation.id], deletion_key: 'delete-1')
+      recorder.record_agent_deletion(account.id, agent.id, [conversation.id], deletion_key: 'delete-1')
+      expect(provenance_for(conversation).count).to eq(1)
+
+      # Re-add + a genuinely NEW deletion occurrence (new job_id) => a second, distinct tombstone.
+      recorder.record_agent_deletion(account.id, agent.id, [conversation.id], deletion_key: 'delete-2')
+      expect(provenance_for(conversation).count).to eq(2)
+      expect(provenance_for(conversation).pluck(:deletion_key)).to contain_exactly('delete-1', 'delete-2')
+    end
+
+    it 'recovers the SECOND occurrence after a crash between its two recordings (retry re-records once)' do
+      agent = make_agent
+      conversation = conversation_assigned_to(agent)
+      conversation.update_column(:assignee_id, nil) # rubocop:disable Rails/SkipsModelValidations
+
+      recorder.record_agent_deletion(account.id, agent.id, [conversation.id], deletion_key: 'occ-1')
+      # A second occurrence begins; simulate a crash by having its FIRST recording raise mid-write,
+      # then a retry of the SAME occurrence completes it — exactly one new row, never zero, never two.
+      calls = 0
+      allow(recorder).to receive(:upsert_row).and_wrap_original do |orig, *args|
+        calls += 1
+        raise StandardError, 'crash mid-record' if calls == 1
+
+        orig.call(*args)
+      end
+      expect do
+        recorder.record_agent_deletion(account.id, agent.id, [conversation.id], deletion_key: 'occ-2')
+      end.to raise_error(StandardError, /crash/)
+      expect(provenance_for(conversation).count).to eq(1) # savepoint rolled back the partial second write
+
+      # Retry of the SAME second occurrence (same deletion_key) completes it exactly once.
+      recorder.record_agent_deletion(account.id, agent.id, [conversation.id], deletion_key: 'occ-2')
+      expect(provenance_for(conversation).count).to eq(2)
+      expect(provenance_for(conversation).pluck(:deletion_key)).to contain_exactly('occ-1', 'occ-2')
     end
   end
 
@@ -116,7 +162,7 @@ RSpec.describe 'Deferred auto-assignment deletion provenance', type: :model do
       cross = create(:conversation, account: other_account, inbox: other_inbox, contact: other_contact,
                                     contact_inbox: create(:contact_inbox, contact: other_contact, inbox: other_inbox))
 
-      recorder.record_agent_deletion(account.id, agent.id, [mine.id, cross.id])
+      recorder.record_agent_deletion(account.id, agent.id, [mine.id, cross.id], deletion_key: 'job-x')
 
       expect(provenance_for(mine).count).to eq(1)
       expect(provenance_for(cross)).to be_empty

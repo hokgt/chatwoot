@@ -1,31 +1,35 @@
 # WIJAYA_CUSTOM_START deferred_auto_assignment
-# One-time automatic historical reconciliation trigger — ordered AFTER all schema prerequisites.
+# One-time automatic historical reconciliation — persisted as DURABLE run intent, not a Redis job.
 #
-# This replaces the original enqueue in 20260912000001 (now a no-op). It runs only once every
-# schema dependency the corrected ReconciliationJob/Reconciler needs is in place:
-#   - 20260912000000 created the provenance + run-ledger tables;
-#   - 20260912000002 added the marker correlation columns (reconciliation_generation /
-#     reconciliation_outcome) and the full run counter set (identified / assigned /
-#     no_eligible_agent / dropped / failed / retries).
-# Migrations run in filename (version) order, so by the time this executes those columns exist and
-# no worker can consume the job against an incomplete schema.
+# This runs once every schema prerequisite the corrected ReconciliationJob/Reconciler needs is in
+# place (20260912000000 created the tables; 20260912000002 added the correlation columns + full
+# counter set). It replaces the original in 20260912000001 (now a no-op).
 #
-# It mirrors the established Chatwoot convention of a migration enqueuing a background job (see
-# EnqueueValidateOpenaiHooksJob): recorded once in schema_migrations, giving a durable,
-# non-recurring completion boundary — no recurring blanket scan on every boot.
+# It does NOT enqueue a Redis ActiveJob (perform_later). Relying on a one-shot enqueue inside a
+# migration is fragile: a Redis outage, or an OLD Sidekiq worker consuming the job in the deploy
+# window before new code/schema is fully in place, would silently drop the only trigger and the
+# one-time reconciliation would never run. Instead the migration INSERTs a durable, persisted run
+# intent — a wijaya_deferred_reconciliation_runs row in status 'running' with started_at NULL (never
+# executed yet) and cutoff_at = the deploy instant (full history up to deploy). The recurring
+# RecoveryDrainerJob is the coordinator: on each tick it (re-)enqueues ReconciliationJob for every
+# incomplete run, so this intent is retried until it truthfully completes — surviving Redis downtime
+# and old-worker timing entirely, because the run executes later under new code with the full schema.
 #
-# The enqueued ReconciliationJob scans ONLY the durable provenance rows (never all unassigned
-# conversations), in bounded batches, idempotently, guarded by the
-# wijaya_deferred_reconciliation_runs ledger keyed on this migration's version as the generation.
-# Fail-open: if the optional battery is absent the constant will not resolve, so the enqueue is
-# guarded and the migration still completes.
+# Idempotent (INSERT ... WHERE NOT EXISTS on the unique generation), so a re-run of the migration
+# never creates a second intent, and the ledger's unique generation keeps the run one-time. On this
+# install the run scans ZERO rows (the provenance table is new); its ledger still completes truthfully.
 class EnqueueDeferredAssignmentReconciliationAfterSchema < ActiveRecord::Migration[7.1]
   GENERATION = '20260912000003'.freeze
+  RUNS_TABLE = 'wijaya_deferred_reconciliation_runs'.freeze
 
   def up
-    return unless defined?(Wijaya::Batteries::DeferredAutoAssignment::ReconciliationJob)
+    return unless table_exists?(RUNS_TABLE)
 
-    Wijaya::Batteries::DeferredAutoAssignment::ReconciliationJob.perform_later(generation: GENERATION)
+    execute(<<~SQL.squish)
+      INSERT INTO #{RUNS_TABLE} (generation, status, cutoff_at, started_at, created_at, updated_at)
+      SELECT #{quote(GENERATION)}, 'running', NOW(), NULL, NOW(), NOW()
+      WHERE NOT EXISTS (SELECT 1 FROM #{RUNS_TABLE} WHERE generation = #{quote(GENERATION)})
+    SQL
   end
 
   def down; end

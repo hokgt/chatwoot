@@ -33,25 +33,63 @@ only trustworthy source is provenance this battery records **itself, at deletion
 
 ## Durable provenance (recorded going forward)
 
-When `Agents::DestroyJob` deletes an agent, a `wijaya_deferred_assignment_provenance` tombstone is
-written **atomically inside the unassignment transaction** (savepoint-isolated + fail-open, so it
-can never roll back the user deletion) for each cleared conversation:
+When `Agents::DestroyJob` deletes an agent it **row-locks (`FOR UPDATE`)** the conversations still
+assigned to that user, clears **only** those still owned by the user while the lock is held, and
+records a `wijaya_deferred_assignment_provenance` tombstone for **exactly the rows it cleared**. A
+concurrent manual reassignment is serialized either fully **before** the lock (excluded from every
+step) or fully **after** the commit (it wins), so a deletion can never record a tombstone for — nor
+clobber — a conversation it did not actually unassign.
+
+> **Best-effort, NOT guaranteed atomic completeness.** The tombstone write is savepoint-isolated
+> (`requires_new: true`) and routed through the fail-open core dispatcher, so a recorder failure can
+> **never** roll back the user deletion. The direct consequence, stated plainly: provenance capture
+> is **best-effort**. On a recorder failure the deletion still commits with that tombstone **absent**,
+> and — having no other authoritative source — that conversation stays **unrecoverable** by
+> reconciliation. Normal deletion is never blocked. This is a deliberate fail-open trade-off, not an
+> all-or-nothing guarantee.
+
+Each tombstone stores:
 
 - account, conversation, inbox, **prior human agent id**, event kind (`agent_deletion`), event time,
-  and a `reconciled_at` cursor.
+  a `reconciled_at` cursor, a `superseded_at` continuity cursor, and a **`deletion_key`**.
+- **`deletion_key`** is the `Agents::DestroyJob` ActiveJob `job_id` — stable across retries of one
+  deletion but distinct for a genuinely new deletion. Uniqueness is
+  `(conversation_id, prior_assignee_id, event, deletion_key)`, so a **retry** of one deletion dedupes
+  while a later **re-add and re-deletion** of the same conversation+agent records a **distinct,
+  independently reconcilable** tombstone (the earlier design's 3-column key collapsed these).
 - `prior_assignee_id` has **no foreign key** — the agent User is deleted in this very scenario, and
   a cascading FK would erase the provenance. Account/conversation/inbox FKs cascade because nothing
   is left to reassign once those are gone.
 - **No message content, no credentials** are ever stored.
 
+### Causal-continuity guard (`superseded_at`)
+
+A pending tombstone is adopted only while the conversation's emptiness still traces to the deletion.
+The reconciliation does **not** rely on "current assignee is nil": the moment an **intervening
+intentional transition** commits on the conversation — a human/bot assignment, a team/inbox routing
+change, or a status transition (**close/reopen**) — the battery `ConversationExtensions`
+**in-transaction** `after_update` seam marks any still-pending tombstone `superseded_at`, atomically
+with that transition. The `unreconciled` scope excludes superseded rows, so a conversation that was
+reassigned/routed/reopened and **then** unassigned again is **never re-adopted**. The
+deletion-caused unassignment itself uses `update_all` (callbacks skipped), so it never supersedes its
+own tombstone and a genuine crash-gap orphan stays eligible. The write is a validation/FK-free
+`update_all`, so on the rare DB failure the whole transaction rolls back with the transition
+(fail-closed).
+
 ## Automatic one-time (initial) reconciliation
 
-A migration (`20260912000003_enqueue_deferred_assignment_reconciliation_after_schema`) enqueues
-`ReconciliationJob` exactly once at deploy — the same convention as
-`EnqueueValidateOpenaiHooksJob`. It is recorded once in `schema_migrations`, so it is **not a
-recurring blanket scan**. (The enqueue originally lived in `…000001`, which is now a **no-op**; it
-moved to `…000003` so it runs **after** `…000002` adds the columns the corrected job requires — see
-*Retry / deploy safety* below.) The job runs the `Reconciler`, which:
+A migration (`20260912000003_enqueue_deferred_assignment_reconciliation_after_schema`) persists a
+**durable run intent** exactly once at deploy: it INSERTs a `wijaya_deferred_reconciliation_runs`
+row (`status = running`, `started_at = NULL`, full-history `cutoff_at`), **not** a one-shot Redis
+`perform_later`. Relying on an in-migration `perform_later` was fragile — a Redis outage, or an old
+Sidekiq worker consuming the job in the deploy window against an incomplete schema, could silently
+drop the only trigger. The **recurring `RecoveryDrainerJob` is the coordinator**: each tick it
+(re-)enqueues `ReconciliationJob` for every **incomplete** run until it truthfully completes, so the
+one-time run executes later under new code with the full schema and cannot be lost to Redis/timing.
+The INSERT is idempotent (`WHERE NOT EXISTS` on the unique `generation`), so a re-run of the
+migration never creates a second intent, and the ledger's unique `generation` keeps the run
+one-time. (The enqueue originally lived in `…000001`, which is now a **no-op**.) The
+`ReconciliationJob` runs the `Reconciler`, which:
 
 - scans **only** unreconciled provenance rows (never all unassigned conversations), in bounded
   batches;
@@ -159,29 +197,34 @@ loop. Each retry resumes the same generation from the still-unreconciled rows an
 `retries`; a failed attempt increments `failed`. After attempts are exhausted the run stays
 `running`, safe to re-enqueue later without rescanning completed batches.
 
-**Migration ordering.** The one-time enqueue is the **last** migration in the set. `…000001` is now
-a no-op (kept because it may already be recorded in `schema_migrations`); `…000002` adds the
-`reconciliation_generation` / `reconciliation_outcome` marker columns and the full run counter set;
-`…000003` enqueues `ReconciliationJob`. Because migrations run in version order, the job is queued
-only **after** every column the corrected job requires exists — so a worker consuming it can never
-hit an incomplete schema. The `generation` for the automatic run is `20260912000003` (the enqueue
-migration's version); one-time idempotent semantics are unchanged.
+**Migration set (version order).** `…000001` is a no-op (kept because it may already be recorded in
+`schema_migrations`); `…000002` adds the `reconciliation_generation` / `reconciliation_outcome`
+marker columns and the full run counter set; `…000003` persists the durable one-time run intent;
+`…000004` adds the per-occurrence `deletion_key` and reindexes provenance uniqueness to
+`(conversation_id, prior_assignee_id, event, deletion_key)`; `…000005` is a **forward-only repair**
+of the marker foreign keys to `on_delete: :cascade` (reconciling the drift left by editing the
+already-applied `20260905000000` in place — never a history rewrite); `…000006` adds the
+`superseded_at` continuity column. All are additive/idempotent and never edit an applied migration
+as an upgrade substitute. The `generation` for the automatic run is `20260912000003`.
 
-**Deploy order** (so an old Sidekiq cannot consume the new job before the new code runs — run
-exactly in this order; do **not** run it as part of this change):
+Because the one-time run is a **persisted intent executed by the drainer coordinator** (not a Redis
+job queued inside the migration), it no longer depends on old-Sidekiq/Redis timing: it runs later
+under new code with the full schema regardless.
+
+**Deploy order** (still recommended so nothing consumes the job path prematurely):
 
 1. **Stop the old Sidekiq workers.**
 2. **Back up the database.**
 3. **Build the new image** (with the corrected battery code).
-4. **Run migrations using the new image** (`20260912000000`, `…000001` no-op, `…000002`, `…000003`).
-   `…000002` adds the correlation columns and full counter set; `…000003` then queues
-   `ReconciliationJob`.
-5. **Start the new `rails` and `sidekiq`**, which pick up the job with the corrected code.
+4. **Run migrations using the new image** (`20260912000000` … `…000006`). `…000003` persists the
+   durable run intent; the remaining additive/repair migrations complete the schema.
+5. **Start the new `rails` and `sidekiq`.** The scheduled `RecoveryDrainerJob` then resumes the
+   persisted run intent (and drains any crash-gap provenance) under the corrected code.
 
 On **this** install the initial run scans **zero** legacy rows (the provenance table is new), so it
-is effectively a no-op here; the machinery is correct for any future re-deploy or for deletions that
-accumulate a crash-gap provenance row going forward. Pre-feature deletions carry no provenance and
-are never inferred from activity text.
+is effectively a no-op here, but its run ledger still **completes truthfully**; the machinery is
+correct for any future re-deploy or for deletions that accumulate a crash-gap provenance row going
+forward. Pre-feature deletions carry no provenance and are never inferred from activity text.
 
 ## Recurring recovery drainer (crash-gap fallback — distinct from the one-time run)
 
@@ -191,9 +234,13 @@ that hits the one irreducible crash-gap — a SIGKILL **after** the unassignment
 (the provenance tombstone is durable) but **before** the post-commit `Registrar` dispatch — would
 therefore be **stranded permanently** with only the one-time migration in place.
 
-`Wijaya::Batteries::DeferredAutoAssignment::RecoveryDrainerJob` closes that gap. It is a
-**low-frequency scheduled fallback, NOT the primary future deletion mechanism** — the normal
-`Agents::DestroyJob -> Registrar` bridge remains primary and behaviorally unchanged. On each tick it:
+`Wijaya::Batteries::DeferredAutoAssignment::RecoveryDrainerJob` closes that gap **and** acts as the
+**durable-run-intent coordinator**. It is a **low-frequency scheduled fallback, NOT the primary
+future deletion mechanism** — the normal `Agents::DestroyJob -> Registrar` bridge remains primary and
+behaviorally unchanged. On each tick it first **resumes every incomplete `ReconciliationRun`** (the
+one-time migration intent, plus any run left `running` by an exhausted retry) by re-enqueuing
+`ReconciliationJob` with the run's own persisted `cutoff_at` — so a persisted intent is retried until
+it truthfully completes. Then it drains crash-gap provenance:
 
 - scans **only** unreconciled `DeletionProvenance` tombstones (`reconciled_at IS NULL`) whose
   `event_at` is **older than a short safety age** (`SAFETY_AGE = 15.minutes`), so it never races the

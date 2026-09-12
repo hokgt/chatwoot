@@ -389,6 +389,15 @@ patches:
       - db/migrate/20260912000001_enqueue_deferred_assignment_reconciliation.rb
       - db/migrate/20260912000002_add_deferred_reconciliation_correlation.rb
       - db/migrate/20260912000003_enqueue_deferred_assignment_reconciliation_after_schema.rb
+      # Per-deletion-occurrence idempotency key (deletion_key) + reindex, so a re-add/re-deletion of
+      # the same conversation+agent records a distinct, independently reconcilable tombstone.
+      - db/migrate/20260912000004_add_deferred_provenance_deletion_key.rb
+      # Forward-only repair of the marker FKs to on_delete: :cascade (the drift left by editing the
+      # already-applied 20260905000000 in place).
+      - db/migrate/20260912000005_repair_wijaya_deferred_assignment_marker_fks.rb
+      # Causal-continuity guard column (superseded_at) stamped in-transaction by the battery when an
+      # intervening assignment/routing/state transition breaks the chain from the deletion.
+      - db/migrate/20260912000006_add_deferred_provenance_superseded_at.rb
     core_hook_touchpoints:
       # Battery Hooks module resolved by name from the core dispatcher (core/hooks.rb map).
       - custom/wijaya/batteries/core/hooks.rb
