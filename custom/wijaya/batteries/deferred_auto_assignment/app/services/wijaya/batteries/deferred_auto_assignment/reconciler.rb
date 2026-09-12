@@ -41,7 +41,11 @@
 # reconciliation-stamped markers themselves are the durable outbox and every still-present one for
 # the generation is (re-)dispatched, then the run is finalized. A crash/raise between a batch commit
 # and dispatch therefore strands nothing: a retry re-dispatches every still-present generation
-# marker, relying on the existing in-flight coalescing + InboxProcessor idempotency.
+# marker, relying on the existing in-flight coalescing + InboxProcessor idempotency. That per-batch
+# dispatch is BEST-EFFORT (a stale in-flight key from a crashed worker coalesces it away and later
+# expires unconsumed), so finalizing right after it does NOT itself guarantee a worker ran — the
+# marker plus the hourly RecoveryDrainerJob marker-outbox drain (which redispatches every
+# still-present marker every tick, independent of run/provenance state) is the durable guarantee.
 #
 # Fail-closed proof (requirement: any uncertainty => skipped/ambiguous, never registered):
 #   AMBIGUOUS (never registered) — no structural proof of a deleted-agent orphan:
@@ -254,15 +258,23 @@ module Wijaya
           end
         end
 
-        # Durable outbox dispatch (runs after ALL scan batches, inside the global lock). The
-        # reconciliation-stamped markers ARE the outbox: every still-present marker for this
+        # Best-effort outbox dispatch (runs after ALL scan batches, inside the global lock). The
+        # reconciliation-stamped markers ARE the durable outbox: every still-present marker for this
         # generation is a conversation that was adopted but not yet resolved, so we (re-)enqueue a
-        # coalesced ProcessInboxJob for each distinct inbox. This closes the durability gap where a
-        # crash/raise AFTER a batch committed but BEFORE its enqueue could strand a marker with no
-        # job: a resumed run re-dispatches every still-present generation marker, and the in-flight
-        # coalescing + InboxProcessor idempotency make repeated dispatch harmless. It is the LAST
-        # step before finalize, so a run is completed only once every adopted inbox has been
-        # (re-)dispatched; a raise here leaves the run RUNNING for the next retry.
+        # coalesced ProcessInboxJob for each distinct inbox. A resumed run re-dispatches every
+        # still-present generation marker, and the in-flight coalescing + InboxProcessor idempotency
+        # make repeated dispatch harmless.
+        #
+        # It is intentionally acceptable to finalize the run right after this: enqueue_for_inbox is
+        # best-effort (a stale in-flight key from a crashed worker coalesces the dispatch away, and
+        # both keys later expire with no worker having consumed them), so this step alone does NOT
+        # guarantee a worker ran. The DURABLE guarantee is the marker itself plus the hourly
+        # RecoveryDrainerJob marker-outbox drain, which redispatches every still-present marker each
+        # tick regardless of run/provenance state (see RecoveryDrainerJob#drain_marker_outbox). Once
+        # this run is completed its provenance is reconciled and the crash-gap branch no longer sees
+        # it, so that always-on marker drain — not a re-dispatch by this finalized run — is what
+        # eventually drives a coalesced-away marker to assignment. A raise here still leaves the run
+        # RUNNING for the next retry.
         def dispatch(run_row)
           Marker.where(reconciliation_generation: run_row.generation).distinct.pluck(:inbox_id).each do |inbox_id|
             ProcessInboxJob.enqueue_for_inbox(inbox_id)

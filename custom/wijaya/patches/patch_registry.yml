@@ -384,7 +384,17 @@ patches:
       (the incomplete-run query, the provenance existence check, or find-or-create of a fresh intent) —
       are logged and swallowed at the tick level (never re-raised — that would spin a second unbounded
       retry tree via ActiveJob's Sidekiq default retry, one per hourly tick under a persistent failure);
-      any in-flight run is left running and the next hourly tick resumes it.
+      any in-flight run is left running and the next hourly tick resumes it. The per-batch
+      ProcessInboxJob dispatch is BEST-EFFORT (enqueue_for_inbox is coalesced away by a crashed
+      worker's stale in-flight key, which then expires unconsumed), so the run can finalize right
+      after it ONLY because the marker is durable: on EVERY tick, FIRST and independent of any
+      run/provenance state, the RecoveryDrainerJob also redispatches a BOUNDED batch
+      (MARKER_OUTBOX_BATCH = 100 distinct inbox ids) of the inboxes that currently hold Marker rows,
+      querying ONLY the battery marker table (never Conversation / all Unassigned) and reusing
+      enqueue_for_inbox so a live key coalesces (no storm) while a since-expired stale key lets a
+      later tick enqueue a real job — the marker is thus a true durable outbox. The drain runs first
+      so the commonly-expected LockContention (swallowed) never suppresses it, and the whole tick
+      (drain + reconcile) is under the one tick-level guard.
       So the one-time run is retried until it truthfully completes —
       surviving Redis downtime and old-worker timing without a fragile once-only enqueue. Deploy
       order still applies (old Sidekiq must not run the new job against an incomplete schema): stop

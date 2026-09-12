@@ -121,7 +121,12 @@ coordinator (and the retained `ReconciliationJob`, below) run the `Reconciler`, 
   marker for the generation is (re-)dispatched, then the run is finalized. A crash/raise **between a
   batch commit and the enqueue** therefore strands nothing — a retry re-dispatches every
   still-present generation marker, relying on the existing in-flight coalescing + `InboxProcessor`
-  idempotency.
+  idempotency. That per-batch dispatch is **best-effort**, though: `enqueue_for_inbox` is coalesced
+  away by a stale in-flight key left by a **crashed worker**, and both keys then expire with no
+  worker having consumed them. Finalizing the run right after dispatch is therefore safe **only
+  because the marker is durable and the hourly `RecoveryDrainerJob` marker-outbox drain
+  redispatches every still-present marker on every tick** (see the recovery-drainer section) — a
+  finalized run, whose provenance is now reconciled, never re-dispatches on its own.
 
 For each provenance row it **fails closed**:
 
@@ -303,10 +308,40 @@ already handled is re-checked and stamped reconciled as **skipped**/**ambiguous*
 that reaches it — harmless and one-time. Run counters and marker outcome accounting are the **same**
 truthful ledger as the one-time run.
 
+### Marker durable outbox (always-on, every tick)
+
+Reconciler `dispatch` calls `ProcessInboxJob.enqueue_for_inbox`, which is **best-effort**: if a Redis
+in-flight key from a **crashed/lost worker** is present, the dispatch is coalesced away (a rerun key
+is set) and **no worker consumes it**; both keys then expire after their 5-minute TTL. Since the
+Reconciler has by then stamped provenance `reconciled_at` and completed the run, and the crash-gap
+branch scans **only unreconciled** provenance, the still-present `Marker` row would be **stranded
+forever** with no guaranteed worker.
+
+So on **every** tick — first, before run-intent coordination, and regardless of any run/provenance
+state — the drainer also redispatches a **bounded** batch (`MARKER_OUTBOX_BATCH = 100` distinct
+inbox ids) of the inboxes that **currently hold `Marker` rows**, querying **only** the battery
+marker table (never `Conversation`, never all Unassigned). It reuses `enqueue_for_inbox`, so the
+in-flight/rerun coalescing stays **authoritative**: a **live** key coalesces the tick (no job
+storm — repeated ticks against a live key enqueue nothing new), while a **stale** key that has since
+expired lets a **later** hourly tick enqueue a real `ProcessInboxJob`. The batch bound means a tick
+with more than 100 marker-inboxes drains the rest on subsequent ticks (markers are durable). This is
+what makes the marker a true durable outbox and lets the Reconciler finalize immediately after an
+accepted/coalesced dispatch.
+
+**Ordering (deliberate, fail-closed).** The marker-outbox drain runs **first**, so it executes on
+every tick and is never preempted by the reconcile step, whose commonly-expected `LockContention`
+(or a transient reconcile error) the tick-level guard swallows. The **whole tick** — drain + run
+selection + inline reconcile — is under a **single** `rescue`: any DB/Redis/dispatch error is logged
+and **swallowed**, never re-raised (re-raising would let ActiveJob's Sidekiq default retry spin an
+independent, unbounded retry tree, one per hourly tick). A drain failure that preempts the reconcile
+loses nothing — the run intent is persisted and resumes next tick, and the drain retries next tick
+against the durable markers.
+
 **Scheduler touchpoint.** A single `config/schedule.yml` entry
 (`wijaya_deferred_assignment_recovery_drainer_job`, hourly, inside `WIJAYA_CUSTOM` markers) drives it.
-This is permitted as a scheduled job **precisely because it queries provenance tombstones**, not a
-blanket Unassigned scan. It is covered by `check_custom_patches.sh` and the patch registry.
+This is permitted as a scheduled job **precisely because it queries provenance tombstones** (and the
+battery's own marker table), not a blanket Unassigned scan. It is covered by `check_custom_patches.sh`
+and the patch registry.
 
 ## Limitation: pre-provenance legacy cases cannot be recovered automatically
 

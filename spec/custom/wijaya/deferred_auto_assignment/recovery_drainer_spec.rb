@@ -61,6 +61,21 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
     provenance_model.find_by(conversation_id: conversation.id)
   end
 
+  # A durable, still-waiting Marker row on its OWN inbox (distinct inbox_id), with no lingering
+  # in-flight/rerun key — the durable-outbox unit the marker drain redispatches. No provenance and no
+  # reconciliation run is involved: the drain acts on the marker table alone.
+  def waiting_marker_on_new_inbox
+    ibx = create(:inbox, account: account, enable_auto_assignment: true)
+    ci = create(:contact_inbox, contact: contact, inbox: ibx)
+    conversation = Conversation.create!(account: account, inbox: ibx, contact: contact, contact_inbox: ci)
+    conversation.update_column(:assignee_id, nil) # rubocop:disable Rails/SkipsModelValidations
+    marker_model.where(conversation_id: conversation.id).delete_all # drop any creation-time marker
+    marker_model.create!(account: account, inbox: ibx, conversation: conversation)
+    Redis::Alfred.delete(format(process_inbox_job::IN_FLIGHT_KEY, inbox_id: ibx.id))
+    Redis::Alfred.delete(format(process_inbox_job::RERUN_KEY, inbox_id: ibx.id))
+    ibx
+  end
+
   # A crash-gap orphan: assignee cleared by an agent deletion, WITH a durable provenance tombstone
   # but NO marker and no trigger (the SIGKILL-after-commit-before-dispatch case). Backdated so both
   # event_at AND created_at sit before the drainer's safety-age cutoff, exactly as in production.
@@ -397,6 +412,81 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
 
       expect(run_model.where("generation LIKE 'recovery-%'").count).to eq(1)
       expect(conversation.reload.assignee_id).to be_present
+    end
+  end
+
+  # The marker itself is the durable OUTBOX. Reconciler#dispatch is best-effort: a stale in-flight key
+  # left by a crashed worker coalesces the dispatch away and later expires unconsumed, and because the
+  # run is by then completed + its provenance reconciled, the crash-gap branch never re-sees it. So on
+  # EVERY tick — first, and regardless of run/provenance state — the drainer redispatches a bounded
+  # batch of the inboxes that currently hold markers, querying ONLY the battery marker table.
+  describe 'durable marker outbox (redispatches still-present markers every tick)' do
+    it 'coalesces under a stale in-flight key, then enqueues once the key expires — even after the run completed' do
+      make_agent
+      conversation, = crash_gap_orphan
+      @online = [] # adopted but no online agent, so the marker is RETAINED (no_eligible_agent)
+
+      run_drainer
+      expect(marker_for(conversation)).to be_present                     # durable marker survives
+      expect(provenance_row(conversation).reconciled_at).to be_present   # run completed, provenance reconciled
+      expect(run_model.first.status).to eq('completed')
+
+      inbox_id = conversation.inbox_id
+      in_flight = format(process_inbox_job::IN_FLIGHT_KEY, inbox_id: inbox_id)
+      rerun = format(process_inbox_job::RERUN_KEY, inbox_id: inbox_id)
+      # A stale in-flight key from a since-crashed worker: no real job is queued/running for it.
+      Redis::Alfred.set(in_flight, 'stale-token', ex: 300)
+
+      # First tick: the marker drain coalesces against the stale key (records a rerun request), so it
+      # enqueues NO new job — the coalescing stays authoritative, no storm.
+      expect { drainer.perform_now }.not_to have_enqueued_job(process_inbox_job)
+      expect(Redis::Alfred.get(rerun)).to be_present
+
+      # TTL expiry: both keys expire with no worker having consumed them (the crashed-worker case).
+      Redis::Alfred.delete(in_flight)
+      Redis::Alfred.delete(rerun)
+
+      # A later hourly tick now enqueues a real ProcessInboxJob for the still-present marker.
+      expect { drainer.perform_now }.to have_enqueued_job(process_inbox_job)
+    end
+
+    it 'bounds the outbox per tick to MARKER_OUTBOX_BATCH distinct inboxes' do
+      stub_const("#{drainer}::MARKER_OUTBOX_BATCH", 2)
+      3.times { waiting_marker_on_new_inbox }
+      expect(marker_model.count).to eq(3)
+
+      expect { drainer.perform_now }.to have_enqueued_job(process_inbox_job).exactly(2).times
+    end
+
+    it 'scans ONLY the marker table — an intentionally-unassigned conversation with no marker drives no dispatch' do
+      intentional = Conversation.create!(account: account, inbox: inbox, contact: contact, contact_inbox: contact_inbox)
+      intentional.update_column(:assignee_id, nil) # rubocop:disable Rails/SkipsModelValidations
+      marker_model.where(conversation_id: intentional.id).delete_all
+      expect(marker_model.count).to eq(0)
+      allow(marker_model).to receive(:distinct).and_call_original
+
+      expect { drainer.perform_now }.not_to have_enqueued_job(process_inbox_job)
+      expect(marker_model).to have_received(:distinct) # the outbox queries the marker table, nothing else
+    end
+
+    it 'enqueues nothing when there are no markers' do
+      expect { drainer.perform_now }.not_to have_enqueued_job(process_inbox_job)
+    end
+
+    it 'repeated ticks against a live in-flight key coalesce — no job storm' do
+      waiting_marker_on_new_inbox
+
+      # Jobs are enqueued (not performed), so the first tick's in-flight key stays live and every
+      # later tick coalesces against it: exactly one job across three ticks.
+      expect { 3.times { drainer.perform_now } }.to have_enqueued_job(process_inbox_job).exactly(:once)
+    end
+
+    it 'swallows a marker-outbox dispatch failure via the whole-tick guard (no raise, no retry tree)' do
+      waiting_marker_on_new_inbox
+      allow(process_inbox_job).to receive(:enqueue_for_inbox).and_raise(StandardError, 'redis boom')
+      expect(reconciler).not_to receive(:run) # the drain raises first; the tick guard swallows it
+
+      expect { drainer.perform_now }.not_to raise_error
     end
   end
 end

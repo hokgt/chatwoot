@@ -41,6 +41,21 @@
 # ProcessInboxJob -> InboxProcessor -> native AgentAssignmentService path inline with a fresh
 # generation. It never writes assignee_id directly and never introduces a second assignment engine.
 #
+# Marker durable outbox (the second, always-on responsibility — see drain_marker_outbox):
+# Reconciler#dispatch (re-)enqueues a coalesced ProcessInboxJob per adopted inbox, but
+# ProcessInboxJob.enqueue_for_inbox is best-effort: if a Redis in-flight key from a CRASHED/lost
+# worker is present, the dispatch is coalesced away (a rerun key is set) and NO worker actually
+# consumes it. The in-flight and rerun keys then expire after their 5-minute TTL. Because the
+# Reconciler by then has already stamped provenance reconciled and completed the run, and the
+# crash-gap branch above scans ONLY unreconciled provenance, the still-present Marker row would be
+# stranded forever with no guaranteed worker. So each tick ALSO redispatches a BOUNDED batch of the
+# distinct inbox_ids that currently have Marker rows, querying ONLY the battery marker table
+# (NEVER Conversation / all Unassigned) and regardless of any run/provenance state. It reuses
+# ProcessInboxJob.enqueue_for_inbox so the in-flight/rerun coalescing stays authoritative: a live
+# key coalesces the tick (no storm), but once a stale key has expired a later hourly tick enqueues
+# a real ProcessInboxJob. This is what actually makes the marker a durable outbox — the Reconciler
+# is then free to finalize after an accepted/coalesced dispatch (see Reconciler#dispatch / BACKFILL).
+#
 # Bounded + idempotent + concurrency-safe:
 #   * No eligible unreconciled provenance and no incomplete run -> it does NOTHING: no run row, no
 #     reconciliation (the existence check is the only work, so an empty system stays completely quiet).
@@ -73,15 +88,31 @@ module Wijaya
         # that a genuine crash-gap straggler is recovered promptly on the next low-frequency tick.
         SAFETY_AGE = 15.minutes
 
-        # Guard the ENTIRE coordinator tick — run-intent selection/creation AND the inline reconcile —
-        # with a single rescue. next_run_intent touches the DB (ReconciliationRun.incomplete, the
-        # DeletionProvenance existence check, and find_or_create! of a fresh intent), so a transient
-        # error THERE would otherwise escape perform and let ActiveJob's Sidekiq default retry spin an
-        # independent, unbounded retry tree — and repeated hourly ticks during a persistent DB/query
-        # failure would accumulate one such tree per tick. Expected failures (global-lock contention, a
-        # transient query/reconciliation error) are logged and SWALLOWED, never re-raised: the next
+        # Upper bound on the distinct inbox_ids the marker outbox redispatches per tick. Bounds the
+        # tick's work (and, with enqueue_for_inbox's per-inbox coalescing, the jobs it can create) so
+        # repeated hourly ticks can never fan out into a job storm. A tick that hits the bound simply
+        # drains the remaining inboxes on subsequent hourly ticks — the markers are durable.
+        MARKER_OUTBOX_BATCH = 100
+
+        # Guard the ENTIRE tick — the marker-outbox drain AND run-intent selection/creation AND the
+        # inline reconcile — with a single rescue. Every step touches the DB (and the drain also
+        # Redis), so a transient error in ANY of them would otherwise escape perform and let
+        # ActiveJob's Sidekiq default retry spin an independent, unbounded retry tree — one per hourly
+        # tick under a persistent failure. Expected failures (global-lock contention, a transient
+        # query/reconciliation/dispatch error) are logged and SWALLOWED, never re-raised: the next
         # hourly cron tick is the ONLY, bounded retry, preserving one-run-per-tick / no second queue.
+        #
+        # ORDERING (safe, deliberate): the marker-outbox drain runs FIRST, before run-intent
+        # coordination. It is the always-on durability guarantee and must execute on EVERY tick
+        # regardless of run/provenance state, so it must not be preempted by the reconcile step, whose
+        # commonly-expected LockContention (or a transient reconcile error) is swallowed by the guard
+        # below and would otherwise skip the drain for the whole tick. If the drain itself fails
+        # transiently it is swallowed too and the reconcile it preempts is simply resumed on the next
+        # tick (its run intent is persisted) while the drain retries next tick (the markers are
+        # durable) — no work is lost either way.
         def perform
+          drain_marker_outbox
+
           run = next_run_intent
           return if run.nil?
 
@@ -93,6 +124,21 @@ module Wijaya
         end
 
         private
+
+        # Redispatch a BOUNDED batch of the distinct inboxes that currently hold Marker rows, so a
+        # marker whose Reconciler dispatch was coalesced away by a since-crashed worker's in-flight
+        # key (which then expired) is re-driven to the shared per-inbox pipeline. Queries ONLY the
+        # battery marker table — never Conversation, never all Unassigned conversations — and is
+        # independent of any reconciliation run / provenance state. enqueue_for_inbox keeps the
+        # in-flight/rerun coalescing authoritative: a live key coalesces this tick (no storm), a stale
+        # key that has since expired lets a later tick enqueue a real job. Runs inside perform's
+        # tick-level guard, so a marker-query or Redis/dispatch failure is swallowed with the rest of
+        # the tick (no independent retry tree); the next hourly tick retries against the durable markers.
+        def drain_marker_outbox
+          Marker.distinct.order(:inbox_id).limit(MARKER_OUTBOX_BATCH).pluck(:inbox_id).each do |inbox_id|
+            ProcessInboxJob.enqueue_for_inbox(inbox_id)
+          end
+        end
 
         # Select AT MOST ONE persisted run intent to process this tick — the amplification guard.
         # An incomplete run (the migration's durable one-time intent, or a run left 'running' by a
