@@ -272,6 +272,48 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
     end
   end
 
+  # A transient error while SELECTING the run intent (before the inline reconcile) must be swallowed by
+  # the tick-level guard exactly like an inline reconciliation failure — otherwise it would escape
+  # perform and let ActiveJob's Sidekiq default retry spin an independent, unbounded retry tree, one
+  # per hourly cron tick under a persistent DB/query failure.
+  describe 'a pre-reconcile failure is swallowed by the tick-level guard (no independent retry tree)' do
+    it 'swallows a failing incomplete-run query across repeated ticks (no raise, no ReconciliationJob enqueue)' do
+      allow(run_model).to receive(:incomplete).and_raise(ActiveRecord::StatementInvalid, 'incomplete query boom')
+      expect(recon_job).not_to receive(:perform_later)
+      expect(recon_job).not_to receive(:perform_now)
+      expect(reconciler).not_to receive(:run)
+
+      3.times { expect { drainer.perform_now }.not_to raise_error }
+
+      expect(run_model.count).to eq(0) # the failing query aborted the tick before any run was created
+    end
+
+    it 'swallows a failing provenance exists? query across repeated ticks (no raise, no enqueue, no reconcile)' do
+      # No incomplete run, so the coordinator advances to the provenance existence check, which raises.
+      allow(provenance_model).to receive(:unreconciled).and_raise(ActiveRecord::StatementInvalid, 'provenance query boom')
+      expect(recon_job).not_to receive(:perform_later)
+      expect(recon_job).not_to receive(:perform_now)
+      expect(reconciler).not_to receive(:run)
+
+      3.times { expect { drainer.perform_now }.not_to raise_error }
+
+      expect(run_model.count).to eq(0)
+    end
+
+    it 'swallows a failing fresh-intent find/create across repeated ticks (no raise, no enqueue, no reconcile)' do
+      make_agent
+      crash_gap_orphan # a genuine straggler exists, so the coordinator reaches find_or_create!
+      allow(run_model).to receive(:find_or_create_by!).and_raise(ActiveRecord::RecordNotUnique, 'intent create boom')
+      expect(recon_job).not_to receive(:perform_later)
+      expect(recon_job).not_to receive(:perform_now)
+      expect(reconciler).not_to receive(:run)
+
+      3.times { expect { drainer.perform_now }.not_to raise_error }
+
+      expect(run_model.where("generation LIKE 'recovery-%'").count).to eq(0)
+    end
+  end
+
   # Blocker E: the one-time reconciliation is a DURABLE persisted run intent (the migration INSERTs a
   # 'running' run row with started_at NULL), NOT a one-shot Redis perform_later. The drainer is the
   # coordinator: each tick it runs the Reconciler INLINE for the oldest incomplete run until it

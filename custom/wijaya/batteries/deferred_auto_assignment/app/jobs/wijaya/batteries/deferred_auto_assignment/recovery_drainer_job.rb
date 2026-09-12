@@ -53,11 +53,14 @@
 #     is a candidate only once it is older than the window the bridge would normally complete in, so
 #     the drainer only ever adopts real crash-gap stragglers. Everything the bridge already handled
 #     is re-checked and stamped reconciled as skipped/ambiguous (idempotent, harmless).
-#   * Expected failures (global-lock contention, a transient reconciliation error) are logged and
-#     SWALLOWED, never re-raised: the Reconciler leaves the run RUNNING with its committed batches
-#     intact, and re-raising would let the job backend (ActiveJob-on-Sidekiq default retry) start a
-#     second, unbounded retry tree on top of the cron cadence. The next hourly tick is the bounded
-#     retry — it resumes the same still-incomplete generation.
+#   * Expected failures ANYWHERE in the tick — global-lock contention, a transient reconciliation
+#     error, OR a transient DB/query error while SELECTING the run intent (the incomplete-run query,
+#     the DeletionProvenance existence check, or find_or_create! of a fresh intent) — are logged and
+#     SWALLOWED at the tick level, never re-raised: the Reconciler leaves any in-flight run RUNNING
+#     with its committed batches intact, and re-raising would let the job backend (ActiveJob-on-Sidekiq
+#     default retry) start a second, unbounded retry tree on top of the cron cadence — one such tree
+#     per hourly tick under a persistent failure. The next hourly tick is the ONLY, bounded retry — it
+#     resumes the same still-incomplete generation.
 module Wijaya
   module Batteries
     module DeferredAutoAssignment
@@ -70,11 +73,23 @@ module Wijaya
         # that a genuine crash-gap straggler is recovered promptly on the next low-frequency tick.
         SAFETY_AGE = 15.minutes
 
+        # Guard the ENTIRE coordinator tick — run-intent selection/creation AND the inline reconcile —
+        # with a single rescue. next_run_intent touches the DB (ReconciliationRun.incomplete, the
+        # DeletionProvenance existence check, and find_or_create! of a fresh intent), so a transient
+        # error THERE would otherwise escape perform and let ActiveJob's Sidekiq default retry spin an
+        # independent, unbounded retry tree — and repeated hourly ticks during a persistent DB/query
+        # failure would accumulate one such tree per tick. Expected failures (global-lock contention, a
+        # transient query/reconciliation error) are logged and SWALLOWED, never re-raised: the next
+        # hourly cron tick is the ONLY, bounded retry, preserving one-run-per-tick / no second queue.
         def perform
           run = next_run_intent
           return if run.nil?
 
           reconcile_inline(run)
+        rescue Reconciler::LockContention => e
+          Rails.logger.info("[Wijaya] deferred recovery coordinator deferred (lock busy): #{e.message}")
+        rescue StandardError => e
+          Rails.logger.warn("[Wijaya] deferred recovery coordinator tick failed (will retry next tick): #{e.message}")
         end
 
         private
@@ -112,17 +127,14 @@ module Wijaya
         # hourly scheduled cron occurrence, so processing inline keeps recovery to exactly one queued
         # unit per tick.
         #
-        # Expected failures are logged and SWALLOWED, never re-raised: the Reconciler already leaves
-        # the run RUNNING with its committed batches intact, and re-raising would let ActiveJob's
-        # Sidekiq default retry start a second, unbounded retry tree. The bounded retry is the next
-        # hourly tick, which resumes this same generation via the incomplete-run branch above.
+        # Failures here are NOT rescued locally — the tick-level guard in perform swallows expected
+        # lock contention / transient reconciliation errors (never re-raising, so ActiveJob's Sidekiq
+        # default retry can never start a second, unbounded retry tree). On such a failure the
+        # Reconciler leaves the run RUNNING with its committed batches intact, and the bounded retry is
+        # the next hourly tick, which resumes this same generation via the incomplete-run branch above.
         def reconcile_inline(run)
           Rails.logger.info("[Wijaya] deferred recovery coordinator reconciling generation=#{run.generation} inline")
           Reconciler.run(generation: run.generation, cutoff: run.cutoff_at)
-        rescue Reconciler::LockContention => e
-          Rails.logger.info("[Wijaya] deferred recovery coordinator deferred (lock busy): #{e.message}")
-        rescue StandardError => e
-          Rails.logger.warn("[Wijaya] deferred recovery coordinator reconciliation failed (will retry next tick): #{e.message}")
         end
       end
     end

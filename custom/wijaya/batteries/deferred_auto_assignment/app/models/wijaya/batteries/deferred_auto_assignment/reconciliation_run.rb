@@ -3,9 +3,10 @@
 # Persisted run/cutoff/completion ledger for the one-time automatic historical reconciliation.
 # Exactly one row per generation (unique) records that the reconciliation for that generation is
 # running or has completed, plus the cutoff timestamp and the full set of REQUIRED, truthful
-# counters. It makes the migration-triggered ReconciliationJob idempotent and non-recurring: a
-# completed generation is never re-scanned, and a retried/re-enqueued job for the same generation
-# resumes safely rather than starting a second engine.
+# counters. It makes reconciliation idempotent and non-recurring: a completed generation is never
+# re-scanned, and a later tick (the RecoveryDrainerJob coordinator resuming an incomplete run inline,
+# or a legacy/manual ReconciliationJob) for the same generation resumes safely rather than starting a
+# second engine.
 #
 # Counter semantics (all persisted incrementally + idempotently, never recomputed):
 #   scanned            provenance rows examined by the scan (each stamped reconciled exactly once)
@@ -44,9 +45,10 @@ module Wijaya
         validates :generation, presence: true, uniqueness: true
 
         # Runs that have NOT yet reached completion — durable work intents the RecoveryDrainerJob
-        # coordinator (re-)enqueues each tick until they truthfully complete. Covers the one-time
-        # reconciliation intent the migration persists (started_at NULL) and any run left 'running'
-        # by an exhausted retry, so no run intent is ever silently stranded.
+        # coordinator adopts each tick and runs INLINE (via Reconciler.run under the global advisory
+        # lock, never a re-enqueue) until they truthfully complete. Covers the one-time reconciliation
+        # intent the migration persists (started_at NULL) and any run left 'running' by an earlier
+        # failed tick, so no run intent is ever silently stranded.
         scope :incomplete, -> { where(status: RUNNING) }
 
         def completed?

@@ -11,9 +11,10 @@
 # one-time reconciliation would never run. Instead the migration INSERTs a durable, persisted run
 # intent — a wijaya_deferred_reconciliation_runs row in status 'running' with started_at NULL (never
 # executed yet) and cutoff_at = the deploy instant (full history up to deploy). The recurring
-# RecoveryDrainerJob is the coordinator: on each tick it (re-)enqueues ReconciliationJob for every
-# incomplete run, so this intent is retried until it truthfully completes — surviving Redis downtime
-# and old-worker timing entirely, because the run executes later under new code with the full schema.
+# RecoveryDrainerJob is the coordinator: on each tick it adopts the oldest incomplete run and runs the
+# Reconciler INLINE (under its global advisory lock — it never enqueues ReconciliationJob), so this
+# intent is resumed until it truthfully completes — surviving Redis downtime and old-worker timing
+# entirely, because the run executes later under new code with the full schema.
 #
 # Idempotent (INSERT ... WHERE NOT EXISTS on the unique generation), so a re-run of the migration
 # never creates a second intent, and the ledger's unique generation keeps the run one-time. On this

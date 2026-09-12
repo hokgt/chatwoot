@@ -379,9 +379,12 @@ patches:
       intent each tick and reconciles it INLINE (never enqueuing a second ReconciliationJob onto the
       :low queue): an incomplete run is resumed with its own persisted generation/cutoff, and only once
       none is incomplete does it durably find-or-create exactly one fresh recovery generation (minute
-      bucket) and reconcile it inline. Expected lock contention or a transient reconciliation failure
-      is logged and swallowed (never re-raised — that would spin a second unbounded retry tree via
-      ActiveJob's Sidekiq default retry); the run is left running and the next hourly tick resumes it.
+      bucket) and reconcile it inline. Expected failures ANYWHERE in the tick — lock contention, a
+      transient reconciliation failure, OR a transient DB/query error while selecting the run intent
+      (the incomplete-run query, the provenance existence check, or find-or-create of a fresh intent) —
+      are logged and swallowed at the tick level (never re-raised — that would spin a second unbounded
+      retry tree via ActiveJob's Sidekiq default retry, one per hourly tick under a persistent failure);
+      any in-flight run is left running and the next hourly tick resumes it.
       So the one-time run is retried until it truthfully completes —
       surviving Redis downtime and old-worker timing without a fragile once-only enqueue. Deploy
       order still applies (old Sidekiq must not run the new job against an incomplete schema): stop

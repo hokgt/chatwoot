@@ -18,9 +18,11 @@
 # unreconciled rows without losing or double-counting work.
 #
 # Two callers reach this: the one-time migration run (a fixed historical cutoff, generation =
-# the enqueue migration's version) and the recurring RecoveryDrainerJob (a fresh generation +
-# a short safety-age cutoff each cycle). The drainer is the durable-outbox/crash-gap fallback for
-# provenance recorded AFTER the migration ran — see RecoveryDrainerJob and BACKFILL.md. The normal
+# the enqueue migration's version) and the recurring RecoveryDrainerJob coordinator, which each tick
+# resumes the oldest incomplete run inline (including that persisted migration intent) or opens one
+# fresh generation with a short safety-age cutoff. The drainer is the durable-outbox/crash-gap
+# fallback for provenance recorded AFTER the migration ran — see RecoveryDrainerJob and BACKFILL.md.
+# The normal
 # Agents::DestroyJob -> Registrar bridge remains the PRIMARY future deletion path, unchanged.
 #
 # Single-run serialization + durable dispatch (correctness): the entire scan + dispatch + finalize
@@ -28,10 +30,12 @@
 # generation), so at most ONE reconciliation of ANY generation is ever inside it — the migration
 # run and every drainer run are strictly serialized and can never race each other's run rows. FOR
 # UPDATE SKIP LOCKED then only ever guards against an unexpected stray process (defense in depth),
-# never the normal path. A job that cannot take the lock RAISES (LockContention) instead of
-# returning a successful no-op: ReconciliationJob's bounded retry_on re-enqueues it so its
-# generation is eventually processed once the lock frees, rather than stranding its run row
-# permanently 'running' (which a silent running return would do — nothing else would retry it). It
+# never the normal path. A caller that cannot take the lock RAISES (LockContention) instead of
+# returning a successful no-op, so its generation is eventually processed once the lock frees rather
+# than stranding its run row permanently 'running' (which a silent running return would do — nothing
+# else would retry it): the RecoveryDrainerJob coordinator swallows it and the next hourly tick
+# resumes the same incomplete run inline, and the legacy ReconciliationJob's bounded retry_on
+# re-enqueues it. It
 # can NEVER mark a run completed while another worker still owns (and may roll back) the tail of the
 # scan. The coalesced ProcessInboxJob is NOT enqueued per batch; instead, after all batches are scanned, the
 # reconciliation-stamped markers themselves are the durable outbox and every still-present one for
