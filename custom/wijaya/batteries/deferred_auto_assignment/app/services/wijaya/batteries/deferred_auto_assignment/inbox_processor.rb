@@ -17,11 +17,18 @@
 #     and unclaimed at the instant of our write.
 # We hold at most one conversation row lock at a time, so there is no cross-row deadlock.
 #
-# Marker lifecycle after processing one conversation:
-#   * assigned by us            -> destroy (done);
+# Marker lifecycle after processing one conversation (via Marker.resolve_and_record /
+# Marker.record_waiting, which also record the run-ledger disposition for a reconciliation-owned
+# marker — an ordinary marker is simply removed/kept exactly as before):
+#   * assigned by us            -> resolve (ASSIGNED), done;
 #   * ineligible (resolved/snoozed/pending, already assigned by SPV, agent-bot owned, team
-#     auto-assign turned off, moved to V2, inbox gone) -> destroy;
-#   * still eligible but no online/capacity agent right now -> KEEP, for a later trigger.
+#     auto-assign turned off, moved to V2, inbox gone) -> resolve (DROPPED);
+#   * still eligible but no online/capacity agent right now -> KEEP (NO_ELIGIBLE_AGENT), for a
+#     later trigger; the ledger counts the conversation once, not once per no-agent pass.
+#
+# For a reconciliation-adopted marker this is the ONLY place the actual assignment outcome is
+# truthfully known, so it is where the run ledger's assigned / no_eligible_agent / dropped counters
+# are recorded and correlated back to the generation the Reconciler stamped on the marker.
 module Wijaya
   module Batteries
     module DeferredAutoAssignment
@@ -38,56 +45,73 @@ module Wijaya
 
         def process_marker(marker)
           conversation = marker.conversation
-          return marker.destroy if conversation.nil?
-
-          keep = false
-          conversation.with_lock do
-            keep = try_assign(conversation)
+          if conversation.nil?
+            log_outcome(marker, 'dropped_conversation_missing')
+            return Marker.resolve_and_record(marker.conversation_id, ReconciliationRun::DROPPED)
           end
-          marker.destroy unless keep
+
+          outcome = :dropped_ineligible
+          conversation.with_lock { outcome = try_assign(conversation) }
+          record_result(marker, outcome)
         rescue ActiveRecord::RecordNotFound
-          marker.destroy
+          log_outcome(marker, 'dropped_not_found')
+          Marker.resolve_and_record(marker.conversation_id, ReconciliationRun::DROPPED)
         end
 
-        # Returns true to KEEP the marker (still eligible, nobody available yet), false to drop
-        # it (assigned or no longer eligible). Runs inside the caller's row lock. Emits a
-        # content-free outcome log per marker (conversation id only) so the deferred/agent-deletion
-        # and reconciliation flows have accurate, non-misleading observability of the actual
-        # assignment result (this is where "assigned / no eligible agent / marker retained" is
-        # truthfully known — the Reconciler only owns registration counts).
+        # Runs inside the caller's row lock and returns a disposition symbol; it performs the
+        # assignment and, on success, resolves the marker as ASSIGNED WITHIN the same lock
+        # transaction so the assignment and the ledger 'assigned' commit atomically (the post-commit
+        # lifecycle cleanup then finds no marker and records nothing, so a system assignment can
+        # never be mis-recorded as dropped). Non-assignment outcomes are resolved by record_result
+        # after the lock releases.
+        #   :assigned            native selector claimed it (marker already resolved here)
+        #   :no_eligible_agent   still eligible, nobody available yet -> keep the marker
+        #   :dropped_ineligible / :dropped_claimed -> drop the marker
         def try_assign(conversation)
-          unless Eligibility.deferrable?(conversation)
-            log_outcome(conversation, 'dropped_ineligible')
-            return false
-          end
+          return :dropped_ineligible unless Eligibility.deferrable?(conversation)
 
           allowed_agent_ids = Eligibility.allowed_agent_ids(conversation)
           assignee = AutoAssignment::AgentAssignmentService.new(
             conversation: conversation, allowed_agent_ids: allowed_agent_ids
           ).find_assignee
-          if assignee.nil?
-            log_outcome(conversation, 'no_eligible_agent_marker_retained')
-            return true
-          end
+          return :no_eligible_agent if assignee.nil?
 
           # Final compare-and-set immediately before the write, still holding the FOR UPDATE
           # row lock: assign only while this locked+reloaded row is still open and unclaimed by
           # a human or an agent bot. update! (not update_all) preserves the native assignment
           # callbacks/events, including the automatic_assignment_activity marker that
           # find_assignee just set, so the normal "assigned by the System" activity still fires.
-          unless assignable_now?(conversation)
-            log_outcome(conversation, 'dropped_claimed')
-            return false
-          end
+          return :dropped_claimed unless assignable_now?(conversation)
 
           conversation.update!(assignee: assignee)
-          log_outcome(conversation, 'assigned')
-          false
+          Marker.resolve_and_record(conversation.id, ReconciliationRun::ASSIGNED)
+          :assigned
         end
 
-        # Content-free: conversation id and outcome only, never message bodies.
-        def log_outcome(conversation, outcome)
-          Rails.logger.info("[Wijaya] deferred assignment conversation=#{conversation.id} outcome=#{outcome}")
+        # Records the per-marker outcome (content-free log for EVERY marker + ledger disposition for
+        # reconciliation-owned ones) and finalizes the marker lifecycle: assigned markers are already
+        # resolved atomically inside the lock; a no-eligible-agent marker is KEPT (counted once) for a
+        # later trigger; everything else is dropped.
+        def record_result(marker, outcome)
+          case outcome
+          when :assigned
+            log_outcome(marker, 'assigned')
+          when :no_eligible_agent
+            log_outcome(marker, 'no_eligible_agent_marker_retained')
+            Marker.record_waiting(marker.conversation_id)
+          else
+            log_outcome(marker, outcome.to_s)
+            Marker.resolve_and_record(marker.conversation_id, ReconciliationRun::DROPPED)
+          end
+        end
+
+        # Content-free: conversation id, outcome, and (for correlation) the reconciliation
+        # generation when this marker was adopted by a reconciliation run. Never message bodies or
+        # assignee names.
+        def log_outcome(marker, outcome)
+          generation = marker.reconciliation_generation
+          suffix = generation.present? ? " reconciliation_generation=#{generation}" : ''
+          Rails.logger.info("[Wijaya] deferred assignment conversation=#{marker.conversation_id} outcome=#{outcome}#{suffix}")
         end
 
         # The conditional predicate for the final write: id match is implicit (same locked

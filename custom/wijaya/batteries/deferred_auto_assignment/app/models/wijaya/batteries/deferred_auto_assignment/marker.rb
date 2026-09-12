@@ -28,6 +28,44 @@ module Wijaya
         belongs_to :conversation
 
         validates :conversation_id, uniqueness: true
+
+        # Remove the marker for +conversation_id+ and, when it was adopted by a reconciliation
+        # generation, record its terminal +outcome+ (ReconciliationRun::ASSIGNED / DROPPED) so the
+        # run ledger reflects each identified conversation's latest, unique disposition. Single-shot
+        # under concurrency: the delete row-count gate means two racing removers (e.g. the
+        # InboxProcessor assignment and the post-commit lifecycle cleanup) apply the ledger
+        # transition at most once — the first to delete the row wins. A no-op when no marker exists.
+        # Ordinary markers (generation nil) are simply deleted, exactly as before.
+        def self.resolve_and_record(conversation_id, outcome)
+          marker = find_by(conversation_id: conversation_id)
+          return if marker.nil?
+
+          generation = marker.reconciliation_generation
+          previous = marker.reconciliation_outcome
+          return if where(conversation_id: conversation_id).delete_all.zero?
+
+          ReconciliationRun.record_outcome(generation, outcome, previous)
+        end
+
+        # Record that a reconciliation-adopted, still-waiting marker found no eligible agent this
+        # pass, KEEPING the marker for a later trigger. Counts the conversation as no_eligible_agent
+        # exactly once (idempotent across repeated no-agent passes) via the persisted
+        # reconciliation_outcome, and the conditional update is itself single-shot under concurrency.
+        def self.record_waiting(conversation_id)
+          marker = find_by(conversation_id: conversation_id)
+          return if marker.nil? || marker.reconciliation_generation.blank?
+          return if marker.reconciliation_outcome == ReconciliationRun::NO_ELIGIBLE_AGENT
+
+          # rubocop:disable Rails/SkipsModelValidations
+          updated = where(conversation_id: conversation_id, reconciliation_outcome: marker.reconciliation_outcome)
+                    .update_all(reconciliation_outcome: ReconciliationRun::NO_ELIGIBLE_AGENT, updated_at: Time.current)
+          # rubocop:enable Rails/SkipsModelValidations
+          return if updated.zero?
+
+          ReconciliationRun.record_outcome(
+            marker.reconciliation_generation, ReconciliationRun::NO_ELIGIBLE_AGENT, marker.reconciliation_outcome
+          )
+        end
       end
     end
   end

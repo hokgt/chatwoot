@@ -331,6 +331,24 @@ patches:
       BACKFILL.md). InboxProcessor emits a content-free per-marker outcome log (assigned /
       no-eligible-agent-marker-retained / dropped) so assignment outcomes are observable without
       the Reconciler fabricating async counts it cannot know.
+      Correctness hardening (20260912000002): each batch is claimed FOR UPDATE SKIP LOCKED and, in
+      ONE transaction, classified + registered + stamped reconciled + counted, so a row is stamped
+      only AFTER its disposition commits — a failed batch rolls back wholesale and a retried/duplicate
+      job RESUMES the same generation from the remaining unreconciled rows without losing or
+      double-counting work (two concurrent jobs lock disjoint batches). Counters persist cumulatively
+      and idempotently on the run row (never a once-only finalize), and registered is the ACTUAL
+      adopted count from the Registrar's re-check (a row raced to marked/assigned in between is
+      reported skipped, never a false registered). A nullable reconciliation_generation +
+      reconciliation_outcome on the marker (NULL for every ordinary marker, which stays unchanged)
+      lets the shared InboxProcessor correlate the eventual assignment outcome back to its run and
+      count assigned / no_eligible_agent / dropped as the LATEST unique disposition per conversation
+      (a repeated no-agent pass is not re-counted; a later assign/drop transitions the count). The run
+      ledger now carries the full required set: scanned / identified / registered / skipped /
+      ambiguous / assigned / no_eligible_agent / dropped / failed / retries. ReconciliationJob uses a
+      bounded retry_on (attempts: 5) — no unbounded custom loop. Deploy order (old Sidekiq must not
+      consume the new job before new code runs): stop old Sidekiq, migrate with the new image, start
+      new workers (see BACKFILL.md). On this install the initial run scans ZERO legacy rows (the
+      provenance table is new); pre-feature deletions carry no provenance and are never guessed.
     custom_files:
       - custom/wijaya/batteries/deferred_auto_assignment/loader.rb
       - custom/wijaya/batteries/deferred_auto_assignment/conversation_extensions.rb
@@ -354,6 +372,7 @@ patches:
       - db/migrate/20260905000000_create_wijaya_deferred_assignments.rb
       - db/migrate/20260912000000_create_wijaya_deferred_assignment_provenance.rb
       - db/migrate/20260912000001_enqueue_deferred_assignment_reconciliation.rb
+      - db/migrate/20260912000002_add_deferred_reconciliation_correlation.rb
     core_hook_touchpoints:
       # Battery Hooks module resolved by name from the core dispatcher (core/hooks.rb map).
       - custom/wijaya/batteries/core/hooks.rb

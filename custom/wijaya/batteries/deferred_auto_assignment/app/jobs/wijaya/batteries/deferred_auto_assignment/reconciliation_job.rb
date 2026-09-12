@@ -13,6 +13,15 @@ module Wijaya
       class ReconciliationJob < ApplicationJob
         queue_as :low
 
+        # Bounded retry, consistent with the app's job conventions (retry_on wait:/attempts:, e.g.
+        # Captain::Documents::PerformSyncJob) — NOT an unbounded custom loop. On a batch failure the
+        # Reconciler leaves the run RUNNING with its already-committed batches intact and re-raises;
+        # each retry RESUMES the same generation from the still-unreconciled rows (ledger-guarded),
+        # and the run's failed/retries counters record the attempt history truthfully. After the
+        # attempts are exhausted the job is dropped by ActiveJob and the run stays RUNNING, safe to
+        # re-enqueue later without rescanning completed batches.
+        retry_on StandardError, wait: :polynomially_longer, attempts: 5
+
         def perform(generation:)
           Reconciler.run(generation: generation)
         end

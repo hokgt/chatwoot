@@ -14,6 +14,7 @@ RSpec.describe 'Deferred auto-assignment historical reconciliation', type: :mode
   let(:run_model) { Wijaya::Batteries::DeferredAutoAssignment::ReconciliationRun }
   let(:marker_model) { Wijaya::Batteries::DeferredAutoAssignment::Marker }
   let(:reconciler) { Wijaya::Batteries::DeferredAutoAssignment::Reconciler }
+  let(:registrar) { Wijaya::Batteries::DeferredAutoAssignment::Registrar }
   let(:recon_job) { Wijaya::Batteries::DeferredAutoAssignment::ReconciliationJob }
   let(:process_inbox_job) { Wijaya::Batteries::DeferredAutoAssignment::ProcessInboxJob }
   let(:erp_owner_sync_job) { Wijaya::Batteries::ErpLeadOwnerSync::OwnerSyncJob }
@@ -318,6 +319,185 @@ RSpec.describe 'Deferred auto-assignment historical reconciliation', type: :mode
       expect(run.scanned).to eq(2)
       expect(provenance_row(c1).reconciled_at).to be_present
       expect(provenance_row(c2).reconciled_at).to be_present
+    end
+  end
+
+  # Supervisor defect 1: a row must not be stamped reconciled until its registration disposition
+  # has committed durably, so a Registrar failure can never permanently skip it on retry.
+  describe 'retry safety when registration fails mid-run' do
+    it 'leaves provenance unreconciled and the run incomplete, then resumes cleanly on retry without duplication' do
+      make_agent
+      conversation, = orphan_with_provenance
+      @online = []
+
+      calls = 0
+      allow(registrar).to receive(:register_unassigned_from_provenance).and_wrap_original do |orig, *args, **kwargs|
+        calls += 1
+        raise StandardError, 'injected registration failure' if calls == 1
+
+        orig.call(*args, **kwargs)
+      end
+
+      expect { reconciler.run(generation: 'gen-fail') }.to raise_error(StandardError, /injected/)
+
+      failed_run = run_model.find_by(generation: 'gen-fail')
+      expect(failed_run.completed?).to be(false)
+      expect(failed_run.status).to eq('running')
+      expect(failed_run.scanned).to eq(0)                    # counters rolled back with the batch
+      expect(failed_run.failed).to eq(1)
+      expect(provenance_row(conversation).reconciled_at).to be_nil
+      expect(marker_for(conversation)).to be_nil             # no phantom marker from the failed attempt
+
+      resumed = run_reconciliation(generation: 'gen-fail')   # a retry of the SAME generation
+      expect(resumed.status).to eq('completed')
+      expect(resumed.scanned).to eq(1)
+      expect(resumed.registered).to eq(1)
+      expect(resumed.retries).to eq(1)
+      expect(provenance_row(conversation).reconciled_at).to be_present
+      expect(marker_model.where(conversation_id: conversation.id).count).to eq(1)
+    end
+  end
+
+  # Supervisor defect 2: counters must be cumulative + idempotent so a failure after some batches
+  # completed, then a resume, still yields exact totals (nothing lost, nothing double-counted).
+  describe 'cumulative counters across a multi-batch failure and resume' do
+    it 'persists exact scanned/identified/registered/skipped/ambiguous totals' do
+      stub_const("#{reconciler}::BATCH_SIZE", 1)
+      make_agent
+      c1, = orphan_with_provenance
+      c2, = orphan_with_provenance
+      c3, = orphan_with_provenance
+      @online = []
+
+      boom = true
+      allow(registrar).to receive(:register_unassigned_from_provenance).and_wrap_original do |orig, account_id, ids, **kwargs|
+        if boom && ids.include?(c2.id)
+          boom = false
+          raise StandardError, 'injected mid-run failure'
+        end
+        orig.call(account_id, ids, **kwargs)
+      end
+
+      expect { reconciler.run(generation: 'gen-multi') }.to raise_error(StandardError, /injected/)
+
+      run = run_reconciliation(generation: 'gen-multi') # resume; drains queued ProcessInboxJobs too
+      expect(run.status).to eq('completed')
+      expect(run.scanned).to eq(3)
+      expect(run.identified).to eq(3)
+      expect(run.registered).to eq(3)
+      expect(run.skipped).to eq(0)
+      expect(run.ambiguous).to eq(0)
+      expect(run.failed).to eq(1)
+      expect(run.retries).to eq(1)
+      [c1, c2, c3].each { |c| expect(provenance_row(c).reconciled_at).to be_present }
+      expect(marker_model.where(conversation_id: [c1.id, c2.id, c3.id]).count).to eq(3)
+    end
+  end
+
+  # Supervisor defect 3: "registered" must mean a marker was ACTUALLY adopted, not a pre-classification
+  # prediction — a row claimed between classification and registration is skipped, never registered.
+  describe 'registered reflects actual adoption, not classification' do
+    it 'counts a candidate claimed between classification and registration as skipped, never registered' do
+      system_agent = make_agent
+      racer = make_agent
+      conversation, = orphan_with_provenance
+
+      allow(reconciler).to receive(:classify).and_wrap_original do |orig, row, cutoff|
+        category = orig.call(row, cutoff)
+        # Simulate a concurrent manual assignment that lands AFTER classification but BEFORE the
+        # Registrar's re-check for this exact row.
+        conversation.update!(assignee: racer) if category == :registered && row.conversation_id == conversation.id
+        category
+      end
+
+      @online = [system_agent.id.to_s]
+      run = run_reconciliation
+
+      expect(conversation.reload.assignee).to eq(racer)   # the manual claim is never overwritten
+      expect(run.identified).to eq(1)
+      expect(run.registered).to eq(0)
+      expect(run.skipped).to eq(1)
+      expect(marker_for(conversation)).to be_nil
+    end
+  end
+
+  # Supervisor defect 4: the run ledger must carry truthful, correlated assigned / no_eligible_agent /
+  # dropped counters (latest unique disposition per conversation), not just registration counts.
+  describe 'async assignment-outcome observability (correlated to the generation)' do
+    it 'records identified + assigned when the orphan is reassigned by the pipeline' do
+      agent = make_agent
+      conversation, = orphan_with_provenance
+
+      @online = [agent.id.to_s]
+      run = run_reconciliation
+
+      expect(conversation.reload.assignee).to eq(agent)
+      expect(run.reload.identified).to eq(1)
+      expect(run.registered).to eq(1)
+      expect(run.assigned).to eq(1)
+      expect(run.no_eligible_agent).to eq(0)
+      expect(run.dropped).to eq(0)
+    end
+
+    it 'counts no_eligible_agent once across repeated no-agent passes, then transitions it to assigned' do
+      agent = make_agent
+      conversation, = orphan_with_provenance
+
+      @online = []
+      run = run_reconciliation
+      expect(run.reload.registered).to eq(1)
+      expect(run.no_eligible_agent).to eq(1)
+
+      # A second no-agent trigger must not double-count the same waiting conversation.
+      perform_enqueued_jobs(only: process_inbox_job) { process_inbox_job.enqueue_for_inbox(inbox.id) }
+      expect(run.reload.no_eligible_agent).to eq(1)
+
+      # An agent comes online: the waiting count transitions down as it becomes assigned.
+      @online = [agent.id.to_s]
+      perform_enqueued_jobs(only: process_inbox_job) { process_inbox_job.enqueue_for_inbox(inbox.id) }
+      expect(conversation.reload.assignee).to eq(agent)
+      expect(run.reload.no_eligible_agent).to eq(0)
+      expect(run.assigned).to eq(1)
+      expect(run.registered).to eq(1)
+    end
+
+    it 'transitions a waiting orphan to dropped when it is manually assigned between passes' do
+      spv = make_agent
+      conversation, = orphan_with_provenance
+
+      @online = []
+      run = run_reconciliation
+      expect(run.reload.no_eligible_agent).to eq(1)
+
+      conversation.update!(assignee: spv) # manual claim -> lifecycle cleanup drops the marker
+
+      expect(run.reload.no_eligible_agent).to eq(0)
+      expect(run.dropped).to eq(1)
+      expect(run.assigned).to eq(0)
+      expect(marker_for(conversation)).to be_nil
+    end
+  end
+
+  # Supervisor defect 5: two jobs for the same generation must not double-process rows or finalize
+  # inconsistently.
+  describe 'concurrent / duplicate job safety' do
+    it 'claims each batch with FOR UPDATE SKIP LOCKED so a concurrent job locks disjoint rows' do
+      expect(reconciler.batch_scope(1.minute.from_now).to_sql).to include('FOR UPDATE SKIP LOCKED')
+    end
+
+    it 'a duplicate invocation for the same generation neither re-registers nor double-counts' do
+      make_agent
+      conversation, = orphan_with_provenance
+
+      @online = []
+      first = run_reconciliation(generation: 'gen-dup')
+      expect(first.registered).to eq(1)
+      expect(marker_model.where(conversation_id: conversation.id).count).to eq(1)
+
+      second = run_reconciliation(generation: 'gen-dup')
+      expect(second.scanned).to eq(1)       # unchanged
+      expect(second.registered).to eq(1)    # not 2
+      expect(marker_model.where(conversation_id: conversation.id).count).to eq(1)
     end
   end
 

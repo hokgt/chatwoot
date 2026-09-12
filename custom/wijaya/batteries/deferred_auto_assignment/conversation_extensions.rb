@@ -42,7 +42,16 @@ module Wijaya::Batteries::DeferredAutoAssignment::ConversationExtensions
   def wijaya_cleanup_deferred_marker_if_ineligible
     return unless wijaya_deferred_marker_should_clear?
 
-    Wijaya::Batteries::DeferredAutoAssignment::Marker.where(conversation_id: id).delete_all
+    # resolve_and_record removes the marker exactly as the old delete_all did (a single narrow
+    # DELETE, no child callbacks) for ordinary markers, and additionally records a DROPPED
+    # disposition when the marker was reconciliation-owned — so an orphan that was manually/bot
+    # assigned or resolved between reconciliation passes leaves the run ledger truthful instead of
+    # stuck at "no eligible agent". A no-op when no marker exists (the common case). When the system
+    # itself assigned the conversation, the InboxProcessor already resolved the marker as ASSIGNED
+    # inside its lock, so this post-commit call finds nothing and records nothing.
+    Wijaya::Batteries::DeferredAutoAssignment::Marker.resolve_and_record(
+      id, Wijaya::Batteries::DeferredAutoAssignment::ReconciliationRun::DROPPED
+    )
   end
 
   # Assignment capacity for this inbox may have just freed up — a previously assigned

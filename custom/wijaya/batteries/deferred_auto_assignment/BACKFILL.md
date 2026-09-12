@@ -47,7 +47,14 @@ recurring blanket scan**. The job runs the `Reconciler`, which:
 - is guarded by a `wijaya_deferred_reconciliation_runs` ledger keyed on a unique **generation**
   (the persisted run/cutoff/completion state) so a retry/re-enqueue **resumes** the same run
   instead of starting a second engine;
-- stamps every examined row `reconciled_at` so it is processed **at most once**.
+- claims each batch with **`FOR UPDATE SKIP LOCKED`** (the same primitive the native
+  `AutoAssignment::AssignmentService` uses) and, in **one transaction**, classifies + registers +
+  stamps `reconciled_at` + adds the batch's counts to the run row — so a row is stamped (and
+  counted) **only after its disposition has committed**. A failed batch rolls back wholesale (row
+  left unreconciled, counters untouched); a retried or duplicate job **resumes** from the remaining
+  unreconciled rows without losing or double-counting work, and two concurrent jobs lock **disjoint**
+  batches instead of colliding. The coalesced `ProcessInboxJob` is enqueued only **after** the batch
+  commits, so a rolled-back batch leaves neither a phantom marker nor a phantom job.
 
 For each provenance row it **fails closed**:
 
@@ -61,24 +68,73 @@ Registration goes through `Registrar.register_unassigned_from_provenance`, which
 live pipeline and **never writes `assignee_id` directly**:
 
 ```
-Reconciler -> Registrar.register_unassigned_from_provenance
-           -> (per id) Marker exists? skip  |  Eligibility.deferrable? recheck
-           -> Marker (unique conversation_id)
+Reconciler (per batch, in one FOR UPDATE SKIP LOCKED transaction)
+           -> Registrar.register_unassigned_from_provenance (returns { adopted:, inbox_ids: })
+                -> (per id) Marker exists? skip  |  Eligibility.deferrable? recheck
+                -> Marker (unique conversation_id, stamped reconciliation_generation)
+           -> stamp reconciled_at + bump run counters  (atomic, same transaction)
+   after commit:
            -> ProcessInboxJob (coalesced per inbox)
            -> InboxProcessor (row-locked recheck) -> native AutoAssignment::AgentAssignmentService
            -> conversation.update! -> existing ERP owner-sync callback (only if a lead is linked)
+           -> Marker.resolve_and_record / record_waiting  (ledger disposition, correlated by generation)
 ```
 
 A manual assignment made before reconciliation is never overwritten (assignee-present rows are not
 deferrable, and the row-locked recheck in `InboxProcessor` re-verifies immediately before writing).
 
+> **`registered` is the ACTUAL adopted count.** `Registrar.register_unassigned_from_provenance`
+> re-checks each candidate (`Marker.exists?` / `Eligibility.deferrable?` / a concurrently-created
+> marker) and returns how many markers it truly adopted. A conversation that was marked or assigned
+> between the reconciler's classification and this call is reported **skipped**, so `registered` can
+> never overstate what happened. It returns a structured outcome and does **not** enqueue — the
+> reconciler enqueues the coalesced per-inbox pass after the batch commits.
+
 ### Observability
 
-The `Reconciler` records accurate, content-free run counters on the ledger and logs them:
-`scanned / registered / skipped / ambiguous`. The **assignment outcome** (assigned / no eligible
-agent, marker retained / dropped) is produced asynchronously by the shared `InboxProcessor`, which
-logs it per marker (`conversation=<id> outcome=<...>`, no message content). The reconciler does not
-fabricate async assignment counts it cannot truthfully know.
+The run ledger carries the **full required counter set**, persisted **cumulatively and
+idempotently** (never a once-only finalize), so a resumed run reports exact totals:
+
+| Counter | Meaning |
+|---------|---------|
+| `scanned` | provenance rows examined (each stamped `reconciled_at` exactly once) |
+| `identified` | of those, the ones structurally **proven** deleted-agent orphans (`registered + skipped`) |
+| `registered` | orphans a marker was **actually adopted** for by this run (post Registrar re-check) |
+| `skipped` | proven orphans left to existing behavior (already marked / not deferrable / raced) |
+| `ambiguous` | rows without structural proof (never touched) |
+| `assigned` / `no_eligible_agent` / `dropped` | the **latest, unique** async disposition of each registered marker |
+| `failed` / `retries` | failed run attempts and resumes (job retries) for this generation |
+
+The three async dispositions are recorded by the shared `InboxProcessor` — the only place the actual
+assignment result is truthfully known — and correlated back to the run via a nullable
+`reconciliation_generation` stamped on the marker (**NULL for every ordinary marker**, which is
+therefore unchanged). The ledger represents the **latest unique disposition per identified
+conversation**: a repeated "no eligible agent" pass is **not** re-counted, and if a waiting orphan is
+later assigned (by the system) or dropped (manually/bot assigned or resolved between passes) the
+count **transitions** (`no_eligible_agent → assigned`/`dropped`) rather than double-counting. Every
+outcome is logged content-free (`conversation=<id> outcome=<...> reconciliation_generation=<gen>`) —
+never message bodies or assignee names.
+
+### Retry / deploy safety
+
+`ReconciliationJob` uses a **bounded** `retry_on StandardError, attempts: 5` (consistent with the
+app's job conventions, e.g. `Captain::Documents::PerformSyncJob`) — **not** an unbounded custom
+loop. Each retry resumes the same generation from the still-unreconciled rows and increments
+`retries`; a failed attempt increments `failed`. After attempts are exhausted the run stays
+`running`, safe to re-enqueue later without rescanning completed batches.
+
+**Deploy order** (so an old Sidekiq cannot consume the new job before the new code runs):
+
+1. **Stop the old Sidekiq workers.**
+2. **Run migrations using the new image** (`20260912000000`, `…000001`, `…000002`). The enqueue
+   migration (`…000001`) queues `ReconciliationJob`, and `…000002` adds the correlation columns and
+   the full counter set.
+3. **Start the new workers**, which pick up the job with the corrected code.
+
+On **this** install the initial run scans **zero** legacy rows (the provenance table is new), so it
+is effectively a no-op here; the machinery is correct for any future re-deploy or for deletions that
+accumulate a crash-gap provenance row going forward. Pre-feature deletions carry no provenance and
+are never inferred from activity text.
 
 ## Limitation: pre-provenance legacy cases cannot be recovered automatically
 

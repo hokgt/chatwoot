@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_09_12_000001) do
+ActiveRecord::Schema[7.1].define(version: 2026_09_12_000002) do
   # These extensions should be enabled to support this database
   enable_extension "pg_stat_statements"
   enable_extension "pg_trgm"
@@ -1478,9 +1478,12 @@ ActiveRecord::Schema[7.1].define(version: 2026_09_12_000001) do
     t.bigint "conversation_id", null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "reconciliation_generation"
+    t.string "reconciliation_outcome"
     t.index ["account_id"], name: "index_wijaya_deferred_assignments_on_account_id"
     t.index ["conversation_id"], name: "index_wijaya_deferred_assignments_on_conversation_id", unique: true
     t.index ["inbox_id"], name: "index_wijaya_deferred_assignments_on_inbox_id"
+    t.index ["reconciliation_generation"], name: "idx_wijaya_deferred_asg_on_recon_generation"
   end
 
   create_table "wijaya_deferred_reconciliation_runs", force: :cascade do |t|
@@ -1495,6 +1498,12 @@ ActiveRecord::Schema[7.1].define(version: 2026_09_12_000001) do
     t.datetime "finished_at"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.integer "identified", default: 0, null: false
+    t.integer "assigned", default: 0, null: false
+    t.integer "no_eligible_agent", default: 0, null: false
+    t.integer "dropped", default: 0, null: false
+    t.integer "failed", default: 0, null: false
+    t.integer "retries", default: 0, null: false
     t.index ["generation"], name: "idx_wijaya_deferred_recon_runs_on_generation", unique: true
   end
 

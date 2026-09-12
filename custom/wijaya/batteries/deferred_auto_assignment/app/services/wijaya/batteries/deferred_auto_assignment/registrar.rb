@@ -78,14 +78,36 @@ module Wijaya
         # Provenance-backed entry point for the automatic one-time reconciliation (Reconciler).
         # The Reconciler has already established, from durable structured provenance, that each id
         # was assigned to a human agent who was subsequently deleted and is currently deferrable;
-        # this narrowly named entry point marks + enqueues exactly those account-scoped ids through
-        # the SAME shared pipeline as every other path — no direct assignee write, no new engine.
-        # It shares adopt_markerless with the historical path: an already-marked id is skipped (the
-        # live pipeline owns it), the per-id Eligibility.deferrable? recheck is re-run here and again
-        # under the row lock in InboxProcessor, and the unique conversation_id keeps a retried run
-        # from double-marking.
-        def register_unassigned_from_provenance(account_id, conversation_ids)
-          adopt_markerless(account_id, conversation_ids)
+        # this narrowly named entry point marks exactly those account-scoped ids through the SAME
+        # shared pipeline as every other path — no direct assignee write, no new engine.
+        #
+        # It differs from adopt_markerless in two deliberate, correctness-driven ways:
+        #   1. It STAMPS the marker with +generation+ so the shared InboxProcessor can attribute the
+        #      eventual assignment outcome back to this run. The generation is written only when THIS
+        #      call creates the marker, so an existing (ordinary or already-reconciled) marker is
+        #      never restamped and every non-reconciliation marker stays unchanged.
+        #   2. It returns a STRUCTURED outcome { adopted:, inbox_ids: } reporting how many markers
+        #      were ACTUALLY adopted here (marker.previously_new_record?) rather than pre-counted by
+        #      the caller. A row that was marked or assigned between the Reconciler's classification
+        #      and this call is re-checked (Marker.exists? / Eligibility.deferrable? / a
+        #      concurrently-created marker) and reported as skipped, so "registered" can never
+        #      overstate reality. It does NOT enqueue: the Reconciler owns the coalesced per-inbox
+        #      pass, enqueuing AFTER its batch commits so a rolled-back adoption leaves no phantom job.
+        # The unique conversation_id still keeps a retried run from double-marking.
+        def register_unassigned_from_provenance(account_id, conversation_ids, generation:)
+          adopted = 0
+          affected_inbox_ids = []
+          Conversation.where(account_id: account_id, id: conversation_ids).find_each do |conversation|
+            next if Marker.exists?(conversation_id: conversation.id)
+            next unless Eligibility.deferrable?(conversation)
+
+            marker = register_reconciliation_marker(conversation, generation)
+            next unless marker.previously_new_record?
+
+            adopted += 1
+            affected_inbox_ids << conversation.inbox_id
+          end
+          { adopted: adopted, inbox_ids: affected_inbox_ids.uniq }
         end
 
         # Shared body for the markerless-adoption paths (historical allowlist + provenance
@@ -112,6 +134,18 @@ module Wijaya
           Marker.find_or_create_by!(conversation_id: conversation.id) do |marker|
             marker.account_id = conversation.account_id
             marker.inbox_id = conversation.inbox_id
+          end
+        end
+
+        # Reconciliation variant of register_marker: identical idempotent find_or_create keyed on
+        # the unique conversation_id, but stamps the generation so the InboxProcessor can attribute
+        # the assignment outcome back to the run. The generation is set only in the creation block,
+        # so an existing marker (ordinary or already reconciliation-owned) is never restamped.
+        def register_reconciliation_marker(conversation, generation)
+          Marker.find_or_create_by!(conversation_id: conversation.id) do |marker|
+            marker.account_id = conversation.account_id
+            marker.inbox_id = conversation.inbox_id
+            marker.reconciliation_generation = generation
           end
         end
       end
