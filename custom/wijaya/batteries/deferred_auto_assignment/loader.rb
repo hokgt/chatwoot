@@ -3,8 +3,7 @@
 require 'fileutils'
 require Rails.root.join('custom/wijaya/batteries/core/loader')
 
-# Feature loader for the deferred/native auto-assignment battery. Three jobs (the third re-asserts
-# the MarkerDropTrigger idempotently on boot, since schema.rb cannot carry a trigger — see below):
+# Feature loader for the deferred/native auto-assignment battery. Two jobs:
 #
 #   1. Wire its own app/ subtree into Zeitwerk: the ActiveRecord marker model, the plain-Ruby
 #      service objects, and the coalescing job all autoload from there (constant names derive
@@ -15,6 +14,10 @@ require Rails.root.join('custom/wijaya/batteries/core/loader')
 #   2. Attach the battery ConversationExtensions concern (marker has_one dependent: :destroy +
 #      the after_update_commit lifecycle cleanup) inside to_prepare, so app/models/conversation.rb
 #      carries only the tiny registration seam and the child-marker lifecycle stays battery-owned.
+#
+# The MarkerDropTrigger is NOT installed here: it is owned by migration 20260912000008 (HairTrigger
+# create_trigger DSL) and dumped into db/schema.rb, so both migrate-forward and fresh db:schema:load
+# installs carry it. Boot must do no DDL.
 #
 # Nested (not compact `module Wijaya::Batteries::DeferredAutoAssignment::Loader`) so this
 # file is standalone-safe: the core loader's discover! requires it before any Wijaya parent
@@ -32,7 +35,6 @@ module Wijaya
         def setup!
           register_autoload_paths!
           attach_conversation_extensions!
-          install_marker_drop_trigger!
         end
 
         def register_autoload_paths!
@@ -57,19 +59,6 @@ module Wijaya
             Conversation.include(extensions) unless extensions >= Conversation
           rescue StandardError, ScriptError => e
             Rails.logger.error("[Wijaya] deferred_auto_assignment extension attach failed: #{e.class}")
-          end
-        end
-
-        # (Re-)assert the MarkerDropTrigger idempotently on boot. schema.rb (:ruby format) cannot
-        # carry a trigger, so a fresh db:schema:load install would otherwise lack it — the forward
-        # migration only covers migrate-forward installs. Installed inside to_prepare (after AR is
-        # ready), advisory-locked + rescued so a missing table (asset precompile / db:create) or a
-        # concurrent boot never breaks startup.
-        def install_marker_drop_trigger!
-          Rails.application.config.to_prepare do
-            Wijaya::Batteries::DeferredAutoAssignment::MarkerDropTrigger.install!
-          rescue StandardError => e
-            Rails.logger.error("[Wijaya] deferred_auto_assignment marker-drop trigger install failed: #{e.class}")
           end
         end
       end

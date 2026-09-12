@@ -11,7 +11,8 @@ require 'rails_helper'
 # the trigger for its own delete so the two never double-count).
 #
 # These tests execute TRUE DB-level deletes (delete_all / cascade) — not Rails destroy — to prove the
-# trigger, and rely on spec/support/wijaya_deferred_marker_drop_trigger.rb having installed it.
+# trigger. It is carried by db/schema.rb (declared via the HairTrigger create_trigger DSL in migration
+# 20260912000008), so the test database loaded from schema.rb already has it — no re-assertion needed.
 RSpec.describe 'Deferred auto-assignment marker terminal counters on DB cascade', type: :model do
   let(:run_model) { Wijaya::Batteries::DeferredAutoAssignment::ReconciliationRun }
   let(:marker_model) { Wijaya::Batteries::DeferredAutoAssignment::Marker }

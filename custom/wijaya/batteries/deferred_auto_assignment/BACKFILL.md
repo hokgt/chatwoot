@@ -213,8 +213,9 @@ run intent exists on installs that recorded the OLD (pre-rewrite) `…000003` an
 its rewritten `up` (idempotent `WHERE NOT EXISTS` on the same `generation`, no Redis); `…000008`
 installs the **`MarkerDropTrigger`** BEFORE DELETE trigger that keeps the run ledger's terminal
 counters truthful when a DB cascade removes a reconciliation-owned marker with **no** Rails callback
-(the shared trigger definition is also re-asserted idempotently on boot by the battery loader, since
-schema.rb cannot represent a trigger). All are additive/idempotent and never edit an applied
+(declared with the HairTrigger `create_trigger` DSL, so it is dumped into `db/schema.rb` and a fresh
+`db:schema:load` reconstructs it in the correct function-before-trigger order — no boot-time DDL).
+All are additive/idempotent and never edit an applied
 migration as an upgrade substitute. The `generation` for the automatic run is `20260912000003`.
 
 Because the one-time run is a **persisted intent executed by the drainer coordinator** (not a Redis

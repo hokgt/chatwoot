@@ -463,8 +463,6 @@ patches:
       - spec/custom/wijaya/deferred_auto_assignment/recovery_drainer_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/run_intent_repair_migration_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/marker_cascade_counters_spec.rb
-      # schema.rb cannot carry the MarkerDropTrigger; this before(:suite) hook re-asserts it in test.
-      - spec/support/wijaya_deferred_marker_drop_trigger.rb
 
 
   - id: erp_lead_sidebar

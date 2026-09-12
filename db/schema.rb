@@ -1623,4 +1623,30 @@ ActiveRecord::Schema[7.1].define(version: 2026_09_12_000008) do
     "NEW.display_id := nextval('camp_dpid_seq_' || NEW.account_id);"
   end
 
+  create_trigger("wijaya_deferred_marker_drop_trg", :generated => true, :compatibility => 1).
+      on("wijaya_deferred_assignments").
+      before(:delete).
+      for_each(:row) do
+    <<-SQL_ACTIONS
+IF OLD.reconciliation_generation IS NULL OR OLD.reconciliation_generation = '' THEN
+  RETURN OLD;
+END IF;
+IF current_setting('wijaya.deferred_skip_marker_drop', true) = 'on' THEN
+  RETURN OLD;
+END IF;
+IF OLD.reconciliation_outcome = 'dropped' THEN
+  RETURN OLD;
+END IF;
+UPDATE wijaya_deferred_reconciliation_runs
+   SET dropped = dropped + 1,
+       no_eligible_agent = CASE WHEN OLD.reconciliation_outcome = 'no_eligible_agent'
+         THEN GREATEST(no_eligible_agent - 1, 0) ELSE no_eligible_agent END,
+       assigned = CASE WHEN OLD.reconciliation_outcome = 'assigned'
+         THEN GREATEST(assigned - 1, 0) ELSE assigned END,
+       updated_at = NOW()
+ WHERE generation = OLD.reconciliation_generation;
+RETURN OLD;
+    SQL_ACTIONS
+  end
+
 end

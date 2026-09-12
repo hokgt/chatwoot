@@ -214,7 +214,6 @@ require_file spec/custom/wijaya/deferred_auto_assignment/recovery_drainer_spec.r
 require_file spec/custom/wijaya/deferred_auto_assignment/provenance_deletion_key_migration_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/run_intent_repair_migration_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/marker_cascade_counters_spec.rb
-require_file spec/support/wijaya_deferred_marker_drop_trigger.rb
 # Battery Hooks module is resolved by name from the core dispatcher map.
 require_marker custom/wijaya/batteries/core/hooks.rb "deferred_auto_assignment:"
 
