@@ -388,11 +388,16 @@ patches:
       ProcessInboxJob dispatch is BEST-EFFORT (enqueue_for_inbox is coalesced away by a crashed
       worker's stale in-flight key, which then expires unconsumed), so the run can finalize right
       after it ONLY because the marker is durable: on EVERY tick, FIRST and independent of any
-      run/provenance state, the RecoveryDrainerJob also redispatches a BOUNDED batch
+      run/provenance state, the RecoveryDrainerJob also redispatches a BOUNDED, ROTATING batch
       (MARKER_OUTBOX_BATCH = 100 distinct inbox ids) of the inboxes that currently hold Marker rows,
       querying ONLY the battery marker table (never Conversation / all Unassigned) and reusing
       enqueue_for_inbox so a live key coalesces (no storm) while a since-expired stale key lets a
-      later tick enqueue a real job — the marker is thus a true durable outbox. The drain runs first
+      later tick enqueue a real job — the marker is thus a true durable outbox. The batch is windowed
+      on a durable Redis cursor (MARKER_OUTBOX_CURSOR_KEY, the last inbox_id dispatched, wrapping at
+      the end of the ring and advanced only after a whole batch dispatches), so low inbox_ids that
+      permanently retain markers (no eligible agent) can never be re-selected every tick and starve
+      the inboxes above them — the window rotates forward and every marker-inbox is eventually drained.
+      The drain runs first
       so the commonly-expected LockContention (swallowed) never suppresses it, and the whole tick
       (drain + reconcile) is under the one tick-level guard.
       So the one-time run is retried until it truthfully completes —

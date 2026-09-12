@@ -323,10 +323,15 @@ inbox ids) of the inboxes that **currently hold `Marker` rows**, querying **only
 marker table (never `Conversation`, never all Unassigned). It reuses `enqueue_for_inbox`, so the
 in-flight/rerun coalescing stays **authoritative**: a **live** key coalesces the tick (no job
 storm — repeated ticks against a live key enqueue nothing new), while a **stale** key that has since
-expired lets a **later** hourly tick enqueue a real `ProcessInboxJob`. The batch bound means a tick
-with more than 100 marker-inboxes drains the rest on subsequent ticks (markers are durable). This is
-what makes the marker a true durable outbox and lets the Reconciler finalize immediately after an
-accepted/coalesced dispatch.
+expired lets a **later** hourly tick enqueue a real `ProcessInboxJob`. The batch **rotates**: it is
+windowed on a durable Redis cursor (`MARKER_OUTBOX_CURSOR_KEY`, the last `inbox_id` dispatched,
+wrapping at the end of the ring and advanced **only after a whole batch dispatches**), so a batch of
+low `inbox_id`s that permanently retain their markers (e.g. no eligible agent) can **never** be
+re-selected every tick and starve the inboxes above them — a tick with more than 100 marker-inboxes
+drains a **later** window next tick, and every marker-inbox is eventually redispatched (markers are
+durable; losing the cursor key merely restarts rotation at the beginning). This is what makes the
+marker a true durable outbox and lets the Reconciler finalize immediately after an accepted/coalesced
+dispatch.
 
 **Ordering (deliberate, fail-closed).** The marker-outbox drain runs **first**, so it executes on
 every tick and is never preempted by the reconcile step, whose commonly-expected `LockContention`

@@ -466,7 +466,8 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
       allow(marker_model).to receive(:distinct).and_call_original
 
       expect { drainer.perform_now }.not_to have_enqueued_job(process_inbox_job)
-      expect(marker_model).to have_received(:distinct) # the outbox queries the marker table, nothing else
+      # The outbox queries the marker table, nothing else (at_least: the end-of-ring wrap can re-query).
+      expect(marker_model).to have_received(:distinct).at_least(:once)
     end
 
     it 'enqueues nothing when there are no markers' do
@@ -487,6 +488,69 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
       expect(reconciler).not_to receive(:run) # the drain raises first; the tick guard swallows it
 
       expect { drainer.perform_now }.not_to raise_error
+    end
+  end
+
+  # The rotation guarantee: without it, a batch of low inbox_ids that permanently retain their markers
+  # (no eligible agent) would be re-selected on every hourly tick forever and any marker-inbox above
+  # the batch would be starved. A durable cursor windows each tick strictly past the previous batch and
+  # wraps at the end of the ring, so every marker-inbox is eventually redispatched.
+  describe 'marker outbox rotates across ticks (no starvation)' do
+    let(:cursor_key) { drainer::MARKER_OUTBOX_CURSOR_KEY }
+
+    before { Redis::Alfred.delete(cursor_key) }
+
+    def collect_dispatched_inbox_ids
+      dispatched = []
+      allow(process_inbox_job).to receive(:enqueue_for_inbox) { |inbox_id| dispatched << inbox_id }
+      drainer.perform_now
+      dispatched
+    end
+
+    it 'selects the first batch and stores the cursor, then a second tick selects the LATER batch' do
+      stub_const("#{drainer}::MARKER_OUTBOX_BATCH", 2)
+      inbox_ids = Array.new(3) { waiting_marker_on_new_inbox.id }.sort
+
+      first = collect_dispatched_inbox_ids
+      expect(first).to eq(inbox_ids.first(2))                                # first batch (lowest two)
+      expect(Redis::Alfred.get(cursor_key).to_i).to eq(inbox_ids[1])        # cursor advanced to its last
+
+      second = collect_dispatched_inbox_ids
+      expect(second).to eq([inbox_ids.last])                                # LATER batch — the third inbox, not starved
+      expect(Redis::Alfred.get(cursor_key).to_i).to eq(inbox_ids.last)
+    end
+
+    it 'wraps to the beginning once the cursor has passed the end of the ring' do
+      stub_const("#{drainer}::MARKER_OUTBOX_BATCH", 2)
+      inbox_ids = Array.new(3) { waiting_marker_on_new_inbox.id }.sort
+
+      collect_dispatched_inbox_ids                                          # tick 1 -> first two
+      collect_dispatched_inbox_ids                                          # tick 2 -> last one, cursor at max
+
+      wrapped = collect_dispatched_inbox_ids                               # tick 3 -> wraps to the beginning
+      expect(wrapped).to eq(inbox_ids.first(2))
+      expect(Redis::Alfred.get(cursor_key).to_i).to eq(inbox_ids[1])
+    end
+
+    it 'leaves the cursor unchanged when a dispatch in the batch fails (fail closed)' do
+      waiting_marker_on_new_inbox
+      allow(process_inbox_job).to receive(:enqueue_for_inbox).and_raise(StandardError, 'redis boom')
+
+      expect { drainer.perform_now }.not_to raise_error
+      expect(Redis::Alfred.get(cursor_key)).to be_nil                       # never advanced past a failed batch
+    end
+
+    it 'swallows a cursor-read Redis failure via the whole-tick guard (no raise, no retry tree)' do
+      waiting_marker_on_new_inbox
+      allow(Redis::Alfred).to receive(:get).with(cursor_key).and_raise(StandardError, 'redis down')
+      expect(process_inbox_job).not_to receive(:enqueue_for_inbox) # the read raises before any dispatch
+
+      expect { drainer.perform_now }.not_to raise_error
+    end
+
+    it 'enqueues nothing and does not touch the cursor when there are no markers' do
+      expect { drainer.perform_now }.not_to have_enqueued_job(process_inbox_job)
+      expect(Redis::Alfred.get(cursor_key)).to be_nil
     end
   end
 end

@@ -48,13 +48,17 @@
 # consumes it. The in-flight and rerun keys then expire after their 5-minute TTL. Because the
 # Reconciler by then has already stamped provenance reconciled and completed the run, and the
 # crash-gap branch above scans ONLY unreconciled provenance, the still-present Marker row would be
-# stranded forever with no guaranteed worker. So each tick ALSO redispatches a BOUNDED batch of the
-# distinct inbox_ids that currently have Marker rows, querying ONLY the battery marker table
-# (NEVER Conversation / all Unassigned) and regardless of any run/provenance state. It reuses
-# ProcessInboxJob.enqueue_for_inbox so the in-flight/rerun coalescing stays authoritative: a live
-# key coalesces the tick (no storm), but once a stale key has expired a later hourly tick enqueues
-# a real ProcessInboxJob. This is what actually makes the marker a durable outbox — the Reconciler
-# is then free to finalize after an accepted/coalesced dispatch (see Reconciler#dispatch / BACKFILL).
+# stranded forever with no guaranteed worker. So each tick ALSO redispatches a BOUNDED, ROTATING
+# batch of the distinct inbox_ids that currently have Marker rows, querying ONLY the battery marker
+# table (NEVER Conversation / all Unassigned) and regardless of any run/provenance state. The batch
+# is windowed on a durable Redis cursor (the last inbox_id dispatched, wrapping at the end of the
+# ring), so a batch of low inbox_ids that permanently retain their markers (no eligible agent) can
+# NEVER be re-selected every tick and starve the inboxes above them — the window rotates forward
+# and every marker-inbox is eventually redispatched. It reuses ProcessInboxJob.enqueue_for_inbox so
+# the in-flight/rerun coalescing stays authoritative: a live key coalesces the tick (no storm), but
+# once a stale key has expired a later hourly tick enqueues a real ProcessInboxJob. This is what
+# actually makes the marker a durable outbox — the Reconciler is then free to finalize after an
+# accepted/coalesced dispatch (see Reconciler#dispatch / BACKFILL).
 #
 # Bounded + idempotent + concurrency-safe:
 #   * No eligible unreconciled provenance and no incomplete run -> it does NOTHING: no run row, no
@@ -90,9 +94,20 @@ module Wijaya
 
         # Upper bound on the distinct inbox_ids the marker outbox redispatches per tick. Bounds the
         # tick's work (and, with enqueue_for_inbox's per-inbox coalescing, the jobs it can create) so
-        # repeated hourly ticks can never fan out into a job storm. A tick that hits the bound simply
-        # drains the remaining inboxes on subsequent hourly ticks — the markers are durable.
+        # repeated hourly ticks can never fan out into a job storm. A tick that hits the bound advances
+        # a durable cursor (see MARKER_OUTBOX_CURSOR_KEY) so the NEXT tick resumes at the inboxes just
+        # past it — the batch ROTATES forward through the marker-inbox ring, so no inbox is ever starved.
         MARKER_OUTBOX_BATCH = 100
+
+        # Durable Redis cursor for the marker-outbox ROTATION: the highest inbox_id dispatched on the
+        # previous tick. Each tick selects the next batch of distinct marker-inboxes strictly GREATER
+        # than this cursor (wrapping to the beginning at the end of the ring), so a batch of low
+        # inbox_ids that permanently retain their markers (e.g. no eligible agent) can never monopolise
+        # every tick and starve the inboxes above them — the window rotates forward instead. It is
+        # advanced ONLY after a whole batch has dispatched (fail-closed: a query/Redis/dispatch error is
+        # swallowed by perform's tick guard before the cursor moves, so the same window retries next
+        # tick). Loss of the key merely restarts rotation at the beginning; coverage is eventual either way.
+        MARKER_OUTBOX_CURSOR_KEY = 'WIJAYA_DEFERRED_ASSIGNMENT_MARKER_OUTBOX_CURSOR'
 
         # Guard the ENTIRE tick — the marker-outbox drain AND run-intent selection/creation AND the
         # inline reconcile — with a single rescue. Every step touches the DB (and the drain also
@@ -125,19 +140,40 @@ module Wijaya
 
         private
 
-        # Redispatch a BOUNDED batch of the distinct inboxes that currently hold Marker rows, so a
-        # marker whose Reconciler dispatch was coalesced away by a since-crashed worker's in-flight
+        # Redispatch a BOUNDED, ROTATING batch of the distinct inboxes that currently hold Marker rows,
+        # so a marker whose Reconciler dispatch was coalesced away by a since-crashed worker's in-flight
         # key (which then expired) is re-driven to the shared per-inbox pipeline. Queries ONLY the
         # battery marker table — never Conversation, never all Unassigned conversations — and is
-        # independent of any reconciliation run / provenance state. enqueue_for_inbox keeps the
-        # in-flight/rerun coalescing authoritative: a live key coalesces this tick (no storm), a stale
-        # key that has since expired lets a later tick enqueue a real job. Runs inside perform's
-        # tick-level guard, so a marker-query or Redis/dispatch failure is swallowed with the rest of
-        # the tick (no independent retry tree); the next hourly tick retries against the durable markers.
+        # independent of any reconciliation run / provenance state.
+        #
+        # Fairness (no starvation): the batch is windowed on a durable cursor of the last inbox_id
+        # dispatched, selecting distinct inbox_ids strictly GREATER than it in ascending order. When the
+        # window past the cursor is empty we have reached the end of the ring, so we WRAP to the
+        # beginning in the SAME tick. Without this, a batch of low inbox_ids that permanently retain
+        # their markers (no eligible agent) would be re-selected on every tick forever and any inbox
+        # above the batch would never be redispatched.
+        #
+        # enqueue_for_inbox keeps the in-flight/rerun coalescing authoritative: a live key coalesces
+        # this tick (no storm), a stale key that has since expired lets a later tick enqueue a real job.
+        # The cursor advances ONLY after the whole batch has dispatched. Runs inside perform's tick-level
+        # guard, so a marker-query or Redis/dispatch failure is swallowed with the rest of the tick (no
+        # independent retry tree) BEFORE the cursor moves — fail-closed, the same window retries next tick.
         def drain_marker_outbox
-          Marker.distinct.order(:inbox_id).limit(MARKER_OUTBOX_BATCH).pluck(:inbox_id).each do |inbox_id|
-            ProcessInboxJob.enqueue_for_inbox(inbox_id)
-          end
+          cursor = ::Redis::Alfred.get(MARKER_OUTBOX_CURSOR_KEY).to_i
+          inbox_ids = marker_inbox_ids_after(cursor)
+          # End of the ring: wrap to the beginning within this same tick so rotation keeps moving.
+          inbox_ids = marker_inbox_ids_after(0) if inbox_ids.empty? && cursor.positive?
+          return if inbox_ids.empty?
+
+          inbox_ids.each { |inbox_id| ProcessInboxJob.enqueue_for_inbox(inbox_id) }
+          ::Redis::Alfred.set(MARKER_OUTBOX_CURSOR_KEY, inbox_ids.last)
+        end
+
+        # Distinct marker inbox_ids strictly greater than the cursor, ascending, capped to the batch.
+        # `Marker.distinct` keeps the class-level distinct query so the outbox provably scans ONLY the
+        # marker table; a raw `inbox_id > ?` bound avoids any random ordering or offset scan.
+        def marker_inbox_ids_after(cursor)
+          Marker.distinct.where('inbox_id > ?', cursor).order(:inbox_id).limit(MARKER_OUTBOX_BATCH).pluck(:inbox_id)
         end
 
         # Select AT MOST ONE persisted run intent to process this tick — the amplification guard.
