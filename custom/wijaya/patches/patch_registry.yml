@@ -939,6 +939,25 @@ patches:
       # (no DB/flow/state read or write); each surface supplies the already-localized fallback + a lazy
       # localized-acknowledgement producer and consumes the returned Decision via its own adapter.
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/stock_reply_composer.rb
+      # price-display-v1 — pure, deterministic DISPLAY formatter for an eligibility-checked
+      # price_available descriptor: turns the raw repository price facts into a deeply immutable
+      # envelope carrying the canonical raw values, the approved per-locale display facts (id: Rp +
+      # dot thousands; en: IDR + comma thousands; lowercase UOM), and a raw-to-display provenance
+      # map. Exact decimal-string/BigDecimal processing, never Float, never rounded; scale preserved.
+      # Fails closed (no envelope) on unsupported locale/currency/UOM, malformed/missing/negative/
+      # nonfinite/non-exact amount. No DB, no LLM, no sentence building.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_display_formatter.rb
+      # price-display-v1 — shared, surface-agnostic dynamic price boundary consumed identically by
+      # ResponseBuilderJob and PlaygroundPreview. Resolves the target (provider -> configured ->
+      # detector on message -> bounded context; id/en only, else SILENT handoff), invokes the
+      # formatter, builds a battery-locale deterministic fallback from the display facts, and
+      # generates a DIRECT target-language line from role-labelled placeholders (<P_PRODUCT>,
+      # <P_CURRENCY>, <P_AMOUNT>, <P_UOM>) with NO raw facts/history/customer content, restoring them
+      # byte-exact. Full fail-closed gates: structured shape, placeholder inventory, display-fact +
+      # token inventory (extended ProductFactProtectionValidator/FactPlaceholderMask), target-language
+      # proof, and the independent semantic FactPreservationValidator — the generator never self-
+      # certifies. Never invokes ReplyLocalizer/TranslateResponseService/GroundedProductWordingService.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_reply_composer.rb
       # Phase 7 — context-aware natural wording for a product HANDOFF acknowledgement. An
       # unsupported request (warehouse location, delivery to a customer-supplied destination,
       # shipping cost) or an exact-quantity question hands off; instead of the generic branded
@@ -1037,8 +1056,11 @@ patches:
       - custom/wijaya/batteries/marine_ai/frontend/api/llmSettings.js
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/llm-settings/Index.vue
       - custom/wijaya/batteries/marine_ai/frontend/i18n/marine.json
-      # Marine backend locale is battery-owned; loader registers this on the i18n load path.
+      # Marine backend locale is battery-owned; loader registers these on the i18n load path
+      # (config/locales/**/*.yml glob — no core edit needed). id.yml carries the price-display-v1
+      # Indonesian deterministic price_available fallback.
       - custom/wijaya/batteries/marine_ai/config/locales/en.yml
+      - custom/wijaya/batteries/marine_ai/config/locales/id.yml
       - db/migrate/20260708010000_create_wijaya_marine_tables.rb
       - db/migrate/20260708010001_create_wijaya_marine_inboxes.rb
       - db/migrate/20260710000000_add_source_kind_to_marine_documents.rb
@@ -1230,6 +1252,17 @@ patches:
       # proving identical business conclusions (dynamic deliver, or the same factless handoff).
       - spec/custom/wijaya/batteries/marine_ai/catalog/stock_reply_composer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/stock_reply_parity_spec.rb
+      # price-display-v1 — PriceDisplayFormatter spec: id/en formatting (12500, decimals, large,
+      # zero), immutability/provenance/policy version, no rounding, and fail-closed rejection of
+      # invalid/nonfinite/negative amount and unsupported currency/UOM/locale.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/price_display_formatter_spec.rb
+      # price-display-v1 — PriceReplyComposer spec: placeholder inventory (missing/duplicate/unknown/
+      # mangled + injected numbers/currencies/codes + prompt-injection), language precedence + proof,
+      # every supported-locale failure -> target-language deterministic fallback, unresolved/
+      # unsupported -> silent handoff, >=3 stubbed sentence forms preserving exact facts, and the
+      # conversation<->Playground price parity + ReplyLocalizer/TranslateResponseService/general
+      # GroundedProductWordingService not-invoked-for-price regressions.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/price_reply_composer_spec.rb
       # Phase 7 — context-aware natural product-handoff acknowledgement service + regression
       # coverage for quantity-inquiry routing, price/catalog grounded context, and language
       # consistency (see marine_ai_natural_reply_regression_spec).

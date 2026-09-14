@@ -42,6 +42,16 @@ module Marine
         'exact_quantity' => "I'm sorry, I can't confirm the exact quantity available for you directly. Let me bring in a colleague to help with this."
       }.freeze
 
+      # Raised when a STANDALONE :price_available reply reaches this presenter's deterministic text
+      # path. A pure price reply is locale-sensitive and MUST be resolved through the shared
+      # Marine::Catalog::PriceReplyComposer (as both ResponseBuilderJob and PlaygroundPreview already
+      # do), which owns the account/language context this pure presenter deliberately lacks. Letting
+      # the presenter answer it would leak a hardcoded English price sentence, so the path fails
+      # closed with this narrowly named error instead of ever emitting one. (A composite price+stock
+      # reply is a DIFFERENT descriptor kind whose price clause is still rendered internally here.)
+      # marker: price-standalone-fail-closed-v1
+      PriceReplyNotPresentable = Class.new(StandardError)
+
       # Renders the caption/text for a plan. A DIRECT catalog request carries a :catalog reply
       # descriptor and renders a catalog caption; a catalog-ASSISTED send_catalog (reply nil)
       # renders the deterministic variant clarification, used both as its no-usable-catalog text
@@ -77,6 +87,11 @@ module Marine
       # The deterministic sentence for ONE child descriptor (the same mapping reply_text applies to a
       # standalone reply, excluding the plan-level send_catalog branch a composite part never uses).
       def single_descriptor_text(descriptor)
+        # A composite price leg still renders its deterministic price clause here (the composite as a
+        # whole is naturalized/localized downstream, not routed through the PriceReplyComposer), so it
+        # calls the internal builder directly and never trips the standalone price fail-closed guard.
+        return price_available_text(descriptor) if descriptor[:kind] == :price_available
+
         dynamic_product_text(descriptor) || STATIC_PRODUCT_TEXT[descriptor[:kind]] || GENERIC_PRODUCT_TEXT
       end
 
@@ -136,7 +151,7 @@ module Marine
         case descriptor[:kind]
         when :parent_info then parent_info_text(descriptor)
         when :variant_info then "Here are the details for #{descriptor[:variant_code]}. Would you like the price or availability?"
-        when :price_available then price_available_text(descriptor)
+        when :price_available then raise PriceReplyNotPresentable, 'price_available must be resolved via PriceReplyComposer, not presented here'
         when :stock_available, :stock_empty then stock_text(descriptor)
         when :clarify_family then clarify_family_text(descriptor[:candidates])
         when :clarify_variant then clarify_variant_text(descriptor[:attribute_names])
@@ -200,6 +215,10 @@ module Marine
         "You're asking about #{name}. Which specific variant would you like to know about?"
       end
 
+      # The deterministic English price clause for a composite price+stock reply ONLY (a standalone
+      # :price_available reply fails closed in #dynamic_product_text — see PriceReplyNotPresentable).
+      # Reached solely by #same_variant_price_stock_text and #single_descriptor_text's composite leg,
+      # never for a pure price reply, which the shared PriceReplyComposer resolves in a locale-safe way.
       def price_available_text(descriptor)
         amount = [descriptor[:currency], descriptor[:price_list_rate]].compact.join(' ')
         subject = descriptor[:variant_code].presence

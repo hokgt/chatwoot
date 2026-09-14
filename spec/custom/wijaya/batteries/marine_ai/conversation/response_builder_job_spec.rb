@@ -72,10 +72,19 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload).current
     end
 
-    it 'creates a deterministic product text reply, applies flow state, and completes the claim' do
+    # price_available now routes through the shared Marine::Catalog::PriceReplyComposer (see
+    # price_reply_composer_spec); the job delivers the composer's accepted candidate as the product
+    # text, still applying flow state, usage, and claim exactly as any other product reply.
+    it 'delivers a price reply via the shared PriceReplyComposer, applies flow state, and completes the claim' do
+      decision = Marine::Catalog::PriceReplyComposer::Decision.new(
+        decision: :deliver_generated, reason: :generated_accepted, text: 'Harga IMP-3 adalah Rp 150.000 per pcs.'
+      ).freeze
+      allow(Marine::Catalog::PriceReplyComposer).to receive(:new).and_return(
+        instance_double(Marine::Catalog::PriceReplyComposer, compose: decision)
+      )
       stub_reasoning(product_payload(
                        action: :reply,
-                       reply: { kind: :price_available, currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
+                       reply: { kind: :price_available, variant_code: 'IMP-3', currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
                        operation: :update,
                        changes: { 'validated_family' => 'IMP', 'validated_variant' => 'IMP-3', 'current_intent' => 'price' }
                      ))
@@ -84,7 +93,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
 
       conversation.messages.reload
       reply = conversation.messages.outgoing.last
-      expect(reply.content).to eq('The price is IDR 150000 per pcs.')
+      expect(reply.content).to eq('Harga IMP-3 adalah Rp 150.000 per pcs.')
       expect(reply.additional_attributes['source_type']).to eq('marine_product')
       expect(reply.attachments).to be_empty
       expect(product_state['validated_variant']).to eq('IMP-3')
@@ -316,13 +325,20 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       expect(conversation.messages.outgoing.last.content).to eq(original)
     end
 
-    # D7 — configured-language consistency with exact fact preservation on the real shared path.
-    # A non-English product reply localizes through the SAME ReplyLocalizer + FactPlaceholderMask,
-    # so immutable facts (variant code, currency, amount, UOM) stay byte-exact while the prose
-    # follows the customer's language. The translator only ever sees the masked text (facts replaced
-    # by opaque placeholders); no outbound network runs and exactly one message is delivered.
-    it 'delivers a product price reply in the configured language with every fact byte-exact (masked, no LLM output trusted)' do
+    # price-display-v1 — a price reply is now generated DIRECTLY in the resolved target language by
+    # the shared PriceReplyComposer (which does its own display-fact formatting + fail-closed gates),
+    # so the price path NEVER re-localizes via ReplyLocalizer / TranslateResponseService. The job
+    # simply delivers the composer's accepted target-language candidate; exactly one message is sent.
+    it 'delivers a price reply in the target language via the composer, never re-localizing (no ReplyLocalizer/TranslateResponseService)' do
       msg = create(:message, conversation: conversation, message_type: :incoming, content: 'berapa harga IMP-3')
+      decision = Marine::Catalog::PriceReplyComposer::Decision.new(
+        decision: :deliver_generated, reason: :generated_accepted, text: 'Harga IMP-3 adalah Rp 150.000 per pcs.'
+      ).freeze
+      allow(Marine::Catalog::PriceReplyComposer).to receive(:new).and_return(
+        instance_double(Marine::Catalog::PriceReplyComposer, compose: decision)
+      )
+      expect(Marine::Catalog::ReplyLocalizer).not_to receive(:new)
+      expect(Marine::Llm::TranslateResponseService).not_to receive(:new)
       payload = product_payload(
         action: :reply,
         reply: { kind: :price_available, variant_code: 'IMP-3', currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
@@ -331,20 +347,12 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       )
       payload['product_plan'][:language] = 'id' # per-turn provider language -> deterministic target
       stub_reasoning(payload)
-      # Masking-aware translator: rephrases prose, leaves the opaque fact placeholders verbatim.
-      allow(Marine::Llm::TranslateResponseService).to receive(:new) do |**kwargs|
-        localized = kwargs[:text].gsub('The price for', 'Harga untuk').gsub(' is ', ' adalah ')
-        instance_double(Marine::Llm::TranslateResponseService, call: { ok: true, text: localized, translated: true })
-      end
-      allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(
-        instance_double(Marine::Charge::FactPreservationValidator, valid?: true)
-      )
 
       described_class.perform_now(conversation, assistant, msg.id)
 
       reply = conversation.messages.outgoing.last
-      expect(reply.content).to eq('Harga untuk IMP-3 adalah IDR 150000 per pcs.')
-      expect(reply.content).to include('IMP-3', 'IDR', '150000', 'pcs') # immutable facts restored byte-exact
+      expect(reply.content).to eq('Harga IMP-3 adalah Rp 150.000 per pcs.')
+      expect(reply.content).to include('IMP-3', 'Rp', '150.000', 'pcs') # exact display facts
       expect(reply.attachments).to be_empty
       expect(conversation.messages.outgoing.count).to eq(1)
     end
@@ -555,19 +563,25 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         expect(claim_status).to eq('completed')
       end
 
-      it 'delivers an accepted Tier 3 price candidate as the product text' do
+      # A price reply is delivered by the shared PriceReplyComposer, NOT the general two-gate
+      # GroundedProductWordingService (which stays the path for other product kinds).
+      it 'delivers a price candidate from the shared composer, not the general wording service' do
+        decision = Marine::Catalog::PriceReplyComposer::Decision.new(
+          decision: :deliver_generated, reason: :generated_accepted, text: 'IMP-3 dihargai Rp 150.000 per pcs.'
+        ).freeze
+        allow(Marine::Catalog::PriceReplyComposer).to receive(:new).and_return(
+          instance_double(Marine::Catalog::PriceReplyComposer, compose: decision)
+        )
+        expect(Marine::Catalog::GroundedProductWordingService).not_to receive(:new)
         stub_reasoning(product_payload(
                          action: :reply,
                          reply: { kind: :price_available, variant_code: 'IMP-3', currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
                          operation: :update, changes: { 'validated_family' => 'IMP', 'validated_variant' => 'IMP-3', 'current_intent' => 'price' }
                        ))
-        # A realistic candidate the real two-gate wording service could return: it names the
-        # protected variant code (IMP-3) and preserves the exact amount/currency/UOM.
-        stub_wording('IMP-3 is IDR 150000 per pcs.')
 
         described_class.perform_now(conversation, assistant, incoming.id)
 
-        expect(conversation.messages.outgoing.last.content).to eq('IMP-3 is IDR 150000 per pcs.')
+        expect(conversation.messages.outgoing.last.content).to eq('IMP-3 dihargai Rp 150.000 per pcs.')
         expect(product_state['validated_variant']).to eq('IMP-3')
       end
 
@@ -864,7 +878,8 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         # The eligible path is already committed, so a wording-service failure retains the exact
         # localized fallback computed lock-free; delivery uses it verbatim with NO second
         # ReplyLocalizer call (which would be a network call under the finalize row lock). A non-stock
-        # reply is used because a stock reply fails closed to the handoff, not the deterministic line.
+        # AND non-price reply is used because both stock and price replies fail closed to the handoff,
+        # not the deterministic line (price now routes through the shared PriceReplyComposer).
         localizer_calls = 0
         allow(Marine::Catalog::ReplyLocalizer).to receive(:new).and_wrap_original do |method, **kwargs|
           localizer_calls += 1
@@ -875,13 +890,14 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         allow(Marine::Catalog::GroundedProductWordingService).to receive(:new).and_return(raising)
         stub_reasoning(product_payload(
                          action: :reply,
-                         reply: { kind: :price_available, variant_code: 'IMP-3', currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
-                         operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'price' }
+                         reply: { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' },
+                         operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'parent_info' }
                        ))
 
         described_class.perform_now(conversation, assistant, incoming.id)
 
-        expect(conversation.messages.outgoing.last.content).to eq('The price for IMP-3 is IDR 150000 per pcs.')
+        deterministic = "You're asking about Impeller. Which specific variant would you like to know about?"
+        expect(conversation.messages.outgoing.last.content).to eq(deterministic)
         expect(localizer_calls).to eq(1) # only the single lock-free precompute; delivery did not re-localize
         expect(claim_status).to eq('completed')
       end

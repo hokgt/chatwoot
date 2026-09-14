@@ -407,12 +407,49 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     return if plan[:action] == :handoff
 
     @product_language = plan[:language]
-    @product_wording_prepared = true
     descriptor = plan[:reply]
+    # A pure price_available reply is routed through the shared Marine::Catalog::PriceReplyComposer
+    # (the SAME dynamic price boundary the source-less PlaygroundPreview consumes). It builds its own
+    # locale-safe deterministic fallback and dynamic in-language line, so ReplyLocalizer/
+    # TranslateResponseService and the general GroundedProductWordingService are NOT invoked here.
+    return prepare_price_wording(descriptor) if price_reply_kind?(descriptor)
+
+    @product_wording_prepared = true
     fallback = localized_product_text(presenter.reply_text(plan), action: plan[:action], descriptor: descriptor)
     @prepared_product_text = naturalized_product_text(plan, descriptor, fallback)
   rescue StandardError
     @prepared_product_text = degraded_product_text(plan)
+  end
+
+  # Resolve a pure price reply through the shared composer, then map its Decision onto this
+  # conversation's delivery adapter: deliver the accepted DYNAMIC candidate or the deterministic
+  # same-language fallback, or record the fail-closed SILENT product handoff (no visible message —
+  # never a wrong- or unformatted price line). Runs BEFORE finalize's row lock (no provider call
+  # under the lock). @product_wording_prepared keeps finalize on the lock-free precomputed text.
+  def prepare_price_wording(descriptor)
+    @product_wording_prepared = true
+    context = Marine::Conversation::ContextBuilder.new(conversation: @conversation, trigger_message: @trigger_message).build
+    decision = price_composer.compose(
+      descriptor: descriptor, reply_language: @product_language,
+      customer_request: context.trigger, configured_language: configured_reply_language,
+      message_history: context.history, opening: context.opening?
+    )
+    if decision.silent_handoff?
+      @force_stock_language_handoff = true
+      @handoff_message = nil
+      @stock_handoff_silent = true
+      @prepared_product_text = nil
+    else
+      @prepared_product_text = decision.text
+    end
+  end
+
+  def price_reply_kind?(descriptor)
+    descriptor.is_a?(Hash) && descriptor[:kind] == Marine::Catalog::PriceReplyComposer::PRICE_KIND
+  end
+
+  def price_composer
+    @price_composer ||= Marine::Catalog::PriceReplyComposer.new(account: @conversation.account)
   end
 
   # Preparation failed before a validated localized reply existed. For a non-stock reply, deliver the
@@ -423,8 +460,11 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # wrong-language and no canned stock line is ever sent, on any target. No network call is made here
   # (localization already failed).
   def degraded_product_text(plan)
-    return presenter.reply_text(plan) unless stock_reply_kind?(plan[:reply])
+    return presenter.reply_text(plan) unless stock_reply_kind?(plan[:reply]) || price_reply_kind?(plan[:reply])
 
+    # Stock and price replies must NEVER degrade to a raw English/unformatted fact line: with no
+    # accepted candidate and no localizable message, fail closed to the shared SILENT factless
+    # handoff (internal transfer, no visible message) on any target.
     decision = stock_composer.degraded
     @force_stock_language_handoff = true
     @stock_handoff_silent = decision.silent

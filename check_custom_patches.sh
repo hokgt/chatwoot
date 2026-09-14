@@ -569,6 +569,33 @@ for file in \
   require_marker "$file" "WIJAYA_CUSTOM_END marine_ai"
 done
 
+# marine_ai price-display-v1 — deterministic, locale-safe dynamic price replies. A pure
+# DISPLAY formatter turns eligibility-checked catalog facts into display values; the shared
+# PriceReplyComposer generates wording from role-labelled placeholders (restored byte-exact
+# through the FactPlaceholderMask boundary) so no raw price/currency/code is ever model-authored.
+# Both locales carry the deterministic price_available fallback.
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_display_formatter.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_reply_composer.rb
+require_file custom/wijaya/batteries/marine_ai/config/locales/id.yml
+require_file spec/custom/wijaya/batteries/marine_ai/catalog/price_display_formatter_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/catalog/price_reply_composer_spec.rb
+# Policy version is defined in the formatter and reused by the composer.
+require_marker custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_display_formatter.rb "price-display-v1"
+require_marker custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_reply_composer.rb "price-display-v1"
+# Placeholder/composer boundary: the composer restores role-labelled placeholders through the
+# FactPlaceholderMask, so raw facts are never invented in generated wording.
+require_marker custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_reply_composer.rb "FactPlaceholderMask"
+# The deterministic price_available fallback key must exist in BOTH en and id locales.
+require_marker custom/wijaya/batteries/marine_ai/config/locales/en.yml "price_available"
+require_marker custom/wijaya/batteries/marine_ai/config/locales/id.yml "price_available"
+# A STANDALONE price_available reply must NEVER be presented as a hardcoded English price sentence:
+# ReplyPresenter fails closed on it (PriceReplyNotPresentable) so a future caller cannot leak English
+# — a pure price reply is resolved only through the shared PriceReplyComposer. This asserts the guard
+# is present; a forbid-text check on the price sentence itself is intentionally NOT used because the
+# composite price+stock reply legitimately still renders that clause via the same internal builder.
+require_marker custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_presenter.rb "price-standalone-fail-closed-v1"
+require_marker custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_presenter.rb "PriceReplyNotPresentable"
+
 # marine_ai_provisioning
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/errors.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/config.rb
