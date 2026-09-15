@@ -1,7 +1,7 @@
 class Agents::DestroyJob < ApplicationJob
   queue_as :low
 
-  def perform(account, user)
+  def perform(account, user, delete_user_when_orphaned: false)
     # WIJAYA_CUSTOM_START deferred_auto_assignment
     wijaya_unassigned_conversation_ids = []
     # WIJAYA_CUSTOM_END deferred_auto_assignment
@@ -30,10 +30,35 @@ class Agents::DestroyJob < ApplicationJob
     # Post-commit: hand the just-cleared conversations to the deferred auto-assignment battery.
     # Fail-open; retry/crash-window semantics are documented in the battery registrar.
     wijaya_bridge_agent_deletion_auto_assignment(account, wijaya_unassigned_conversation_ids)
+    # Serialize the final orphaned-User deletion HERE — after the provenance/unassignment
+    # transaction committed and the reassignment bridge dispatched — so it can never FK-clear
+    # conversations.assignee_id before provenance is captured (the original sibling-job race). Only
+    # when the caller carried the intent (agent deletion), never for account teardown/platform APIs.
+    wijaya_finalize_orphaned_user_deletion(user) if delete_user_when_orphaned
     # WIJAYA_CUSTOM_END deferred_auto_assignment
   end
 
   private
+
+  # WIJAYA_CUSTOM_START deferred_auto_assignment
+  # Tail-of-job orphaned-User deletion. The battery owns the decision (membership recheck + enqueue,
+  # see OrphanedUserFinalizer); this core seam is a tiny fail-open dispatch plus a native fallback
+  # so an orphaned User is still deleted when the battery is unavailable/errored — upstream deletion
+  # semantics preserved either way. Exactly one DeleteObjectJob is enqueued: the fallback fires only
+  # when the hook did not authoritatively handle it. Idempotent via GlobalID + discard_on: once the
+  # User is gone a retried DeleteObjectJob (or a retried DestroyJob, whose user argument no longer
+  # deserializes) fails deserialization and is DISCARDED by ApplicationJob's
+  # discard_on ActiveJob::DeserializationError — it is not re-run as a no-op.
+  def wijaya_finalize_orphaned_user_deletion(user)
+    handled = Wijaya::Batteries::Core::Hooks.dispatch(
+      :deferred_auto_assignment, :finalize_orphaned_user_deletion,
+      default: false, user_id: user.id
+    )
+    return if handled
+
+    DeleteObjectJob.perform_later(user) if user.reload.account_users.blank?
+  end
+  # WIJAYA_CUSTOM_END deferred_auto_assignment
 
   # WIJAYA_CUSTOM_START deferred_auto_assignment
   # Post-commit bridge: hand the exact cleared conversations to the deferred auto-assignment battery

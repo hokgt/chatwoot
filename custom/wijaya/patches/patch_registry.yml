@@ -419,6 +419,9 @@ patches:
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/inbox_processor.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/process_inbox_job.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/agent_deletion_unassignment.rb
+      # Tail-of-DestroyJob orphaned-User deletion finalizer (membership recheck + DeleteObjectJob
+      # enqueue), serializing the deletion behind provenance capture (race fix).
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/orphaned_user_finalizer.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/provenance_recorder.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/reconciler.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/marker_drop_trigger.rb
@@ -454,8 +457,14 @@ patches:
       - custom/wijaya/batteries/core/hooks.rb
       # Creation-only, post-commit registration seam.
       - app/models/conversation.rb
-      # Availability offline/busy -> online trigger (after_commit).
+      # Availability offline/busy -> online trigger (after_commit). Also carries the transient
+      # final user-deletion intent (attr_accessor) and forwards it to Agents::DestroyJob so the
+      # orphaned-User deletion is serialized behind provenance capture, not raced by a sibling.
       - app/models/account_user.rb
+      # Agent-deletion entry point: sets the final user-deletion intent on the account-user before
+      # destroy! (so Agents::DestroyJob deletes the orphaned User last) instead of enqueuing a
+      # sibling DeleteObjectJob that could FK-clear assignee_id before provenance is captured.
+      - app/controllers/api/v1/accounts/agents_controller.rb
       # Absent -> present User presence trigger (transition detected at the seam).
       - app/channels/room_channel.rb
       # New inbox member -> bounded reprocessing of that inbox's markers (after_create_commit).
@@ -464,7 +473,10 @@ patches:
       - app/models/team_member.rb
       # Agent deletion bridge: after the unassignment transaction commits, the exact
       # conversations this deletion cleared are handed to the battery for re-assignment
-      # (collected inside the transaction, dispatched post-commit; no account-wide scan).
+      # (collected inside the transaction, dispatched post-commit; no account-wide scan). Also
+      # serializes the final orphaned-User deletion at the very end — after provenance/unassignment/
+      # dispatch — via a tiny fail-open hook (finalize_orphaned_user_deletion -> OrphanedUserFinalizer)
+      # gated by the caller's intent, with a native DeleteObjectJob fallback if the battery is absent.
       - app/jobs/agents/destroy_job.rb
       # Generated schema touchpoint for the marker table.
       - db/schema.rb
@@ -486,6 +498,7 @@ patches:
       - spec/custom/wijaya/deferred_auto_assignment/presence_channel_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/remediation_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/agent_deletion_bridge_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/agent_deletion_user_removal_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/provenance_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/reconciliation_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/recovery_drainer_spec.rb

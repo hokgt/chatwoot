@@ -41,6 +41,13 @@
 #                                                  are re-run through native auto-assignment:
 #                                                  each eligible one is marked + processed, so it
 #                                                  is reassigned now or waits for a later trigger.
+#   finalize_orphaned_user_deletion(user_id:)      Agents::DestroyJob (tail) — after the
+#                                                  provenance/unassignment transaction committed and
+#                                                  the reassignment bridge dispatched, enqueue the
+#                                                  orphaned User's DeleteObjectJob LAST (membership
+#                                                  recheck preserves multi-account users). Serializes
+#                                                  the deletion behind provenance capture, replacing
+#                                                  the racing sibling job. Returns true when handled.
 #
 # All heavy lifting lives in the service objects; this surface only translates a native call
 # into a battery action. Every method is safe to fail: the core dispatcher rescues anything.
@@ -81,6 +88,10 @@ module Wijaya
 
         def on_agent_deletion_unassigned(account_id:, conversation_ids:)
           Registrar.register_unassigned_after_agent_deletion(account_id, conversation_ids)
+        end
+
+        def finalize_orphaned_user_deletion(user_id:)
+          OrphanedUserFinalizer.finalize(user_id: user_id)
         end
       end
     end
