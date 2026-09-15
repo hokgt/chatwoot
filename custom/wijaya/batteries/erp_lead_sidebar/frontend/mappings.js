@@ -2,10 +2,12 @@
 // Chatwoot-owned mapping config. Values must be exact ERP document names.
 // Keep UI usable offline: these are not fetched from ERP metadata at render time.
 
-// The agent -> ERP User mapping has been removed: the ERP Lead owner is never derived
-// from an id/name mapping. It is set server-side by the erp_lead_owner_sync battery from
-// the conversation's committed assignee email (validated against ERP) after the Lead
-// links, so the sidebar neither offers nor sends an owner value.
+// The agent -> ERP User mapping has been removed: the ERP Lead owner is never derived from an
+// id/name mapping, and it never rides the generic field payload. It has a dedicated, validated
+// path: by default it follows the conversation's committed assignee email, but the agent can
+// pick any active non-Guest ERP User as a sticky manual override through the searchable Lead
+// Owner picker (server-revalidated), with reset/retry and a pending indicator while it syncs.
+// The erp_lead_owner_sync battery performs the owner-only ERP write after the Lead links.
 
 export const SOURCE_MAPPING = {
   whatsapp: 'WhatsApp',

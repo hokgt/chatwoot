@@ -51,6 +51,21 @@ RSpec.describe 'ERP Lead owner sync assignment seam', type: :model do
     end
   end
 
+  describe 'a committed assignee change while a sticky manual override is active' do
+    it 'does not enqueue an owner sync (the manual owner is never overwritten)' do
+      # Link without firing the create-time link seam so we isolate the assignee-change seam.
+      draft = Wijaya::ErpLeadDraft.create!(
+        account: account, conversation: conversation, sync_status: 'synced',
+        fields: { 'lead_owner' => 'manual-pick@example.com', 'lead_owner_override' => true }
+      )
+      draft.update_column(:erp_lead_id, 'LEAD-0001') # rubocop:disable Rails/SkipsModelValidations
+
+      conversation.update!(assignee: agent_b)
+
+      expect(job).not_to have_received(:perform_later)
+    end
+  end
+
   describe 'a transition to nil (unassignment / agent removal path)' do
     it 'does not enqueue an owner sync' do
       link_draft

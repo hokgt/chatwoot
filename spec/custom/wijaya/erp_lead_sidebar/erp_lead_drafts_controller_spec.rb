@@ -82,6 +82,10 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
     before do
       allow(Wijaya::Batteries::ErpLeadSidebar::Config).to receive(:erp_configured?).and_return(true)
       allow(Wijaya::Batteries::ErpLeadSidebar::OptionsService).to receive(:new).and_return(options_service)
+      # The Lead Owner picker directory is fetched on open; stub it so show does no
+      # real outbound call (the owner endpoint contract is exercised separately below).
+      allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory)
+        .to receive(:fetch_options).and_return([])
     end
 
     it 'creates exactly one draft row on open' do
@@ -103,6 +107,315 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       draft = Wijaya::ErpLeadDraft.find_by(conversation: conversation)
       expect(draft.fields).not_to have_key('lead_owner')
       expect(draft.fields['first_name']).to eq('Bob')
+    end
+  end
+
+  # Dedicated, validated Lead Owner set/reset endpoint. The owner is never trusted from
+  # the browser: every nonblank value is exact-revalidated against the live ERP User
+  # directory before it is stored, and the actual ERP write is owned by OwnerSyncJob.
+  context 'with the Lead Owner endpoint' do
+    let(:owner_path) { "#{base_path}/owner" }
+    let(:directory) { Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory }
+    let(:owner_job) { Wijaya::Batteries::ErpLeadOwnerSync::OwnerSyncJob }
+
+    before do
+      allow(Wijaya::Batteries::ErpLeadSidebar::Config).to receive(:erp_configured?).and_return(true)
+      allow(owner_job).to receive(:perform_later)
+    end
+
+    def linked_draft
+      Wijaya::ErpLeadDraft.create!(
+        account: account, conversation: conversation, fields: { 'first_name' => 'Bob' },
+        erp_lead_id: 'LEAD-1', sync_status: 'synced'
+      )
+    end
+
+    it 'stores a validated manual owner as a sticky override + pending marker and enqueues the ERP sync' do
+      draft = linked_draft
+      allow(directory).to receive(:valid?).with(anything, 'boss@example.com').and_return(true)
+
+      post owner_path, params: { owner: 'boss@example.com' }, headers: auth, as: :json
+
+      expect(response).to have_http_status(:success)
+      expect(response.parsed_body['lead_owner']).to eq('boss@example.com')
+      expect(response.parsed_body['lead_owner_override']).to be(true)
+      draft.reload
+      expect(draft.fields['lead_owner']).to eq('boss@example.com')
+      expect(draft.fields['lead_owner_override']).to be(true)
+      # Local storage is not proof of ERP sync: the pending marker forces a real PUT.
+      expect(draft.fields['lead_owner_sync_pending']).to be(true)
+      expect(owner_job).to have_received(:perform_later).with(conversation.id, conversation.assignee_id)
+    end
+
+    it 'reports a sanitized failure (not success) and leaves pending state when the manual sync cannot be queued' do
+      draft = linked_draft
+      allow(directory).to receive(:valid?).and_return(true)
+      allow(owner_job).to receive(:perform_later).and_raise(StandardError, 'queue down')
+
+      post owner_path, params: { owner: 'boss@example.com' }, headers: auth, as: :json
+
+      expect(response).to have_http_status(:service_unavailable)
+      expect(response.parsed_body['error']).to be_present
+      expect(response.parsed_body['message']).to be_nil
+      draft.reload
+      # Retryable pending state persists so the owner is not stranded.
+      expect(draft.fields['lead_owner']).to eq('boss@example.com')
+      expect(draft.fields['lead_owner_override']).to be(true)
+      expect(draft.fields['lead_owner_sync_pending']).to be(true)
+    end
+
+    it 'rejects an invalid owner with a sanitized error, writing nothing and enqueuing no sync' do
+      draft = linked_draft
+      allow(directory).to receive(:valid?).and_return(false)
+
+      post owner_path, params: { owner: 'attacker@evil.example' }, headers: auth, as: :json
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response.parsed_body['error']).to be_present
+      draft.reload
+      expect(draft.fields).not_to have_key('lead_owner')
+      expect(draft.fields).not_to have_key('lead_owner_override')
+      expect(owner_job).not_to have_received(:perform_later)
+    end
+
+    it 'fails closed on a directory outage (no write, no enqueue)' do
+      draft = linked_draft
+      allow(directory).to receive(:valid?).and_raise(Wijaya::Batteries::ErpLeadSidebar::SyncError)
+
+      post owner_path, params: { owner: 'boss@example.com' }, headers: auth, as: :json
+
+      expect(response).to have_http_status(:bad_gateway)
+      expect(draft.reload.fields).not_to have_key('lead_owner_override')
+      expect(owner_job).not_to have_received(:perform_later)
+    end
+
+    # Reset must synchronously prove the CURRENT committed assignee is a valid ERP User
+    # before clearing the override, so it can never drop the manual owner on a false
+    # success while ERP still holds it.
+    def overridden_linked_draft
+      draft = Wijaya::ErpLeadDraft.create!(
+        account: account, conversation: conversation, sync_status: 'synced',
+        fields: { 'lead_owner' => 'boss@example.com', 'lead_owner_override' => true }
+      )
+      draft.update_column(:erp_lead_id, 'LEAD-1') # rubocop:disable Rails/SkipsModelValidations
+      draft
+    end
+
+    it 'reset clears the override, marks the owner sync pending and resumes assignee-driven sync when the assignee is valid' do
+      draft = overridden_linked_draft
+      conversation.update_column(:assignee_id, agent.id) # rubocop:disable Rails/SkipsModelValidations
+      allow(directory).to receive(:valid?).with(anything, agent.email).and_return(true)
+
+      post owner_path, params: { reset: true }, headers: auth, as: :json
+
+      expect(response).to have_http_status(:success)
+      expect(response.parsed_body['lead_owner_override']).to be(false)
+      draft.reload
+      expect(draft.fields).not_to have_key('lead_owner_override')
+      expect(draft.fields).not_to have_key('lead_owner')
+      expect(draft.fields['lead_owner_sync_pending']).to be(true)
+      expect(owner_job).to have_received(:perform_later).with(conversation.id, conversation.assignee_id)
+    end
+
+    it 'reset with no assignee preserves the manual owner + override, sends no PUT and enqueues nothing' do
+      draft = overridden_linked_draft # conversation has no assignee
+
+      post owner_path, params: { reset: true }, headers: auth, as: :json
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response.parsed_body['error']).to be_present
+      draft.reload
+      expect(draft.fields['lead_owner']).to eq('boss@example.com')
+      expect(draft.fields['lead_owner_override']).to be(true)
+      expect(draft.fields).not_to have_key('lead_owner_sync_pending')
+      expect(owner_job).not_to have_received(:perform_later)
+    end
+
+    it 'reset with an invalid/disabled/Guest assignee preserves the override and enqueues nothing' do
+      draft = overridden_linked_draft
+      conversation.update_column(:assignee_id, agent.id) # rubocop:disable Rails/SkipsModelValidations
+      allow(directory).to receive(:valid?).and_return(false)
+
+      post owner_path, params: { reset: true }, headers: auth, as: :json
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      draft.reload
+      expect(draft.fields['lead_owner']).to eq('boss@example.com')
+      expect(draft.fields['lead_owner_override']).to be(true)
+      expect(draft.fields).not_to have_key('lead_owner_sync_pending')
+      expect(owner_job).not_to have_received(:perform_later)
+    end
+
+    it 'reset during a directory outage fails closed (sanitized 502) and preserves the override' do
+      draft = overridden_linked_draft
+      conversation.update_column(:assignee_id, agent.id) # rubocop:disable Rails/SkipsModelValidations
+      allow(directory).to receive(:valid?).and_raise(Wijaya::Batteries::ErpLeadSidebar::SyncError)
+
+      post owner_path, params: { reset: true }, headers: auth, as: :json
+
+      expect(response).to have_http_status(:bad_gateway)
+      expect(response.parsed_body['error']).to be_present
+      draft.reload
+      expect(draft.fields['lead_owner']).to eq('boss@example.com')
+      expect(draft.fields['lead_owner_override']).to be(true)
+      expect(owner_job).not_to have_received(:perform_later)
+    end
+
+    it 'keeps the manual owner + override across an ordinary field autosave' do
+      draft = linked_draft
+      allow(directory).to receive(:valid?).and_return(true)
+      post owner_path, params: { owner: 'boss@example.com' }, headers: auth, as: :json
+
+      patch update_path, params: { fields: { first_name: 'Bob Edited' } }, headers: auth, as: :json
+
+      expect(response).to have_http_status(:success)
+      draft.reload
+      expect(draft.fields['first_name']).to eq('Bob Edited')
+      expect(draft.fields['lead_owner']).to eq('boss@example.com')
+      expect(draft.fields['lead_owner_override']).to be(true)
+      # A routine field autosave must not drop the server-managed pending marker either.
+      expect(draft.fields['lead_owner_sync_pending']).to be(true)
+    end
+
+    # The sidebar consumes lead_owner_sync_pending to render the pending/failed status and the
+    # Retry action, so a truthful "saved but not yet in ERP" message must ride the response.
+    it 'serializes lead_owner_sync_pending and a truthful (not "updated") manual message' do
+      linked_draft
+      allow(directory).to receive(:valid?).and_return(true)
+
+      post owner_path, params: { owner: 'boss@example.com' }, headers: auth, as: :json
+
+      expect(response.parsed_body['lead_owner_sync_pending']).to be(true)
+      expect(response.parsed_body['message']).to include('syncing to ERP')
+      expect(response.parsed_body['message']).not_to include('updated')
+    end
+
+    # A failed/pending manual owner must be retryable WITHOUT re-picking it: the retry re-validates
+    # the current sticky owner and re-enqueues the same mode/target, touching no unrelated field.
+    it 'retry re-validates and re-enqueues the sticky manual owner, leaving other fields untouched' do
+      draft = linked_draft
+      allow(directory).to receive(:valid?).and_return(true)
+      post owner_path, params: { owner: 'boss@example.com' }, headers: auth, as: :json
+
+      post owner_path, params: { retry: true }, headers: auth, as: :json
+
+      expect(response).to have_http_status(:success)
+      expect(directory).to have_received(:valid?).with(anything, 'boss@example.com').at_least(:once)
+      expect(owner_job).to have_received(:perform_later).with(conversation.id, conversation.assignee_id).twice
+      draft.reload
+      expect(draft.fields['lead_owner']).to eq('boss@example.com')
+      expect(draft.fields['lead_owner_override']).to be(true)
+      expect(draft.fields['lead_owner_sync_pending']).to be(true)
+      expect(draft.fields['first_name']).to eq('Bob')
+    end
+
+    it 'retry in automatic mode re-validates the current assignee and re-enqueues' do
+      draft = Wijaya::ErpLeadDraft.create!(
+        account: account, conversation: conversation, erp_lead_id: 'LEAD-1', sync_status: 'failed',
+        fields: { 'first_name' => 'Bob', 'lead_owner' => agent.email, 'lead_owner_sync_pending' => true }
+      )
+      conversation.update_column(:assignee_id, agent.id) # rubocop:disable Rails/SkipsModelValidations
+      allow(directory).to receive(:valid?).with(anything, agent.email).and_return(true)
+
+      post owner_path, params: { retry: true }, headers: auth, as: :json
+
+      expect(response).to have_http_status(:success)
+      expect(owner_job).to have_received(:perform_later).with(conversation.id, agent.id)
+      expect(draft.reload.fields['lead_owner_sync_pending']).to be(true)
+    end
+
+    it 'retry fails closed (422) when the desired owner is no longer a valid ERP user, enqueuing nothing' do
+      draft = linked_draft
+      draft.update!(fields: draft.fields.merge('lead_owner' => 'boss@example.com', 'lead_owner_override' => true, 'lead_owner_sync_pending' => true))
+      allow(directory).to receive(:valid?).and_return(false)
+
+      post owner_path, params: { retry: true }, headers: auth, as: :json
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response.parsed_body['error']).to be_present
+      expect(owner_job).not_to have_received(:perform_later)
+    end
+
+    it 'retry fails closed (502) during a directory outage, enqueuing nothing' do
+      draft = linked_draft
+      draft.update!(fields: draft.fields.merge('lead_owner' => 'boss@example.com', 'lead_owner_override' => true, 'lead_owner_sync_pending' => true))
+      allow(directory).to receive(:valid?).and_raise(Wijaya::Batteries::ErpLeadSidebar::SyncError)
+
+      post owner_path, params: { retry: true }, headers: auth, as: :json
+
+      expect(response).to have_http_status(:bad_gateway)
+      expect(owner_job).not_to have_received(:perform_later)
+    end
+
+    it 'retry on an unlinked draft explains it will sync after creation and enqueues nothing' do
+      Wijaya::ErpLeadDraft.create!(
+        account: account, conversation: conversation, sync_status: 'draft',
+        fields: { 'lead_owner' => 'boss@example.com', 'lead_owner_override' => true, 'lead_owner_sync_pending' => true }
+      )
+      allow(directory).to receive(:valid?).and_return(true)
+
+      post owner_path, params: { retry: true }, headers: auth, as: :json
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response.parsed_body['error']).to be_present
+      expect(owner_job).not_to have_received(:perform_later)
+    end
+
+    # Create/Update Lead must carry a confirmed-but-pending owner to ERP once the Lead is linked.
+    # The owner has its own idempotent job, so an extra enqueue here is safe.
+    it 'the full Lead sync re-enqueues a pending owner once the Lead is linked' do
+      allow(Wijaya::Batteries::ErpLeadSidebar::OptionsService).to receive(:new).and_return(
+        instance_double(Wijaya::Batteries::ErpLeadSidebar::OptionsService, fetch_all: {})
+      )
+      draft = Wijaya::ErpLeadDraft.create!(
+        account: account, conversation: conversation, sync_status: 'synced',
+        fields: { 'first_name' => 'Bob', 'status' => 'Lead', 'industry' => 'Retail',
+                  'lead_owner' => 'boss@example.com', 'lead_owner_override' => true, 'lead_owner_sync_pending' => true }
+      )
+      # Link via update_column so the after_commit link seam does not fire here; this isolates
+      # the sync action's own carry-the-pending-owner enqueue (create/link already covers linkage).
+      draft.update_column(:erp_lead_id, 'LEAD-1') # rubocop:disable Rails/SkipsModelValidations
+      sync_double = instance_double(
+        Wijaya::Batteries::ErpLeadSidebar::SyncService, perform: { payload: {}, erp_lead_id: 'LEAD-1' }
+      )
+      allow(Wijaya::Batteries::ErpLeadSidebar::SyncService).to receive(:new).and_return(sync_double)
+
+      post "#{base_path}/sync", headers: auth, as: :json
+
+      expect(response).to have_http_status(:success)
+      expect(owner_job).to have_received(:perform_later).with(conversation.id, conversation.assignee_id).once
+    end
+
+    # Opening the sidebar on a synced Lead whose manual owner is still pending must NOT claim a
+    # clean refresh: it preserves the local owner and returns a truthful owner-pending status.
+    it 'show reports owner-pending (not "Refreshed") and preserves the local owner while pending' do
+      allow(Wijaya::Batteries::ErpLeadSidebar::Config).to receive_messages(
+        erp_configured?: true, erp_base_url: 'https://erp.example.com', erp_api_key: 'k', erp_api_secret: 's'
+      )
+      allow(Wijaya::Batteries::ErpLeadSidebar::OptionsService).to receive(:new).and_return(
+        instance_double(Wijaya::Batteries::ErpLeadSidebar::OptionsService, fetch_all: {})
+      )
+      allow(directory).to receive(:fetch_options).and_return([])
+      Wijaya::ErpLeadDraft.create!(
+        account: account, conversation: conversation, erp_lead_id: 'LEAD-1', sync_status: 'synced',
+        fields: { 'first_name' => 'Local', 'lead_owner' => 'boss@example.com',
+                  'lead_owner_override' => true, 'lead_owner_sync_pending' => true }
+      )
+      remote = Net::HTTPOK.new('1.1', '200', 'OK')
+      allow(remote).to receive(:body).and_return(
+        { 'data' => { 'first_name' => 'Remote', 'lead_owner' => 'someone-else@example.com' } }.to_json
+      )
+      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(remote)
+
+      get show_path, headers: auth, as: :json
+
+      body = response.parsed_body
+      expect(body['owner_pending']).to be(true)
+      expect(body['conflict']).to be(false)
+      expect(body['message']).to include('not yet confirmed')
+      expect(body['message']).not_to include('Refreshed')
+      expect(body['lead_owner']).to eq('boss@example.com')
+      expect(body['lead_owner_sync_pending']).to be(true)
     end
   end
 end

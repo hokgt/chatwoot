@@ -37,7 +37,11 @@ module Wijaya::Batteries::ErpLeadOwnerSync::LeadDraftExtensions
     return if erp_lead_id.blank?
 
     assignee_id = conversation&.assignee_id
-    return if assignee_id.blank?
+    # With a sticky manual override the confirmed owner must reach the just-linked
+    # Lead even when there is no assignee; the job reads the override and pushes the
+    # manual owner. Without an override we need an assignee to derive the owner from.
+    override_active = ActiveModel::Type::Boolean.new.cast(fields['lead_owner_override'])
+    return if assignee_id.blank? && !override_active
 
     Wijaya::Batteries::ErpLeadOwnerSync::OwnerSyncJob.perform_later(conversation_id, assignee_id)
   rescue StandardError => e

@@ -26,19 +26,48 @@ module Wijaya
         def perform(conversation_id, expected_assignee_id)
           conversation = Conversation.find_by(id: conversation_id)
           return if conversation.nil?
-          return unless conversation.assignee_id == expected_assignee_id
 
           draft = conversation.wijaya_erp_lead_draft
           return if draft.nil? || draft.erp_lead_id.blank?
+
+          # Override state is read fresh (not captured at enqueue) so a reset/manual
+          # choice that commits before this job runs decides which owner is synced;
+          # OwnerSyncService re-checks it under the row lock for the final say.
+          if manual_override?(draft)
+            sync_manual_owner(conversation, draft, expected_assignee_id)
+          else
+            sync_assignee_owner(conversation, draft, expected_assignee_id)
+          end
+        end
+
+        private
+
+        def manual_override?(draft)
+          ActiveModel::Type::Boolean.new.cast(draft.fields['lead_owner_override']) && draft.fields['lead_owner'].present?
+        end
+
+        # Sticky manual override: push the agent's confirmed owner, regardless of the
+        # current assignee (assignee changes never reach here — see ConversationExtensions).
+        def sync_manual_owner(conversation, draft, expected_assignee_id)
+          target_owner = draft.fields['lead_owner'].to_s.strip.presence
+          return if target_owner.blank?
+
+          OwnerSyncService.new(
+            conversation: conversation, draft: draft,
+            expected_assignee_id: expected_assignee_id, target_owner: target_owner, mode: :manual
+          ).perform
+        end
+
+        # Default automatic path: owner follows the committed assignee email.
+        def sync_assignee_owner(conversation, draft, expected_assignee_id)
+          return unless conversation.assignee_id == expected_assignee_id
 
           target_owner = conversation.assignee&.email.to_s.strip.presence
           return if target_owner.blank?
 
           OwnerSyncService.new(
-            conversation: conversation,
-            draft: draft,
-            expected_assignee_id: expected_assignee_id,
-            target_owner: target_owner
+            conversation: conversation, draft: draft,
+            expected_assignee_id: expected_assignee_id, target_owner: target_owner, mode: :assignee
           ).perform
         end
       end

@@ -42,12 +42,20 @@ module Wijaya::Batteries::ErpLeadSidebar
       # matching the new assignee email could make the post-link owner sync a false no-op and
       # the Lead would keep no owner. A later full update (erp_lead_id already present) leaves a
       # legitimately synced owner intact.
-      attrs[:fields] = @draft.fields.except('lead_owner') if first_link
+      #
+      # Exception: a sticky manual override carries the agent's explicitly confirmed owner
+      # (server-validated when it was set); keep it so the post-link OwnerSyncJob applies that
+      # exact owner instead of the assignee. The override flag itself is preserved either way.
+      attrs[:fields] = @draft.fields.except('lead_owner') if first_link && !manual_override?
       @draft.update!(**attrs)
       { erp_lead_id: lead_name, payload: payload }
     end
 
     private
+
+    def manual_override?
+      ActiveModel::Type::Boolean.new.cast(@draft.fields['lead_owner_override'])
+    end
 
     # PUT-updates an existing ERP Lead. A 404 here means the stored id no
     # longer exists in ERP; we must NOT silently create a duplicate, so we

@@ -228,6 +228,155 @@ RSpec.describe 'ERP Lead owner sync', type: :model do
     end
   end
 
+  describe 'sticky manual override' do
+    it 'pushes the manual owner (not the assignee) when the job runs with an override active' do
+      # Override active + a different committed assignee: the job must sync the agent's
+      # manual owner, never the assignee email.
+      draft = draft_with(fields: { 'lead_owner' => 'manual-pick@example.com', 'lead_owner_override' => true })
+      assign_committed(agent_c.id)
+
+      run_job(expected_assignee_id: agent_c.id)
+
+      expect(requests.length).to eq(1)
+      expect(JSON.parse(requests.first[:body])).to eq('lead_owner' => 'manual-pick@example.com')
+      draft.reload
+      expect(draft.sync_status).to eq('synced')
+      expect(draft.fields['lead_owner']).to eq('manual-pick@example.com')
+      expect(draft.fields['lead_owner_override']).to be(true)
+    end
+
+    it 'is a no-op on a repeat run once the manual owner is already synced' do
+      # First run is unsynced (draft) so it PUTs; the second run is already synced.
+      draft_with(fields: { 'lead_owner' => 'manual-pick@example.com', 'lead_owner_override' => true })
+      assign_committed(agent_b.id)
+
+      run_job
+      expect(requests.length).to eq(1)
+      run_job
+      expect(requests.length).to eq(1)
+    end
+
+    it 'assignee-mode declines to touch the owner while an override is active (no PUT)' do
+      # A stale assignee-mode job (enqueued before the override) must NOT clobber the
+      # manual owner: the lock-time override guard makes it skip.
+      draft = draft_with(fields: { 'lead_owner' => 'manual-pick@example.com', 'lead_owner_override' => true }, sync_status: 'synced')
+      assign_committed(agent_b.id)
+
+      Wijaya::Batteries::ErpLeadOwnerSync::OwnerSyncService.new(
+        conversation: conversation.reload, draft: draft, expected_assignee_id: agent_b.id,
+        target_owner: agent_b.email, mode: :assignee
+      ).perform
+
+      expect(requests).to be_empty
+      expect(draft.reload.fields['lead_owner']).to eq('manual-pick@example.com')
+    end
+
+    it 'manual-mode declines when the override was cleared before it ran (reset race)' do
+      # Override already cleared (e.g. a reset committed first): a delayed manual write
+      # must not resurrect the manual owner.
+      draft = draft_with(fields: { 'lead_owner' => 'assignee@example.com' }, sync_status: 'synced')
+      assign_committed(agent_b.id)
+
+      Wijaya::Batteries::ErpLeadOwnerSync::OwnerSyncService.new(
+        conversation: conversation.reload, draft: draft, expected_assignee_id: agent_b.id,
+        target_owner: 'manual-pick@example.com', mode: :manual
+      ).perform
+
+      expect(requests).to be_empty
+      expect(draft.reload.fields['lead_owner']).to eq('assignee@example.com')
+    end
+  end
+
+  describe 'manual owner pending marker (local storage is never proof of ERP sync)' do
+    it 'PUTs the manual owner even when it is already stored+synced, then clears the pending marker' do
+      # This is the reported bug: the controller stores lead_owner locally on a synced draft,
+      # so without the pending marker already_synced? would falsely no-op and never PUT.
+      draft = draft_with(
+        fields: { 'lead_owner' => 'manual-pick@example.com', 'lead_owner_override' => true, 'lead_owner_sync_pending' => true },
+        sync_status: 'synced'
+      )
+      assign_committed(agent_c.id)
+
+      run_job(expected_assignee_id: agent_c.id)
+
+      expect(requests.length).to eq(1)
+      expect(JSON.parse(requests.first[:body])).to eq('lead_owner' => 'manual-pick@example.com')
+      draft.reload
+      expect(draft.fields).not_to have_key('lead_owner_sync_pending')
+      expect(draft.sync_status).to eq('synced')
+
+      # Only now genuinely synced (pending cleared) -> a repeat run is a real no-op.
+      run_job(expected_assignee_id: agent_c.id)
+      expect(requests.length).to eq(1)
+    end
+
+    it 'an older manual job cannot overwrite a newer manual selection (desired owner changed under the lock)' do
+      draft = draft_with(
+        fields: { 'lead_owner' => 'newer-pick@example.com', 'lead_owner_override' => true, 'lead_owner_sync_pending' => true },
+        sync_status: 'draft'
+      )
+      assign_committed(agent_b.id)
+
+      # The older job still carries the superseded target; the draft's desired owner is
+      # already the newer pick, so the stale manual write must decline (no PUT).
+      Wijaya::Batteries::ErpLeadOwnerSync::OwnerSyncService.new(
+        conversation: conversation.reload, draft: draft, expected_assignee_id: agent_b.id,
+        target_owner: 'older-pick@example.com', mode: :manual
+      ).perform
+
+      expect(requests).to be_empty
+      draft.reload
+      expect(draft.fields['lead_owner']).to eq('newer-pick@example.com')
+      expect(draft.fields['lead_owner_sync_pending']).to be(true)
+    end
+  end
+
+  describe 'manual owner PUT failure keeps retryable pending state' do
+    let(:put_ok) { false }
+
+    it 'preserves the pending marker so the manual owner is retried' do
+      draft = draft_with(
+        fields: { 'lead_owner' => 'manual-pick@example.com', 'lead_owner_override' => true, 'lead_owner_sync_pending' => true },
+        sync_status: 'synced'
+      )
+      assign_committed(agent_b.id)
+
+      run_job
+
+      expect(requests.length).to eq(1)
+      draft.reload
+      expect(draft.sync_status).to eq('failed')
+      expect(draft.last_error).to eq('ERPNext lead owner sync failed')
+      expect(draft.fields['lead_owner']).to eq('manual-pick@example.com')
+      expect(draft.fields['lead_owner_sync_pending']).to be(true)
+    end
+  end
+
+  describe 'automatic (assignee-mode) pending retry using the current valid assignee' do
+    it 're-PUTs the current assignee email and clears the pending marker after an earlier failure' do
+      # An earlier automatic owner sync failed: the draft is failed + pending, with the intended
+      # assignee email stored. Re-running the job for the same (still current, still valid) assignee
+      # must resend it and clear pending; once cleared a repeat run is a genuine no-op.
+      draft = draft_with(
+        fields: { 'lead_owner' => agent_b.email, 'lead_owner_sync_pending' => true },
+        sync_status: 'failed', last_error: 'ERPNext lead owner sync failed'
+      )
+      assign_committed(agent_b.id)
+
+      run_job
+
+      expect(requests.length).to eq(1)
+      expect(JSON.parse(requests.first[:body])).to eq('lead_owner' => agent_b.email)
+      draft.reload
+      expect(draft.sync_status).to eq('synced')
+      expect(draft.fields['lead_owner']).to eq(agent_b.email)
+      expect(draft.fields).not_to have_key('lead_owner_sync_pending')
+
+      run_job
+      expect(requests.length).to eq(1)
+    end
+  end
+
   describe 'unconfigured account' do
     it 'skips without any ERP call and leaves the draft untouched' do
       allow(Wijaya::Batteries::ErpLeadSidebar::Config).to receive(:erp_configured?).and_return(false)

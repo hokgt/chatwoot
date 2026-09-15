@@ -546,9 +546,12 @@ patches:
       # invalid/disabled/deleted/Guest/stale value never reaches ERP. It is NOT
       # derived from the conversation assignee or any agent mapping.
       # (The former agent_erp_user_map.json agent -> ERP User mapping has been removed:
-      # the ERP Lead owner is never derived from an id/name mapping. Lead Details no longer
-      # sends an owner; the owner is set by the erp_lead_owner_sync battery from the
-      # committed assignee email after the Lead links — see that patch below.)
+      # the ERP Lead owner is never derived from an id/name mapping and never rides the generic
+      # Lead Details payload. The Lead Owner is an editable, server-validated ERP-User picker: by
+      # default it follows the committed assignee email (automatic default), but the agent can set
+      # a sticky manual override chosen from the live ERP User directory, reset it back to the
+      # assignee, or retry a still-pending sync, with a pending indicator while the owner-only ERP
+      # write is performed by the erp_lead_owner_sync battery after the Lead links — see below.)
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_person_directory.rb
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_options_service.rb
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_payload_builder.rb
@@ -612,8 +615,15 @@ patches:
     name: ERPNext Lead Owner Sync on Assignment
     battery: custom/wijaya/batteries/erp_lead_owner_sync
     description: >
-      Keeps the linked ERPNext Lead's lead_owner in step with the Chatwoot conversation
-      assignee, entirely after the fact and without redesigning assignment. A battery
+      Keeps the linked ERPNext Lead's lead_owner in step with the desired owner, entirely after
+      the fact and without redesigning assignment. The owner has TWO modes, both server-validated
+      against the live ERP User directory before any write: an AUTOMATIC default that follows the
+      committed conversation assignee email, and a sticky MANUAL override the agent picks from the
+      editable ERP-User picker in the sidebar (dedicated POST owner endpoint — never the generic
+      field payload). The manual owner is reset back to the assignee, and a still-pending owner
+      sync can be retried, through that same endpoint; a lead_owner_sync_pending marker (local
+      storage is never itself proof of ERP sync) drives the sidebar's pending/failed status and
+      Retry action and is cleared only by a successful owner PUT. In automatic mode a battery
       ConversationExtensions concern (attached to core Conversation via the loader's
       to_prepare include, so app/models/conversation.rb carries NO owner-sync code) runs an
       after_update_commit seam: the moment a conversation's assignee_id change to a PRESENT

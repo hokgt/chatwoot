@@ -32,6 +32,11 @@ module Wijaya::Batteries::ErpLeadOwnerSync::ConversationExtensions
     draft = wijaya_erp_lead_draft
     return if draft.nil? || draft.erp_lead_id.blank?
 
+    # Sticky manual override: the agent picked the Lead Owner by hand, so a later
+    # Chatwoot reassignment must NOT touch it. Skip the enqueue entirely (the
+    # OwnerSyncService also re-checks the override under a lock as the final guard).
+    return if ActiveModel::Type::Boolean.new.cast(draft.fields['lead_owner_override'])
+
     # expected_assignee_id is captured now (the committed assignee) so a later job
     # can detect it has gone stale after a rapid reassignment.
     Wijaya::Batteries::ErpLeadOwnerSync::OwnerSyncJob.perform_later(id, assignee_id)

@@ -178,6 +178,36 @@ RSpec.describe 'ERP Lead owner sync — lead-link reconcile', type: :model do
       expect(draft.fields['lead_owner']).to eq(agent_b.email)
     end
 
+    it 'keeps a manual override pending through the link and PUTs the manual owner exactly once' do
+      stub_erp(valid_user: true)
+      conversation.update!(assignee: agent_b)
+      # An unlinked draft with a sticky manual owner (different from the assignee) that the
+      # controller marked pending before any Lead existed. SyncService must NOT drop it on
+      # link, and the post-link job must PUT it (the pending marker defeats a false no-op).
+      draft = Wijaya::ErpLeadDraft.create!(
+        account: account, conversation: conversation, sync_status: 'draft',
+        fields: { 'lead_owner' => 'manual-pick@example.com', 'lead_owner_override' => true,
+                  'lead_owner_sync_pending' => true, 'first_name' => 'Bob', 'status' => 'Lead',
+                  'industry' => 'Garment', 'whatsapp_no' => '+628123' }
+      )
+
+      perform_enqueued_jobs do
+        Wijaya::Batteries::ErpLeadSidebar::SyncService.new(draft).perform
+      end
+
+      expect(posts.length).to eq(1)
+      expect(JSON.parse(posts.first[:body])).not_to have_key('lead_owner')
+      expect(puts_.length).to eq(1)
+      expect(JSON.parse(puts_.first[:body])).to eq('lead_owner' => 'manual-pick@example.com')
+
+      draft.reload
+      expect(draft.erp_lead_id).to eq('LEAD-0001')
+      expect(draft.sync_status).to eq('synced')
+      expect(draft.fields['lead_owner']).to eq('manual-pick@example.com')
+      expect(draft.fields['lead_owner_override']).to be(true)
+      expect(draft.fields).not_to have_key('lead_owner_sync_pending')
+    end
+
     it 'links the Lead with no owner PUT and records a retryable failure when the ERP User is invalid' do
       stub_erp(valid_user: false)
       conversation.update!(assignee: agent_b)

@@ -11,6 +11,12 @@ require 'erb'
 # in ERPNext). This service fetches the linked Lead and reconciles it with the
 # local draft under a simple conflict policy:
 #
+#   * a manual owner is still pending (lead_owner_sync_pending) -> keep local
+#                               fields (owner especially) and return an owner-specific
+#                               pending message, NOT a clean-refresh claim: the agent's
+#                               confirmed owner has not reached ERP yet, and this is not
+#                               a full-field conflict, so we must not imply Update Lead is
+#                               needed to overwrite unrelated fields.
 #   * draft is `synced`      -> overwrite local fields with ERP fields so the
 #                               sidebar shows the current ERP state.
 #   * draft is `draft`/`failed` (unsynced agent edits) -> keep local fields,
@@ -40,17 +46,24 @@ module Wijaya::Batteries::ErpLeadSidebar
       remote = fetch_remote_fields
       return fetch_failed_result if remote.nil?
 
-      if unsynced?
-        conflict_result(remote)
-      else
-        refreshed_result(remote)
-      end
+      reconcile(remote)
     rescue StandardError => e
       Rails.logger.warn("Wijaya ERP Lead refresh failed for #{@draft.erp_lead_id}: #{e.class}") if defined?(Rails)
       fetch_failed_result
     end
 
     private
+
+    # A pending manual owner is checked before the generic unsynced/synced split: it is an
+    # owner-only pending state (not a full-field conflict), so it must keep the local owner and
+    # surface an owner-specific message rather than the "overwrite ERP fields" conflict copy or a
+    # false "Refreshed from ERP" claim.
+    def reconcile(remote)
+      return owner_pending_result(remote) if owner_sync_pending?
+      return conflict_result(remote) if unsynced?
+
+      refreshed_result(remote)
+    end
 
     # Draft carries agent edits that have not reached ERP yet.
     def unsynced?
@@ -64,6 +77,19 @@ module Wijaya::Batteries::ErpLeadSidebar
         refreshed: true,
         conflict: false,
         message: "Refreshed from ERP Lead #{@draft.erp_lead_id}.",
+        remote_fields: remote
+      }
+    end
+
+    # Owner not yet confirmed in ERP: preserve the local draft (the confirmed owner especially)
+    # and tell the truth — the choice is saved but not yet in ERP. Never claims a clean refresh
+    # and never asks the agent to Update Lead to overwrite unrelated full-Lead fields.
+    def owner_pending_result(remote)
+      {
+        refreshed: false,
+        conflict: false,
+        owner_pending: true,
+        message: "Lead Owner saved; not yet confirmed in ERP Lead #{@draft.erp_lead_id}.",
         remote_fields: remote
       }
     end
@@ -109,7 +135,20 @@ module Wijaya::Batteries::ErpLeadSidebar
       checkbox_fields.each do |field|
         mapped[field] = truthy?(data[field])
       end
+      # Surface the current ERP Lead owner in the sidebar, but never overwrite a sticky
+      # manual override or a still-pending owner sync (the agent's confirmed owner and any
+      # not-yet-pushed owner target survive a clean refresh untouched; the override flag
+      # and the pending marker are preserved by the merge either way).
+      mapped['lead_owner'] = data['lead_owner'].to_s unless override_active? || owner_sync_pending?
       mapped
+    end
+
+    def override_active?
+      ActiveModel::Type::Boolean.new.cast(@draft.fields['lead_owner_override'])
+    end
+
+    def owner_sync_pending?
+      ActiveModel::Type::Boolean.new.cast(@draft.fields['lead_owner_sync_pending'])
     end
 
     def checkbox_fields

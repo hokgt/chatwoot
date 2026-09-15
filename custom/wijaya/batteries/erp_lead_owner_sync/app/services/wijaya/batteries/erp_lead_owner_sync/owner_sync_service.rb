@@ -20,9 +20,14 @@ require 'erb'
 #     with the intended owner email (LeadActivityPersonDirectory.valid? returns false for a
 #     real "no such User"). Assignment stays committed; the sidebar's draft-driven retry
 #     resends once the ERP User exists.
-#   * Stale after a rapid B -> C swap -> :stale, no PUT (row-lock re-check).
-#   * Already synced to this owner    -> :noop, no PUT (idempotent across dup jobs);
-#     a 'failed' draft still retries because its status is not 'synced'.
+#   * Stale after a rapid B -> C swap -> :stale, no PUT (row-lock re-check). For a
+#     manual job this also covers a newer manual selection that changed the desired
+#     owner under the lock, so an older manual write can never win over a newer one.
+#   * Already synced to this owner    -> :noop, no PUT (idempotent across dup jobs).
+#     "Synced" means a successful ERP PUT cleared the lead_owner_sync_pending marker;
+#     local storage of the owner is never itself treated as proof of ERP sync, so a
+#     freshly stored manual owner (pending) still performs exactly one validated PUT,
+#     and a 'failed' draft still retries.
 #   * ERP outage / non-2xx / timeout  -> SyncError -> draft marked 'failed' with a
 #     generic, non-secret error and the intended new owner, under the same row lock
 #     + staleness re-check, so the sidebar's draft-driven retry resends the intended
@@ -33,11 +38,20 @@ module Wijaya
   module Batteries
     module ErpLeadOwnerSync
       class OwnerSyncService
-        def initialize(conversation:, draft:, expected_assignee_id:, target_owner:)
+        # mode:
+        #   :assignee -> owner follows the committed conversation assignee. Skips
+        #     while a sticky manual override is active (the agent picked the owner
+        #     by hand) and honors the B -> C staleness guard.
+        #   :manual   -> owner is the agent's explicit manual choice (sticky
+        #     override). Skips if the override has since been cleared (e.g. a reset
+        #     committed after this job was enqueued) so a stale manual write can
+        #     never win over a newer reset/assignee state.
+        def initialize(conversation:, draft:, expected_assignee_id:, target_owner:, mode: :assignee)
           @conversation = conversation
           @draft = draft
           @expected_assignee_id = expected_assignee_id
           @target_owner = target_owner
+          @mode = mode
           @account = draft.account
         end
 
@@ -71,12 +85,16 @@ module Wijaya
         def apply_owner!
           @conversation.with_lock do
             @draft.reload
-            next :stale unless @conversation.assignee_id == @expected_assignee_id
+            next :skipped unless mode_permitted?
+            next :stale if stale_target?
             next :noop if already_synced?
 
             put_owner!
+            # Clear the pending marker only after a successful ERP owner PUT: local
+            # storage is never proof of ERP synchronization, so the pending flag is the
+            # single source of truth that this owner still needs to reach ERP.
             @draft.update!(
-              fields: @draft.fields.merge('lead_owner' => @target_owner),
+              fields: @draft.fields.merge('lead_owner' => @target_owner).except('lead_owner_sync_pending'),
               sync_status: 'synced',
               last_error: nil
             )
@@ -97,8 +115,44 @@ module Wijaya
           raise Wijaya::Batteries::ErpLeadSidebar::SyncError, 'ERPNext lead owner update failed'
         end
 
+        # Synced only when a successful ERP PUT has cleared the pending marker. A manual
+        # selection (or a link-time preserve) stores lead_owner locally AND sets
+        # lead_owner_sync_pending, so the same-owner + synced-status combination is NOT
+        # treated as proof of ERP sync until this battery clears the pending flag itself.
         def already_synced?
-          @draft.sync_status == 'synced' && @draft.fields['lead_owner'].to_s == @target_owner
+          @draft.sync_status == 'synced' &&
+            @draft.fields['lead_owner'].to_s == @target_owner &&
+            !owner_sync_pending?
+        end
+
+        def owner_sync_pending?
+          ActiveModel::Type::Boolean.new.cast(@draft.fields['lead_owner_sync_pending'])
+        end
+
+        # A job is stale when the state it was enqueued for has since moved on:
+        #   * :assignee — the committed assignee changed (the B -> C guard).
+        #   * :manual   — a newer manual selection changed the desired owner under the
+        #     lock, so this older job's target must not win over the newer one (the
+        #     newer selection enqueued its own job). A cleared override (reset) is
+        #     already handled earlier by mode_permitted?.
+        def stale_target?
+          return @conversation.assignee_id != @expected_assignee_id if @mode == :assignee
+
+          @draft.fields['lead_owner'].to_s != @target_owner
+        end
+
+        # Read under the row lock so it reflects committed override state:
+        #   * :assignee proceeds only while NO manual override is active — a sticky
+        #     manual owner is never clobbered by an assignee change.
+        #   * :manual proceeds only while the override is STILL active — a reset that
+        #     committed after this job was enqueued removes the override, and the
+        #     manual write then declines rather than resurrecting the manual owner.
+        def mode_permitted?
+          @mode == :manual ? override_active? : !override_active?
+        end
+
+        def override_active?
+          ActiveModel::Type::Boolean.new.cast(@draft.fields['lead_owner_override'])
         end
 
         # Persist the failure under the same row lock and staleness re-check the PUT
@@ -109,10 +163,13 @@ module Wijaya
         def mark_failed
           @conversation.with_lock do
             @draft.reload
-            next :stale unless @conversation.assignee_id == @expected_assignee_id
+            next :skipped unless mode_permitted?
+            next :stale if stale_target?
 
+            # Keep the pending marker set: the owner still has not reached ERP, so the
+            # draft-driven retry must resend it (the flag is the retryable-state signal).
             @draft.update!(
-              fields: @draft.fields.merge('lead_owner' => @target_owner),
+              fields: @draft.fields.merge('lead_owner' => @target_owner, 'lead_owner_sync_pending' => true),
               sync_status: 'failed',
               last_error: 'ERPNext lead owner sync failed'
             )

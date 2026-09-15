@@ -6,14 +6,25 @@ import ErpLeadPanel from '@wijaya/erp_lead_sidebar/frontend/ErpLeadPanel.vue';
 // autosave (PATCH) and no sync (POST) until the server confirms configured:true.
 // These specs drive the real component (no weakening) and assert the API surface.
 
-const { showSpy, saveSpy, syncSpy } = vi.hoisted(() => ({
-  showSpy: vi.fn(),
-  saveSpy: vi.fn(),
-  syncSpy: vi.fn(),
-}));
+const { showSpy, saveSpy, syncSpy, setOwnerSpy, resetOwnerSpy, retryOwnerSpy } =
+  vi.hoisted(() => ({
+    showSpy: vi.fn(),
+    saveSpy: vi.fn(),
+    syncSpy: vi.fn(),
+    setOwnerSpy: vi.fn(),
+    resetOwnerSpy: vi.fn(),
+    retryOwnerSpy: vi.fn(),
+  }));
 
 vi.mock('@wijaya/erp_lead_sidebar/frontend/api/wijayaErpLeadDrafts', () => ({
-  default: { show: showSpy, save: saveSpy, sync: syncSpy },
+  default: {
+    show: showSpy,
+    save: saveSpy,
+    sync: syncSpy,
+    setOwner: setOwnerSpy,
+    resetOwner: resetOwnerSpy,
+    retryOwner: retryOwnerSpy,
+  },
 }));
 
 // The global NextButton stub renders only its default slot; the real Button
@@ -179,17 +190,32 @@ describe('ErpLeadPanel modal presentation', () => {
     expect(wrapper.find('input').exists()).toBe(true);
   });
 
-  // The Lead Owner is read-only and reflects the current assignee email only — never a
-  // stored fields.lead_owner, an id/name mapping, or free-text input, and it never autosaves.
-  it('renders the owner read-only from the assignee email, ignoring any stored/mapped value', async () => {
-    // Server returns a stored fields.lead_owner AND the assignee carries a display name and
-    // id; none of those may become the owner value or be editable.
+  // The Lead Owner is a searchable combobox: it defaults to the assigned agent but the
+  // agent can override it with a value chosen ONLY from the fetched ERP user list. The
+  // browser never submits free text, and the owner is set through its own #owner endpoint
+  // (setOwner), never the field autosave.
+  it('defaults the owner to the assignee and sets a manual override from the ERP user list', async () => {
     showSpy.mockResolvedValue({
       data: {
         configured: true,
-        fields: { lead_owner: 'stored-owner@example.com', first_name: 'Bob' },
+        fields: { first_name: 'Bob' },
+        lead_owner: '',
+        lead_owner_override: false,
+        owner_options: [
+          { value: 'agent@example.com', label: 'Agent One' },
+          { value: 'boss@example.com', label: 'Boss Two' },
+        ],
+        owner_options_available: true,
       },
     });
+    setOwnerSpy.mockResolvedValue({
+      data: {
+        lead_owner: 'boss@example.com',
+        lead_owner_override: true,
+        message: 'set',
+      },
+    });
+
     const wrapper = mount(ErpLeadPanel, {
       props: {
         conversationId: 42,
@@ -212,15 +238,68 @@ describe('ErpLeadPanel modal presentation', () => {
     await flushPromises();
 
     const owner = wrapper.find('#erp-lead-owner');
-    expect(owner.attributes('readonly')).toBeDefined();
-    // Shows the assignee email, not the stored fields value and not the display name.
-    expect(owner.element.value).toBe('agent@example.com');
-    expect(owner.element.value).not.toBe('stored-owner@example.com');
-    expect(owner.element.value).not.toBe('Budi The Agent');
-    // No autosave is wired to the owner input.
-    await owner.setValue('typed@evil.example');
-    await owner.trigger('input');
+    // Editable combobox (not readonly) defaulting to the assignee, shown by its ERP label.
+    expect(owner.attributes('readonly')).toBeUndefined();
+    expect(owner.attributes('role')).toBe('combobox');
+    expect(owner.element.value).toBe('Agent One');
+
+    // Open the menu and pick the second ERP user; only the exact User.name is submitted.
+    await owner.trigger('focus');
+    const option = wrapper.findAll('li').find(li => li.text() === 'Boss Two');
+    await option.trigger('mousedown');
+    await flushPromises();
+
+    expect(setOwnerSpy).toHaveBeenCalledWith(42, 'boss@example.com');
+    // Owner autosave path is never used for the owner.
     expect(saveSpy).not.toHaveBeenCalled();
+    // Now in manual override mode, showing the picked user.
+    expect(wrapper.find('#erp-lead-owner').element.value).toBe('Boss Two');
+  });
+
+  it('offers a reset action while overridden and surfaces a sanitized rejection', async () => {
+    showSpy.mockResolvedValue({
+      data: {
+        configured: true,
+        fields: { first_name: 'Bob' },
+        lead_owner: 'boss@example.com',
+        lead_owner_override: true,
+        owner_options: [{ value: 'boss@example.com', label: 'Boss Two' }],
+        owner_options_available: true,
+      },
+    });
+    resetOwnerSpy.mockResolvedValue({
+      data: {
+        lead_owner: '',
+        lead_owner_override: false,
+        message: 'follows agent',
+      },
+    });
+
+    const wrapper = mount(ErpLeadPanel, {
+      props: {
+        conversationId: 42,
+        currentChat: { meta: { assignee: { email: 'agent@example.com' } } },
+      },
+      global: {
+        stubs: { WootModal, WootModalHeader, NextButton, LeadActivityForm },
+      },
+    });
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    // Reset offered only while a manual override is active.
+    const reset = wrapper
+      .findAll('button')
+      .find(b => b.text() === 'Use assigned agent');
+    expect(reset).toBeTruthy();
+    await reset.trigger('click');
+    await flushPromises();
+    expect(resetOwnerSpy).toHaveBeenCalledWith(42);
+    // Back to automatic: the reset action is no longer offered.
+    expect(
+      wrapper.findAll('button').find(b => b.text() === 'Use assigned agent')
+    ).toBeFalsy();
   });
 
   it('requests the wider supported WootModal size', async () => {
@@ -708,5 +787,184 @@ describe('ErpLeadPanel modal presentation', () => {
     expect(wrapper.find('.woot-modal').text()).not.toContain(
       'ERP Lead created'
     );
+  });
+});
+
+// The assigned agent is the automatic Lead Owner default ONLY when it resolves to a
+// selectable ERP User. An arbitrary/unresolved assignee email — or any email while the
+// directory is unavailable — must never be shown as a valid selected owner; a confirmed
+// stored owner is still shown even if it is not in the current options list.
+describe('ErpLeadPanel Lead Owner default resolution', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const mountWithAssignee = (assigneeEmail, showData) => {
+    showSpy.mockResolvedValue({ data: showData });
+    return mount(ErpLeadPanel, {
+      props: {
+        conversationId: 42,
+        currentChat: { meta: { assignee: { email: assigneeEmail } } },
+      },
+      global: {
+        stubs: { WootModal, WootModalHeader, NextButton, LeadActivityForm },
+      },
+    });
+  };
+
+  const openOwner = async wrapper => {
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+    return wrapper.find('#erp-lead-owner');
+  };
+
+  it('shows the assigned agent as the owner default when it is a selectable ERP user', async () => {
+    const wrapper = mountWithAssignee('agent@example.com', {
+      configured: true,
+      fields: { first_name: 'Bob' },
+      lead_owner: '',
+      lead_owner_override: false,
+      owner_options: [{ value: 'agent@example.com', label: 'Agent One' }],
+      owner_options_available: true,
+    });
+
+    const owner = await openOwner(wrapper);
+    expect(owner.element.value).toBe('Agent One');
+  });
+
+  it('leaves the owner blank and warns when the assigned agent is not a selectable ERP user', async () => {
+    const wrapper = mountWithAssignee('ghost@example.com', {
+      configured: true,
+      fields: { first_name: 'Bob' },
+      lead_owner: '',
+      lead_owner_override: false,
+      owner_options: [{ value: 'agent@example.com', label: 'Agent One' }],
+      owner_options_available: true,
+    });
+
+    const owner = await openOwner(wrapper);
+    expect(owner.element.value).toBe('');
+    expect(wrapper.text()).toContain('not a selectable ERP user');
+  });
+
+  it('does not show the assigned agent as a valid default when the directory is unavailable', async () => {
+    const wrapper = mountWithAssignee('agent@example.com', {
+      configured: true,
+      fields: { first_name: 'Bob' },
+      lead_owner: '',
+      lead_owner_override: false,
+      owner_options: [],
+      owner_options_available: false,
+    });
+
+    const owner = await openOwner(wrapper);
+    expect(owner.element.value).toBe('');
+    expect(wrapper.text()).toContain('ERP user list is unavailable');
+  });
+
+  it('still shows a confirmed stored owner even when it is not in the current options list', async () => {
+    const wrapper = mountWithAssignee('agent@example.com', {
+      configured: true,
+      fields: { first_name: 'Bob' },
+      lead_owner: 'legacy-owner@example.com',
+      lead_owner_override: false,
+      owner_options: [{ value: 'agent@example.com', label: 'Agent One' }],
+      owner_options_available: true,
+    });
+
+    const owner = await openOwner(wrapper);
+    expect(owner.element.value).toBe('legacy-owner@example.com');
+  });
+});
+
+// A confirmed owner that has not reached ERP (lead_owner_sync_pending) must be visible and,
+// on a LINKED Lead, retryable without re-picking it. On an UNLINKED Lead there is nothing to
+// retry yet, so it only explains the owner will sync after the Lead is created.
+describe('ErpLeadPanel Lead Owner pending/retry', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const mountWith = showData => {
+    showSpy.mockResolvedValue({ data: showData });
+    return mount(ErpLeadPanel, {
+      props: { conversationId: 42 },
+      global: {
+        stubs: { WootModal, WootModalHeader, NextButton, LeadActivityForm },
+      },
+    });
+  };
+
+  const open = async wrapper => {
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+  };
+
+  it('shows a Retry Lead Owner sync action for a pending owner on a linked Lead', async () => {
+    const wrapper = mountWith({
+      configured: true,
+      erp_lead_id: 'LEAD-1',
+      sync_status: 'failed',
+      fields: { first_name: 'Bob', industry: 'Retail', status: 'Lead' },
+      lead_owner: 'boss@example.com',
+      lead_owner_override: true,
+      lead_owner_sync_pending: true,
+    });
+    retryOwnerSpy.mockResolvedValue({
+      data: {
+        lead_owner: 'boss@example.com',
+        lead_owner_override: true,
+        lead_owner_sync_pending: true,
+        message: 'Retrying the Lead Owner sync to ERP.',
+      },
+    });
+    await open(wrapper);
+
+    const retry = wrapper
+      .findAll('button')
+      .find(b => b.text() === 'Retry Lead Owner sync');
+    expect(retry).toBeTruthy();
+
+    await retry.trigger('click');
+    await flushPromises();
+    expect(retryOwnerSpy).toHaveBeenCalledWith(42);
+  });
+
+  it('explains a pending owner will sync after creation on an unlinked Lead (no retry button)', async () => {
+    const wrapper = mountWith({
+      configured: true,
+      erp_lead_id: '',
+      sync_status: 'draft',
+      fields: { first_name: 'Bob', industry: 'Retail', status: 'Lead' },
+      lead_owner: 'boss@example.com',
+      lead_owner_override: true,
+      lead_owner_sync_pending: true,
+    });
+    await open(wrapper);
+
+    expect(
+      wrapper.findAll('button').find(b => b.text() === 'Retry Lead Owner sync')
+    ).toBeFalsy();
+    expect(wrapper.text()).toContain('will sync to ERP after the Lead is');
+  });
+
+  it('shows no pending owner indicator once the owner is confirmed in ERP', async () => {
+    const wrapper = mountWith({
+      configured: true,
+      erp_lead_id: 'LEAD-1',
+      sync_status: 'synced',
+      fields: { first_name: 'Bob', industry: 'Retail', status: 'Lead' },
+      lead_owner: 'boss@example.com',
+      lead_owner_override: true,
+      lead_owner_sync_pending: false,
+    });
+    await open(wrapper);
+
+    expect(
+      wrapper.findAll('button').find(b => b.text() === 'Retry Lead Owner sync')
+    ).toBeFalsy();
+    expect(wrapper.text()).not.toContain('not yet confirmed in ERP');
   });
 });

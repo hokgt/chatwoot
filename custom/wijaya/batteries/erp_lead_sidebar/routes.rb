@@ -12,6 +12,8 @@ module Wijaya::Batteries::ErpLeadSidebar::Routes
         resources :erp_lead_drafts, only: %i[show update] do
           member do
             post :sync
+            # Dedicated validated Lead Owner set/reset (never a generic field allowlist).
+            post :owner
           end
           collection do
             get :options
