@@ -108,7 +108,7 @@ const SearchableSelect = defineComponent({
   props: {
     modelValue: { type: String, default: '' },
     // Either plain strings (Source/Campaign/Industry/Territory) or
-    // { value, label } objects (Lead Owner: value = exact ERP User.name).
+    // { value, label } objects (Lead Owner: value = the Chatwoot agent email).
     options: { type: Array, default: () => [] },
     placeholder: { type: String, default: 'Search…' },
     id: { type: String, default: '' },
@@ -349,17 +349,18 @@ const sourceFromMapping = () => {
 // Lead Owner. By default it follows the committed conversation assignee (synced to
 // ERP server-side by the erp_lead_owner_sync battery after the Lead links, from the
 // assignee email and only after ERP-User validation). The agent may also pick any
-// active non-Guest ERP User as a sticky manual override through the dedicated,
-// server-validated #owner endpoint: the browser only ever submits an exact ERP
-// User.name chosen from the fetched list, never free text, and the backend
-// revalidates every nonblank value before any ERP write. The owner is intentionally
+// current-account Chatwoot agent as a sticky manual override through the dedicated,
+// server-validated #owner endpoint: the browser only ever submits an agent email
+// chosen from the fetched list, never free text, and the backend reconfirms every
+// nonblank value is a current-account Chatwoot agent before storing it (the ERP owner
+// write stays fail-closed ERP-User validated downstream). The owner is intentionally
 // NOT part of `fields`, `buildAutofill` or the Create/Update Lead payload — it has
 // its own path and never rides the generic field allowlist.
-const ownerValue = ref(''); // confirmed owner (ERP User.name); '' when auto + unsynced
+const ownerValue = ref(''); // confirmed owner (agent email); '' when auto + unsynced
 const ownerOverride = ref(false); // sticky manual override active
 const ownerPending = ref(false); // confirmed owner not yet reached ERP (pending/failed)
-const ownerOptions = ref([]); // [{ value, label }] selectable ERP users
-const ownerAvailable = ref(true); // ERP user directory reachable
+const ownerOptions = ref([]); // [{ value, label }] selectable Chatwoot agents (email)
+const ownerAvailable = ref(true); // agent directory reachable
 const ownerError = ref('');
 const ownerMessage = ref('');
 const ownerSaving = ref(false);
@@ -367,16 +368,16 @@ const ownerSaving = ref(false);
 const assigneeEmail = computed(() => assignee.value.email || '');
 
 // The assigned agent is a valid automatic default ONLY when it resolves to a
-// selectable ERP User (an exact value match in the fetched owner list). An arbitrary
-// assignee email — including any while the directory is unavailable, so the list is
-// empty — is never treated as a selected/valid owner.
+// selectable Chatwoot agent (an exact value match in the fetched owner list). An
+// arbitrary assignee email — including any while the directory is unavailable, so the
+// list is empty — is never treated as a selected/valid owner.
 const assigneeIsSelectable = computed(() =>
   ownerOptions.value.some(option => option.value === assigneeEmail.value)
 );
 
 // Displayed owner value: the confirmed stored/ERP owner when present (shown even if it
 // is not currently in the options list), otherwise the assignee email only when it is a
-// selectable ERP User. Never an unresolved assignee email.
+// selectable Chatwoot agent. Never an unresolved assignee email.
 const leadOwnerDisplay = computed(() => {
   if (ownerValue.value) return ownerValue.value;
   if (ownerOverride.value) return '';
@@ -385,12 +386,12 @@ const leadOwnerDisplay = computed(() => {
 
 const ownerHelp = computed(() => {
   if (!ownerAvailable.value)
-    return 'The ERP user list is unavailable right now; the Lead Owner cannot be changed.';
+    return 'The agent list is unavailable right now; the Lead Owner cannot be changed.';
   if (ownerOverride.value)
     return 'Set manually. Use "Use assigned agent" to follow the assignee again.';
   if (!ownerValue.value && assigneeEmail.value && !assigneeIsSelectable.value)
-    return 'The assigned agent is not a selectable ERP user, so the Lead Owner is unset. Pick a user from the list.';
-  return 'Set automatically from the assigned agent. Pick a user to override it.';
+    return 'The assigned agent is not in the agent list, so the Lead Owner is unset. Pick an agent from the list.';
+  return 'Set automatically from the assigned agent. Pick an agent to override it.';
 });
 
 const applyOwnerResponse = data => {

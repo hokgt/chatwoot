@@ -82,10 +82,6 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
     before do
       allow(Wijaya::Batteries::ErpLeadSidebar::Config).to receive(:erp_configured?).and_return(true)
       allow(Wijaya::Batteries::ErpLeadSidebar::OptionsService).to receive(:new).and_return(options_service)
-      # The Lead Owner picker directory is fetched on open; stub it so show does no
-      # real outbound call (the owner endpoint contract is exercised separately below).
-      allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory)
-        .to receive(:fetch_options).and_return([])
     end
 
     it 'creates exactly one draft row on open' do
@@ -93,6 +89,25 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
 
       expect(response).to have_http_status(:success)
       expect(response.parsed_body['configured']).to be(true)
+    end
+
+    # The Lead Owner options are the current account's own Chatwoot agents (email as value),
+    # sourced from the local DB — never the ERPNext User list — so opening the sidebar issues
+    # no outbound ERP request just to populate the picker.
+    it 'serializes the account Chatwoot agents as the owner options (email value) with no ERP call' do
+      admin = create(:user, account: account, role: :administrator, email: 'admin@example.com')
+      create(:user, account: create(:account), role: :agent, email: 'elsewhere@example.com')
+      expect(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).not_to receive(:request)
+
+      open_sidebar
+
+      body = response.parsed_body
+      expect(body['owner_options_available']).to be(true)
+      values = body['owner_options'].pluck('value')
+      expect(values).to include(agent.email, admin.email)
+      expect(values).not_to include('elsewhere@example.com')
+      # value and label are both the agent email (the displayed value is clearly the email).
+      body['owner_options'].each { |option| expect(option['label']).to eq(option['value']) }
     end
 
     # The owner is never an accepted draft input: it is set server-side post-link from the
@@ -111,12 +126,14 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
   end
 
   # Dedicated, validated Lead Owner set/reset endpoint. The owner is never trusted from
-  # the browser: every nonblank value is exact-revalidated against the live ERP User
-  # directory before it is stored, and the actual ERP write is owned by OwnerSyncJob.
+  # the browser: every nonblank value is reconfirmed to be a current-account Chatwoot
+  # agent (AccountAgentDirectory) before it is stored, and the actual owner-only ERP
+  # write — still fail-closed ERP-User validated — is owned by OwnerSyncJob.
   context 'with the Lead Owner endpoint' do
     let(:owner_path) { "#{base_path}/owner" }
-    let(:directory) { Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory }
     let(:owner_job) { Wijaya::Batteries::ErpLeadOwnerSync::OwnerSyncJob }
+    # A real current-account Chatwoot agent whose email is the manual owner under test.
+    let!(:owner_agent) { create(:user, account: account, role: :agent, email: 'boss@example.com') }
 
     before do
       allow(Wijaya::Batteries::ErpLeadSidebar::Config).to receive(:erp_configured?).and_return(true)
@@ -130,9 +147,8 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       )
     end
 
-    it 'stores a validated manual owner as a sticky override + pending marker and enqueues the ERP sync' do
+    it 'stores a current-account agent owner as a sticky override + pending marker and enqueues the ERP sync' do
       draft = linked_draft
-      allow(directory).to receive(:valid?).with(anything, 'boss@example.com').and_return(true)
 
       post owner_path, params: { owner: 'boss@example.com' }, headers: auth, as: :json
 
@@ -149,7 +165,6 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
 
     it 'reports a sanitized failure (not success) and leaves pending state when the manual sync cannot be queued' do
       draft = linked_draft
-      allow(directory).to receive(:valid?).and_return(true)
       allow(owner_job).to receive(:perform_later).and_raise(StandardError, 'queue down')
 
       post owner_path, params: { owner: 'boss@example.com' }, headers: auth, as: :json
@@ -164,9 +179,10 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       expect(draft.fields['lead_owner_sync_pending']).to be(true)
     end
 
-    it 'rejects an invalid owner with a sanitized error, writing nothing and enqueuing no sync' do
+    # The server independently rejects a fabricated owner email that is not a current-account
+    # Chatwoot agent even though the browser could submit anything: nothing is stored, no sync queued.
+    it 'rejects a fabricated non-agent owner with a sanitized error, writing nothing and enqueuing no sync' do
       draft = linked_draft
-      allow(directory).to receive(:valid?).and_return(false)
 
       post owner_path, params: { owner: 'attacker@evil.example' }, headers: auth, as: :json
 
@@ -178,18 +194,20 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       expect(owner_job).not_to have_received(:perform_later)
     end
 
-    it 'fails closed on a directory outage (no write, no enqueue)' do
+    # An agent that belongs only to ANOTHER account is not a current-account agent and is rejected.
+    it 'rejects an owner that is an agent only of another account' do
       draft = linked_draft
-      allow(directory).to receive(:valid?).and_raise(Wijaya::Batteries::ErpLeadSidebar::SyncError)
+      stranger = create(:user, account: create(:account), role: :agent, email: 'elsewhere@example.com')
 
-      post owner_path, params: { owner: 'boss@example.com' }, headers: auth, as: :json
+      post owner_path, params: { owner: stranger.email }, headers: auth, as: :json
 
-      expect(response).to have_http_status(:bad_gateway)
-      expect(draft.reload.fields).not_to have_key('lead_owner_override')
+      expect(response).to have_http_status(:unprocessable_entity)
+      draft.reload
+      expect(draft.fields).not_to have_key('lead_owner')
       expect(owner_job).not_to have_received(:perform_later)
     end
 
-    # Reset must synchronously prove the CURRENT committed assignee is a valid ERP User
+    # Reset must prove the CURRENT committed assignee is a current-account Chatwoot agent
     # before clearing the override, so it can never drop the manual owner on a false
     # success while ERP still holds it.
     def overridden_linked_draft
@@ -201,10 +219,9 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       draft
     end
 
-    it 'reset clears the override, marks the owner sync pending and resumes assignee-driven sync when the assignee is valid' do
+    it 'reset clears the override, marks the owner sync pending and resumes assignee-driven sync when the assignee is an agent' do
       draft = overridden_linked_draft
       conversation.update_column(:assignee_id, agent.id) # rubocop:disable Rails/SkipsModelValidations
-      allow(directory).to receive(:valid?).with(anything, agent.email).and_return(true)
 
       post owner_path, params: { reset: true }, headers: auth, as: :json
 
@@ -231,10 +248,10 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       expect(owner_job).not_to have_received(:perform_later)
     end
 
-    it 'reset with an invalid/disabled/Guest assignee preserves the override and enqueues nothing' do
+    it 'reset fails closed when the assignee is not a current-account agent, preserving the override' do
       draft = overridden_linked_draft
-      conversation.update_column(:assignee_id, agent.id) # rubocop:disable Rails/SkipsModelValidations
-      allow(directory).to receive(:valid?).and_return(false)
+      stranger = create(:user) # not a member of this account
+      conversation.update_column(:assignee_id, stranger.id) # rubocop:disable Rails/SkipsModelValidations
 
       post owner_path, params: { reset: true }, headers: auth, as: :json
 
@@ -246,24 +263,8 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       expect(owner_job).not_to have_received(:perform_later)
     end
 
-    it 'reset during a directory outage fails closed (sanitized 502) and preserves the override' do
-      draft = overridden_linked_draft
-      conversation.update_column(:assignee_id, agent.id) # rubocop:disable Rails/SkipsModelValidations
-      allow(directory).to receive(:valid?).and_raise(Wijaya::Batteries::ErpLeadSidebar::SyncError)
-
-      post owner_path, params: { reset: true }, headers: auth, as: :json
-
-      expect(response).to have_http_status(:bad_gateway)
-      expect(response.parsed_body['error']).to be_present
-      draft.reload
-      expect(draft.fields['lead_owner']).to eq('boss@example.com')
-      expect(draft.fields['lead_owner_override']).to be(true)
-      expect(owner_job).not_to have_received(:perform_later)
-    end
-
     it 'keeps the manual owner + override across an ordinary field autosave' do
       draft = linked_draft
-      allow(directory).to receive(:valid?).and_return(true)
       post owner_path, params: { owner: 'boss@example.com' }, headers: auth, as: :json
 
       patch update_path, params: { fields: { first_name: 'Bob Edited' } }, headers: auth, as: :json
@@ -281,7 +282,6 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
     # Retry action, so a truthful "saved but not yet in ERP" message must ride the response.
     it 'serializes lead_owner_sync_pending and a truthful (not "updated") manual message' do
       linked_draft
-      allow(directory).to receive(:valid?).and_return(true)
 
       post owner_path, params: { owner: 'boss@example.com' }, headers: auth, as: :json
 
@@ -290,17 +290,15 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       expect(response.parsed_body['message']).not_to include('updated')
     end
 
-    # A failed/pending manual owner must be retryable WITHOUT re-picking it: the retry re-validates
+    # A failed/pending manual owner must be retryable WITHOUT re-picking it: the retry reconfirms
     # the current sticky owner and re-enqueues the same mode/target, touching no unrelated field.
-    it 'retry re-validates and re-enqueues the sticky manual owner, leaving other fields untouched' do
+    it 'retry reconfirms and re-enqueues the sticky manual owner, leaving other fields untouched' do
       draft = linked_draft
-      allow(directory).to receive(:valid?).and_return(true)
       post owner_path, params: { owner: 'boss@example.com' }, headers: auth, as: :json
 
       post owner_path, params: { retry: true }, headers: auth, as: :json
 
       expect(response).to have_http_status(:success)
-      expect(directory).to have_received(:valid?).with(anything, 'boss@example.com').at_least(:once)
       expect(owner_job).to have_received(:perform_later).with(conversation.id, conversation.assignee_id).twice
       draft.reload
       expect(draft.fields['lead_owner']).to eq('boss@example.com')
@@ -309,13 +307,12 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       expect(draft.fields['first_name']).to eq('Bob')
     end
 
-    it 'retry in automatic mode re-validates the current assignee and re-enqueues' do
+    it 'retry in automatic mode reconfirms the current assignee and re-enqueues' do
       draft = Wijaya::ErpLeadDraft.create!(
         account: account, conversation: conversation, erp_lead_id: 'LEAD-1', sync_status: 'failed',
         fields: { 'first_name' => 'Bob', 'lead_owner' => agent.email, 'lead_owner_sync_pending' => true }
       )
       conversation.update_column(:assignee_id, agent.id) # rubocop:disable Rails/SkipsModelValidations
-      allow(directory).to receive(:valid?).with(anything, agent.email).and_return(true)
 
       post owner_path, params: { retry: true }, headers: auth, as: :json
 
@@ -324,10 +321,9 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       expect(draft.reload.fields['lead_owner_sync_pending']).to be(true)
     end
 
-    it 'retry fails closed (422) when the desired owner is no longer a valid ERP user, enqueuing nothing' do
+    it 'retry fails closed (422) when the desired owner is no longer a current-account agent, enqueuing nothing' do
       draft = linked_draft
-      draft.update!(fields: draft.fields.merge('lead_owner' => 'boss@example.com', 'lead_owner_override' => true, 'lead_owner_sync_pending' => true))
-      allow(directory).to receive(:valid?).and_return(false)
+      draft.update!(fields: draft.fields.merge('lead_owner' => 'ghost@example.com', 'lead_owner_override' => true, 'lead_owner_sync_pending' => true))
 
       post owner_path, params: { retry: true }, headers: auth, as: :json
 
@@ -336,23 +332,11 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       expect(owner_job).not_to have_received(:perform_later)
     end
 
-    it 'retry fails closed (502) during a directory outage, enqueuing nothing' do
-      draft = linked_draft
-      draft.update!(fields: draft.fields.merge('lead_owner' => 'boss@example.com', 'lead_owner_override' => true, 'lead_owner_sync_pending' => true))
-      allow(directory).to receive(:valid?).and_raise(Wijaya::Batteries::ErpLeadSidebar::SyncError)
-
-      post owner_path, params: { retry: true }, headers: auth, as: :json
-
-      expect(response).to have_http_status(:bad_gateway)
-      expect(owner_job).not_to have_received(:perform_later)
-    end
-
     it 'retry on an unlinked draft explains it will sync after creation and enqueues nothing' do
       Wijaya::ErpLeadDraft.create!(
         account: account, conversation: conversation, sync_status: 'draft',
         fields: { 'lead_owner' => 'boss@example.com', 'lead_owner_override' => true, 'lead_owner_sync_pending' => true }
       )
-      allow(directory).to receive(:valid?).and_return(true)
 
       post owner_path, params: { retry: true }, headers: auth, as: :json
 
@@ -395,7 +379,6 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       allow(Wijaya::Batteries::ErpLeadSidebar::OptionsService).to receive(:new).and_return(
         instance_double(Wijaya::Batteries::ErpLeadSidebar::OptionsService, fetch_all: {})
       )
-      allow(directory).to receive(:fetch_options).and_return([])
       Wijaya::ErpLeadDraft.create!(
         account: account, conversation: conversation, erp_lead_id: 'LEAD-1', sync_status: 'synced',
         fields: { 'first_name' => 'Local', 'lead_owner' => 'boss@example.com',

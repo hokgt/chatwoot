@@ -54,24 +54,25 @@ class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::Ba
   end
 
   # Dedicated, validated Lead Owner path. Never a generic allowlist entry: the owner
-  # is set here through the same live ERP User validator the owner-sync battery uses,
-  # so an arbitrary/stale/disabled/Guest value can never reach ERP.
-  #   * reset=true            -> only after synchronously resolving and validating the
-  #                              CURRENT committed assignee as a selectable ERP User,
-  #                              clear the sticky manual override and mark the owner sync
-  #                              pending so it resumes following the assignee. If there is
-  #                              no assignee, the assignee is not a valid ERP User, or the
-  #                              directory is unavailable, fail closed and leave the manual
-  #                              override + owner unchanged.
-  #   * retry=true            -> explicit "Retry Lead Owner sync". Re-derive and revalidate the
+  # is confirmed here to be a current-account Chatwoot agent (AccountAgentDirectory),
+  # so an arbitrary/fabricated/cross-account/non-agent value can never be stored. The
+  # ERP owner write itself stays fail-closed ERP-User validated downstream by OwnerSyncJob.
+  #   * reset=true            -> only after resolving and confirming the CURRENT committed
+  #                              assignee is a current-account Chatwoot agent, clear the sticky
+  #                              manual override and mark the owner sync pending so it resumes
+  #                              following the assignee. If there is no assignee (or it is not a
+  #                              current agent), fail closed and leave the manual override + owner
+  #                              unchanged.
+  #   * retry=true            -> explicit "Retry Lead Owner sync". Re-derive and reconfirm the
   #                              CURRENT desired owner (the sticky manual owner, or the committed
-  #                              assignee in automatic mode), keep the pending marker and re-enqueue
-  #                              exactly that current mode/target. Fails closed on an invalid owner
-  #                              or a directory outage and never touches unrelated Lead fields.
-  #   * owner present         -> validate, then persist a sticky manual override AND a
-  #                              pending marker; the owner-only ERP write is done by
-  #                              OwnerSyncJob (linked drafts) or applied at link time
-  #                              (unlinked drafts). Local storage is never proof of sync.
+  #                              assignee in automatic mode) is a current-account Chatwoot agent,
+  #                              keep the pending marker and re-enqueue exactly that current
+  #                              mode/target. Fails closed on a non-agent and never touches
+  #                              unrelated Lead fields.
+  #   * owner present         -> confirm it is a current-account Chatwoot agent, then persist a
+  #                              sticky manual override AND a pending marker; the owner-only ERP
+  #                              write is done by OwnerSyncJob (linked drafts) or applied at link
+  #                              time (unlinked drafts). Local storage is never proof of sync.
   def owner
     return render json: serialize(@draft).merge(configured: false) unless erp_configured?
 
@@ -82,10 +83,6 @@ class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::Ba
     else
       apply_owner_manual
     end
-  rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError
-    # Fail closed: a directory outage is never treated as a valid owner.
-    render json: serialize(@draft).merge(error: 'ERP user directory is unavailable; the Lead Owner was not changed.'),
-           status: :bad_gateway
   end
 
   private
@@ -100,9 +97,9 @@ class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::Ba
 
   def apply_owner_manual
     owner = params[:owner].to_s.strip
-    return render_owner_error('Select a valid ERP user for the Lead Owner.') if owner.blank?
-    unless ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory.valid?(Current.account, owner)
-      return render_owner_error('That user is not a selectable ERP user. Pick one from the list.')
+    return render_owner_error('Select a valid agent for the Lead Owner.') if owner.blank?
+    unless ::Wijaya::Batteries::ErpLeadSidebar::AccountAgentDirectory.agent?(Current.account, owner)
+      return render_owner_error('That is not a selectable agent. Pick one from the list.')
     end
 
     # Store the manual owner AND a pending marker: the owner has not reached ERP yet, so
@@ -131,26 +128,24 @@ class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::Ba
   end
 
   # The owner to resend on retry: the sticky manual owner if an override is active, otherwise the
-  # current committed assignee. Both are exact-revalidated against the live ERP User directory
-  # (raising SyncError on an outage -> handled by #owner's fail-closed 502 rescue). Nil when the
-  # desired owner is blank or not a selectable ERP User, so retry declines rather than queuing a
-  # doomed job.
+  # current committed assignee. Both are reconfirmed to be a current-account Chatwoot agent. Nil
+  # when the desired owner is blank or no longer a current agent, so retry declines rather than
+  # queuing a doomed job.
   def retry_target_owner
     return current_assignee_owner unless ActiveModel::Type::Boolean.new.cast(@draft.fields['lead_owner_override'])
 
     owner = @draft.fields['lead_owner'].to_s.strip
     return nil if owner.blank?
-    return nil unless ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory.valid?(Current.account, owner)
+    return nil unless ::Wijaya::Batteries::ErpLeadSidebar::AccountAgentDirectory.agent?(Current.account, owner)
 
     owner
   end
 
   def apply_owner_reset
     # Prove a valid assignee owner exists BEFORE clearing the override: never drop the
-    # sticky manual owner on a false success while ERP still holds it. Raises SyncError on
-    # a directory outage, handled by #owner's rescue (fail closed 502, override preserved).
+    # sticky manual owner on a false success while ERP still holds it.
     owner = current_assignee_owner
-    return render_owner_error('Assign an agent with a valid ERP user before the Lead Owner can follow the assignee.') if owner.blank?
+    return render_owner_error('Assign an agent before the Lead Owner can follow the assignee.') if owner.blank?
 
     @draft.update!(fields: @draft.fields.except('lead_owner', 'lead_owner_override').merge('lead_owner_sync_pending' => true))
     return render_owner_enqueue_failure unless enqueue_owner_sync
@@ -158,13 +153,12 @@ class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::Ba
     render json: serialize(@draft).merge(configured: true, message: 'Lead Owner will follow the assigned agent; syncing to ERP.')
   end
 
-  # The current committed assignee email, validated as a selectable enabled non-Guest ERP
-  # User, or nil when there is no assignee / it is not a valid ERP User. Propagates
-  # SyncError on a directory outage so the caller fails closed.
+  # The current committed assignee email, confirmed to be a current-account Chatwoot agent,
+  # or nil when there is no assignee / it is not a current agent.
   def current_assignee_owner
     email = @conversation.assignee&.email.to_s.strip
     return nil if email.blank?
-    return nil unless ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory.valid?(Current.account, email)
+    return nil unless ::Wijaya::Batteries::ErpLeadSidebar::AccountAgentDirectory.agent?(Current.account, email)
 
     email
   end
@@ -197,17 +191,15 @@ class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::Ba
     false
   end
 
-  # Selectable ERP Users [{ value, label }] for the manual Lead Owner picker, plus
-  # whether the directory was reachable. A directory outage degrades to an empty,
-  # optional list (the picker is unavailable) and never breaks the sidebar open.
+  # Selectable current-account Chatwoot agents [{ value, label }] (value/label = agent
+  # email) for the Lead Owner picker. The options are the account's own agents, never the
+  # ERPNext User list, so no ERP request is made to populate the picker. It is a local DB
+  # read, so it is always available while ERP is configured.
   def owner_directory
     return { owner_options: [], owner_options_available: false } unless erp_configured?
 
-    options = ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory.fetch_options(Current.account)
+    options = ::Wijaya::Batteries::ErpLeadSidebar::AccountAgentDirectory.fetch_options(Current.account)
     { owner_options: options, owner_options_available: true }
-  rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError => e
-    Rails.logger.warn("Wijaya ERP Lead owner directory unavailable for draft show: #{e.class}")
-    { owner_options: [], owner_options_available: false }
   end
 
   # Reconcile the linked ERP Lead into the draft before serialize so the sidebar
@@ -279,9 +271,9 @@ class Api::V1::Accounts::Wijaya::ErpLeadDraftsController < Api::V1::Accounts::Ba
       sync_status: draft.sync_status,
       erp_lead_id: draft.erp_lead_id,
       last_error: draft.last_error,
-      # Explicit owner contract for the sidebar: the confirmed owner value (ERP
-      # User.name), whether it is a sticky manual override, and whether the owner
-      # still has to reach ERP (drives the pending/failed status + retry action).
+      # Explicit owner contract for the sidebar: the confirmed owner value (the
+      # Chatwoot agent email), whether it is a sticky manual override, and whether the
+      # owner still has to reach ERP (drives the pending/failed status + retry action).
       lead_owner: draft.fields['lead_owner'].to_s,
       lead_owner_override: draft.fields['lead_owner_override'] == true,
       lead_owner_sync_pending: ActiveModel::Type::Boolean.new.cast(draft.fields['lead_owner_sync_pending']),

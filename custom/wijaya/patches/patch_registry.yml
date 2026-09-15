@@ -511,6 +511,14 @@ patches:
       - custom/wijaya/batteries/erp_lead_sidebar/safe_http.rb
       - custom/wijaya/batteries/erp_lead_sidebar/refresh_service.rb
       - custom/wijaya/batteries/erp_lead_sidebar/options_service.rb
+      # Account-scoped Chatwoot agent directory for the Lead Owner picker: the
+      # owner options are THIS account's own Chatwoot agents (account.users —
+      # administrators + agents, value + label = agent email), never the ERPNext
+      # User list, so no ERP request is made to populate the picker. It is also the
+      # server-side gate that reconfirms a submitted owner email is a current-account
+      # Chatwoot agent before it is stored; the ERP owner write stays fail-closed
+      # ERP-User validated downstream by the erp_lead_owner_sync battery.
+      - custom/wijaya/batteries/erp_lead_sidebar/account_agent_directory.rb
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/ErpLeadPanel.vue
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/fieldConfig.js
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/mappings.js
@@ -547,11 +555,13 @@ patches:
       # derived from the conversation assignee or any agent mapping.
       # (The former agent_erp_user_map.json agent -> ERP User mapping has been removed:
       # the ERP Lead owner is never derived from an id/name mapping and never rides the generic
-      # Lead Details payload. The Lead Owner is an editable, server-validated ERP-User picker: by
-      # default it follows the committed assignee email (automatic default), but the agent can set
-      # a sticky manual override chosen from the live ERP User directory, reset it back to the
-      # assignee, or retry a still-pending sync, with a pending indicator while the owner-only ERP
-      # write is performed by the erp_lead_owner_sync battery after the Lead links — see below.)
+      # Lead Details payload. The Lead Owner is an editable, server-validated picker whose options
+      # are THIS account's Chatwoot agents (account_agent_directory.rb, value = agent email), NOT
+      # the ERP User list: by default it follows the committed assignee email (automatic default),
+      # but the agent can set a sticky manual override chosen from the account's Chatwoot agents,
+      # reset it back to the assignee, or retry a still-pending sync, with a pending indicator while
+      # the owner-only ERP write — still fail-closed ERP-User validated — is performed by the
+      # erp_lead_owner_sync battery after the Lead links — see below.)
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_person_directory.rb
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_options_service.rb
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_payload_builder.rb

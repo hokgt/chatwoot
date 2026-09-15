@@ -191,10 +191,11 @@ describe('ErpLeadPanel modal presentation', () => {
   });
 
   // The Lead Owner is a searchable combobox: it defaults to the assigned agent but the
-  // agent can override it with a value chosen ONLY from the fetched ERP user list. The
-  // browser never submits free text, and the owner is set through its own #owner endpoint
-  // (setOwner), never the field autosave.
-  it('defaults the owner to the assignee and sets a manual override from the ERP user list', async () => {
+  // agent can override it with a value chosen ONLY from the fetched Chatwoot agent list.
+  // Each option's value AND label is the agent email, so the displayed selectable value is
+  // clearly the email. The browser never submits free text, and the owner is set through its
+  // own #owner endpoint (setOwner), never the field autosave.
+  it('defaults the owner to the assignee and sets a manual override from the agent list, using emails', async () => {
     showSpy.mockResolvedValue({
       data: {
         configured: true,
@@ -202,8 +203,8 @@ describe('ErpLeadPanel modal presentation', () => {
         lead_owner: '',
         lead_owner_override: false,
         owner_options: [
-          { value: 'agent@example.com', label: 'Agent One' },
-          { value: 'boss@example.com', label: 'Boss Two' },
+          { value: 'agent@example.com', label: 'agent@example.com' },
+          { value: 'boss@example.com', label: 'boss@example.com' },
         ],
         owner_options_available: true,
       },
@@ -238,22 +239,26 @@ describe('ErpLeadPanel modal presentation', () => {
     await flushPromises();
 
     const owner = wrapper.find('#erp-lead-owner');
-    // Editable combobox (not readonly) defaulting to the assignee, shown by its ERP label.
+    // Editable combobox (not readonly) defaulting to the assignee, shown by its email.
     expect(owner.attributes('readonly')).toBeUndefined();
     expect(owner.attributes('role')).toBe('combobox');
-    expect(owner.element.value).toBe('Agent One');
+    expect(owner.element.value).toBe('agent@example.com');
 
-    // Open the menu and pick the second ERP user; only the exact User.name is submitted.
+    // Open the menu and pick another agent; the agent email is what gets submitted.
     await owner.trigger('focus');
-    const option = wrapper.findAll('li').find(li => li.text() === 'Boss Two');
+    const option = wrapper
+      .findAll('li')
+      .find(li => li.text() === 'boss@example.com');
     await option.trigger('mousedown');
     await flushPromises();
 
     expect(setOwnerSpy).toHaveBeenCalledWith(42, 'boss@example.com');
     // Owner autosave path is never used for the owner.
     expect(saveSpy).not.toHaveBeenCalled();
-    // Now in manual override mode, showing the picked user.
-    expect(wrapper.find('#erp-lead-owner').element.value).toBe('Boss Two');
+    // Now in manual override mode, showing the picked agent email.
+    expect(wrapper.find('#erp-lead-owner').element.value).toBe(
+      'boss@example.com'
+    );
   });
 
   it('offers a reset action while overridden and surfaces a sanitized rejection', async () => {
@@ -263,7 +268,9 @@ describe('ErpLeadPanel modal presentation', () => {
         fields: { first_name: 'Bob' },
         lead_owner: 'boss@example.com',
         lead_owner_override: true,
-        owner_options: [{ value: 'boss@example.com', label: 'Boss Two' }],
+        owner_options: [
+          { value: 'boss@example.com', label: 'boss@example.com' },
+        ],
         owner_options_available: true,
       },
     });
@@ -791,7 +798,7 @@ describe('ErpLeadPanel modal presentation', () => {
 });
 
 // The assigned agent is the automatic Lead Owner default ONLY when it resolves to a
-// selectable ERP User. An arbitrary/unresolved assignee email — or any email while the
+// selectable Chatwoot agent. An arbitrary/unresolved assignee email — or any email while the
 // directory is unavailable — must never be shown as a valid selected owner; a confirmed
 // stored owner is still shown even if it is not in the current options list.
 describe('ErpLeadPanel Lead Owner default resolution', () => {
@@ -819,33 +826,37 @@ describe('ErpLeadPanel Lead Owner default resolution', () => {
     return wrapper.find('#erp-lead-owner');
   };
 
-  it('shows the assigned agent as the owner default when it is a selectable ERP user', async () => {
+  it('shows the assigned agent email as the owner default when it is a selectable agent', async () => {
     const wrapper = mountWithAssignee('agent@example.com', {
       configured: true,
       fields: { first_name: 'Bob' },
       lead_owner: '',
       lead_owner_override: false,
-      owner_options: [{ value: 'agent@example.com', label: 'Agent One' }],
+      owner_options: [
+        { value: 'agent@example.com', label: 'agent@example.com' },
+      ],
       owner_options_available: true,
     });
 
     const owner = await openOwner(wrapper);
-    expect(owner.element.value).toBe('Agent One');
+    expect(owner.element.value).toBe('agent@example.com');
   });
 
-  it('leaves the owner blank and warns when the assigned agent is not a selectable ERP user', async () => {
+  it('leaves the owner blank and warns when the assigned agent is not a selectable agent', async () => {
     const wrapper = mountWithAssignee('ghost@example.com', {
       configured: true,
       fields: { first_name: 'Bob' },
       lead_owner: '',
       lead_owner_override: false,
-      owner_options: [{ value: 'agent@example.com', label: 'Agent One' }],
+      owner_options: [
+        { value: 'agent@example.com', label: 'agent@example.com' },
+      ],
       owner_options_available: true,
     });
 
     const owner = await openOwner(wrapper);
     expect(owner.element.value).toBe('');
-    expect(wrapper.text()).toContain('not a selectable ERP user');
+    expect(wrapper.text()).toContain('not in the agent list');
   });
 
   it('does not show the assigned agent as a valid default when the directory is unavailable', async () => {
@@ -860,7 +871,7 @@ describe('ErpLeadPanel Lead Owner default resolution', () => {
 
     const owner = await openOwner(wrapper);
     expect(owner.element.value).toBe('');
-    expect(wrapper.text()).toContain('ERP user list is unavailable');
+    expect(wrapper.text()).toContain('agent list is unavailable');
   });
 
   it('still shows a confirmed stored owner even when it is not in the current options list', async () => {
@@ -869,7 +880,9 @@ describe('ErpLeadPanel Lead Owner default resolution', () => {
       fields: { first_name: 'Bob' },
       lead_owner: 'legacy-owner@example.com',
       lead_owner_override: false,
-      owner_options: [{ value: 'agent@example.com', label: 'Agent One' }],
+      owner_options: [
+        { value: 'agent@example.com', label: 'agent@example.com' },
+      ],
       owner_options_available: true,
     });
 
