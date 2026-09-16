@@ -27,6 +27,16 @@ RSpec.describe 'ERP Lead owner sync assignment seam', type: :model do
     )
   end
 
+  # Create an already-linked draft WITHOUT firing the create-time link seam (update_column
+  # skips callbacks), so each example isolates the assignee-change seam under test.
+  def linked_draft_with(fields)
+    draft = Wijaya::ErpLeadDraft.create!(
+      account: account, conversation: conversation, sync_status: 'synced', fields: fields
+    )
+    draft.update_column(:erp_lead_id, 'LEAD-0001') # rubocop:disable Rails/SkipsModelValidations
+    draft
+  end
+
   describe 'a committed change to a present assignee (nil -> Agent B)' do
     it 'enqueues the owner sync with the committed assignee when a lead is linked' do
       link_draft
@@ -52,28 +62,78 @@ RSpec.describe 'ERP Lead owner sync assignment seam', type: :model do
   end
 
   describe 'a committed assignee change while a sticky manual override is active' do
-    it 'does not enqueue an owner sync (the manual owner is never overwritten)' do
-      # Link without firing the create-time link seam so we isolate the assignee-change seam.
-      draft = Wijaya::ErpLeadDraft.create!(
-        account: account, conversation: conversation, sync_status: 'synced',
-        fields: { 'lead_owner' => 'manual-pick@example.com', 'lead_owner_override' => true }
-      )
-      draft.update_column(:erp_lead_id, 'LEAD-0001') # rubocop:disable Rails/SkipsModelValidations
+    # A newly committed assignment is authoritative: it supersedes the prior manual owner.
+    it 'enqueues the owner sync for the new assignee (the assignment supersedes the manual owner)' do
+      linked_draft_with('lead_owner' => 'manual-pick@example.com', 'lead_owner_override' => true)
 
       conversation.update!(assignee: agent_b)
 
+      expect(job).to have_received(:perform_later).with(conversation.id, agent_b.id)
+    end
+
+    it 'clears the override and records the new assignee as the intended pending owner' do
+      draft = linked_draft_with('lead_owner' => 'manual-pick@example.com', 'lead_owner_override' => true)
+
+      conversation.update!(assignee: agent_b)
+
+      draft.reload
+      expect(draft.fields['lead_owner']).to eq(agent_b.email)
+      expect(draft.fields).not_to have_key('lead_owner_override')
+      expect(draft.fields['lead_owner_sync_pending']).to be(true)
+    end
+
+    it 'leaves unrelated draft fields untouched' do
+      draft = linked_draft_with(
+        'lead_owner' => 'manual-pick@example.com', 'lead_owner_override' => true, 'first_name' => 'Budi'
+      )
+
+      conversation.update!(assignee: agent_b)
+
+      expect(draft.reload.fields['first_name']).to eq('Budi')
+    end
+  end
+
+  describe 'a manual owner selected AFTER an assignment (a non-assignee update must not disturb it)' do
+    it 'keeps the manual override and does not enqueue on an update that is not an assignee change' do
+      draft = linked_draft_with('lead_owner' => 'manual-later@example.com', 'lead_owner_override' => true)
+      conversation.update_column(:assignee_id, agent_b.id) # rubocop:disable Rails/SkipsModelValidations
+
+      conversation.update!(status: :resolved)
+
+      draft.reload
+      expect(draft.fields['lead_owner']).to eq('manual-later@example.com')
+      expect(draft.fields['lead_owner_override']).to be(true)
       expect(job).not_to have_received(:perform_later)
     end
   end
 
-  describe 'a transition to nil (unassignment / agent removal path)' do
-    it 'does not enqueue an owner sync' do
-      link_draft
+  describe 'a transition to nil (temporary unassignment / agent removal path)' do
+    it 'does not enqueue an owner sync and leaves the owner + override untouched' do
+      draft = linked_draft_with('lead_owner' => 'manual-pick@example.com', 'lead_owner_override' => true)
       conversation.update_column(:assignee_id, agent_b.id) # rubocop:disable Rails/SkipsModelValidations
 
       conversation.update!(assignee_id: nil)
 
       expect(job).not_to have_received(:perform_later)
+      draft.reload
+      expect(draft.fields['lead_owner']).to eq('manual-pick@example.com')
+      expect(draft.fields['lead_owner_override']).to be(true)
+    end
+  end
+
+  describe 'a final replacement assignment (deletion lifecycle) to a present agent' do
+    it 'follows the same assignment-authoritative path (enqueues + clears override)' do
+      draft = linked_draft_with('lead_owner' => 'manual-pick@example.com', 'lead_owner_override' => true)
+      # The temporary unassignment already committed (assignee cleared); the deferred engine
+      # then commits the replacement assignment to a present agent, which reaches this seam.
+      conversation.update_column(:assignee_id, nil) # rubocop:disable Rails/SkipsModelValidations
+
+      conversation.update!(assignee: agent_b)
+
+      expect(job).to have_received(:perform_later).with(conversation.id, agent_b.id)
+      draft.reload
+      expect(draft.fields['lead_owner']).to eq(agent_b.email)
+      expect(draft.fields).not_to have_key('lead_owner_override')
     end
   end
 

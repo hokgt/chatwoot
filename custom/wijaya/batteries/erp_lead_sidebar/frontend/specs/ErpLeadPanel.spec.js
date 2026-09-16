@@ -949,7 +949,10 @@ describe('ErpLeadPanel Lead Owner follows an in-session reassignment', () => {
     expect(owner.element.value).toBe('agent-b@example.com');
   });
 
-  it('keeps a sticky manual override when the conversation is reassigned', async () => {
+  it('clears a prior manual override and follows the new assignee when reassigned', async () => {
+    // A genuine reassignment is authoritative: it supersedes the prior manual owner, so the
+    // panel must drop the override and reflect the newly assigned agent (the backend clears
+    // the override and re-syncs the owner to the new assignee).
     const wrapper = mountReassignable('agent-a@example.com', {
       configured: true,
       fields: { first_name: 'Bob' },
@@ -973,7 +976,7 @@ describe('ErpLeadPanel Lead Owner follows an in-session reassignment', () => {
     await flushPromises();
 
     owner = wrapper.find('#erp-lead-owner');
-    expect(owner.element.value).toBe('manual-pick@example.com');
+    expect(owner.element.value).toBe('agent-b@example.com');
   });
 });
 
