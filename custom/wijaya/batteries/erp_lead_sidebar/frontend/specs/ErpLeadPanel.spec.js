@@ -891,6 +891,92 @@ describe('ErpLeadPanel Lead Owner default resolution', () => {
   });
 });
 
+// When the conversation is reassigned to another agent WITHOUT switching conversations,
+// the sidebar must not keep showing the previous owner. In automatic mode (no manual
+// override) the backend owner sync follows the new assignee, so the panel must drop the
+// now-stale synced owner and reflect the newly assigned agent. A sticky manual override is
+// never disturbed by a reassignment.
+describe('ErpLeadPanel Lead Owner follows an in-session reassignment', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const openOwner = async wrapper => {
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+    return wrapper.find('#erp-lead-owner');
+  };
+
+  const mountReassignable = (assigneeEmail, showData) => {
+    showSpy.mockResolvedValue({ data: showData });
+    return mount(ErpLeadPanel, {
+      props: {
+        conversationId: 42,
+        currentChat: { meta: { assignee: { id: 1, email: assigneeEmail } } },
+      },
+      global: {
+        stubs: { WootModal, WootModalHeader, NextButton, LeadActivityForm },
+      },
+    });
+  };
+
+  it('follows the newly assigned agent in automatic mode (conversationId unchanged)', async () => {
+    const wrapper = mountReassignable('agent-a@example.com', {
+      configured: true,
+      fields: { first_name: 'Bob' },
+      lead_owner: 'agent-a@example.com', // previously synced to the old assignee
+      lead_owner_override: false,
+      owner_options: [
+        { value: 'agent-a@example.com', label: 'agent-a@example.com' },
+        { value: 'agent-b@example.com', label: 'agent-b@example.com' },
+      ],
+      owner_options_available: true,
+    });
+
+    let owner = await openOwner(wrapper);
+    expect(owner.element.value).toBe('agent-a@example.com');
+
+    // Reassign the SAME conversation to agent B (conversationId does not change).
+    await wrapper.setProps({
+      currentChat: {
+        meta: { assignee: { id: 2, email: 'agent-b@example.com' } },
+      },
+    });
+    await flushPromises();
+
+    owner = wrapper.find('#erp-lead-owner');
+    expect(owner.element.value).toBe('agent-b@example.com');
+  });
+
+  it('keeps a sticky manual override when the conversation is reassigned', async () => {
+    const wrapper = mountReassignable('agent-a@example.com', {
+      configured: true,
+      fields: { first_name: 'Bob' },
+      lead_owner: 'manual-pick@example.com',
+      lead_owner_override: true,
+      owner_options: [
+        { value: 'manual-pick@example.com', label: 'manual-pick@example.com' },
+        { value: 'agent-b@example.com', label: 'agent-b@example.com' },
+      ],
+      owner_options_available: true,
+    });
+
+    let owner = await openOwner(wrapper);
+    expect(owner.element.value).toBe('manual-pick@example.com');
+
+    await wrapper.setProps({
+      currentChat: {
+        meta: { assignee: { id: 2, email: 'agent-b@example.com' } },
+      },
+    });
+    await flushPromises();
+
+    owner = wrapper.find('#erp-lead-owner');
+    expect(owner.element.value).toBe('manual-pick@example.com');
+  });
+});
+
 // A confirmed owner that has not reached ERP (lead_owner_sync_pending) must be visible and,
 // on a LINKED Lead, retryable without re-picking it. On an UNLINKED Lead there is nothing to
 // retry yet, so it only explains the owner will sync after the Lead is created.

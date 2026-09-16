@@ -710,6 +710,18 @@ watch(
   },
   { immediate: true }
 );
+
+// A conversation can be reassigned to another agent WITHOUT switching conversations
+// (so the conversationId watch above never re-runs and the last-loaded owner stays on
+// screen). In automatic mode the backend owner sync follows the new assignee, so drop
+// the now-stale synced owner and let leadOwnerDisplay fall back to the new assignee.
+// A sticky manual override is never disturbed; unassignment (blank) leaves the owner as
+// ERP has it, matching the backend which only syncs on a change to a present assignee.
+watch(assigneeEmail, (next, prev) => {
+  if (!next || next === prev) return;
+  if (ownerOverride.value) return;
+  ownerValue.value = '';
+});
 // WIJAYA_CUSTOM_END erp_lead_sidebar
 </script>
 
