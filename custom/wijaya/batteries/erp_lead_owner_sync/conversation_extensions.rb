@@ -51,9 +51,10 @@ module Wijaya::Batteries::ErpLeadOwnerSync::ConversationExtensions
 
     Wijaya::Batteries::ErpLeadOwnerSync::OwnerSyncJob.perform_later(id, assignee_id)
   rescue StandardError => e
-    # Fail-open: the assignment is already committed; a sync-enqueue error must
-    # never surface to the native caller. Log the class only (never a message).
-    Rails.logger.error("[Wijaya] erp_lead_owner_sync enqueue failed: #{e.class}")
+    # Fail-open: the assignment is already committed; neither the synchronous owner
+    # record nor the sync enqueue may surface an error to the native caller. Log the
+    # class only (never a message, which could carry data).
+    Rails.logger.error("[Wijaya] erp_lead_owner_sync callback failed: #{e.class}")
   end
 
   # Clear the sticky manual override and store the committed assignee as the new intended
@@ -64,10 +65,20 @@ module Wijaya::Batteries::ErpLeadOwnerSync::ConversationExtensions
     owner_email = assignee&.email.to_s.strip.presence
     return if owner_email.blank?
 
-    draft.update!(
-      fields: draft.fields.except('lead_owner_override').merge(
-        'lead_owner' => owner_email, 'lead_owner_sync_pending' => true
-      )
-    )
+    committed_assignee_id = assignee_id
+    self.class.transaction do
+      # Serialize concurrent assignment callbacks on the conversation row so an older
+      # assignment committing after a newer one cannot overwrite the newest owner in the
+      # draft: only record when this callback's committed assignee is still the
+      # database-current assignee (newest committed assignment wins). The lock is on the
+      # conversation row alone, so there is no cross-row lock ordering to deadlock on.
+      if self.class.where(id: id).lock.pick(:assignee_id) == committed_assignee_id
+        draft.update!(
+          fields: draft.fields.except('lead_owner_override').merge(
+            'lead_owner' => owner_email, 'lead_owner_sync_pending' => true
+          )
+        )
+      end
+    end
   end
 end

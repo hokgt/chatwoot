@@ -137,6 +137,37 @@ RSpec.describe 'ERP Lead owner sync assignment seam', type: :model do
     end
   end
 
+  describe 'a stale assignment callback committing after a newer one (B commits, then C, then B fires)' do
+    let(:agent_c) { create(:user, account: account, role: :agent) }
+
+    # A rapid nil -> B -> C reassignment: C is the newest committed assignee, but B's
+    # post-commit callback runs late. The guard must ensure the newest committed
+    # assignment wins the draft, so B cannot overwrite C's recorded owner.
+    it 'does not overwrite the current assignee (C) owner in the draft' do
+      draft = linked_draft_with('lead_owner' => agent_c.email, 'lead_owner_sync_pending' => true)
+      # C is the database-current assignee (its own callback already recorded it).
+      conversation.update_column(:assignee_id, agent_c.id) # rubocop:disable Rails/SkipsModelValidations
+
+      # Replay B's stale callback: an in-memory instance still pointing at B while C is
+      # committed. wijaya_record_assignment_owner is the synchronous draft-record seam.
+      stale = Conversation.find(conversation.id)
+      stale.assignee_id = agent_b.id
+      stale.send(:wijaya_record_assignment_owner, draft)
+
+      expect(draft.reload.fields['lead_owner']).to eq(agent_c.email)
+    end
+
+    it 'records the owner when the callback assignee is still the current assignee' do
+      draft = linked_draft_with('lead_owner' => 'stale@example.com')
+      conversation.update_column(:assignee_id, agent_b.id) # rubocop:disable Rails/SkipsModelValidations
+
+      current = Conversation.find(conversation.id)
+      current.send(:wijaya_record_assignment_owner, draft)
+
+      expect(draft.reload.fields['lead_owner']).to eq(agent_b.email)
+    end
+  end
+
   describe 'an update that does not change the assignee' do
     it 'does not enqueue an owner sync' do
       link_draft

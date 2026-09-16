@@ -978,6 +978,72 @@ describe('ErpLeadPanel Lead Owner follows an in-session reassignment', () => {
     owner = wrapper.find('#erp-lead-owner');
     expect(owner.element.value).toBe('agent-b@example.com');
   });
+
+  it('marks the owner pending with retry on a LINKED Lead when reassigned', async () => {
+    // The backend records a pending owner intent for a present reassignment, so the panel
+    // must immediately reflect pending (a linked Lead offers the retry action) rather than
+    // keep presenting the previous owner sync as clean/synced.
+    const wrapper = mountReassignable('agent-a@example.com', {
+      configured: true,
+      erp_lead_id: 'LEAD-1',
+      fields: { first_name: 'Bob' },
+      lead_owner: 'agent-a@example.com',
+      lead_owner_override: false,
+      lead_owner_sync_pending: false,
+      owner_options: [
+        { value: 'agent-a@example.com', label: 'agent-a@example.com' },
+        { value: 'agent-b@example.com', label: 'agent-b@example.com' },
+      ],
+      owner_options_available: true,
+    });
+
+    await openOwner(wrapper);
+    expect(wrapper.text()).not.toContain('not yet confirmed in ERP');
+
+    await wrapper.setProps({
+      currentChat: {
+        meta: { assignee: { id: 2, email: 'agent-b@example.com' } },
+      },
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('not yet confirmed in ERP');
+    expect(
+      wrapper.findAll('button').find(b => b.text() === 'Retry Lead Owner sync')
+    ).toBeTruthy();
+  });
+
+  it('marks the owner pending with the unlinked note on an UNLINKED Lead when reassigned', async () => {
+    // An unlinked draft is never auto-created in ERP by a reassignment: it shows the
+    // existing unlinked pending note and never the retry action.
+    const wrapper = mountReassignable('agent-a@example.com', {
+      configured: true,
+      erp_lead_id: '',
+      fields: { first_name: 'Bob' },
+      lead_owner: 'agent-a@example.com',
+      lead_owner_override: false,
+      lead_owner_sync_pending: false,
+      owner_options: [
+        { value: 'agent-a@example.com', label: 'agent-a@example.com' },
+        { value: 'agent-b@example.com', label: 'agent-b@example.com' },
+      ],
+      owner_options_available: true,
+    });
+
+    await openOwner(wrapper);
+
+    await wrapper.setProps({
+      currentChat: {
+        meta: { assignee: { id: 2, email: 'agent-b@example.com' } },
+      },
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('will sync to ERP after the Lead is');
+    expect(
+      wrapper.findAll('button').find(b => b.text() === 'Retry Lead Owner sync')
+    ).toBeFalsy();
+  });
 });
 
 // A confirmed owner that has not reached ERP (lead_owner_sync_pending) must be visible and,

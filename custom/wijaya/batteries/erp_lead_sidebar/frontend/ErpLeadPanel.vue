@@ -716,13 +716,17 @@ watch(
 // screen). A genuine reassignment to a present agent is authoritative: the backend
 // clears any prior manual override and re-syncs the Lead Owner to the new assignee. So
 // drop the now-stale synced owner AND the manual override here too, letting
-// leadOwnerDisplay fall back to the newly assigned agent. Unassignment (blank next)
+// leadOwnerDisplay fall back to the newly assigned agent. The backend has recorded a
+// pending owner intent for this reassignment, so mark it pending immediately until a
+// response/reload confirms the ERP sync (a linked Lead then offers retry; an unlinked
+// Lead shows the "syncs after the Lead is created" note). Unassignment (blank next)
 // leaves the owner as ERP has it, matching the backend which only syncs on a change to
 // a present assignee. The agent can still pick a new manual owner afterwards.
 watch(assigneeEmail, (next, prev) => {
   if (!next || next === prev) return;
   ownerOverride.value = false;
   ownerValue.value = '';
+  ownerPending.value = true;
 });
 // WIJAYA_CUSTOM_END erp_lead_sidebar
 </script>
