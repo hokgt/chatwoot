@@ -448,14 +448,36 @@ require_file custom/wijaya/batteries/marine_ai/app/services/marine/documents/sop
 require_file custom/wijaya/batteries/marine_ai/app/jobs/marine/documents/process_job.rb
 require_file custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing
 require_file custom/wijaya/batteries/marine_ai/deploy/install_sop_processing_dependencies.sh
-# Dedicated, resource-capped SOP worker + optional catalog secret live in a Battery
-# overlay so the base production compose boots core Rails/Sidekiq with no Marine var.
-require_file custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop.yml
-require_marker custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop.yml "marine_sop_worker"
+# The MANDATORY catalog secret mount (rails+sidekiq) and the OPTIONAL dedicated SOP
+# worker live in SEPARATE Battery overlays so the base compose boots core Rails/Sidekiq
+# with no Marine var. Recreation goes through the canonical entrypoint (deploy.sh).
+require_file custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml
+require_marker custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml "MARINE_CATALOG_PG_PASSWORD_FILE"
+require_file custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml
+require_marker custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml "marine_sop_worker"
+# The optional SOP worker overlay must NOT carry the rails/sidekiq catalog secret.
+if grep -q "MARINE_CATALOG_PG_PASSWORD_FILE" custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml 2>/dev/null; then
+  echo "FORBIDDEN: SOP worker overlay must not carry the catalog secret (it lives in docker-compose.marine-catalog.yml)" >&2
+  missing=1
+fi
 # The base compose must NOT carry the mandatory Marine catalog secret mount anymore.
 if grep -q "MARINE_CATALOG_PG_PASSWORD_FILE" docker-compose.production.yaml 2>/dev/null; then
   echo "FORBIDDEN: base docker-compose.production.yaml still references MARINE_CATALOG_PG_PASSWORD_FILE (must live in the Battery overlay)" >&2
   missing=1
+fi
+# Canonical Development deployment contract: tracked entrypoint + static checker +
+# secret-safe dependency monitor + regression suite. The static checker enforces the
+# base+catalog overlay usage, the retired-filename ban, and the no-competing-entrypoint
+# invariant; run it here so the contract is verified alongside the battery surface.
+require_file custom/wijaya/deploy/deploy.sh
+require_file custom/wijaya/scripts/check_deploy_contract.sh
+require_file custom/wijaya/scripts/marine_domain_boundary_monitor.sh
+require_file custom/wijaya/deploy/tests/run_tests.sh
+if [[ -f custom/wijaya/scripts/check_deploy_contract.sh ]]; then
+  if ! bash custom/wijaya/scripts/check_deploy_contract.sh >/dev/null; then
+    echo "FORBIDDEN: deployment contract check failed (see check_deploy_contract.sh)" >&2
+    missing=1
+  fi
 fi
 # Commit 1C — registered specs
 require_file spec/custom/wijaya/batteries/marine_ai/documents/command_runner_spec.rb
@@ -670,8 +692,12 @@ while IFS= read -r f; do
   case "$f" in
     custom/wijaya/batteries/*) continue ;;
     custom/wijaya/patches/*) continue ;;
+    # Canonical Development deployment contract lives outside the batteries: the tracked
+    # entrypoint (deploy/) and its static checker/monitor/tests (scripts/, deploy/tests/).
+    custom/wijaya/deploy/*) continue ;;
+    custom/wijaya/scripts/*) continue ;;
   esac
-  echo "FORBIDDEN: custom/wijaya path outside canonical batteries/ (patches/ excepted): $f" >&2
+  echo "FORBIDDEN: custom/wijaya path outside canonical batteries/ (patches/, deploy/, scripts/ excepted): $f" >&2
   missing=1
 done < <( { git ls-files -- 'custom/wijaya'; git ls-files --others --exclude-standard -- 'custom/wijaya'; } | sort -u )
 

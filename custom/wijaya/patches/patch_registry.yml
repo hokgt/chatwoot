@@ -1029,9 +1029,12 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/documents/process_job.rb
       - custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing
       - custom/wijaya/batteries/marine_ai/deploy/install_sop_processing_dependencies.sh
-      # Battery overlay: dedicated marine_sop_worker service (isolated queue + SOP
-      # hardening) + optional read-only catalog secret, kept out of base compose.
-      - custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop.yml
+      # Battery overlays (kept out of base compose): the MANDATORY read-only catalog
+      # secret mount for rails+sidekiq, and the OPTIONAL dedicated marine_sop_worker
+      # service (isolated queue + SOP hardening). Recreation goes through the canonical
+      # entrypoint custom/wijaya/deploy/deploy.sh — never a manual `docker compose up`.
+      - custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml
+      - custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml
       - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
       - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
       - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/preferences_controller.rb
@@ -1433,3 +1436,33 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/controllers/provisioning_controller_spec.rb
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/settings/specs/MarineProvisioningSection.spec.js
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/settings/specs/MarineProvisioningCredentialsDialog.spec.js
+
+  - id: wijaya_deploy_contract
+    name: Development Deployment Contract (canonical entrypoint)
+    battery: custom/wijaya/deploy
+    description: >
+      The canonical, tracked entrypoint for Development recreation/deployment of
+      rails/sidekiq (and the optional marine_sop_worker) on erp-dev. Manual
+      `docker compose up` is forbidden: it can recreate rails/sidekiq from the
+      ignored local docker-compose.deploy.yaml alone, dropping the MANDATORY Marine
+      catalog secret mount and forcing the domain boundary into a fail-closed
+      category=error on every non-product turn. deploy.sh always layers the base
+      compose + the mandatory catalog overlay (docker-compose.marine-catalog.yml),
+      optionally adds the SOP worker overlay (docker-compose.marine-sop-worker.yml),
+      preserves the pinned image (no build, no migrations), recreates only the
+      intended services with --no-deps --force-recreate --no-build, runs a
+      fail-fast preflight (resolved rails+sidekiq must carry the read-only catalog
+      mount backed by a non-empty host file) and a post-deploy health gate. A static
+      contract checker and a secret-safe domain-boundary dependency monitor guard the
+      contract in CI and at deploy time.
+    custom_files:
+      - custom/wijaya/deploy/deploy.sh
+      - custom/wijaya/scripts/check_deploy_contract.sh
+      - custom/wijaya/scripts/marine_domain_boundary_monitor.sh
+    verification:
+      # Static contract check (invoked by root check_custom_patches.sh too).
+      - bash custom/wijaya/scripts/check_deploy_contract.sh
+      # Non-mutating preflight + fixture-based regression suite (no Docker daemon).
+      - bash custom/wijaya/deploy/tests/run_tests.sh
+    tests:
+      - custom/wijaya/deploy/tests/run_tests.sh
