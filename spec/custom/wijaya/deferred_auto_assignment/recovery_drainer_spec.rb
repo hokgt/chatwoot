@@ -238,10 +238,10 @@ RSpec.describe 'Deferred auto-assignment recovery drainer', type: :model do
       # With a stalled reconciler the first tick opens ONE fresh recovery generation and leaves it
       # running; the second tick in the same minute must resume that SAME run, never open a duplicate.
       make_agent
-      crash_gap_orphan
       allow(reconciler).to receive(:run) # stall: leave whatever run is opened incomplete
 
       travel_to(Time.zone.local(2026, 9, 12, 10, 15, 30)) do
+        crash_gap_orphan # event_at relative to the frozen clock so the tombstone sits before the cutoff
         drainer.perform_now
         drainer.perform_now
       end
