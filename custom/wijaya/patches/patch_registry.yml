@@ -250,8 +250,15 @@ patches:
       is created ONLY when the conversation is open, human- and bot-unassigned, on the LEGACY
       path (Assignment V2 untouched), and native auto-assignment was applicable (team
       conversation -> team.allow_auto_assign; otherwise inbox.enable_auto_assignment) — i.e.
-      it would have been assigned had an agent been online. No historical backfill and no
-      blanket scan of open unassigned conversations: the marker table is the entire work-list.
+      it would have been assigned had an agent been online. No automatic/recurring historical
+      backfill and no blanket scan of open unassigned conversations in the live path: the marker
+      table is the entire work-list. A separate operator-invoked, one-time historical backfill
+      exists for conversations that became unassigned before the agent-deletion bridge existed —
+      a provably read-only discovery/dry-run (HistoricalDiscovery, default) plus an
+      explicit-allowlist apply (HistoricalBackfill -> bounded BackfillJob ->
+      Registrar.register_unassigned_historical) that reuses this exact pipeline; it fails closed
+      on an empty allowlist, rejects cross-account/missing ids distinctly, is bounded and
+      idempotent, and adds no selector, no direct assignee write, and no new ERP path.
       The conversation stays open with assignee_id nil (no new status), naturally visible in
       Unassigned and All. Two triggers resume processing for exactly the agent's marked
       inboxes: an actual AccountUser availability transition offline/busy -> online
@@ -281,34 +288,200 @@ patches:
       the marker on assignment or on any residual ineligibility, and keeps it only when still
       eligible but nobody is available yet (for a later trigger). Manual unassignment later
       never re-creates a marker (registration is creation-only; cleanup only ever destroys).
-      All native touch points are tiny marker-wrapped calls through the fail-open core
-      dispatcher.
+      Beyond creation, one more registration path exists: when Agents::DestroyJob deletes an
+      agent it clears that agent's assignee_id via update_all (callbacks skipped), leaving those
+      conversations open + unassigned with no marker; a post-commit bridge (IDs collected inside
+      the unassignment transaction, dispatched only after it commits) hands exactly those
+      account-scoped conversations to the battery, which marks each still-eligible one
+      (idempotent per unique conversation_id, so a retried deletion never double-marks) and
+      enqueues the same coalesced per-inbox pass — reassigning an eligible online agent now via
+      the unchanged native selector, or leaving the marker to wait for a later trigger. No
+      account-wide scan. A normal job retry is a safe no-op (the agent owns nothing by then) and
+      the unique conversation_id makes even a same-id redispatch non-duplicating; the sole
+      irreducible gap is a SIGKILL after the commit but before the post-commit dispatch (left
+      unmarked deliberately — see the registrar comment for why marking in-transaction or an
+      account-wide scan were both rejected). All native touch points are tiny marker-wrapped
+      calls through the fail-open core dispatcher.
+      Durable structured provenance closes that crash gap and enables SAFE AUTOMATIC historical
+      reconciliation. A wijaya_deferred_assignment_provenance tombstone (account, conversation,
+      inbox, PRIOR human agent id, event kind + time, reconciled_at cursor) is recorded by the
+      battery AgentDeletionUnassignment service for exactly the rows it cleared under the FOR UPDATE
+      lock, inside the DestroyJob unassignment transaction. Capture is deliberately BEST-EFFORT, NOT
+      guaranteed: the recorder wraps its writes in a SAVEPOINT (requires_new: true) and the whole
+      unassignment hook is routed through the fail-open dispatcher, so a provenance error can never
+      roll back the user deletion — but it also means a recorder failure leaves the deletion
+      committed with that tombstone simply ABSENT (that conversation then unrecoverable by
+      reconciliation). A SUCCESSFUL write is transactional (it commits atomically with the clear);
+      an unsuccessful one is silently skipped. prior_assignee_id carries NO foreign
+      key (a cascading FK would erase the provenance when the agent User is deleted, which is the
+      whole scenario); account/conversation/inbox FKs cascade because nothing is left to reassign
+      once those are gone. No message content, no credentials. The one-time automatic reconciliation
+      (Reconciler) is not triggered by an in-migration Redis enqueue: migration 000003 INSERTs a
+      DURABLE PERSISTED RUN INTENT (a wijaya_deferred_reconciliation_runs row, status 'running',
+      started_at NULL, cutoff_at = the deploy instant), idempotent on the unique generation. The
+      recurring hourly RecoveryDrainerJob is the coordinator: each tick it selects at most one
+      incomplete run and runs the Reconciler INLINE (a direct Reconciler.run under the global advisory
+      lock — it does NOT enqueue ReconciliationJob), so the one-time run is retried until it truthfully
+      completes — surviving a Redis outage or an old Sidekiq worker in the deploy window, because the
+      run always executes later under new code with the full schema. It scans ONLY unreconciled provenance rows (never all unassigned
+      conversations) in bounded batches, guarded by a wijaya_deferred_reconciliation_runs ledger
+      (unique generation = persisted run/cutoff/completion state) so a retry/re-enqueue resumes the
+      same run. Per row it fails closed: it registers (through the narrowly named provenance-backed
+      Registrar.register_unassigned_from_provenance entry, which shares the exact marker ->
+      ProcessInboxJob -> InboxProcessor -> native selector -> update! -> ERP owner-sync pipeline and
+      NEVER writes assignee_id directly) ONLY a conversation that is structurally proven a
+      deleted-agent orphan (event is agent_deletion, prior human agent no longer an account member)
+      AND currently deferrable AND markerless AND same-account AND created before the cutoff; any
+      uncertainty is ambiguous/skipped and every examined row is stamped reconciled_at so it is
+      never rescanned. The historical allowlist apply (HistoricalBackfill/BackfillOperator) is
+      DEPRECATED as the required path — automatic reconciliation needs no manual ids; the read-only
+      discovery/dry-run remains as operator diagnostics. Conversations unassigned by a deletion that
+      predates provenance carry NO provenance row and are never guessed from free-text activity —
+      they cannot be recovered automatically without an external authoritative source (see
+      BACKFILL.md). InboxProcessor emits a content-free per-marker outcome log (assigned /
+      no-eligible-agent-marker-retained / dropped) so assignment outcomes are observable without
+      the Reconciler fabricating async counts it cannot know.
+      Correctness hardening (20260912000002/000003): each batch is claimed FOR UPDATE SKIP LOCKED
+      and, in ONE transaction, classified + registered + stamped reconciled + counted, so a row is
+      stamped only AFTER its disposition commits — a failed batch rolls back wholesale and a
+      retried/duplicate job RESUMES the same generation from the remaining unreconciled rows without
+      losing or double-counting work. The whole scan + dispatch + finalize runs under a PostgreSQL
+      SESSION advisory lock scoped to the generation, so only ONE job is ever inside it; a duplicate
+      that cannot take the lock returns the still-running ledger WITHOUT finalizing (it can never
+      complete a run another worker still owns and may roll back), and the lock auto-releases if that
+      owner's DB session dies. The coalesced ProcessInboxJob is NOT enqueued per batch — the
+      reconciliation-stamped markers are a durable outbox and every still-present one is
+      (re-)dispatched after the scan, then the run is finalized, so a crash between a batch commit and
+      the enqueue strands nothing (a retry re-dispatches idempotently). Counters persist cumulatively
+      and idempotently on the run row (never a once-only finalize), and registered is the ACTUAL
+      adopted count from the Registrar's re-check (a row raced to marked/assigned in between is
+      reported skipped, never a false registered). A nullable reconciliation_generation +
+      reconciliation_outcome on the marker (NULL for every ordinary marker, which stays unchanged)
+      lets the shared InboxProcessor correlate the eventual assignment outcome back to its run and
+      count assigned / no_eligible_agent / dropped as the LATEST unique disposition per conversation
+      (a repeated no-agent pass is not re-counted; a later assign/drop transitions the count); the
+      marker outcome/removal transition and the ledger counter transition are wrapped in ONE
+      transaction at every call site so they can never diverge on a crash. The run ledger carries the
+      full required set: scanned / identified / registered / skipped / ambiguous / assigned /
+      no_eligible_agent / dropped / failed / retries; a run marked completed means only that
+      scan+dispatch were accepted — the async outcome counters keep transitioning afterwards.
+      ReconciliationJob is RETAINED for legacy/manual/already-queued compatibility only (no longer
+      enqueued by the coordinator); when run it uses a bounded retry_on (attempts: 5) — no unbounded
+      custom loop. The coordinator path carries NO retry_on tree: it runs the Reconciler inline, so
+      its only bounded retry is the next hourly cron occurrence. There is
+      NO in-migration Redis enqueue (a one-shot perform_later inside a migration is fragile: a Redis
+      outage or an old Sidekiq consuming the job before new code/schema is in place would silently
+      drop the only trigger). Instead the trigger was MOVED out of 000001 (now a no-op) into 000003,
+      which — running AFTER 000002 created the columns the corrected job requires — INSERTs a durable
+      persisted run intent (a wijaya_deferred_reconciliation_runs row, status 'running', started_at
+      NULL, cutoff_at = the deploy instant), idempotent on the unique generation. The recurring
+      hourly RecoveryDrainerJob coordinator (config/schedule.yml) selects at most one persisted run
+      intent each tick and reconciles it INLINE (never enqueuing a second ReconciliationJob onto the
+      :low queue): an incomplete run is resumed with its own persisted generation/cutoff, and only once
+      none is incomplete does it durably find-or-create exactly one fresh recovery generation (minute
+      bucket) and reconcile it inline. Expected failures ANYWHERE in the tick — lock contention, a
+      transient reconciliation failure, OR a transient DB/query error while selecting the run intent
+      (the incomplete-run query, the provenance existence check, or find-or-create of a fresh intent) —
+      are logged and swallowed at the tick level (never re-raised — that would spin a second unbounded
+      retry tree via ActiveJob's Sidekiq default retry, one per hourly tick under a persistent failure);
+      any in-flight run is left running and the next hourly tick resumes it. The per-batch
+      ProcessInboxJob dispatch is BEST-EFFORT (enqueue_for_inbox is coalesced away by a crashed
+      worker's stale in-flight key, which then expires unconsumed), so the run can finalize right
+      after it ONLY because the marker is durable: on EVERY tick, FIRST and independent of any
+      run/provenance state, the RecoveryDrainerJob also redispatches a BOUNDED, ROTATING batch
+      (MARKER_OUTBOX_BATCH = 100 distinct inbox ids) of the inboxes that currently hold Marker rows,
+      querying ONLY the battery marker table (never Conversation / all Unassigned) and reusing
+      enqueue_for_inbox so a live key coalesces (no storm) while a since-expired stale key lets a
+      later tick enqueue a real job — the marker is thus a true durable outbox. The batch is windowed
+      on a durable Redis cursor (MARKER_OUTBOX_CURSOR_KEY, the last inbox_id dispatched, wrapping at
+      the end of the ring and advanced only after a whole batch dispatches), so low inbox_ids that
+      permanently retain markers (no eligible agent) can never be re-selected every tick and starve
+      the inboxes above them — the window rotates forward and every marker-inbox is eventually drained.
+      The drain runs first
+      so the commonly-expected LockContention (swallowed) never suppresses it, and the whole tick
+      (drain + reconcile) is under the one tick-level guard.
+      So the one-time run is retried until it truthfully completes —
+      surviving Redis downtime and old-worker timing without a fragile once-only enqueue. Deploy
+      order still applies (old Sidekiq must not run the new job against an incomplete schema): stop
+      old Sidekiq, backup, build the new image, migrate with the new image, start new rails/sidekiq
+      (see BACKFILL.md). On this install the initial run scans ZERO legacy rows (the provenance table
+      is new); pre-feature deletions carry no provenance and are never guessed.
     custom_files:
       - custom/wijaya/batteries/deferred_auto_assignment/loader.rb
       - custom/wijaya/batteries/deferred_auto_assignment/conversation_extensions.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/marker.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/deletion_provenance.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/reconciliation_run.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/hooks.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/eligibility.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/registrar.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/trigger_service.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/inbox_processor.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/process_inbox_job.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/agent_deletion_unassignment.rb
+      # Tail-of-DestroyJob orphaned-User deletion finalizer (membership recheck + DeleteObjectJob
+      # enqueue), serializing the deletion behind provenance capture (race fix).
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/orphaned_user_finalizer.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/provenance_recorder.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/reconciler.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/marker_drop_trigger.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/reconciliation_job.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/recovery_drainer_job.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_discovery.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_backfill.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/backfill_job.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/backfill_operator.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/bin/historical_backfill.rb
       - db/migrate/20260905000000_create_wijaya_deferred_assignments.rb
+      - db/migrate/20260912000000_create_wijaya_deferred_assignment_provenance.rb
+      - db/migrate/20260912000001_enqueue_deferred_assignment_reconciliation.rb
+      - db/migrate/20260912000002_add_deferred_reconciliation_correlation.rb
+      - db/migrate/20260912000003_enqueue_deferred_assignment_reconciliation_after_schema.rb
+      # Per-deletion-occurrence idempotency key (deletion_key) + reindex, so a re-add/re-deletion of
+      # the same conversation+agent records a distinct, independently reconcilable tombstone.
+      - db/migrate/20260912000004_add_deferred_provenance_deletion_key.rb
+      # Forward-only repair of the marker FKs to on_delete: :cascade (the drift left by editing the
+      # already-applied 20260905000000 in place).
+      - db/migrate/20260912000005_repair_wijaya_deferred_assignment_marker_fks.rb
+      # Causal-continuity guard column (superseded_at) stamped in-transaction by the battery when an
+      # intervening assignment/routing/state transition breaks the chain from the deletion.
+      - db/migrate/20260912000006_add_deferred_provenance_superseded_at.rb
+      # Forward repair ensuring the durable one-time reconciliation run intent exists on installs that
+      # recorded the OLD (pre-rewrite) 20260912000003 and would never re-run its rewritten up.
+      - db/migrate/20260912000007_ensure_deferred_reconciliation_initial_run_intent.rb
+      # BEFORE DELETE trigger (shared MarkerDropTrigger) keeping the run ledger's terminal counters
+      # truthful when a DB cascade removes a reconciliation-owned marker with no Rails callback.
+      - db/migrate/20260912000008_install_deferred_marker_drop_trigger.rb
     core_hook_touchpoints:
       # Battery Hooks module resolved by name from the core dispatcher (core/hooks.rb map).
       - custom/wijaya/batteries/core/hooks.rb
       # Creation-only, post-commit registration seam.
       - app/models/conversation.rb
-      # Availability offline/busy -> online trigger (after_commit).
+      # Availability offline/busy -> online trigger (after_commit). Also carries the transient
+      # final user-deletion intent (attr_accessor) and forwards it to Agents::DestroyJob so the
+      # orphaned-User deletion is serialized behind provenance capture, not raced by a sibling.
       - app/models/account_user.rb
+      # Agent-deletion entry point: sets the final user-deletion intent on the account-user before
+      # destroy! (so Agents::DestroyJob deletes the orphaned User last) instead of enqueuing a
+      # sibling DeleteObjectJob that could FK-clear assignee_id before provenance is captured.
+      - app/controllers/api/v1/accounts/agents_controller.rb
       # Absent -> present User presence trigger (transition detected at the seam).
       - app/channels/room_channel.rb
       # New inbox member -> bounded reprocessing of that inbox's markers (after_create_commit).
       - app/models/inbox_member.rb
       # New team member -> bounded reprocessing of that team's marked inboxes (after_create_commit).
       - app/models/team_member.rb
+      # Agent deletion bridge: after the unassignment transaction commits, the exact
+      # conversations this deletion cleared are handed to the battery for re-assignment
+      # (collected inside the transaction, dispatched post-commit; no account-wide scan). Also
+      # serializes the final orphaned-User deletion at the very end — after provenance/unassignment/
+      # dispatch — via a tiny fail-open hook (finalize_orphaned_user_deletion -> OrphanedUserFinalizer)
+      # gated by the caller's intent, with a native DeleteObjectJob fallback if the battery is absent.
+      - app/jobs/agents/destroy_job.rb
       # Generated schema touchpoint for the marker table.
       - db/schema.rb
+      # Low-frequency crash-gap recovery drainer cron entry (provenance-scoped, self-gating).
+      - config/schedule.yml
     loader_touchpoints:
       # Feature loader self-registers with the generic core loader, pushes the battery app/
       # subtree (models/services/jobs) onto the Zeitwerk main autoloader, and (in to_prepare)
@@ -324,6 +497,13 @@ patches:
       - spec/custom/wijaya/deferred_auto_assignment/triggers_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/presence_channel_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/remediation_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/agent_deletion_bridge_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/agent_deletion_user_removal_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/provenance_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/reconciliation_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/recovery_drainer_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/run_intent_repair_migration_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/marker_cascade_counters_spec.rb
 
 
   - id: erp_lead_sidebar
@@ -344,6 +524,14 @@ patches:
       - custom/wijaya/batteries/erp_lead_sidebar/safe_http.rb
       - custom/wijaya/batteries/erp_lead_sidebar/refresh_service.rb
       - custom/wijaya/batteries/erp_lead_sidebar/options_service.rb
+      # Account-scoped Chatwoot agent directory for the Lead Owner picker: the
+      # owner options are THIS account's own Chatwoot agents (account.users —
+      # administrators + agents, value + label = agent email), never the ERPNext
+      # User list, so no ERP request is made to populate the picker. It is also the
+      # server-side gate that reconfirms a submitted owner email is a current-account
+      # Chatwoot agent before it is stored; the ERP owner write stays fail-closed
+      # ERP-User validated downstream by the erp_lead_owner_sync battery.
+      - custom/wijaya/batteries/erp_lead_sidebar/account_agent_directory.rb
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/ErpLeadPanel.vue
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/fieldConfig.js
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/mappings.js
@@ -378,12 +566,15 @@ patches:
       # (exact User.name, enabled=1, not Guest) immediately before insert, so an
       # invalid/disabled/deleted/Guest/stale value never reaches ERP. It is NOT
       # derived from the conversation assignee or any agent mapping.
-      # agent_erp_user_map.json is NOT the Lead Activity PIC source; it remains
-      # solely the Lead Details autofill mapping consumed by ErpLeadPanel.vue via
-      # frontend/mappings.js (committed empty; real mappings must stay
-      # source-controlled and may only be added by a future, explicitly approved
-      # code change, never hand-edited in a deployed copy).
-      - custom/wijaya/batteries/erp_lead_sidebar/agent_erp_user_map.json
+      # (The former agent_erp_user_map.json agent -> ERP User mapping has been removed:
+      # the ERP Lead owner is never derived from an id/name mapping and never rides the generic
+      # Lead Details payload. The Lead Owner is an editable, server-validated picker whose options
+      # are THIS account's Chatwoot agents (account_agent_directory.rb, value = agent email), NOT
+      # the ERP User list: by default it follows the committed assignee email (automatic default),
+      # but the agent can set a sticky manual override chosen from the account's Chatwoot agents,
+      # reset it back to the assignee, or retry a still-pending sync, with a pending indicator while
+      # the owner-only ERP write — still fail-closed ERP-User validated — is performed by the
+      # erp_lead_owner_sync battery after the Lead links — see below.)
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_person_directory.rb
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_options_service.rb
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_payload_builder.rb
@@ -442,6 +633,83 @@ patches:
       - spec/custom/wijaya/erp_lead_sidebar/lead_activities_controller_spec.rb
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/LeadActivityForm.spec.js
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/dateValidation.spec.js
+
+  - id: erp_lead_owner_sync
+    name: ERPNext Lead Owner Sync on Assignment
+    battery: custom/wijaya/batteries/erp_lead_owner_sync
+    description: >
+      Keeps the linked ERPNext Lead's lead_owner in step with the desired owner, entirely after
+      the fact and without redesigning assignment. The owner has TWO modes, both server-validated
+      against the live ERP User directory before any write: an AUTOMATIC default that follows the
+      committed conversation assignee email, and a sticky MANUAL override the agent picks from the
+      editable ERP-User picker in the sidebar (dedicated POST owner endpoint — never the generic
+      field payload). The manual owner is reset back to the assignee, and a still-pending owner
+      sync can be retried, through that same endpoint; a lead_owner_sync_pending marker (local
+      storage is never itself proof of ERP sync) drives the sidebar's pending/failed status and
+      Retry action and is cleared only by a successful owner PUT. In automatic mode a battery
+      ConversationExtensions concern (attached to core Conversation via the loader's
+      to_prepare include, so app/models/conversation.rb carries NO owner-sync code) runs an
+      after_update_commit seam: the moment a conversation's assignee_id change to a PRESENT
+      agent commits — Assignment V2's claim_and_assign update! and a genuine manual
+      reassignment alike — it enqueues OwnerSyncJob with the committed assignee id. It never
+      fires for a change to nil (Agents::DestroyJob clears assignee_id with update_all, which
+      skips callbacks; an unassign is filtered out regardless) and never when assignee_id did
+      not change, and it only enqueues when the conversation already has a linked
+      Wijaya::ErpLeadDraft with a present erp_lead_id. The enqueue is fail-open, so a sync
+      error can never roll back or block the committed assignment. The owner is the committed
+      assignee's Chatwoot email (stripped, exact) — the authoritative identity that matches the
+      ERPNext User.name (login/email) on this deployment — never the agent's display name and
+      never a substituted user; a blank email leaves the existing owner untouched. There is no
+      id map: resolution is email-only, so an empty/absent mapping never blocks the sync.
+      Critical Case B — assignment can happen BEFORE any ERP Lead exists, so the
+      assignee-change seam finds no erp_lead_id and returns; a second battery seam
+      (LeadDraftExtensions, mixed into the erp_lead_sidebar Wijaya::ErpLeadDraft model via the
+      loader to_prepare) observes the moment the existing erp_lead_sidebar SyncService/controller
+      path first sets erp_lead_id (create or relink — assignment alone never creates a Lead) and
+      enqueues the same OwnerSyncJob with the conversation's CURRENT committed assignee, so the
+      email becomes lead_owner right after linkage; a reassignment racing the Lead create is
+      reconciled by the same expected-assignee/idempotency guards. OwnerSyncJob is idempotent
+      and stale-safe: it captures the committed assignee as expected_assignee_id and returns
+      without touching ERP if the conversation has since moved to a different (or no) assignee
+      (the B -> C guard), if no draft / blank erp_lead_id, or if the assignee has a blank email.
+      OwnerSyncService reuses the erp_lead_sidebar per-account Config, credentialed SafeHttp
+      transport and the live LeadActivityPersonDirectory User validator: it validates the email
+      is a real enabled non-Guest ERP User (a definite false records a RETRYABLE failure carrying
+      the intended assignee email with NO ERP write — it does NOT preserve the prior owner — so a
+      later draft-driven retry resends once the ERP User exists; an ERP outage raises), then under
+      a conversation row lock re-checks the
+      expected assignee and idempotency (already synced to this owner -> no redundant PUT, while
+      a failed draft still retries) before an owner-ONLY PUT to the already linked Lead (never a
+      create or find-by-phone). On any ERP outage/non-2xx/timeout the Chatwoot assignment stays
+      committed and the draft is marked failed with a generic, non-secret error AND the intended
+      new owner, persisted under the same row lock with a repeated staleness re-check so a stale
+      B failure can never clobber a later C — the sidebar's draft-driven retry then resends the
+      intended owner, not the prior one. Assignment selection (team, inbox, availability,
+      capacity, rate-limit, policy, locking, ordering) is never touched.
+    custom_files:
+      - custom/wijaya/batteries/erp_lead_owner_sync/loader.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/conversation_extensions.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/lead_draft_extensions.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/app/services/wijaya/batteries/erp_lead_owner_sync/owner_sync_service.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/app/jobs/wijaya/batteries/erp_lead_owner_sync/owner_sync_job.rb
+    core_hook_touchpoints:
+      # No core edits: the post-commit assignee-change seam is attached entirely via the
+      # battery ConversationExtensions concern (loader to_prepare), so app/models/conversation.rb
+      # carries no markers. The already-linked ERP draft is read through the has_one that the
+      # erp_lead_sidebar battery defines on Conversation.
+      []
+    loader_touchpoints:
+      # Feature loader self-registers with the generic core loader, pushes the battery app/
+      # subtree (services + job) onto the Zeitwerk main autoloader, and (in to_prepare)
+      # requires + includes the ConversationExtensions concern into core Conversation and the
+      # LeadDraftExtensions concern into the erp_lead_sidebar Wijaya::ErpLeadDraft model.
+      - custom/wijaya/batteries/erp_lead_owner_sync/loader.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/conversation_extensions.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/lead_draft_extensions.rb
+    tests:
+      - spec/custom/wijaya/erp_lead_owner_sync/owner_sync_spec.rb
+      - spec/custom/wijaya/erp_lead_owner_sync/assignment_integration_spec.rb
+      - spec/custom/wijaya/erp_lead_owner_sync/lead_link_reconcile_spec.rb
 
   - id: development_version
     name: Wijaya Internal Development Versioning
@@ -704,6 +972,25 @@ patches:
       # (no DB/flow/state read or write); each surface supplies the already-localized fallback + a lazy
       # localized-acknowledgement producer and consumes the returned Decision via its own adapter.
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/stock_reply_composer.rb
+      # price-display-v1 — pure, deterministic DISPLAY formatter for an eligibility-checked
+      # price_available descriptor: turns the raw repository price facts into a deeply immutable
+      # envelope carrying the canonical raw values, the approved per-locale display facts (id: Rp +
+      # dot thousands; en: IDR + comma thousands; lowercase UOM), and a raw-to-display provenance
+      # map. Exact decimal-string/BigDecimal processing, never Float, never rounded; scale preserved.
+      # Fails closed (no envelope) on unsupported locale/currency/UOM, malformed/missing/negative/
+      # nonfinite/non-exact amount. No DB, no LLM, no sentence building.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_display_formatter.rb
+      # price-display-v1 — shared, surface-agnostic dynamic price boundary consumed identically by
+      # ResponseBuilderJob and PlaygroundPreview. Resolves the target (provider -> configured ->
+      # detector on message -> bounded context; id/en only, else SILENT handoff), invokes the
+      # formatter, builds a battery-locale deterministic fallback from the display facts, and
+      # generates a DIRECT target-language line from role-labelled placeholders (<P_PRODUCT>,
+      # <P_CURRENCY>, <P_AMOUNT>, <P_UOM>) with NO raw facts/history/customer content, restoring them
+      # byte-exact. Full fail-closed gates: structured shape, placeholder inventory, display-fact +
+      # token inventory (extended ProductFactProtectionValidator/FactPlaceholderMask), target-language
+      # proof, and the independent semantic FactPreservationValidator — the generator never self-
+      # certifies. Never invokes ReplyLocalizer/TranslateResponseService/GroundedProductWordingService.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_reply_composer.rb
       # Phase 7 — context-aware natural wording for a product HANDOFF acknowledgement. An
       # unsupported request (warehouse location, delivery to a customer-supplied destination,
       # shipping cost) or an exact-quantity question hands off; instead of the generic branded
@@ -742,9 +1029,12 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/documents/process_job.rb
       - custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing
       - custom/wijaya/batteries/marine_ai/deploy/install_sop_processing_dependencies.sh
-      # Battery overlay: dedicated marine_sop_worker service (isolated queue + SOP
-      # hardening) + optional read-only catalog secret, kept out of base compose.
-      - custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop.yml
+      # Battery overlays (kept out of base compose): the MANDATORY read-only catalog
+      # secret mount for rails+sidekiq, and the OPTIONAL dedicated marine_sop_worker
+      # service (isolated queue + SOP hardening). Recreation goes through the canonical
+      # entrypoint custom/wijaya/deploy/deploy.sh — never a manual `docker compose up`.
+      - custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml
+      - custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml
       - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
       - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
       - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/preferences_controller.rb
@@ -802,8 +1092,11 @@ patches:
       - custom/wijaya/batteries/marine_ai/frontend/api/llmSettings.js
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/llm-settings/Index.vue
       - custom/wijaya/batteries/marine_ai/frontend/i18n/marine.json
-      # Marine backend locale is battery-owned; loader registers this on the i18n load path.
+      # Marine backend locale is battery-owned; loader registers these on the i18n load path
+      # (config/locales/**/*.yml glob — no core edit needed). id.yml carries the price-display-v1
+      # Indonesian deterministic price_available fallback.
       - custom/wijaya/batteries/marine_ai/config/locales/en.yml
+      - custom/wijaya/batteries/marine_ai/config/locales/id.yml
       - db/migrate/20260708010000_create_wijaya_marine_tables.rb
       - db/migrate/20260708010001_create_wijaya_marine_inboxes.rb
       - db/migrate/20260710000000_add_source_kind_to_marine_documents.rb
@@ -995,6 +1288,17 @@ patches:
       # proving identical business conclusions (dynamic deliver, or the same factless handoff).
       - spec/custom/wijaya/batteries/marine_ai/catalog/stock_reply_composer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/stock_reply_parity_spec.rb
+      # price-display-v1 — PriceDisplayFormatter spec: id/en formatting (12500, decimals, large,
+      # zero), immutability/provenance/policy version, no rounding, and fail-closed rejection of
+      # invalid/nonfinite/negative amount and unsupported currency/UOM/locale.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/price_display_formatter_spec.rb
+      # price-display-v1 — PriceReplyComposer spec: placeholder inventory (missing/duplicate/unknown/
+      # mangled + injected numbers/currencies/codes + prompt-injection), language precedence + proof,
+      # every supported-locale failure -> target-language deterministic fallback, unresolved/
+      # unsupported -> silent handoff, >=3 stubbed sentence forms preserving exact facts, and the
+      # conversation<->Playground price parity + ReplyLocalizer/TranslateResponseService/general
+      # GroundedProductWordingService not-invoked-for-price regressions.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/price_reply_composer_spec.rb
       # Phase 7 — context-aware natural product-handoff acknowledgement service + regression
       # coverage for quantity-inquiry routing, price/catalog grounded context, and language
       # consistency (see marine_ai_natural_reply_regression_spec).
@@ -1132,3 +1436,33 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/controllers/provisioning_controller_spec.rb
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/settings/specs/MarineProvisioningSection.spec.js
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/settings/specs/MarineProvisioningCredentialsDialog.spec.js
+
+  - id: wijaya_deploy_contract
+    name: Development Deployment Contract (canonical entrypoint)
+    battery: custom/wijaya/deploy
+    description: >
+      The canonical, tracked entrypoint for Development recreation/deployment of
+      rails/sidekiq (and the optional marine_sop_worker) on erp-dev. Manual
+      `docker compose up` is forbidden: it can recreate rails/sidekiq from the
+      ignored local docker-compose.deploy.yaml alone, dropping the MANDATORY Marine
+      catalog secret mount and forcing the domain boundary into a fail-closed
+      category=error on every non-product turn. deploy.sh always layers the base
+      compose + the mandatory catalog overlay (docker-compose.marine-catalog.yml),
+      optionally adds the SOP worker overlay (docker-compose.marine-sop-worker.yml),
+      preserves the pinned image (no build, no migrations), recreates only the
+      intended services with --no-deps --force-recreate --no-build, runs a
+      fail-fast preflight (resolved rails+sidekiq must carry the read-only catalog
+      mount backed by a non-empty host file) and a post-deploy health gate. A static
+      contract checker and a secret-safe domain-boundary dependency monitor guard the
+      contract in CI and at deploy time.
+    custom_files:
+      - custom/wijaya/deploy/deploy.sh
+      - custom/wijaya/scripts/check_deploy_contract.sh
+      - custom/wijaya/scripts/marine_domain_boundary_monitor.sh
+    verification:
+      # Static contract check (invoked by root check_custom_patches.sh too).
+      - bash custom/wijaya/scripts/check_deploy_contract.sh
+      # Non-mutating preflight + fixture-based regression suite (no Docker daemon).
+      - bash custom/wijaya/deploy/tests/run_tests.sh
+    tests:
+      - custom/wijaya/deploy/tests/run_tests.sh

@@ -88,10 +88,17 @@ module Marine
       # accepts? — the full deterministic gate. Returns true ONLY when the descriptor is
       # eligible/well-shaped, every protected display value is present unchanged in BOTH texts,
       # and the four token inventories are identical. False on any failure or uncertainty.
-      def accepts?(action:, descriptor:, fallback:, candidate:)
+      #
+      # protected_display_values: an OPTIONAL caller-supplied set of already-approved DISPLAY values
+      # to require present unchanged in BOTH texts INSTEAD of the raw descriptor-derived ones — used
+      # by the price display path, whose approved display facts (e.g. "Rp", "12.500", "yard") differ
+      # from the raw descriptor values. The raw descriptor STILL gates eligibility (contract + shape)
+      # and the token inventories still guard the whole text. When absent (nil) the behavior is
+      # byte-identical to before (raw descriptor-derived protected values).
+      def accepts?(action:, descriptor:, fallback:, candidate:, protected_display_values: nil)
         return false unless valid_texts?(fallback, candidate)
         return false unless contract_for(action, descriptor)
-        return false unless protected_values_present?(descriptor, fallback, candidate)
+        return false unless protected_values_present?(descriptor, fallback, candidate, protected_display_values)
 
         token_inventories_match?(fallback, candidate)
       rescue StandardError
@@ -104,13 +111,27 @@ module Marine
         valid_text?(fallback) && valid_text?(candidate)
       end
 
-      # Every protected display value derived from the descriptor must appear unchanged in BOTH
-      # the deterministic fallback and the candidate; a malformed/ambiguous descriptor rejects.
-      def protected_values_present?(descriptor, fallback, candidate)
-        values = protected_values(descriptor)
+      # Every protected display value must appear unchanged in BOTH the deterministic fallback and
+      # the candidate; a malformed/ambiguous descriptor (or trusted set) rejects. The values are the
+      # caller-supplied trusted display values when given, else the raw descriptor-derived ones.
+      def protected_values_present?(descriptor, fallback, candidate, trusted = nil)
+        values = trusted ? trusted_values(trusted) : protected_values(descriptor)
         return false if values == REJECT
 
         values.all? { |value| present_as_literal?(fallback, value) && present_as_literal?(candidate, value) }
+      end
+
+      # Validate an explicit caller-supplied trusted DISPLAY value set: a non-empty Array of
+      # nonblank, unique Strings. Anything else is REJECT (fail closed) so a blank/duplicate/
+      # malformed trusted value can never weaken the presence check.
+      def trusted_values(values)
+        return REJECT unless values.is_a?(Array) && !values.empty?
+
+        strings = values.map { |value| presence_string_or_reject(value) }
+        return REJECT if strings.include?(REJECT)
+        return REJECT if strings.uniq.length != strings.length
+
+        strings
       end
 
       # Unicode-aware literal presence with alphanumeric boundaries: the escaped value must occur

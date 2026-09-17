@@ -28,7 +28,6 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder do
 
     expect(payload).to include(
       :doctype => 'Lead',
-      'lead_owner' => 'user@example.com',
       'first_name' => 'Sr Modesta PM',
       'whatsapp_no' => '+6281238392959',
       'mobile_no' => '+6281238392959',
@@ -43,6 +42,15 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder do
     expect(payload).not_to have_key('custom_market_customer')
     expect(payload).not_to have_key('custom_jenis_pakaian')
     expect(payload).not_to have_key('campaign_name')
+  end
+
+  # The sidebar full Lead payload must NEVER carry an owner: the ERP Lead owner is set
+  # exclusively post-link by the erp_lead_owner_sync battery from the validated assignee
+  # email. Even a lead_owner present in the draft fields (legacy/untrusted) is dropped.
+  it 'never emits lead_owner even when the draft fields carry one' do
+    payload = described_class.new(valid_fields.merge('lead_owner' => 'attacker@evil.example')).payload
+
+    expect(payload).not_to have_key('lead_owner')
   end
 
   it 'accepts every current status value' do

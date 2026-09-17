@@ -30,10 +30,14 @@ RSpec.describe Marine::Catalog::ReplyPresenter do
         .to eq('Here are the details for BD-RED. Would you like the price or availability?')
     end
 
-    it 'renders an available price from ONLY the three approved fields plus the variant code' do
+    it 'fails closed for a standalone price reply instead of emitting a hardcoded English price sentence' do
+      # A pure :price_available reply is locale-sensitive and must be resolved through the shared
+      # Marine::Catalog::PriceReplyComposer (as both ResponseBuilderJob and PlaygroundPreview do); the
+      # presenter has no account/language context and must NEVER present the raw English price line.
       descriptor = renderer.price_available({ price_list_rate: '125.50', currency: 'USD', uom: 'Nos' }, 'BD-RED')
-      expect(presenter.reply_text(plan(action: :reply, reply: descriptor)))
-        .to eq('The price for BD-RED is USD 125.50 per Nos.')
+
+      expect { presenter.reply_text(plan(action: :reply, reply: descriptor)) }
+        .to raise_error(described_class::PriceReplyNotPresentable)
     end
 
     it 'renders the static price_unavailable template' do

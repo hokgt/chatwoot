@@ -67,9 +67,11 @@ RSpec.describe 'Marine product flow cross-component regression' do
       leaked = [99_999, 42, 'DROP TABLE item;--', 'W-1']
       expect(deep_values(plan)).not_to include(*leaked)
 
-      text = job.send(:presenter).reply_text(plan)
-      expect(text).to eq('The price for C-1 is USD 10.00 per ea.')
-      %w[99999 42 DROP W-1].each { |secret| expect(text).not_to include(secret) }
+      # A standalone price reply now fails closed in the presenter (it is resolved through the shared
+      # PriceReplyComposer instead); the delivered price line's leak guarantee is enforced by
+      # PriceDisplayFormatter/PriceReplyComposer, which copy ONLY the approved display fields.
+      expect { job.send(:presenter).reply_text(plan) }
+        .to raise_error(Marine::Catalog::ReplyPresenter::PriceReplyNotPresentable)
     end
 
     it 'strips malformed / oversized family candidate fields before the plan' do
@@ -119,8 +121,15 @@ RSpec.describe 'Marine product flow cross-component regression' do
     it 'maps every ReplyRenderer::KINDS descriptor to a non-empty deterministic string' do
       covered = Marine::Catalog::ReplyRenderer::KINDS.map do |kind|
         plan = { action: :reply, reply: descriptor_for(kind), state: { operation: :none, changes: {} } }
-        text = job.send(:presenter).reply_text(plan)
 
+        # A STANDALONE :price_available reply is locale-sensitive and fails closed here — it is resolved
+        # through the shared PriceReplyComposer, never presented as a hardcoded English price line.
+        if kind == :price_available
+          expect { job.send(:presenter).reply_text(plan) }.to raise_error(Marine::Catalog::ReplyPresenter::PriceReplyNotPresentable)
+          next kind
+        end
+
+        text = job.send(:presenter).reply_text(plan)
         expect(text).to be_a(String)
         expect(text).not_to be_empty
         expect(text).not_to match(/\d/) if kind.to_s.start_with?('stock_') # stock is never a quantity

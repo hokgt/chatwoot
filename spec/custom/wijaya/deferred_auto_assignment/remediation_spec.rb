@@ -29,6 +29,7 @@ RSpec.describe 'Deferred auto-assignment remediation', type: :model do
   let(:processor) { Wijaya::Batteries::DeferredAutoAssignment::InboxProcessor }
 
   before do
+    account.disable_features!(:assignment_v2) # legacy battery path; assignment_v2 now defaults on
     @online = {}
     allow(OnlineStatusTracker).to receive(:get_available_users) { @online }
     allow(AutoAssignment::AssignmentJob).to receive(:enqueue_for_inbox)

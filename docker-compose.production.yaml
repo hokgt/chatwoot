@@ -34,9 +34,12 @@ services:
     command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
     restart: always
 
-  # The dedicated Marine SOP worker and the optional Marine catalog secret mount live in
-  # the Battery overlay custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop.yml
-  # so this base file boots core Rails/Sidekiq with no Marine-specific variable or secret.
+  # The MANDATORY Marine catalog secret mount (rails+sidekiq) lives in the Battery overlay
+  # custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml, and the
+  # OPTIONAL dedicated SOP worker lives in docker-compose.marine-sop-worker.yml — so this
+  # base file boots core Rails/Sidekiq with no Marine-specific variable or secret. When
+  # Marine is enabled the catalog overlay is required; recreate services only via the
+  # canonical entrypoint custom/wijaya/deploy/deploy.sh (never a manual `docker compose up`).
 
   postgres:
     image: pgvector/pgvector:pg16

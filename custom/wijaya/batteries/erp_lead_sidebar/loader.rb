@@ -52,6 +52,7 @@ module Wijaya
             require root.join('safe_http').to_s
             require root.join('refresh_service').to_s
             require root.join('options_service').to_s
+            require root.join('account_agent_directory').to_s
             require root.join('lead_activity_person_directory').to_s
             require root.join('lead_activity_options_service').to_s
             require root.join('lead_activity_payload_builder').to_s
