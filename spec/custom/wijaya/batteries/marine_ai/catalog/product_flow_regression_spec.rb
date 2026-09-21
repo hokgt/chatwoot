@@ -113,6 +113,8 @@ RSpec.describe 'Marine product flow cross-component regression' do
       when :stock_empty then renderer.stock_empty('RED')
       when :clarify_family then renderer.clarify_family([{ code: 'FAM-1', name: 'Impeller' }])
       when :clarify_variant then renderer.clarify_variant(%w[Size])
+      when :price_range
+        renderer.price_range({ status: :available, min: '10', max: '20', currency: 'IDR', uom: 'yard' }, { code: 'FAM-1', name: 'Impeller' })
       when :composite then composite_descriptor
       else renderer.public_send(kind)
       end

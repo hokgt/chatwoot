@@ -42,8 +42,9 @@ module Marine
       # Generic field-role allowlist: descriptor fields whose VALUE is an immutable fact. Display
       # labels (family_name, a candidate :name, attribute_names) are intentionally NOT listed — they
       # are translatable wording. :candidates and :parts are handled structurally (a candidate's
-      # :code is immutable; a composite recurses into each part).
-      IMMUTABLE_SCALAR_FIELDS = %i[family_code variant_code currency uom price_list_rate].freeze
+      # :code is immutable; a composite recurses into each part). price_min/price_max are the immutable
+      # endpoint amounts of a family price RANGE caption (:price_range), kept byte-exact like any price.
+      IMMUTABLE_SCALAR_FIELDS = %i[family_code variant_code currency uom price_list_rate price_min price_max].freeze
 
       # descriptor:     the product descriptor whose immutable fact VALUES are masked (default path).
       # trusted_values: an OPTIONAL caller-supplied array of already-approved DISPLAY values to mask

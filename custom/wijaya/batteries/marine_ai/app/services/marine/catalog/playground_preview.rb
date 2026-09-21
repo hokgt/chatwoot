@@ -107,6 +107,7 @@ module Marine
         snapshot = apply_state(plan, prior)
         return stock_payload(plan, query, history, snapshot) if stock_reply?(plan)
         return price_payload(plan, query, history, snapshot) if price_reply?(plan)
+        return range_payload(plan, query, history, snapshot) if range_reply?(plan)
 
         english, catalog_card, next_snapshot = render(plan, snapshot)
         text = localize(english: english, protection: localization_protection(plan),
@@ -189,6 +190,34 @@ module Marine
 
       def price_composer
         @price_composer ||= Marine::Catalog::PriceReplyComposer.new(account: account)
+      end
+
+      # A family-only PRICE turn grounds a catalog-assisted clarification with a deterministic price
+      # RANGE, resolved through the shared Marine::Catalog::PriceRangeReplyComposer so the source-less
+      # preview renders the IDENTICAL locale-safe range caption the real conversation would. The
+      # preview never delivers a native attachment, so catalog_attached is always false: the caption
+      # asks for the exact code WITHOUT claiming a catalog was shown. A composer fallback (unresolved/
+      # unsupported reply language or an unformattable range) degrades to the existing safe catalog-free
+      # variant clarification — never a raw or wrong-language range.
+      def range_reply?(plan)
+        plan[:action] == :send_catalog && plan.dig(:reply, :kind) == :price_range
+      end
+
+      def range_payload(plan, query, history, snapshot)
+        decision = range_composer.compose(
+          descriptor: plan[:reply], reply_language: plan[:language],
+          customer_request: query.to_s, configured_language: configured_reply_language,
+          message_history: history, catalog_attached: false
+        )
+        return reply_payload(decision.text, next_state: snapshot) if decision.deliver?
+
+        text = localize(english: presenter.reply_text(plan.merge(reply: nil)), protection: [nil, nil],
+                        language: plan[:language], query: query, history: history)
+        reply_payload(text, next_state: snapshot)
+      end
+
+      def range_composer
+        @range_composer ||= Marine::Catalog::PriceRangeReplyComposer.new(account: account)
       end
 
       # Apply the plan's deterministic state operation to the prior IN-MEMORY snapshot — the exact

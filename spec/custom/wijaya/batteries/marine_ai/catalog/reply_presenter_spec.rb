@@ -30,6 +30,18 @@ RSpec.describe Marine::Catalog::ReplyPresenter do
         .to eq('Here are the details for BD-RED. Would you like the price or availability?')
     end
 
+    it 'falls back to the safe catalog-assisted variant clarification for a price_range send_catalog plan' do
+      # The range caption is produced OUTSIDE this locale-agnostic presenter (via the shared
+      # PriceRangeReplyComposer); a bare price_range plan through #reply_text degrades to the existing
+      # deterministic catalog-assisted variant clarification, never a raw or untruthful range caption.
+      descriptor = renderer.price_range(
+        { status: :available, min: '12500', max: '45000', currency: 'IDR', uom: 'yard' },
+        { code: 'BD', name: 'Baby Doll' }
+      )
+      expect(presenter.reply_text(plan(action: :send_catalog, reply: descriptor, changes: { 'expected_attributes' => %w[Size] })))
+        .to eq('Could you specify the Size you need?')
+    end
+
     it 'fails closed for a standalone price reply instead of emitting a hardcoded English price sentence' do
       # A pure :price_available reply is locale-sensitive and must be resolved through the shared
       # Marine::Catalog::PriceReplyComposer (as both ResponseBuilderJob and PlaygroundPreview do); the
@@ -87,6 +99,33 @@ RSpec.describe Marine::Catalog::ReplyPresenter do
     it 'falls back to the generic product prompt for an unknown descriptor' do
       expect(presenter.reply_text(plan(action: :reply, reply: { kind: :something_new })))
         .to eq('Could you share a little more detail about the product you need?')
+    end
+  end
+
+  describe '#price_range_text (outcome-aware, display-fact agnostic)' do
+    let(:descriptor) do
+      renderer.price_range({ status: :available, min: '12,500', max: '45,000', currency: 'IDR', uom: 'yard' },
+                           { code: 'BD', name: 'Baby Doll' })
+    end
+
+    it 'points at the attached catalog when a native catalog is actually delivered' do
+      expect(presenter.price_range_text(descriptor, catalog_attached: true))
+        .to eq('Prices for Baby Doll range from IDR 12,500 to IDR 45,000 per yard. ' \
+               "Please reply with the exact variant code shown in the catalog and I'll confirm the exact price for you.")
+    end
+
+    it 'never claims a catalog is shown when no attachment is delivered' do
+      text = presenter.price_range_text(descriptor, catalog_attached: false)
+      expect(text).to eq('Prices for Baby Doll range from IDR 12,500 to IDR 45,000 per yard. ' \
+                         "Please reply with the exact variant code and I'll confirm the exact price for you.")
+      expect(text).not_to include('shown in the catalog')
+    end
+
+    it 'renders a single amount when the endpoints are equal' do
+      equal = renderer.price_range({ status: :available, min: '12,500', max: '12,500', currency: 'IDR', uom: 'yard' },
+                                   { code: 'BD', name: 'Baby Doll' })
+      expect(presenter.price_range_text(equal, catalog_attached: true))
+        .to start_with('The price for Baby Doll is IDR 12,500 per yard.')
     end
   end
 

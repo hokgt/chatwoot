@@ -868,6 +868,16 @@ patches:
       # never leaves PostgreSQL). Read-only, parameterized, bounded, fail-closed.
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/variant_repository.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_repository.rb
+      # Marine AI V1 — deterministic GENERAL selling price RANGE across a family's active variants,
+      # reusing the exact User Price policy. One parameterized SELECT; every active variant must hold
+      # exactly one qualifying tuple with homogeneous currency/UOM, else fails closed (missing ->
+      # unavailable, per-variant/mixed -> conflict). Exact decimal (BigDecimal) min/max, never Float.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_range_repository.rb
+      # Marine AI V1 — shared locale-safe, outcome-truthful family price RANGE caption boundary.
+      # Reuses the exact-price PriceDisplayFormatter display policy for both endpoints per the resolved
+      # reply language, keeps display facts byte-exact via the mask, and fails closed to the safe
+      # catalog-free clarification. Consumed by ResponseBuilderJob and PlaygroundPreview alike.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_range_reply_composer.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/stock_repository.rb
       # Phase 2 — Contextual Product Intent Understanding: LLM-backed extractor that
       # turns customer text + bounded context + a safe state summary into a strict,
@@ -1234,6 +1244,13 @@ patches:
       # Phase 1 — Deterministic Catalog Data Layer specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/variant_repository_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/price_repository_spec.rb
+      # Marine AI V1 — family price range repository spec (available range, duplicate identical rows,
+      # missing variant, per-variant conflict, mixed currency/UOM, invalid/nonpositive, equal min/max,
+      # and the exact-policy match: no packing/currency-match/stock-UOM filter, extra tuple -> conflict).
+      - spec/custom/wijaya/batteries/marine_ai/catalog/price_range_repository_spec.rb
+      # Marine AI V1 — price range reply composer spec (id/en display formatting, equal endpoints,
+      # unsupported/unresolved language fail-closed, outcome-truthful with/without catalog captions).
+      - spec/custom/wijaya/batteries/marine_ai/catalog/price_range_reply_composer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/stock_repository_spec.rb
       # Phase 2 — Contextual Product Intent Understanding spec.
       - spec/custom/wijaya/batteries/marine_ai/catalog/intent_extractor_spec.rb

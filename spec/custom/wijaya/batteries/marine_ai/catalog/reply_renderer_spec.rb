@@ -127,10 +127,43 @@ RSpec.describe Marine::Catalog::ReplyRenderer do
         renderer.stock_available('C'), renderer.stock_empty('C'), renderer.stock_unavailable,
         renderer.clarify_family([]), renderer.clarify_variant([]),
         renderer.catalog(code: 'F', name: 'N'),
+        renderer.price_range({ status: :available, min: '1', max: '2', currency: 'IDR', uom: 'yard' }, { code: 'F', name: 'N' }),
         renderer.catalog_unavailable, renderer.unsupported
       ]
 
       expect(emitted.map { |d| d[:kind] }.uniq).to all(satisfy { |k| described_class::KINDS.include?(k) })
+    end
+  end
+
+  describe '#price_range' do
+    it 'emits only the allowlisted range facts plus the family, deeply frozen' do
+      result = renderer.price_range(
+        { status: :available, min: '12500', max: '45000', currency: 'IDR', uom: 'yard' },
+        { code: 'FAM-1', name: 'Impeller' }
+      )
+
+      expect(result).to eq(kind: :price_range, family_code: 'FAM-1', family_name: 'Impeller',
+                           price_min: '12500', price_max: '45000', currency: 'IDR', uom: 'yard')
+      expect(result).to be_frozen
+    end
+
+    it 'bounds and control-char cleans every scalar at the trust boundary' do
+      result = renderer.price_range(
+        { status: :available, min: "12\t500", max: '45000', currency: 'IDR', uom: "ya\trd" },
+        { code: 'FAM-1', name: 'Impeller' }
+      )
+
+      expect(result[:price_min]).to eq('12 500')
+      expect(result[:uom]).to eq('ya rd')
+    end
+
+    it 'fails closed to nil when a REQUIRED range fact is blank or non-scalar (never customer text)' do
+      expect(renderer.price_range({ status: :available, min: '12500', max: '45000', currency: '  ', uom: 'yard' },
+                                  { code: 'FAM-1', name: 'Impeller' })).to be_nil
+      expect(renderer.price_range({ status: :available, min: nil, max: '45000', currency: 'IDR', uom: 'yard' },
+                                  { code: 'FAM-1', name: 'Impeller' })).to be_nil
+      expect(renderer.price_range({ status: :available, min: '12500', max: '45000', currency: 'IDR', uom: %w[a b] },
+                                  { code: 'FAM-1', name: 'Impeller' })).to be_nil
     end
   end
 end

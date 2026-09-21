@@ -5,7 +5,8 @@ require 'rails_helper'
 RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
   subject(:orchestrator) do
     described_class.new(
-      repositories: { family: family_repository, variant: variant_repository, price: price_repository, stock: stock_repository },
+      repositories: { family: family_repository, variant: variant_repository, price: price_repository,
+                      price_range: price_range_repository, stock: stock_repository },
       variant_resolver: variant_resolver
     )
   end
@@ -13,9 +14,11 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
   let(:family_repository) { instance_double(Marine::Catalog::ProductFamilyRepository) }
   let(:variant_repository) { instance_double(Marine::Catalog::VariantRepository) }
   let(:price_repository) { instance_double(Marine::Catalog::PriceRepository) }
+  let(:price_range_repository) { instance_double(Marine::Catalog::PriceRangeRepository) }
   let(:stock_repository) { instance_double(Marine::Catalog::StockRepository) }
   let(:variant_resolver) { instance_double(Marine::Catalog::VariantResolver) }
   let(:available_price) { { status: :available, price_list_rate: '125.50', currency: 'USD', uom: 'Nos' } }
+  let(:available_range) { { status: :available, min: '12500', max: '45000', currency: 'IDR', uom: 'yard' } }
 
   before do
     allow(family_repository).to receive(:resolve_exact).and_return(code: 'FAM-1', name: 'Impeller')
@@ -24,6 +27,7 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
     allow(variant_repository).to receive(:resolve_child).and_return(nil)
     allow(variant_resolver).to receive(:resolve).and_return(status: :unresolved, reason: :missing)
     allow(price_repository).to receive(:price_for).and_return(status: :unavailable)
+    allow(price_range_repository).to receive(:range_for).and_return(status: :unavailable)
     allow(stock_repository).to receive(:status_for).and_return(:empty)
   end
 
@@ -250,6 +254,118 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       )
 
       expect(plan[:action]).to eq(:clarify_variant)
+    end
+  end
+
+  describe 'family-only price turn grounds the catalog with a price range' do
+    let(:price_family_intent) { intent(intent: 'price', family_mention: 'Impeller') }
+
+    it 'computes the family range and sends the SAME catalog with a range descriptor, asking for the code' do
+      allow(price_range_repository).to receive(:range_for).with('FAM-1').and_return(available_range)
+
+      plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :price_range, family_code: 'FAM-1', family_name: 'Impeller',
+                                 price_min: '12500', price_max: '45000', currency: 'IDR', uom: 'yard')
+      expect(plan[:state][:changes]).to include('validated_family' => 'FAM-1', 'current_intent' => 'price')
+      expect(price_range_repository).to have_received(:range_for).with('FAM-1')
+    end
+
+    it 'carries an equal min/max range through the descriptor unchanged (rendered as one amount downstream)' do
+      allow(price_range_repository).to receive(:range_for)
+        .and_return(status: :available, min: '12500', max: '12500', currency: 'IDR', uom: 'yard')
+
+      plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
+
+      expect(plan[:reply]).to include(kind: :price_range, price_min: '12500', price_max: '12500')
+    end
+
+    it 'fails closed to the existing safe price handoff when the range is unavailable (a missing variant)' do
+      allow(price_range_repository).to receive(:range_for).and_return(status: :unavailable)
+
+      plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply]).to eq(kind: :price_conflict)
+    end
+
+    it 'fails closed to the existing safe price handoff on a per-variant / mixed conflict' do
+      allow(price_range_repository).to receive(:range_for).and_return(status: :conflict)
+
+      plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply]).to eq(kind: :price_conflict)
+    end
+
+    it 'fails closed to the safe price handoff when an available range carries an invalid required fact' do
+      # The repository reports :available but a required fact is blank; the renderer trust boundary
+      # drops the descriptor to nil, so the plan must hand off rather than emit an invalid range.
+      allow(price_range_repository).to receive(:range_for)
+        .and_return(status: :available, min: '12500', max: '45000', currency: '  ', uom: 'yard')
+
+      plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply]).to eq(kind: :price_conflict)
+    end
+
+    it 'hands off safely (catalog_unavailable) when the range repository reports a catalog outage' do
+      allow(price_range_repository).to receive(:range_for).and_raise(Marine::Catalog::Errors::CatalogUnavailableError)
+
+      plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply]).to eq(kind: :catalog_unavailable)
+    end
+
+    it 'does not compute a range for a non-price awaiting-variant turn (variant_info keeps the plain catalog)' do
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'variant_info', requires_exact_variant: true, family_mention: 'Impeller'), flow: nil
+      )
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to be_nil
+      expect(price_range_repository).not_to have_received(:range_for)
+    end
+
+    it 'keeps the exact family+child precedence direct to the exact price, with no range prerequisite' do
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'BD-1')
+      allow(price_repository).to receive(:price_for).with('BD-1').and_return(available_price)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'price', explicit_child_code: 'BD-1', requires_exact_variant: true, family_mention: 'Impeller'),
+        flow: nil
+      )
+
+      expect(plan[:reply]).to include(kind: :price_available, variant_code: 'BD-1')
+      expect(price_range_repository).not_to have_received(:range_for)
+    end
+
+    it 'never falls back to a range when a supplied child is invalid / ambiguous' do
+      allow(variant_resolver).to receive(:resolve).and_return(status: :unresolved, reason: :ambiguous)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'price', explicit_child_code: 'CHILD-X', requires_exact_variant: true, family_mention: 'Impeller'),
+        flow: nil
+      )
+
+      expect(plan[:action]).to eq(:clarify_variant)
+      expect(price_range_repository).not_to have_received(:range_for)
+    end
+
+    it 'reaches the exact price on a code-only follow-up that retains the validated family and price intent' do
+      flow = active_flow('current_intent' => 'price', 'validated_variant' => nil)
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'BD-1')
+      allow(price_repository).to receive(:price_for).with('BD-1').and_return(available_price)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'price', explicit_child_code: 'BD-1', family_mention: nil), flow: flow
+      )
+
+      expect(plan[:reply]).to include(kind: :price_available, variant_code: 'BD-1')
+      expect(price_range_repository).not_to have_received(:range_for)
     end
   end
 

@@ -547,10 +547,46 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
   # The localized (and, for a DIRECT catalog caption, naturalized) text for the predicted outcome.
   def prepared_catalog_text(outcome, plan, flow, document)
+    return price_range_prepared_text(plan, outcome) if price_range_reply?(plan)
+
     english = deterministic_catalog_text(outcome, plan, flow, document)
     return catalog_caption_text(plan, english) if outcome == CATALOG_DELIVER
 
     localized_product_text(english)
+  end
+
+  def price_range_reply?(plan)
+    plan.dig(:reply, :kind) == :price_range
+  end
+
+  # The locale-safe, outcome-truthful family price RANGE caption via the shared composer (reusing the
+  # exact-price display policy). `catalog_attached` is the predicted delivery outcome, so the caption
+  # only points at the catalog when a native attachment is actually sent this turn. When the composer
+  # cannot produce a safe caption (unresolved/unsupported reply language or a malformed/unformattable
+  # range) it falls back to the existing safe catalog-free variant clarification — never a raw or
+  # wrong-language range. A missing trigger message (impossible on this trigger-bound path) also
+  # degrades to that safe clarification.
+  def price_range_prepared_text(plan, outcome)
+    return localized_catalog_assisted_clarification(plan) if @trigger_message.nil?
+
+    context = Marine::Conversation::ContextBuilder.new(conversation: @conversation, trigger_message: @trigger_message).build
+    decision = price_range_composer.compose(
+      descriptor: plan[:reply], reply_language: plan[:language],
+      customer_request: context.trigger, configured_language: configured_reply_language,
+      message_history: context.history, catalog_attached: outcome == CATALOG_DELIVER
+    )
+    decision.deliver? ? decision.text : localized_catalog_assisted_clarification(plan)
+  end
+
+  # The existing safe catalog-free variant clarification for a send_catalog plan, localized. With the
+  # :price_range reply removed, the shared presenter renders the deterministic clarify-variant text
+  # from the plan's expected_attributes — the exact pre-range catalog-assisted caption.
+  def localized_catalog_assisted_clarification(plan)
+    localized_product_text(presenter.reply_text(plan.merge(reply: nil)))
+  end
+
+  def price_range_composer
+    @price_range_composer ||= Marine::Catalog::PriceRangeReplyComposer.new(account: @conversation.account)
   end
 
   # The delivered catalog caption: the localized deterministic caption, and — for a DIRECT catalog

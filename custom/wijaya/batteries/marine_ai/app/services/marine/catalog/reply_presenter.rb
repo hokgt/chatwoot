@@ -145,6 +145,22 @@ module Marine
         descriptor[:family_name].presence || descriptor[:family_code] || 'that product'
       end
 
+      # The deterministic caption for a family price RANGE, grounding the range (from the already
+      # display-formatted facts the descriptor carries) and then asking the customer for the exact
+      # variant code. The ask clause is OUTCOME-AWARE: when a native catalog is actually attached this
+      # turn (`catalog_attached: true`) it points the customer at the code shown in that catalog;
+      # otherwise it never claims a catalog was shown/attached — it simply asks for the exact code.
+      # Equal min and max render a SINGLE amount (handled by #price_range_grounded).
+      def price_range_text(descriptor, catalog_attached:)
+        ask = catalog_attached ? PRICE_RANGE_ASK_WITH_CATALOG : PRICE_RANGE_ASK_WITHOUT_CATALOG
+        "#{price_range_grounded(descriptor)}. #{ask}"
+      end
+
+      # The two outcome-aware ask clauses. The with-catalog clause is delivered ONLY alongside a real
+      # native catalog attachment; the without-catalog clause makes no claim that a catalog is visible.
+      PRICE_RANGE_ASK_WITH_CATALOG = "Please reply with the exact variant code shown in the catalog and I'll confirm the exact price for you.".freeze
+      PRICE_RANGE_ASK_WITHOUT_CATALOG = "Please reply with the exact variant code and I'll confirm the exact price for you.".freeze
+
       private
 
       def dynamic_product_text(descriptor) # rubocop:disable Metrics/CyclomaticComplexity -- a flat per-kind dispatch
@@ -208,6 +224,28 @@ module Marine
 
       def catalog_ready_text(descriptor)
         "Here is the product catalog for #{catalog_family_name(descriptor)}."
+      end
+
+      # The GROUNDED range clause only (no ask): "Prices for <family> range from <A> to <B> per <uom>"
+      # (or a single amount when min == max). Currency and both amounts are the display facts the
+      # PriceRangeReplyComposer already formatted; the family name is a translatable display label.
+      def price_range_grounded(descriptor)
+        family = catalog_family_name(descriptor)
+        min = descriptor[:price_min]
+        max = descriptor[:price_max]
+        if min == max
+          "The price for #{family} is #{range_amount(descriptor, min)}#{range_per(descriptor)}"
+        else
+          "Prices for #{family} range from #{range_amount(descriptor, min)} to #{range_amount(descriptor, max)}#{range_per(descriptor)}"
+        end
+      end
+
+      def range_amount(descriptor, value)
+        [descriptor[:currency], value].compact.join(' ')
+      end
+
+      def range_per(descriptor)
+        descriptor[:uom].present? ? " per #{descriptor[:uom]}" : ''
       end
 
       def parent_info_text(descriptor)

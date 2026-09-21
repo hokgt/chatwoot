@@ -259,6 +259,79 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       expect(reply.attachments).to be_empty
     end
 
+    # --- Family-only price RANGE caption riding the catalog-assisted clarification --------------
+    #
+    # A family-only PRICE turn grounds the catalog-assisted variant clarification with a deterministic,
+    # locale-safe price RANGE. The "reply with the code shown in the catalog" wording is truthful ONLY
+    # when a native catalog attachment is actually delivered this turn; without one the caption must not
+    # claim a catalog was shown, and no attachment (or a duplicate) is ever created.
+
+    def price_range_payload(operation: :start)
+      product_payload(
+        action: :send_catalog,
+        reply: { kind: :price_range, family_code: 'IMP', family_name: 'Impeller',
+                 price_min: '12500', price_max: '45000', currency: 'IDR', uom: 'yard' },
+        operation: operation, language: 'en',
+        changes: { 'validated_family' => 'IMP', 'current_intent' => 'price', 'expected_attributes' => %w[size material] }
+      )
+    end
+
+    it 'delivers one native catalog attachment with a range caption that points at the catalog, and marks state' do
+      document = usable_catalog
+      stub_reasoning(price_range_payload)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq(
+        'Prices for Impeller range from IDR 12,500 to IDR 45,000 per yard. ' \
+        "Please reply with the exact variant code shown in the catalog and I'll confirm the exact price for you."
+      )
+      expect(reply.attachments.count).to eq(1)
+      expect(reply.attachments.first.file.blob.id).to eq(document.source_file.blob.id)
+
+      state = product_state
+      expect(state['validated_family']).to eq('IMP')
+      expect(state['current_intent']).to eq('price')
+      expect(state['catalog_sent']).to be(true)
+      expect(state['catalog_document_id']).to eq(document.id)
+      expect(state['catalog_message_id']).to eq(reply.id)
+      expect(usage_count).to eq(1)
+      expect(claim_status).to eq('completed')
+    end
+
+    it 'never claims a catalog was shown and attaches nothing when no usable catalog exists for a valid range' do
+      stub_reasoning(price_range_payload)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq(
+        'Prices for Impeller range from IDR 12,500 to IDR 45,000 per yard. ' \
+        "Please reply with the exact variant code and I'll confirm the exact price for you."
+      )
+      expect(reply.content).not_to include('shown in the catalog')
+      expect(reply.attachments).to be_empty
+    end
+
+    it 'sends only truthful range text (no duplicate attachment) when the flow already sent a catalog' do
+      document = usable_catalog
+      store = Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload)
+      store.start!('validated_family' => 'IMP', 'current_intent' => 'price')
+      store.update!('catalog_sent' => true, 'catalog_document_id' => document.id, 'catalog_message_id' => 987)
+      stub_reasoning(price_range_payload(operation: :update))
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq(
+        'Prices for Impeller range from IDR 12,500 to IDR 45,000 per yard. ' \
+        "Please reply with the exact variant code and I'll confirm the exact price for you."
+      )
+      expect(reply.attachments).to be_empty
+      expect(product_state['catalog_message_id']).to eq(987)
+    end
+
     # --- Customer-language localization of the product path (generic mechanism) ---
 
     def stub_language(language)

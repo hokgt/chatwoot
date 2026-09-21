@@ -106,12 +106,23 @@ module Marine
       # `repositories` bundles the four Phase 1 read-only repositories under the keys
       # :family, :variant, :price, :stock (each defaulting to the real repository), so
       # dependency injection stays fully testable without a long parameter list.
+      # The real repository class each `repositories` key defaults to, so #initialize stays a flat
+      # assignment rather than a chain of `|| Class.new` fallbacks (one per repository).
+      REPOSITORY_DEFAULTS = {
+        family: Marine::Catalog::ProductFamilyRepository,
+        variant: Marine::Catalog::VariantRepository,
+        price: Marine::Catalog::PriceRepository,
+        price_range: Marine::Catalog::PriceRangeRepository,
+        stock: Marine::Catalog::StockRepository
+      }.freeze
+
       def initialize(intent_extractor: nil, repositories: {}, variant_resolver: nil, reply_renderer: nil)
         @intent_extractor = intent_extractor
-        @family_repository = repositories[:family] || Marine::Catalog::ProductFamilyRepository.new
-        @variant_repository = repositories[:variant] || Marine::Catalog::VariantRepository.new
-        @price_repository = repositories[:price] || Marine::Catalog::PriceRepository.new
-        @stock_repository = repositories[:stock] || Marine::Catalog::StockRepository.new
+        @family_repository = repository(repositories, :family)
+        @variant_repository = repository(repositories, :variant)
+        @price_repository = repository(repositories, :price)
+        @price_range_repository = repository(repositories, :price_range)
+        @stock_repository = repository(repositories, :stock)
         @variant_resolver = variant_resolver || Marine::Catalog::VariantResolver.new(variant_repository: @variant_repository)
         @reply_renderer = reply_renderer || Marine::Catalog::ReplyRenderer.new
       end
@@ -184,7 +195,12 @@ module Marine
       end
 
       attr_reader :family_repository, :variant_repository, :price_repository,
-                  :stock_repository, :variant_resolver, :reply_renderer
+                  :price_range_repository, :stock_repository, :variant_resolver, :reply_renderer
+
+      # The injected repository for `key`, or a fresh instance of its real default.
+      def repository(repositories, key)
+        repositories[key] || REPOSITORY_DEFAULTS.fetch(key).new
+      end
 
       # A later runtime phase injects an account-aware extractor; the lazy default
       # keeps Phase 4 self-contained (extraction is only reached via #process).
@@ -515,8 +531,28 @@ module Marine
         else
           # Do NOT select a Marine::Document here; a later phase picks and sends it, then
           # marks catalog_sent — so the plan does not set the catalog markers itself.
-          build(:send_catalog, operation: state_op, changes: changes)
+          price_range_catalog(intent, family, state_op, changes)
         end
+      end
+
+      # ONLY the family-only PRICE branch of the catalog-assisted variant clarification is changed:
+      # before sending the family catalog it computes a deterministic price RANGE over every active
+      # variant (fixed User Price policy). A clean range rides the SAME send_catalog action/selector/
+      # attachment as a range-grounded caption that asks for the exact variant code shown in the
+      # catalog; a missing / conflicting / heterogeneous range fails CLOSED to the existing safe price
+      # handoff (never a silently dropped variant, never a guessed range). Every OTHER awaiting-variant
+      # intent (variant_info, stock) keeps the unchanged plain catalog-assisted clarification (reply nil).
+      def price_range_catalog(intent, family, state_op, changes)
+        return build(:send_catalog, operation: state_op, changes: changes) unless intent[:intent] == 'price'
+
+        range = price_range_repository.range_for(family[:code])
+        descriptor = range[:status] == :available ? reply_renderer.price_range(range, family) : nil
+        # An unavailable/conflicting range OR a range whose required facts failed the renderer trust
+        # boundary (descriptor nil) both fail CLOSED to the existing safe price handoff — never a
+        # guessed range and never an invalid fact turned into customer text.
+        return build(:handoff, reply: reply_renderer.price_conflict, operation: state_op, changes: changes) if descriptor.nil?
+
+        build(:send_catalog, reply: descriptor, operation: state_op, changes: changes)
       end
 
       # Structured FAMILY clarification occurrence. Occurrences 1 and 2 record bounded
