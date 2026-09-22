@@ -451,16 +451,22 @@ module Marine
         customer_language (string|null, the language of the CUSTOMER's message as a short BCP-47 code such as "en", "id", "zh-hans"; null if unsure).
         Numbers are NOT automatically codes —
         a bare number may be a quantity, price, or size; never invent codes, families, or attributes.
-        Use "catalog" ONLY when the customer asks to see or receive the product catalog DOCUMENT itself for a product family,
-        rather than a specific price, stock level, or single-variant detail. This includes a short follow-up that simply asks to
-        receive or see the catalog while a family is already in focus (use current_family_in_focus) — do not treat that as unsupported.
-        Use "product_overview" for a BROAD, informational question about WHAT the business sells at a high level — its product
-        lines or overall range — rather than any specific family's price/stock/variant OR its catalog document. Examples that are
-        product_overview: "What products does Textilindo sell?", "What kind of products do you offer?", "What is your product
-        range?", "What sort of things do you make?". Judge this from the MEANING of the customer's own words in whatever language
-        they use, not from surface keywords, and never invent product lines. The distinction from "catalog": product_overview asks
-        to be TOLD what is offered (answered from general knowledge), while "catalog" asks to RECEIVE or SEE the catalog document
-        for a family. A broad overview question names no family and wants a document neither, so it is product_overview, not catalog.
+        Decide the artifact/document request FIRST. Use "catalog" whenever the customer asks to RECEIVE, SEE, SEND, SHOW, OPEN,
+        or DOWNLOAD the product catalog DOCUMENT itself — the catalog, brochure, PDF, or catalog file — rather than a specific
+        price, stock level, or single-variant detail. This artifact request is "catalog" WHETHER OR NOT a product family is named:
+        a GLOBAL catalog document request that names no family is still "catalog". Examples that are catalog:
+        "Can you send me your product catalog?", "Please show me your catalog.", "I want the catalog PDF.", and the Indonesian
+        equivalent "Bisa kirim katalog produknya?" — the deterministic flow will clarify which family afterward if needed. The
+        phrase "product catalog" can denote the DOCUMENT and is NOT automatically "product_overview". This also includes a short
+        follow-up that simply asks to receive or see the catalog while a family is already in focus (use
+        current_family_in_focus) — do not treat that as unsupported.
+        Only AFTER ruling out an artifact/document request, use "product_overview" for a BROAD, informational question about WHAT
+        the business sells at a high level — its product lines or overall range — that asks to be TOLD what is offered rather than
+        to RECEIVE any document. Examples that are product_overview: "What products does Textilindo sell?", "What kind of products
+        do you offer?", "What is your product range?", "What sort of things do you make?". Judge this from the MEANING of the
+        customer's own words in whatever language they use, not from surface keywords, and never invent product lines. The
+        distinction from "catalog": product_overview asks to be TOLD what is offered (answered from general knowledge), while
+        "catalog" asks to RECEIVE or SEE the catalog document — even when no family is named.
         When the customer only confirms or refers back to the family already in focus without naming a new one, leave
         family_mention null so the conversation continues with that family.
         For any stock question, decide stock_answer_shape from the ANSWER the customer expects: a request for a NUMBER of units

@@ -128,6 +128,20 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(plan[:action]).to eq(:send_catalog)
       expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-1', family_name: 'Impeller')
     end
+
+    # A GLOBAL catalog document request (no family named) is a transactional catalog intent, NOT an
+    # informational overview: it clarifies the family deterministically and NEVER defers to grounded RAG
+    # (:not_product). catalog ∈ TRANSACTIONAL_INTENTS, so the unresolved-family clarify path applies.
+    it 'clarifies the family for a family-less catalog request instead of routing to knowledge (not RAG)' do
+      allow(family_repository).to receive(:resolve_exact).and_return(nil)
+      allow(family_repository).to receive(:active_candidates).and_return([{ code: 'FAM-1', name: 'Impeller' }])
+
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'catalog', family_mention: nil), flow: nil)
+
+      expect(plan[:action]).to eq(:clarify_family)
+      expect(plan[:action]).not_to eq(:not_product)
+      expect(plan[:reply][:kind]).to eq(:clarify_family)
+    end
   end
 
   describe 'unsupported product intent' do

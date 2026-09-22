@@ -88,6 +88,41 @@ RSpec.describe Marine::Catalog::IntentExtractor do
     end
   end
 
+  describe 'explicit catalog-document requests classify as catalog (artifact-first contract)' do
+    # The extractor is a pass-through for the LLM's chosen intent; the fix lives in the SYSTEM_PROMPT.
+    # These examples assert the prompt states the artifact-first, family-optional rule (no Ruby keyword
+    # heuristic) AND that an emitted "catalog" intent survives normalization for a family-less request.
+    it 'documents the artifact-first, family-optional catalog rule before the broad overview examples' do
+      stub_llm(message: llm_json(intent: 'catalog'))
+
+      extract(text: 'Can you send me your product catalog?')
+
+      system = captured_prompts.last[:system]
+      # Artifact rule is stated and precedes the product_overview examples the model would otherwise
+      # over-match a global "send me your catalog" ask onto.
+      artifact_idx = system.index('WHETHER OR NOT a product family is named')
+      overview_idx = system.index('What products does Textilindo sell?')
+      expect(artifact_idx).not_to be_nil
+      expect(overview_idx).not_to be_nil
+      expect(artifact_idx).to be < overview_idx
+      # The document-request examples (incl. the Indonesian equivalent) are represented semantically.
+      expect(system).to include('Can you send me your product catalog?')
+      expect(system).to include('Bisa kirim katalog produknya?')
+      # "product catalog" must not be treated as automatically product_overview.
+      expect(system).to include('NOT automatically "product_overview"')
+    end
+
+    it 'preserves an emitted catalog intent for a global document request with no family named' do
+      stub_llm(message: llm_json(intent: 'catalog', family_mention: nil))
+
+      result = extract(text: 'Can you send me your product catalog?')
+
+      expect(result[:intent]).to eq('catalog')
+      expect(result[:family_mention]).to be_nil
+      expect(result[:reason]).to eq('extracted')
+    end
+  end
+
   describe 'non-product messages' do
     it 'classifies a non-product message without a product intent' do
       stub_llm(message: '{"product_related": false, "intent": "unsupported"}')
