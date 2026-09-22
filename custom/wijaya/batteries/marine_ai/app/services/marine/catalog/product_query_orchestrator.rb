@@ -159,6 +159,15 @@ module Marine
         @requested_intents = effective_requested_intents(intent, flow)
 
         intent = retain_flow_intent(intent, flow)
+        # A broad, informational product-OVERVIEW question ("what products does Textilindo sell / what is
+        # your product range") is a supported informational intent with NO catalog-grounded answer: the
+        # repositories hold only families/variants/prices/stock, never a product-line summary. Route it to
+        # grounded Knowledge Base retrieval (:not_product, no flow mutation) BEFORE any family resolution
+        # so it can never degrade to an arbitrary "which product?" clarify_family. Unlike
+        # #defer_to_knowledge? this is UNCONDITIONAL (independent of the KB-availability signal): a product
+        # overview always belongs to grounded knowledge generation, never the deterministic catalog flow.
+        # Runs AFTER retain_flow_intent so an active variant-required continuation is already excluded.
+        return build(:not_product) if product_overview?(intent)
         # An INFORMATIONAL product turn the approved KB confidently answers defers to grounded KB
         # retrieval (:not_product) instead of an attribute-free catalog identity echo, a variant
         # clarification, or an unsupported-request handoff — so an approved KB fact about a product is
@@ -302,6 +311,13 @@ module Marine
         return false if truthy(intent[:quantity_inquiry])
 
         TRANSACTIONAL_INTENTS.exclude?(intent[:intent].to_s)
+      end
+
+      # A broad informational product-overview turn — routed straight to grounded KB retrieval and never
+      # to the deterministic catalog flow. Matched against the extractor's single allowlisted constant so
+      # the routing stays free of any product/phrase list.
+      def product_overview?(intent)
+        intent[:intent].to_s == Marine::Catalog::IntentExtractor::PRODUCT_OVERVIEW_INTENT
       end
 
       # Family decision/context for the turn. Returns the settled

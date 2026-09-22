@@ -57,6 +57,37 @@ RSpec.describe Marine::Catalog::IntentExtractor do
     end
   end
 
+  describe 'product_overview intent (broad informational)' do
+    it 'accepts and normalizes the allowlisted product_overview intent' do
+      stub_llm(message: '{"product_related": true, "intent": "product_overview"}')
+
+      result = extract(text: 'What products does Textilindo sell?')
+
+      expect(result[:product_related]).to be(true)
+      expect(result[:intent]).to eq('product_overview')
+      expect(result[:reason]).to eq('extracted')
+    end
+
+    it 'keeps product_overview out of the transactional requested-intent set (informational, never combinable)' do
+      stub_llm(message: '{"product_related": true, "intent": "product_overview", "intents": ["product_overview"]}')
+
+      # SUPPORTED_PRODUCT_INTENTS drives requested_intents; product_overview is not a member, so it
+      # never enters the price/stock combinable machinery.
+      expect(extract[:requested_intents]).to eq([])
+    end
+
+    it 'documents the overview-vs-document contract with examples in the system prompt (no Ruby phrase list)' do
+      stub_llm(message: llm_json(intent: 'product_overview'))
+
+      extract(text: 'What is your product range?')
+
+      system = captured_prompts.last[:system]
+      expect(system).to include('product_overview')
+      expect(system).to include('What products does Textilindo sell?')
+      expect(system).to include('What is your product')
+    end
+  end
+
   describe 'non-product messages' do
     it 'classifies a non-product message without a product intent' do
       stub_llm(message: '{"product_related": false, "intent": "unsupported"}')

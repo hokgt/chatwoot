@@ -85,6 +85,51 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
     end
   end
 
+  describe 'product_overview (broad informational) routes to grounded knowledge' do
+    it 'returns not_product before any family resolution, with no flow state mutation' do
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'product_overview', family_mention: nil), flow: nil)
+
+      expect(plan[:action]).to eq(:not_product)
+      expect(plan[:reply]).to be_nil
+      expect(plan[:state]).to eq(operation: :none, changes: {})
+      expect(family_repository).not_to have_received(:resolve_exact)
+      expect(family_repository).not_to have_received(:active_candidates)
+    end
+
+    it 'never clarifies the family for a broad overview even when a mention is present' do
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'product_overview', family_mention: 'products'), flow: nil)
+
+      expect(plan[:action]).to eq(:not_product)
+      expect(plan[:action]).not_to eq(:clarify_family)
+    end
+
+    it 'does not resolve or mutate an active validated flow on an overview turn' do
+      flow = active_flow('validated_family' => 'FAM-1', 'validated_variant' => 'CHILD-1', 'current_intent' => 'stock')
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'product_overview', family_mention: nil), flow: flow)
+
+      expect(plan[:action]).to eq(:not_product)
+      expect(plan[:state]).to eq(operation: :none, changes: {})
+      expect(family_repository).not_to have_received(:resolve_exact)
+    end
+
+    it 'routes to grounded knowledge regardless of the KB-availability signal (unconditional)' do
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'product_overview', family_mention: nil),
+                                          flow: nil, knowledge_available: false)
+
+      expect(plan[:action]).to eq(:not_product)
+    end
+  end
+
+  describe 'explicit catalog-document requests stay deterministic (unchanged by product_overview)' do
+    it 'sends the catalog document for an explicit family catalog request' do
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'catalog', family_mention: 'Impeller'), flow: nil)
+
+      expect(family_repository).to have_received(:resolve_exact).with('Impeller')
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-1', family_name: 'Impeller')
+    end
+  end
+
   describe 'unsupported product intent' do
     it 'hands off with a safe, factless descriptor' do
       plan = orchestrator.plan_for_intent(intent: intent(intent: 'unsupported'), flow: nil)

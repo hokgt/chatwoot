@@ -48,11 +48,28 @@
 module Marine
   module Catalog
     class IntentExtractor # rubocop:disable Metrics/ClassLength
-      # Product intents we actively support downstream. Anything else that is still a
-      # product query normalizes to `unsupported`; a failed/unavailable/malformed
-      # extraction normalizes to `unknown`.
+      # Product intents we actively support downstream through the deterministic catalog flow
+      # (price/stock/variant resolution, parent identity echo, catalog document delivery). Anything
+      # else that is still a product query normalizes to `unsupported`; a failed/unavailable/malformed
+      # extraction normalizes to `unknown`. This set also drives the per-turn requested-intent SET and
+      # the combinable price+stock pair, so `product_overview` is deliberately NOT a member: it never
+      # combines and never reaches variant/price/stock fulfillment.
       SUPPORTED_PRODUCT_INTENTS = %w[price stock parent_info variant_info catalog].freeze
-      INTENTS = (SUPPORTED_PRODUCT_INTENTS + %w[unsupported unknown]).freeze
+
+      # A broad, informational product-OVERVIEW question — "what products does Textilindo sell", "what
+      # kind of products do you offer", "what is your product range" — asks WHAT the business sells at a
+      # high level, not for a specific family's price/stock/variant nor its catalog DOCUMENT. The catalog
+      # repositories hold only families/variants/prices/stock, never a product-line summary, so this turn
+      # has no catalog-grounded answer; the orchestrator routes it to grounded Knowledge Base retrieval
+      # instead of a "which product?" family clarification. It is a supported informational intent
+      # (allowlisted here) but never a transactional/deliverable one (kept out of SUPPORTED_PRODUCT_INTENTS).
+      PRODUCT_OVERVIEW_INTENT = 'product_overview'
+      INFORMATIONAL_PRODUCT_INTENTS = [PRODUCT_OVERVIEW_INTENT].freeze
+
+      # Every product intent the extractor may surface as-is (transactional + informational). Only these
+      # survive normalization unchanged; any other product query folds to `unsupported`.
+      ALLOWED_PRODUCT_INTENTS = (SUPPORTED_PRODUCT_INTENTS + INFORMATIONAL_PRODUCT_INTENTS).freeze
+      INTENTS = (ALLOWED_PRODUCT_INTENTS + %w[unsupported unknown]).freeze
       CONFIDENCE_LEVELS = %w[low medium high].freeze
 
       # Fixed, generic allowlist for the untrusted unsupported-request CATEGORY. These are
@@ -262,7 +279,7 @@ module Marine
 
       def normalize_intent(value)
         intent = value.to_s.strip.downcase
-        return intent if SUPPORTED_PRODUCT_INTENTS.include?(intent)
+        return intent if ALLOWED_PRODUCT_INTENTS.include?(intent)
         return 'unknown' if intent == 'unknown'
 
         # Any other recognized-but-unsupported product intent, or an unknown string.
@@ -412,7 +429,7 @@ module Marine
       SYSTEM_PROMPT = <<~PROMPT.strip
         You classify a customer's product intent for a marine parts catalog assistant. You only UNDERSTAND intent;
         you never look anything up, price, or confirm it. Respond with a single JSON object and nothing else, with these keys:
-        product_related (boolean); intent (one of "price", "stock", "parent_info", "variant_info", "catalog", "unsupported");
+        product_related (boolean); intent (one of "price", "stock", "parent_info", "variant_info", "catalog", "product_overview", "unsupported");
         intents (array of the supported intents the SAME turn asks for, e.g. ["price","stock"] when the customer asks for both
         the price and whether it is in stock; use a single-element array for a single ask; omit or leave empty when unsure);
         family_mention (string|null, a candidate name only); explicit_child_code (string|null, a candidate code only);
@@ -434,9 +451,16 @@ module Marine
         customer_language (string|null, the language of the CUSTOMER's message as a short BCP-47 code such as "en", "id", "zh-hans"; null if unsure).
         Numbers are NOT automatically codes —
         a bare number may be a quantity, price, or size; never invent codes, families, or attributes.
-        Use "catalog" ONLY when the customer asks to see or receive the product catalog document itself for a product family,
+        Use "catalog" ONLY when the customer asks to see or receive the product catalog DOCUMENT itself for a product family,
         rather than a specific price, stock level, or single-variant detail. This includes a short follow-up that simply asks to
         receive or see the catalog while a family is already in focus (use current_family_in_focus) — do not treat that as unsupported.
+        Use "product_overview" for a BROAD, informational question about WHAT the business sells at a high level — its product
+        lines or overall range — rather than any specific family's price/stock/variant OR its catalog document. Examples that are
+        product_overview: "What products does Textilindo sell?", "What kind of products do you offer?", "What is your product
+        range?", "What sort of things do you make?". Judge this from the MEANING of the customer's own words in whatever language
+        they use, not from surface keywords, and never invent product lines. The distinction from "catalog": product_overview asks
+        to be TOLD what is offered (answered from general knowledge), while "catalog" asks to RECEIVE or SEE the catalog document
+        for a family. A broad overview question names no family and wants a document neither, so it is product_overview, not catalog.
         When the customer only confirms or refers back to the family already in focus without naming a new one, leave
         family_mention null so the conversation continues with that family.
         For any stock question, decide stock_answer_shape from the ANSWER the customer expects: a request for a NUMBER of units
