@@ -74,6 +74,14 @@ class Marine::Charge::ResponseGenerator
     if result.confidence < 1.0
       rag_payload = rag_synthesis_payload(customer_query, message_history, result, query_translation)
       return rag_payload if rag_payload
+
+      # Defect 3 — a NON-EXACT (confidence < 1.0) approved match is not a reliable pricing authority.
+      # When synthesis declined or was rejected (a generated price dropped) the caller would otherwise
+      # fall through to this raw approved answer; if that raw answer itself states a monetary/unit-rate
+      # product price, let it fail CLOSED to the canonical safe handoff rather than substitute one
+      # non-deterministic numeric price for another and bypass the deterministic catalog pricing path.
+      # Exact matches (confidence 1.0, curated) skip this and keep delivering their approved answer.
+      return handoff_payload(result.fallback_reason, query_translation, nil) if price_claim?(result.answer)
     end
 
     response_translation = translate_response(result.answer, query_translation[:source_language])
@@ -227,17 +235,19 @@ class Marine::Charge::ResponseGenerator
     enforced
   end
 
-  # Local, model-free fail-closed backstops for a generated reply. Either drops it to the caller's
+  # Local, model-free fail-closed backstops for a generated reply. Any one drops it to the caller's
   # own fallback (handoff / raw approved answer):
   #   * control_leak? — the reply verbatim-copies a long run of the assistant's confidential control
   #     text (instructions / guardrails / guidelines — never the approved KB, whose answers are
   #     legitimately quotable), so a classification miss can never disclose internal control data.
-  #   * price_claim? — the reply states a numeric product price. Numeric product pricing is
-  #     DETERMINISTIC (catalog pricing path only), so general RAG can never become a source of an
-  #     invented price; narrow to explicit monetary claims so ordinary numbers (dates, codes, phone,
-  #     address, quantity) are never flagged.
+  #   * price_claim? — the reply states a monetary/unit-rate product price by SHAPE. Numeric product
+  #     pricing is DETERMINISTIC (catalog pricing path only), so general RAG can never become a source
+  #     of an invented price; the shape check stays narrow so ordinary numbers are never flagged.
+  #   * numeric_ungrounded? — the reply states a MATERIAL number absent from the approved Knowledge
+  #     Base context it was grounded on (an invented amount/MOQ/date/contact — including a bare price
+  #     with no currency token or rate unit that the shape check cannot see). Grounded numbers pass.
   def rejected_generated_reply?(reply)
-    control_leak?(reply) || price_claim?(reply)
+    control_leak?(reply) || price_claim?(reply) || numeric_ungrounded?(reply)
   end
 
   def control_leak?(reply)
@@ -246,6 +256,13 @@ class Marine::Charge::ResponseGenerator
 
   def price_claim?(reply)
     Marine::Charge::PriceClaimInspector.new.monetary_price_claim?(reply: reply)
+  end
+
+  # Reject a generated reply that asserts a material number the approved KB context does not contain
+  # — grounded against the SAME assembled context the RAG prompt was built from (memoized below).
+  def numeric_ungrounded?(reply)
+    Marine::Charge::NumericGroundingInspector.new
+                                             .ungrounded_numeric_claim?(reply: reply, grounding: knowledge_base_context)
   end
 
   # The confidential control texts the generated reply must never verbatim-copy, mirroring what
@@ -289,8 +306,15 @@ class Marine::Charge::ResponseGenerator
 
   # Builds the grounding block from every approved FAQ entry and document-backed
   # response. Each answer is truncated and the entry count is capped so the prompt
-  # stays within the model context window.
+  # stays within the model context window. Memoized per generation so the RAG prompt and the
+  # numeric-grounding guard share ONE assembled context (identical grounding, no double query).
   def knowledge_base_context
+    return @knowledge_base_context if defined?(@knowledge_base_context)
+
+    @knowledge_base_context = build_knowledge_base_context
+  end
+
+  def build_knowledge_base_context
     entries = knowledge_base_entries
     return nil if entries.empty?
 

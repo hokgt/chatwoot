@@ -38,6 +38,26 @@ RSpec.describe Marine::Charge::PriceClaimInspector do
       end
     end
 
+    context 'with a bare unit-RATE amount that carries NO currency token' do
+      it 'flags a "<amount> per <unit>" rate (no currency token)' do
+        expect(inspector.monetary_price_claim?(reply: 'Harga kain itu 28.500 per yard.')).to be(true)
+      end
+
+      it 'flags a "<amount>/<unit>" rate (no currency token)' do
+        expect(inspector.monetary_price_claim?(reply: 'Sekitar 28500/yard.')).to be(true)
+      end
+
+      it 'still flags a rate shape when the display policy exposes NO currency tokens' do
+        tokenless = described_class.new(currency_tokens: [])
+        expect(tokenless.monetary_price_claim?(reply: '28.500 per yard')).to be(true)
+      end
+
+      it 'does not flag a bare number with neither a currency token nor a rate unit' do
+        # Out of scope by design here — the numeric-grounding guard rejects an ungrounded bare amount.
+        expect(inspector.monetary_price_claim?(reply: 'Harganya 28500')).to be(false)
+      end
+    end
+
     context 'with ordinary non-price numbers (no false positives)' do
       it 'does not flag a date' do
         expect(inspector.monetary_price_claim?(reply: 'We reopen on 22 September 2026.')).to be(false)
@@ -65,6 +85,14 @@ RSpec.describe Marine::Charge::PriceClaimInspector do
 
       it 'does not flag a currency mention with no adjacent number' do
         expect(inspector.monetary_price_claim?(reply: 'We accept payment in IDR by bank transfer.')).to be(false)
+      end
+
+      it 'does not flag a non-rate slash between numbers (e.g. 24/7)' do
+        expect(inspector.monetary_price_claim?(reply: 'Our support is open 24/7 every day.')).to be(false)
+      end
+
+      it 'does not flag operating hours' do
+        expect(inspector.monetary_price_claim?(reply: 'We are open Monday to Friday from 09:00 to 18:00.')).to be(false)
       end
 
       it 'is false for a blank reply' do

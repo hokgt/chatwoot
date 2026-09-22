@@ -75,17 +75,31 @@ RSpec.describe Marine::Agent::Runner, type: :model do
       allow(Marine::Llm::TranslateResponseService).to receive(:new).and_return(
         double(call: { text: nil, source_language: 'id', target_language: 'id', translated: false, error: nil })
       )
+    end
+
+    def stub_rag_reply(message)
       llm = double(configured?: true)
-      allow(llm).to receive(:chat).and_return({ ok: true, message: 'Harga kain Satin Velvet adalah Rp 28.500 per yard.', error: nil })
+      allow(llm).to receive(:chat).and_return({ ok: true, message: message, error: nil })
       allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
     end
 
-    it 'fails the invented RAG price closed to a handoff' do
-      payload = runner.run(additional_message: 'Berapa harganya?')
+    # Every equivalent bare or currency-tagged numeric price assertion must fail closed — none may
+    # be delivered from the source-less Playground RAG fallthrough.
+    {
+      'currency-tagged rate' => ['Harga kain Satin Velvet adalah Rp 28.500 per yard.', '28.500'],
+      'bare "<amount> per <unit>" rate' => ['Kira-kira 28.500 per yard ya.', '28.500'],
+      'bare "<amount>/<unit>" rate' => ['Sekitar 28500/yard.', '28500'],
+      'bare ungrounded amount' => ['Harganya 28500 saja.', '28500']
+    }.each do |label, (message, forbidden)|
+      it "fails an invented RAG price closed to a handoff (#{label})" do
+        stub_rag_reply(message)
 
-      expect(payload['action']).to eq('handoff')
-      expect(payload['response']).to eq('conversation_handoff')
-      expect(payload.to_s).not_to include('28.500')
+        payload = runner.run(additional_message: 'Berapa harganya?')
+
+        expect(payload['action']).to eq('handoff')
+        expect(payload['response']).to eq('conversation_handoff')
+        expect(payload.to_s).not_to include(forbidden)
+      end
     end
   end
 end
