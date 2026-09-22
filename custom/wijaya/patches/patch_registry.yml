@@ -832,6 +832,7 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/charge/fact_preservation_validator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/charge/confidence_scorer.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/charge/control_leak_inspector.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/charge/price_claim_inspector.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/handoff_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/domain_boundary_guard.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/domain_security_decision_service.rb
@@ -1207,7 +1208,10 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/charge/grounded_wording_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/charge/fact_preservation_validator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/charge/control_leak_inspector_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/price_claim_inspector_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/agent/runner_price_guard_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/charge/response_generator_confidentiality_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/response_generator_price_guard_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/response_builder_job_spec.rb
       # D6 — full trigger-bound job-path proof: one inbound price+stock turn -> one composite message.
       - spec/custom/wijaya/batteries/marine_ai/conversation/product_multi_intent_job_spec.rb

@@ -39,7 +39,9 @@ class Marine::Charge::ResponseGenerator
                     'Use earlier messages in this conversation only when they are relevant to the latest request, and do not ' \
                     'unnecessarily repeat an answer you have already given. Acknowledge relevant details the customer has already ' \
                     'provided. Keep your reply concise. If the customer asks for something the Knowledge Base Context does not ' \
-                    'support, say so naturally while still relying only on the approved information above.'.freeze
+                    'support, say so naturally while still relying only on the approved information above. ' \
+                    'Never state, quote, estimate, calculate, or invent any product price or monetary amount; if the customer ' \
+                    'asks about pricing, do not give a number and offer to connect them with a human agent.'.freeze
 
   def initialize(assistant:, conversation: nil, source: nil)
     @assistant = assistant
@@ -220,17 +222,30 @@ class Marine::Charge::ResponseGenerator
     return nil unless result[:ok] && result[:message].present?
 
     enforced = greeting_context.enforce(result[:message], opening: @opening).presence
-    # Confidentiality backstop: if the generated reply verbatim-copies a long run of the assistant's
-    # confidential control text (instructions / guardrails / guidelines — never the approved KB),
-    # drop it (fail closed to the caller's handoff / approved fallback) so a classification miss can
-    # never disclose internal control data. Approved KB answers are not treated as secret.
-    return nil if enforced && control_leak?(enforced)
+    return nil if enforced && rejected_generated_reply?(enforced)
 
     enforced
   end
 
+  # Local, model-free fail-closed backstops for a generated reply. Either drops it to the caller's
+  # own fallback (handoff / raw approved answer):
+  #   * control_leak? — the reply verbatim-copies a long run of the assistant's confidential control
+  #     text (instructions / guardrails / guidelines — never the approved KB, whose answers are
+  #     legitimately quotable), so a classification miss can never disclose internal control data.
+  #   * price_claim? — the reply states a numeric product price. Numeric product pricing is
+  #     DETERMINISTIC (catalog pricing path only), so general RAG can never become a source of an
+  #     invented price; narrow to explicit monetary claims so ordinary numbers (dates, codes, phone,
+  #     address, quantity) are never flagged.
+  def rejected_generated_reply?(reply)
+    control_leak?(reply) || price_claim?(reply)
+  end
+
   def control_leak?(reply)
     Marine::Charge::ControlLeakInspector.new.leak?(reply: reply, control_texts: control_texts)
+  end
+
+  def price_claim?(reply)
+    Marine::Charge::PriceClaimInspector.new.monetary_price_claim?(reply: reply)
   end
 
   # The confidential control texts the generated reply must never verbatim-copy, mirroring what
