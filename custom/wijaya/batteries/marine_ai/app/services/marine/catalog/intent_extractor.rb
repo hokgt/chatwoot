@@ -63,7 +63,7 @@ module Marine
       # has no catalog-grounded answer; the orchestrator routes it to grounded Knowledge Base retrieval
       # instead of a "which product?" family clarification. It is a supported informational intent
       # (allowlisted here) but never a transactional/deliverable one (kept out of SUPPORTED_PRODUCT_INTENTS).
-      PRODUCT_OVERVIEW_INTENT = 'product_overview'
+      PRODUCT_OVERVIEW_INTENT = 'product_overview'.freeze
       INFORMATIONAL_PRODUCT_INTENTS = [PRODUCT_OVERVIEW_INTENT].freeze
 
       # Every product intent the extractor may surface as-is (transactional + informational). Only these
