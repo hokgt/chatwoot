@@ -946,6 +946,14 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/variant_resolver.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_renderer.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_query_orchestrator.rb
+      # Shared, pure Conversation Language Resolver for the deterministic product flow. Resolves
+      # plan[:language] at the orchestrator #process seam from the current turn, the bounded
+      # role-labelled context, the extracted intent, and the assistant's configured language: a
+      # provider guess for a bare code/slot/entity-only turn (no linguistic evidence) is overridden by
+      # the nearest reliable prior CUSTOMER turn, else the configured language, else nil (fail-closed).
+      # Assistant/history turns never set customer language; deprecated aliases (in -> id) canonicalize.
+      # No DB read, no provider call, no state mutation; consumed by both Conversation and Playground.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/conversation_language_resolver.rb
       # Pure, side-effect-free presenter for the deterministic English product/catalog TEXT
       # (extracted from ResponseBuilderJob). The single source of truth for that wording, shared
       # by the trigger-bound job and the source-less PlaygroundPreview so the two never drift.
@@ -1301,6 +1309,10 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/catalog/variant_resolver_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/reply_renderer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_query_orchestrator_spec.rb
+      # Shared ConversationLanguageResolver spec: bare-code provider override to prior customer
+      # language, meaningful-turn authority/switching, nearest-customer-turn precedence, assistant
+      # turns ignored, configured fallback, fail-closed unresolved/unsupported, alias canonicalization.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/conversation_language_resolver_spec.rb
       # D6 — supported multi-intent (price+stock) composite reply: extractor set, orchestrator
       # composite/precedence/persistence, renderer/presenter, fact-protection, signed round-trip.
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_multi_intent_spec.rb

@@ -130,9 +130,19 @@ module Marine
       # Full path: extract intent from raw customer text (via the INJECTED extractor,
       # never the provider directly), then plan. Only this entry point touches the
       # extractor, so a no-provider test uses #plan_for_intent with a pre-extracted intent.
-      def process(text:, context: nil, flow: nil, suppressed: false, knowledge_available: false)
+      #
+      # It is also the single seam where the deterministic product-flow DELIVERY LANGUAGE is
+      # resolved (Marine::Catalog::ConversationLanguageResolver) from the current turn, the bounded
+      # role-labelled context, the extracted intent, and the assistant's `configured_language` — so a
+      # provider that guessed a language for a bare product code (with no linguistic evidence) can no
+      # longer set plan[:language]; the nearest reliable prior CUSTOMER turn (or the configured
+      # language) is used instead. The resolved code, canonical and possibly nil (fail-closed), is
+      # passed authoritatively to #plan_for_intent so every product-plan consumer receives it.
+      def process(text:, context: nil, flow: nil, suppressed: false, knowledge_available: false, configured_language: nil) # rubocop:disable Metrics/ParameterLists -- a flat keyword API at the reasoning entry seam
         intent = intent_extractor.extract(text: text, context: context, state: state_summary(flow))
-        plan_for_intent(intent: intent, flow: flow, suppressed: suppressed, text: text, knowledge_available: knowledge_available)
+        reply_language = resolve_reply_language(text, intent, context, configured_language)
+        plan_for_intent(intent: intent, flow: flow, suppressed: suppressed, text: text,
+                        knowledge_available: knowledge_available, reply_language: reply_language)
       end
 
       # Deterministic planning over an already-extracted (untrusted) intent hash and a
@@ -142,9 +152,13 @@ module Marine
       # `text` is the OPTIONAL raw customer turn. When supplied (the full #process path),
       # it enables data-driven family recovery from the untrusted turn when the extracted
       # family mention is missing or noisy; direct-component callers may omit it.
-      def plan_for_intent(intent:, flow: nil, suppressed: false, text: nil, knowledge_available: false)
+      # `reply_language` is the OPTIONAL resolved delivery language from #process (the sentinel
+      # :unset preserves the legacy per-turn provider language for direct callers/tests): when a
+      # value is supplied it is AUTHORITATIVE — a resolved code sets plan[:language], and a resolved
+      # nil (fail-closed) drops it, so #process never falls back to the raw provider guess.
+      def plan_for_intent(intent:, flow: nil, suppressed: false, text: nil, knowledge_available: false, reply_language: :unset) # rubocop:disable Metrics/ParameterLists -- a flat keyword API shared by #process and direct callers
         intent = symbolize(intent)
-        capture_turn_metadata(intent, text, knowledge_available)
+        capture_turn_metadata(intent, text, knowledge_available, reply_language)
 
         return build(:stop) if suppressed
 
@@ -196,11 +210,35 @@ module Marine
       # #defer_to_knowledge?) and can never redirect a transactional price/stock/catalog or
       # exact-quantity turn. It defaults false, so every existing direct caller keeps its unchanged
       # deterministic catalog behavior.
-      def capture_turn_metadata(intent, text, knowledge_available)
+      def capture_turn_metadata(intent, text, knowledge_available, reply_language = :unset)
         @turn_text = text.to_s
-        @plan_language = normalize_language(intent[:customer_language])
+        # An authoritative resolved language from #process wins (its nil deliberately drops
+        # plan[:language]); a direct caller (:unset) keeps the legacy per-turn provider language.
+        @plan_language = normalize_language(reply_language == :unset ? intent[:customer_language] : reply_language)
         @plan_handoff_category = normalize_unsupported_request(intent[:unsupported_request])
         @knowledge_available = knowledge_available
+      end
+
+      # Resolve the deterministic product-flow delivery language for this turn via the shared,
+      # pure resolver (no extra provider call): the current turn's provider language when it carries
+      # meaningful linguistic evidence, else the nearest reliable prior CUSTOMER turn from the bounded
+      # context, else the configured assistant language, else nil (fail-closed). Canonical code only.
+      # The turn's bounded extracted entity candidates are supplied so a message that is exactly a
+      # code/entity (any shape) is treated as non-linguistic, while a candidate plus real wording is
+      # still a meaningful switch.
+      def resolve_reply_language(text, intent, context, configured_language)
+        Marine::Catalog::ConversationLanguageResolver.resolve(
+          text: text, provider_language: intent[:customer_language], context: context,
+          configured_language: configured_language, entity_candidates: entity_candidates(intent)
+        ).language
+      end
+
+      # The turn's bounded extracted entity/code/attribute candidates (family_mention,
+      # explicit_child_code, attribute_candidates) — normalized extractor fields only, never a
+      # product/phrase list. The resolver subtracts their tokens from the current turn to decide
+      # whether it carries real linguistic evidence.
+      def entity_candidates(intent)
+        [intent[:family_mention], intent[:explicit_child_code], *Array(intent[:attribute_candidates])]
       end
 
       attr_reader :family_repository, :variant_repository, :price_repository,

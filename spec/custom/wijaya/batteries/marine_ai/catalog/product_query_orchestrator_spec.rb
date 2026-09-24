@@ -1169,6 +1169,90 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
     end
   end
 
+  # The shared ConversationLanguageResolver runs at the #process seam and sets plan[:language]
+  # authoritatively — a provider guess for a bare code (no linguistic evidence, even a multi-segment
+  # code) is overridden by the nearest reliable prior CUSTOMER turn, while #plan_for_intent's direct
+  # (test) path keeps the raw per-turn provider language. The turn's bounded extracted entity
+  # candidates flow through the seam so the resolver can recognize a code of any shape. The local
+  # detector is stubbed so the block is deterministic regardless of CLD3's presence. All codes are
+  # synthetic and no behavior is keyed to any code.
+  describe '#process language resolution (shared resolver at the seam)' do
+    subject(:orchestrator) do
+      described_class.new(
+        intent_extractor: extractor,
+        repositories: { family: family_repository, variant: variant_repository, price: price_repository, stock: stock_repository },
+        variant_resolver: variant_resolver
+      )
+    end
+
+    let(:extractor) { instance_double(Marine::Catalog::IntentExtractor) }
+
+    before do
+      allow(Marine::Llm::LanguageDetector).to receive(:new) do |text|
+        result = case text.to_s
+                 when 'halo berapa harganya semuanya' then { language: 'id', reliable: true, confidence: 0.99 }
+                 else { language: 'unknown', reliable: false, confidence: 0.0 }
+                 end
+        instance_double(Marine::Llm::LanguageDetector, detect: result)
+      end
+    end
+
+    it 'overrides an English provider guess for a bare multi-segment code with the Indonesian prior turn' do
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: 'Impeller', explicit_child_code: 'QLR-2200', customer_language: 'en')
+      )
+
+      plan = orchestrator.process(text: 'QLR-2200', context: [{ role: 'user', content: 'halo berapa harganya semuanya' }], flow: nil)
+
+      expect(plan[:language]).to eq('id')
+    end
+
+    it 'keeps a candidate PLUS meaningful English wording as an intentional switch' do
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: 'Impeller', explicit_child_code: 'QLR-2200', customer_language: 'en')
+      )
+
+      plan = orchestrator.process(text: 'QLR-2200 what is the price please',
+                                  context: [{ role: 'user', content: 'halo berapa harganya semuanya' }], flow: nil)
+
+      expect(plan[:language]).to eq('en')
+    end
+
+    it 'falls back to the configured assistant language when no customer language is reliable' do
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: 'Impeller', explicit_child_code: 'QLR-2200', customer_language: 'en')
+      )
+
+      plan = orchestrator.process(text: 'QLR-2200', context: [], flow: nil, configured_language: 'id')
+
+      expect(plan[:language]).to eq('id')
+    end
+
+    it 'keeps the per-turn provider language on the direct #plan_for_intent path (backward compatible)' do
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'parent_info', family_mention: 'Impeller', customer_language: 'en'), flow: nil
+      )
+
+      expect(plan[:language]).to eq('en')
+    end
+
+    # The resolved language rides EVERY deterministic plan action from this one shared seam — the same
+    # #process seam the Conversation Runner and the Playground both call — so both surfaces deliver a
+    # code-only turn in the inherited customer language regardless of the resulting action.
+    it 'applies the SAME resolved language across representative deterministic product actions' do
+      { 'parent_info' => :reply, 'unsupported' => :handoff }.each do |extracted_intent, expected_action|
+        allow(extractor).to receive(:extract).and_return(
+          intent(intent: extracted_intent, family_mention: 'Impeller', explicit_child_code: 'QLR-2200', customer_language: 'en')
+        )
+
+        plan = orchestrator.process(text: 'QLR-2200', context: [{ role: 'user', content: 'halo berapa harganya semuanya' }], flow: nil)
+
+        expect(plan[:action]).to eq(expected_action)
+        expect(plan[:language]).to eq('id')
+      end
+    end
+  end
+
   describe '#process end-to-end: real extractor answer-shape normalization drives routing' do
     subject(:orchestrator) do
       described_class.new(

@@ -57,9 +57,7 @@ module Marine
 
         bounded = bounded_history(history)
         prior = decode_state(state_token)
-        plan = orchestrator.process(text: query.to_s, context: bounded,
-                                    flow: store.snapshot_for_planning(prior) || {}, suppressed: false,
-                                    knowledge_available: knowledge_available)
+        plan = plan_for(query, bounded, prior, knowledge_available)
         return nil if plan[:action] == :not_product
 
         log_event('preview.plan', action: plan[:action], language: plan[:language])
@@ -82,6 +80,15 @@ module Marine
       private
 
       attr_reader :assistant, :account
+
+      # Run the SAME deterministic orchestrator the conversation path uses over the bounded transcript
+      # and prior in-memory snapshot, supplying the configured assistant language so the shared
+      # language resolver has the same last-resort fallback both surfaces provide.
+      def plan_for(query, bounded, prior, knowledge_available)
+        orchestrator.process(text: query.to_s, context: bounded,
+                             flow: store.snapshot_for_planning(prior) || {}, suppressed: false,
+                             knowledge_available: knowledge_available, configured_language: configured_reply_language)
+      end
 
       # Untrusted transcript re-bounded/allowlisted: only user/assistant roles, blank content
       # dropped, each turn truncated, newest turns kept (oldest-to-newest order preserved).

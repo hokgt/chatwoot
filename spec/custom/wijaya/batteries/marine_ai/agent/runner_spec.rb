@@ -203,6 +203,16 @@ RSpec.describe Marine::Agent::Runner do
       expect(orchestrator).to have_received(:process).with(hash_including(text: 'price for impeller 3 inch', suppressed: false))
     end
 
+    it 'forwards the assistant configured language to the shared orchestrator resolver seam' do
+      allow(assistant).to receive(:config).and_return('language' => 'id')
+      allow(orchestrator).to receive(:process).and_return(action: :not_product, reply: nil, state: { operation: :none, changes: {} })
+      allow(generator).to receive(:generate).and_return(reply_payload)
+
+      runner.run(additional_message: 'ignored — text comes from the trigger message')
+
+      expect(orchestrator).to have_received(:process).with(hash_including(configured_language: 'id'))
+    end
+
     it 'falls through to the unchanged retrieval path on a not_product plan' do
       allow(orchestrator).to receive(:process).and_return(action: :not_product, reply: nil, state: { operation: :none, changes: {} })
       allow(generator).to receive(:generate).and_return(reply_payload)

@@ -156,7 +156,8 @@ class Marine::Agent::Runner
 
     plan = product_orchestrator.process(text: context.trigger, context: context.history,
                                         flow: product_flow, suppressed: false,
-                                        knowledge_available: knowledge_available?(kb))
+                                        knowledge_available: knowledge_available?(kb),
+                                        configured_language: configured_reply_language)
     return nil if plan[:action] == :not_product
 
     log_event('answer.product', action: plan[:action])
@@ -225,6 +226,14 @@ class Marine::Agent::Runner
 
   def product_account
     conversation&.account || (assistant.account if assistant.respond_to?(:account))
+  end
+
+  # The assistant's configured operating (KB/reply) language, supplied to the orchestrator's shared
+  # language resolver as the last-resort fallback when neither the current turn nor a prior customer
+  # turn yields a reliable language. nil when unconfigured. Mirrors the ResponseBuilderJob/
+  # PlaygroundPreview config read; the resolver normalizes/validates the value.
+  def configured_reply_language
+    assistant.config.to_h['language'] if assistant.respond_to?(:config)
   end
 
   # Source-less Playground catalog preview. Runs ONLY for an explicit Playground run (source ==
