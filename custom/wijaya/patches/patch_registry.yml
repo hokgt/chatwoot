@@ -575,6 +575,17 @@ patches:
       # reset it back to the assignee, or retry a still-pending sync, with a pending indicator while
       # the owner-only ERP write — still fail-closed ERP-User validated — is performed by the
       # erp_lead_owner_sync battery after the Lead links — see below.)
+      # The Activity Master options source (lead_activity_options_service.rb) now
+      # exposes two read shapes: the strict fetch_activity_names used by the read-only
+      # options endpoint (a malformed 2xx body raises MalformedResponseError so the UI
+      # can Retry rather than silently show "no activities"), and the tolerant
+      # fetch_names retained for the POST insert-validation path (unchanged contract:
+      # a malformed body collapses to []). The controller exposes three independent,
+      # lazily-consumable read endpoints — meta (default_date only; issues NO ERP
+      # request), activity_options (only the Lead Activity Master), and
+      # person_in_charge_options (only the ERP User directory) — plus the unchanged
+      # guarded insert. Each endpoint keeps the same authorization, account/conversation
+      # scoping, configured + linked-Lead gating, and sanitized errors.
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_person_directory.rb
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_options_service.rb
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_payload_builder.rb
@@ -582,6 +593,13 @@ patches:
       - custom/wijaya/batteries/erp_lead_sidebar/app/controllers/api/v1/accounts/wijaya/lead_activities_controller.rb
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/api/wijayaErpLeadActivities.js
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/LeadActivityForm.vue
+      # Dropdown-level lazy loader owned by the battery. Each ERP dependency
+      # (Activity Master, Person In Charge) gets one instance with an explicit
+      # idle/loading/loaded/error state, in-flight dedupe, stale-response guarding,
+      # cache reuse, and independent Retry/Refresh. Consumed by LeadActivityForm so
+      # the Activity Type + Follow Up Activity dropdowns share one Activity Master
+      # fetch while Person In Charge loads independently.
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/useLazyErpResource.js
       # Strict real-calendar YYYY-MM-DD validation shared by the form (mirrors the
       # backend Date.iso8601 round-trip); extracted so it is directly unit-testable.
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/dateValidation.js

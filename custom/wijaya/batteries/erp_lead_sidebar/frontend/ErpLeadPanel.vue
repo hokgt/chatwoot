@@ -46,9 +46,17 @@ const openModal = () => {
 
 // Two isolated views inside the same modal. 'details' is the default and hosts
 // the unchanged Lead Details create/update flow; 'activity' mounts the fully
-// separate LeadActivityForm (v-if, so its runtime options only fetch when the
-// tab is opened). Reset to 'details' on conversation switch.
+// separate LeadActivityForm. Reset to 'details' on conversation switch.
 const activeTab = ref('details');
+
+// The Activity form is mounted on first visit and then kept mounted (toggled with
+// v-show), so switching back and forth between the two tabs preserves the unsaved
+// Activity form state and its loaded option caches. It is unmounted/reset only on
+// a conversation change (activityVisited returns to false below).
+const activityVisited = ref(false);
+watch(activeTab, tab => {
+  if (tab === 'activity') activityVisited.value = true;
+});
 
 // When ERP is unconfigured the backend never persists a draft on open; mirror
 // that on the client by disabling all autosave so opening the panel creates zero
@@ -706,6 +714,9 @@ watch(
   () => {
     isModalOpen.value = false;
     activeTab.value = 'details';
+    // Drop the mounted Activity form so a new conversation starts fresh; a later
+    // visit remounts it with reset caches.
+    activityVisited.value = false;
     loadDraft();
   },
   { immediate: true }
@@ -799,15 +810,19 @@ watch(assigneeEmail, (next, prev) => {
         </p>
 
         <!-- Activity tab: the form owns its own scroll body + footer, so it must
-             not be wrapped in another overflow scroller here. -->
+             not be wrapped in another overflow scroller here. The panel toggles
+             with v-show; the form itself is mounted on first visit (v-if) and then
+             kept mounted, so the unsaved form state and loaded option caches
+             survive tab switching until the conversation changes. -->
         <div
-          v-if="activeTab === 'activity'"
+          v-show="activeTab === 'activity'"
           id="erp-tabpanel-activity"
           role="tabpanel"
           aria-labelledby="erp-tab-activity"
           class="flex min-h-0 flex-1 flex-col pt-2"
         >
           <LeadActivityForm
+            v-if="activityVisited"
             :conversation-id="conversationId"
             :current-chat="currentChat"
             :erp-lead-id="erpLeadId"
@@ -816,9 +831,10 @@ watch(assigneeEmail, (next, prev) => {
         </div>
 
         <!-- Details tab: compact status region, a single scroll body, and a
-             stable non-scrolling footer sibling below it. -->
+             stable non-scrolling footer sibling below it. Toggled with v-show so
+             it stays mounted alongside the Activity form. -->
         <div
-          v-else
+          v-show="activeTab === 'details'"
           id="erp-tabpanel-details"
           role="tabpanel"
           aria-labelledby="erp-tab-details"

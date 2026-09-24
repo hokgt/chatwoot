@@ -129,10 +129,16 @@ const NextButton = {
 
 // The Lead Activity tab hosts a fully separate component with its own API. Stub
 // it so the Lead Details specs never reach that network surface, and so switching
-// tabs can be asserted without mounting the real form.
+// tabs can be asserted without mounting the real form. A module-level mount
+// counter lets the preservation spec prove the form is kept mounted (v-show)
+// across tab switches rather than remounted (which would reset its state/cache).
+let leadActivityMountCount = 0;
 const LeadActivityForm = {
   name: 'LeadActivityForm',
   props: ['conversationId', 'currentChat', 'erpLeadId', 'configured'],
+  mounted() {
+    leadActivityMountCount += 1;
+  },
   template: '<div class="lead-activity-form-stub" />',
 };
 
@@ -498,9 +504,44 @@ describe('ErpLeadPanel modal presentation', () => {
       .find(b => b.text() === 'Lead Activity');
     await activityTab.trigger('click');
 
+    // The Activity form is mounted and its panel is visible; the Lead Details
+    // panel stays mounted (v-show) but is hidden.
     expect(wrapper.find('.lead-activity-form-stub').exists()).toBe(true);
-    // Lead Details sections are no longer rendered while on the Activity tab.
-    expect(wrapper.findAll('h3').length).toBe(0);
+    expect(wrapper.find('#erp-tabpanel-activity').isVisible()).toBe(true);
+    expect(wrapper.find('#erp-tabpanel-details').isVisible()).toBe(false);
+  });
+
+  it('preserves the mounted Activity form (and its caches) across tab switching', async () => {
+    leadActivityMountCount = 0;
+    const wrapper = mountModalPanel();
+    await flushPromises();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await flushPromises();
+
+    const tab = label =>
+      wrapper.findAll('button').find(b => b.text() === label);
+
+    // Details -> Activity (first visit mounts the form).
+    await tab('Lead Activity').trigger('click');
+    expect(wrapper.find('.lead-activity-form-stub').exists()).toBe(true);
+    expect(leadActivityMountCount).toBe(1);
+
+    // Activity -> Details: the form stays mounted (v-show hides the panel).
+    // Assert the inline display directly: jsdom's getComputedStyle (used by
+    // isVisible) is unreliable after repeated v-show toggles, but v-show's inline
+    // `display` is deterministic and is exactly what controls visibility.
+    const activityDisplay = () =>
+      wrapper.find('#erp-tabpanel-activity').element.style.display;
+    await tab('Lead Details').trigger('click');
+    expect(wrapper.find('.lead-activity-form-stub').exists()).toBe(true);
+    expect(activityDisplay()).toBe('none');
+
+    // Details -> Activity again: the panel is shown and the form is the SAME
+    // instance (never remounted, so its state and caches are preserved).
+    await tab('Lead Activity').trigger('click');
+    expect(activityDisplay()).not.toBe('none');
+    expect(wrapper.find('.lead-activity-form-stub').exists()).toBe(true);
+    expect(leadActivityMountCount).toBe(1);
   });
 
   it('resets to the Lead Details tab when the conversation changes', async () => {

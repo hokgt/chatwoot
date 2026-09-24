@@ -4,7 +4,8 @@ require 'rails_helper'
 
 # The manual Lead Activity endpoints are nested under an existing ERP Lead draft
 # (addressed by the conversation display_id). They must never create a draft and
-# must gate on both configuration and a linked ERP Lead.
+# must gate on both configuration and a linked ERP Lead. Each read endpoint is
+# independent and hits ONLY its own ERP dependency (or, for meta, none at all).
 RSpec.describe 'Wijaya Lead Activities API', type: :request do
   let(:account) { create(:account) }
   let(:inbox) { create(:inbox, account: account) }
@@ -15,7 +16,9 @@ RSpec.describe 'Wijaya Lead Activities API', type: :request do
   let(:base_path) do
     "/api/v1/accounts/#{account.id}/wijaya/erp_lead_drafts/#{conversation.display_id}/lead_activities"
   end
-  let(:options_path) { "#{base_path}/options" }
+  let(:meta_path) { "#{base_path}/meta" }
+  let(:activity_options_path) { "#{base_path}/activity_options" }
+  let(:pic_options_path) { "#{base_path}/person_in_charge_options" }
 
   before { create(:inbox_member, inbox: inbox, user: agent) }
 
@@ -28,13 +31,30 @@ RSpec.describe 'Wijaya Lead Activities API', type: :request do
       allow(Wijaya::Batteries::ErpLeadSidebar::Config).to receive(:erp_configured?).and_return(false)
     end
 
-    it 'GET options is unprocessable and issues no ERP request' do
+    it 'GET meta is unprocessable and issues no ERP request' do
       expect(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService).not_to receive(:new)
 
-      get options_path, headers: auth, as: :json
+      get meta_path, headers: auth, as: :json
 
       expect(response).to have_http_status(:unprocessable_entity)
       expect(response.parsed_body['configured']).to be(false)
+    end
+
+    it 'GET activity_options is unprocessable and never runs the options service' do
+      expect(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService).not_to receive(:new)
+
+      get activity_options_path, headers: auth, as: :json
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response.parsed_body['configured']).to be(false)
+    end
+
+    it 'GET person_in_charge_options is unprocessable and never queries the directory' do
+      expect(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).not_to receive(:fetch_options)
+
+      get pic_options_path, headers: auth, as: :json
+
+      expect(response).to have_http_status(:unprocessable_entity)
     end
 
     it 'POST create is unprocessable and never runs the service' do
@@ -51,13 +71,30 @@ RSpec.describe 'Wijaya Lead Activities API', type: :request do
       allow(Wijaya::Batteries::ErpLeadSidebar::Config).to receive(:erp_configured?).and_return(true)
     end
 
-    it 'GET options requires a linked lead and does not fetch options' do
+    it 'GET meta requires a linked lead and issues no ERP request' do
       expect(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService).not_to receive(:new)
 
-      get options_path, headers: auth, as: :json
+      get meta_path, headers: auth, as: :json
 
       expect(response).to have_http_status(:unprocessable_entity)
       expect(response.parsed_body['error']).to match(/Create or link an ERP Lead/)
+    end
+
+    it 'GET activity_options requires a linked lead and does not fetch options' do
+      expect(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService).not_to receive(:new)
+
+      get activity_options_path, headers: auth, as: :json
+
+      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response.parsed_body['error']).to match(/Create or link an ERP Lead/)
+    end
+
+    it 'GET person_in_charge_options requires a linked lead and does not query the directory' do
+      expect(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).not_to receive(:fetch_options)
+
+      get pic_options_path, headers: auth, as: :json
+
+      expect(response).to have_http_status(:unprocessable_entity)
     end
 
     it 'POST create requires a linked lead and never runs the service' do
@@ -70,7 +107,7 @@ RSpec.describe 'Wijaya Lead Activities API', type: :request do
 
     it 'never creates a draft row' do
       expect do
-        get options_path, headers: auth, as: :json
+        get activity_options_path, headers: auth, as: :json
       end.not_to change(Wijaya::ErpLeadDraft, :count)
     end
   end
@@ -81,57 +118,150 @@ RSpec.describe 'Wijaya Lead Activities API', type: :request do
       create_draft(erp_lead_id: 'LEAD-0001')
     end
 
-    def stub_options_service(fetch_names: %w[Call WhatsApp], default_date: '2026-08-10')
-      options_service = instance_double(
-        Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService,
-        fetch_names: fetch_names, default_date: default_date
-      )
+    def stub_options_service(**methods)
+      options_service = instance_double(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService, **methods)
       allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService).to receive(:new).and_return(options_service)
+      options_service
     end
 
-    it 'GET options returns the master names, default date, and sanitized PIC options' do
-      stub_options_service
-      pic = [{ value: 'agent@erp.example', label: 'Agent Example' }]
-      allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).to receive(:fetch_options).and_return(pic)
+    # --- meta ---------------------------------------------------------------
 
-      get options_path, headers: auth, as: :json
+    it 'GET meta returns the default date and issues NO ERP request' do
+      stub_options_service(default_date: '2026-08-10')
+      # meta must touch neither the Activity Master fetch nor the User directory.
+      expect(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).not_to receive(:fetch_options)
+
+      get meta_path, headers: auth, as: :json
 
       expect(response).to have_http_status(:success)
-      expect(response.parsed_body['options']).to eq(%w[Call WhatsApp])
       expect(response.parsed_body['default_date']).to eq('2026-08-10')
-      expect(response.parsed_body['person_in_charge_options']).to eq(
-        [{ 'value' => 'agent@erp.example', 'label' => 'Agent Example' }]
-      )
-      expect(response.parsed_body['person_in_charge_available']).to be(true)
+      expect(response.parsed_body).not_to have_key('options')
     end
 
-    it 'GET options degrades to an empty, optional PIC list when the User directory is unavailable' do
-      stub_options_service
-      allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).to receive(:fetch_options)
-        .and_raise(Wijaya::Batteries::ErpLeadSidebar::SyncError, 'raw ERP User detail')
+    # --- activity_options ---------------------------------------------------
 
-      get options_path, headers: auth, as: :json
+    it 'GET activity_options returns only the master names and queries only its own dependency' do
+      stub_options_service(fetch_activity_names: %w[Call WhatsApp])
+      # The Activity Master endpoint must never touch the User directory.
+      expect(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).not_to receive(:fetch_options)
 
-      # The (valid) Lead Activity options survive; only PIC degrades.
+      get activity_options_path, headers: auth, as: :json
+
       expect(response).to have_http_status(:success)
       expect(response.parsed_body['options']).to eq(%w[Call WhatsApp])
-      expect(response.parsed_body['person_in_charge_options']).to eq([])
-      expect(response.parsed_body['person_in_charge_available']).to be(false)
-      expect(response.body).not_to include('raw ERP User detail')
+      expect(response.parsed_body).not_to have_key('person_in_charge_options')
     end
 
-    it 'GET options surfaces a sanitized message when the fetch fails' do
-      options_service = instance_double(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService)
-      allow(options_service).to receive(:fetch_names)
-        .and_raise(Wijaya::Batteries::ErpLeadSidebar::SyncError, 'raw ERP secret detail')
-      allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService).to receive(:new).and_return(options_service)
+    it 'GET activity_options returns a valid empty list as a successful load' do
+      stub_options_service(fetch_activity_names: [])
 
-      get options_path, headers: auth, as: :json
+      get activity_options_path, headers: auth, as: :json
+
+      expect(response).to have_http_status(:success)
+      expect(response.parsed_body['options']).to eq([])
+    end
+
+    it 'GET activity_options surfaces a sanitized message when the fetch fails' do
+      service = instance_double(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService)
+      allow(service).to receive(:fetch_activity_names)
+        .and_raise(Wijaya::Batteries::ErpLeadSidebar::SyncError, 'raw ERP secret detail')
+      allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService).to receive(:new).and_return(service)
+
+      get activity_options_path, headers: auth, as: :json
 
       expect(response).to have_http_status(:bad_gateway)
       expect(response.parsed_body['error']).to eq('Lead Activity options are currently unavailable.')
       expect(response.body).not_to include('raw ERP secret detail')
     end
+
+    it 'GET activity_options treats a malformed successful body as a bad gateway, not an empty list' do
+      service = instance_double(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService)
+      allow(service).to receive(:fetch_activity_names)
+        .and_raise(Wijaya::Batteries::ErpLeadSidebar::MalformedResponseError, 'malformed body')
+      allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService).to receive(:new).and_return(service)
+
+      get activity_options_path, headers: auth, as: :json
+
+      expect(response).to have_http_status(:bad_gateway)
+      expect(response.parsed_body['error']).to eq('Lead Activity options are currently unavailable.')
+    end
+
+    # End-to-end classification through the real options service (SafeHttp stubbed):
+    # a malformed upstream body must surface as a sanitized bad gateway, never a 500
+    # or a misleading empty list.
+    def erp_ok(body)
+      http_ok = Net::HTTPOK.new('1.1', '200', 'OK')
+      allow(http_ok).to receive(:body).and_return(body.to_json)
+      allow(Wijaya::Batteries::ErpLeadSidebar::Config).to receive_messages(
+        erp_base_url: 'https://erp.example.com', erp_api_key: 'key', erp_api_secret: 'secret'
+      )
+      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(http_ok)
+    end
+
+    it 'GET activity_options maps a malformed top-level JSON array to a sanitized bad gateway' do
+      erp_ok([{ 'name' => 'Call' }])
+
+      get activity_options_path, headers: auth, as: :json
+
+      expect(response).to have_http_status(:bad_gateway)
+      expect(response.parsed_body['error']).to eq('Lead Activity options are currently unavailable.')
+    end
+
+    it 'GET activity_options maps a malformed row to a sanitized bad gateway' do
+      erp_ok('data' => [{ 'name' => 'Call' }, 'bad'])
+
+      get activity_options_path, headers: auth, as: :json
+
+      expect(response).to have_http_status(:bad_gateway)
+      expect(response.parsed_body['error']).to eq('Lead Activity options are currently unavailable.')
+    end
+
+    it 'GET activity_options returns a genuinely empty ERP list as a successful empty load' do
+      erp_ok('data' => [])
+
+      get activity_options_path, headers: auth, as: :json
+
+      expect(response).to have_http_status(:success)
+      expect(response.parsed_body['options']).to eq([])
+    end
+
+    # --- person_in_charge_options -------------------------------------------
+
+    it 'GET person_in_charge_options returns sanitized options and queries only the directory' do
+      # The PIC endpoint must never instantiate the Activity Master options service.
+      expect(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService).not_to receive(:new)
+      pic = [{ value: 'agent@erp.example', label: 'Agent Example' }]
+      allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).to receive(:fetch_options).and_return(pic)
+
+      get pic_options_path, headers: auth, as: :json
+
+      expect(response).to have_http_status(:success)
+      expect(response.parsed_body['options']).to eq(
+        [{ 'value' => 'agent@erp.example', 'label' => 'Agent Example' }]
+      )
+    end
+
+    it 'GET person_in_charge_options returns a valid empty list as a successful load' do
+      allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).to receive(:fetch_options).and_return([])
+
+      get pic_options_path, headers: auth, as: :json
+
+      expect(response).to have_http_status(:success)
+      expect(response.parsed_body['options']).to eq([])
+    end
+
+    it 'GET person_in_charge_options surfaces a sanitized bad gateway when the directory is unavailable' do
+      allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).to receive(:fetch_options)
+        .and_raise(Wijaya::Batteries::ErpLeadSidebar::SyncError, 'raw ERP User detail')
+
+      get pic_options_path, headers: auth, as: :json
+
+      expect(response).to have_http_status(:bad_gateway)
+      expect(response.parsed_body['options']).to eq([])
+      expect(response.body).not_to include('raw ERP User detail')
+    end
+
+    # --- create (unchanged) -------------------------------------------------
 
     it 'POST create renders the service result body and status' do
       result = Wijaya::Batteries::ErpLeadSidebar::LeadActivityService::Result.new(
@@ -180,15 +310,13 @@ RSpec.describe 'Wijaya Lead Activities API', type: :request do
       create_draft(erp_lead_id: 'LEAD-0001')
     end
 
-    it 'allows an ordinary agent with access to this conversation to read options' do
+    it 'allows an ordinary agent with access to this conversation to read activity options' do
       options_service = instance_double(
-        Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService,
-        fetch_names: %w[Call], default_date: '2026-08-10'
+        Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService, fetch_activity_names: %w[Call]
       )
       allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService).to receive(:new).and_return(options_service)
-      allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).to receive(:fetch_options).and_return([])
 
-      get options_path, headers: auth, as: :json
+      get activity_options_path, headers: auth, as: :json
 
       expect(response).to have_http_status(:success)
     end
@@ -197,10 +325,26 @@ RSpec.describe 'Wijaya Lead Activities API', type: :request do
       let(:outsider) { create(:user, account: account, role: :agent) }
       let(:outsider_auth) { { api_access_token: outsider.access_token.token } }
 
-      it 'denies GET options and never fetches options' do
+      it 'denies GET meta' do
         expect(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService).not_to receive(:new)
 
-        get options_path, headers: outsider_auth, as: :json
+        get meta_path, headers: outsider_auth, as: :json
+
+        expect(response).to have_http_status(:unauthorized)
+      end
+
+      it 'denies GET activity_options and never fetches options' do
+        expect(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService).not_to receive(:new)
+
+        get activity_options_path, headers: outsider_auth, as: :json
+
+        expect(response).to have_http_status(:unauthorized)
+      end
+
+      it 'denies GET person_in_charge_options and never queries the directory' do
+        expect(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).not_to receive(:fetch_options)
+
+        get pic_options_path, headers: outsider_auth, as: :json
 
         expect(response).to have_http_status(:unauthorized)
       end

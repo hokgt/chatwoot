@@ -19,10 +19,15 @@ module Wijaya::Batteries::ErpLeadSidebar::Routes
             get :options
           end
           # Manual Lead Activity form, nested under the draft (addressed by the
-          # conversation display_id). Only runtime options + a guarded insert.
+          # conversation display_id). Independent, lazily-loaded read endpoints for
+          # the Activity Master and the Person In Charge directory (each hits only
+          # its own ERP dependency), a lightweight ERP-free metadata endpoint for the
+          # default date, and a single guarded insert.
           resources :lead_activities, only: %i[create] do
             collection do
-              get :options
+              get :meta
+              get :activity_options
+              get :person_in_charge_options
             end
           end
         end

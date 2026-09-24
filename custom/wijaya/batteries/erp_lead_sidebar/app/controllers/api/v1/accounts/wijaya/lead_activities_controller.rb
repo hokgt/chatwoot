@@ -8,29 +8,50 @@ class Api::V1::Accounts::Wijaya::LeadActivitiesController < Api::V1::Accounts::B
   before_action :authorize_conversation
   before_action :set_draft
 
-  # Runtime Lead Activity Master options + the account-timezone default date +
-  # the selectable ERP Users for the manual Person In Charge picker. Fetched only
-  # when the Activity view opens and only for a linked draft.
-  def options
+  # Lightweight Activity form metadata: the account-timezone default date only.
+  # Deliberately issues NO ERP request (it is a pure Time.zone computation), so it
+  # is safe to call on Activity-form mount without any ERP round-trip. Still gated
+  # on configuration + a linked ERP Lead, exactly like the option endpoints.
+  def meta
     return render_unconfigured unless erp_configured?
-    return render_lead_required if @draft.nil? || @draft.erp_lead_id.to_s.strip.empty?
+    return render_lead_required if lead_missing?
 
-    service = ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService.new(Current.account)
-    names = service.fetch_names
-    default_date = service.default_date
-    pic = person_in_charge_options
-    render json: {
-      options: names, default_date: default_date,
-      person_in_charge_options: pic[:options], person_in_charge_available: pic[:available]
-    }
+    default_date = ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService.new(Current.account).default_date
+    render json: { default_date: default_date }
+  end
+
+  # Runtime Lead Activity Master options. Fetched lazily, only when the Activity
+  # Type / Follow Up Activity dropdown opens, and only for a configured, linked
+  # draft. Calls ONLY the Lead Activity Master source (never the User directory).
+  # A malformed upstream body is a bad gateway, never a misleading empty list.
+  def activity_options
+    return render_unconfigured unless erp_configured?
+    return render_lead_required if lead_missing?
+
+    names = ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService.new(Current.account).fetch_activity_names
+    render json: { options: names }
   rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError
     # Never surface the raw ERPNext response/exception to the agent.
     render json: { error: 'Lead Activity options are currently unavailable.', options: [] }, status: :bad_gateway
   end
 
+  # Selectable ERP Users for the manual Person In Charge picker. Fetched lazily,
+  # only when the PIC dropdown opens. Calls ONLY the User directory (never the
+  # Lead Activity Master source). A directory outage is a sanitized bad gateway so
+  # the client can offer Retry; a blank Person In Charge is always submittable.
+  def person_in_charge_options
+    return render_unconfigured unless erp_configured?
+    return render_lead_required if lead_missing?
+
+    options = ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory.fetch_options(Current.account)
+    render json: { options: options }
+  rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError
+    render json: { error: 'The ERP user list is currently unavailable.', options: [] }, status: :bad_gateway
+  end
+
   def create
     return render_unconfigured unless erp_configured?
-    return render_lead_required if @draft.nil? || @draft.erp_lead_id.to_s.strip.empty?
+    return render_lead_required if lead_missing?
 
     result = ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityService.new(
       draft: @draft, agent: Current.user, params: activity_params
@@ -56,20 +77,15 @@ class Api::V1::Accounts::Wijaya::LeadActivitiesController < Api::V1::Accounts::B
     authorize @conversation, :show?
   end
 
-  # Selectable ERP Users for the manual Person In Charge picker. A directory
-  # outage never destroys the (otherwise valid) Lead Activity options: it
-  # degrades to an empty, optional list flagged unavailable so the agent can
-  # still submit with a blank Person In Charge.
-  def person_in_charge_options
-    options = ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory.fetch_options(Current.account)
-    { options: options, available: true }
-  rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError
-    { options: [], available: false }
-  end
-
   # Find the existing draft only; a Lead Activity must never create a draft.
   def set_draft
     @draft = ::Wijaya::ErpLeadDraft.find_by(account: Current.account, conversation: @conversation)
+  end
+
+  # A draft with a linked ERP Lead is required for every endpoint (a Lead Activity
+  # is always recorded against an existing Lead); no draft is ever created here.
+  def lead_missing?
+    @draft.nil? || @draft.erp_lead_id.to_s.strip.empty?
   end
 
   def erp_configured?

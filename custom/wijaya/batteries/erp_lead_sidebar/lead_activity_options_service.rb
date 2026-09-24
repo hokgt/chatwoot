@@ -23,25 +23,28 @@ module Wijaya::Batteries::ErpLeadSidebar
     ORDER_BY = 'name asc'
     # Frappe treats limit_page_length=0 as "return every record".
     LIMIT_PAGE_LENGTH = 0
+    MALFORMED_MESSAGE = 'ERPNext Lead Activity options response was malformed'
 
     def initialize(account = nil)
       @account = account
     end
 
-    # Sorted list of Lead Activity Master `name`s. Raises SyncError when ERP is
-    # unconfigured or the fetch fails, so callers can reject before insert.
-    def fetch_names # rubocop:disable Metrics/CyclomaticComplexity
-      raise SyncError, 'ERPNext connection is not configured' unless Config.erp_configured?(@account)
+    # Sorted list of Lead Activity Master `name`s, tolerating a malformed 2xx body
+    # as an empty list. Raises SyncError when ERP is unconfigured or the fetch
+    # fails. Kept for the POST insert-validation path (LeadActivityService): its
+    # contract is unchanged — any malformed successful body (a non-array `data`, a
+    # non-hash row, or a row without a usable name) still collapses to [] here.
+    def fetch_names
+      names_from(fetch_data)
+    end
 
-      response = request_list
-      body = parse_body(response.body)
-
-      unless response.is_a?(Net::HTTPSuccess)
-        message = body['exception'] || body['exc'] || body['message'] || response.message
-        raise SyncError, "ERPNext Lead Activity options fetch failed: #{message}"
-      end
-
-      Array(body['data']).filter_map { |row| row['name'] if row.is_a?(Hash) }
+    # Strict variant for the read-only options endpoint: a malformed successful
+    # body is raised as MalformedResponseError rather than silently collapsing to a
+    # valid-empty list. Malformed covers a non-array `data`, a non-hash row, and a
+    # row with a missing/blank name. A genuinely empty `data` array is still
+    # returned as [] (a valid empty list).
+    def fetch_activity_names
+      strict_names_from(fetch_data)
     end
 
     # Default form date in the account's reporting timezone (project Time.zone
@@ -54,6 +57,43 @@ module Wijaya::Batteries::ErpLeadSidebar
     end
 
     private
+
+    # Performs the credentialed list request and returns the raw `data` value from a
+    # 2xx body (which may be malformed — each caller classifies it). Raises SyncError
+    # when unconfigured or on a non-2xx response.
+    def fetch_data
+      raise SyncError, 'ERPNext connection is not configured' unless Config.erp_configured?(@account)
+
+      response = request_list
+      body = parse_body(response.body)
+
+      unless response.is_a?(Net::HTTPSuccess)
+        message = body['exception'] || body['exc'] || body['message'] || response.message
+        raise SyncError, "ERPNext Lead Activity options fetch failed: #{message}"
+      end
+
+      body['data']
+    end
+
+    # Tolerant projection for the POST path: skip anything that is not a hash row
+    # carrying a name, so any malformed shape degrades to [] instead of raising.
+    def names_from(data)
+      Array(data).filter_map { |row| row['name'] if row.is_a?(Hash) }
+    end
+
+    # Strict projection for the read path: the whole shape must be well-formed —
+    # `data` an array of hashes, each with a nonblank `name`. Any deviation is a
+    # MalformedResponseError; a genuinely empty array stays a valid empty list.
+    def strict_names_from(data)
+      raise MalformedResponseError, MALFORMED_MESSAGE unless data.is_a?(Array)
+
+      data.map do |row|
+        name = row['name'] if row.is_a?(Hash)
+        raise MalformedResponseError, MALFORMED_MESSAGE if name.to_s.strip.empty?
+
+        name
+      end
+    end
 
     def request_list
       SafeHttp.request(
@@ -75,10 +115,20 @@ module Wijaya::Batteries::ErpLeadSidebar
       uri
     end
 
+    # Always yields a Hash: a non-object top-level body (e.g. a bare JSON array) is
+    # coerced to {} so callers never index a non-hash, and the strict path then sees
+    # a missing `data` (malformed) while the tolerant path sees [].
     def parse_body(raw)
-      JSON.parse(raw.presence || '{}')
+      parsed = JSON.parse(raw.presence || '{}')
+      parsed.is_a?(Hash) ? parsed : {}
     rescue JSON::ParserError
       {}
     end
   end
+
+  # A 2xx ERPNext response whose body lacks a well-formed `data` array. Raised
+  # ONLY by the strict read path (fetch_activity_names) so the options endpoint
+  # can surface an error/retry instead of a misleading "no activities". A subclass
+  # of SyncError so existing `rescue SyncError` callers keep degrading safely.
+  class MalformedResponseError < SyncError; end
 end

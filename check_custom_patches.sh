@@ -274,6 +274,8 @@ require_file custom/wijaya/batteries/erp_lead_sidebar/lead_activity_service.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/app/controllers/api/v1/accounts/wijaya/lead_activities_controller.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/api/wijayaErpLeadActivities.js
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/LeadActivityForm.vue
+# Dropdown-level lazy loader shared by the Activity Master + Person In Charge pickers.
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/useLazyErpResource.js
 # Real-calendar date validation shared by the form + its direct unit spec.
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/dateValidation.js
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/dateValidation.spec.js
