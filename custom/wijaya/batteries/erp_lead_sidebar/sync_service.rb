@@ -161,4 +161,25 @@ module Wijaya::Batteries::ErpLeadSidebar
   end
 
   class SyncError < StandardError; end
+
+  # An upstream 2xx response whose body is not well-formed (a non-object top-level
+  # body, an unparseable body, or a `data` shape a strict read path rejects).
+  # Shared by the Lead Activity dependencies so the controller can emit a safe
+  # diagnostic reason. A subclass of SyncError so existing `rescue SyncError`
+  # callers keep degrading to the same sanitized 502 unchanged.
+  class MalformedResponseError < SyncError; end
+
+  # A non-2xx ERPNext response from a Lead Activity dependency. Carries ONLY the
+  # upstream HTTP status code (an integer) so the controller can emit a safe
+  # diagnostic distinguishing an upstream HTTP error; the upstream body/message is
+  # never captured. A subclass of SyncError so existing `rescue SyncError` callers
+  # keep degrading to the same sanitized 502 unchanged.
+  class UpstreamHttpError < SyncError
+    attr_reader :status
+
+    def initialize(status)
+      @status = status
+      super('ERPNext returned a non-success response')
+    end
+  end
 end

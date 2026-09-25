@@ -126,11 +126,20 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService do
         .to raise_error(Wijaya::Batteries::ErpLeadSidebar::MalformedResponseError)
     end
 
-    it 'raises SyncError on a non-success response' do
-      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(server_error('exc' => 'boom'))
+    # A non-2xx failure is a typed UpstreamHttpError (a SyncError) carrying ONLY the
+    # status code, raised before the body is parsed — so the safe status is captured
+    # even from an HTML/malformed error body and the raw upstream body never leaks.
+    it 'raises UpstreamHttpError carrying the status code (never the raw upstream body)' do
+      html_error = server_error('exc' => 'raw ERP secret detail')
+      allow(html_error).to receive(:body).and_return('<html>raw ERP secret detail</html>')
+      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(html_error)
 
       expect { described_class.new(account).fetch_activity_names }
-        .to raise_error(Wijaya::Batteries::ErpLeadSidebar::SyncError)
+        .to raise_error(Wijaya::Batteries::ErpLeadSidebar::UpstreamHttpError) do |error|
+          expect(error).to be_a(Wijaya::Batteries::ErpLeadSidebar::SyncError)
+          expect(error.status).to eq(500)
+          expect(error.message).not_to include('raw ERP secret detail')
+        end
     end
   end
 

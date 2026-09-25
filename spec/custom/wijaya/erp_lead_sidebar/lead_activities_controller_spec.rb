@@ -261,6 +261,156 @@ RSpec.describe 'Wijaya Lead Activities API', type: :request do
       expect(response.body).not_to include('raw ERP User detail')
     end
 
+    # --- diagnostic logging on a 502 ----------------------------------------
+    # Each independent dependency failure must emit exactly one structured error
+    # log naming the specific source and a safe reason category, while the API
+    # response stays byte-for-byte the current sanitized 502. Raw upstream detail
+    # must never appear in the response OR the log.
+    describe 'structured diagnostic logging when a dependency fails' do
+      let(:error_logs) { [] }
+
+      before do
+        allow(Rails.logger).to receive(:error) { |arg| error_logs << arg }
+      end
+
+      def dependency_log
+        error_logs.find { |e| e.is_a?(Hash) && e[:event] == 'wijaya.erp_lead_sidebar.lead_activity_dependency_failure' }
+      end
+
+      def logged_text
+        error_logs.map(&:to_s).join("\n")
+      end
+
+      # Real dependency path: SafeHttp returns the given HTTP response so the
+      # service/directory raises its own typed error (not a stub).
+      def stub_safe_http(klass, code, reason, body)
+        http = klass.new('1.1', code, reason)
+        allow(http).to receive(:body).and_return(body.to_json)
+        allow(Wijaya::Batteries::ErpLeadSidebar::Config).to receive_messages(
+          erp_base_url: 'https://erp.example.com', erp_api_key: 'key', erp_api_secret: 'secret'
+        )
+        allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(http)
+      end
+
+      def raise_activity_options(error)
+        service = instance_double(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService)
+        allow(service).to receive(:fetch_activity_names).and_raise(error)
+        allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService).to receive(:new).and_return(service)
+      end
+
+      # --- lead_activity_master ---------------------------------------------
+
+      it 'logs source lead_activity_master with a conservative sync_error and leaks no raw detail' do
+        raise_activity_options(
+          Wijaya::Batteries::ErpLeadSidebar::SyncError.new('raw ERP secret detail')
+        )
+
+        get activity_options_path, headers: auth, as: :json
+
+        expect(response).to have_http_status(:bad_gateway)
+        expect(response.parsed_body).to eq('error' => 'Lead Activity options are currently unavailable.', 'options' => [])
+        expect(dependency_log).to include(
+          event: 'wijaya.erp_lead_sidebar.lead_activity_dependency_failure',
+          account_id: account.id, conversation_id: conversation.id,
+          conversation_display_id: conversation.display_id,
+          source: 'lead_activity_master', reason: :sync_error
+        )
+        expect(dependency_log).not_to have_key(:upstream_status)
+        expect(response.body).not_to include('raw ERP secret detail')
+        expect(logged_text).not_to include('raw ERP secret detail')
+      end
+
+      it 'logs reason malformed_response for a malformed successful body' do
+        raise_activity_options(
+          Wijaya::Batteries::ErpLeadSidebar::MalformedResponseError.new('malformed body')
+        )
+
+        get activity_options_path, headers: auth, as: :json
+
+        expect(dependency_log).to include(source: 'lead_activity_master', reason: :malformed_response)
+      end
+
+      it 'logs reason timeout for a request timeout' do
+        raise_activity_options(Wijaya::Batteries::ErpLeadSidebar::SafeHttp::TimeoutError.new('ERPNext request timed out'))
+
+        get activity_options_path, headers: auth, as: :json
+
+        expect(dependency_log).to include(source: 'lead_activity_master', reason: :timeout)
+      end
+
+      it 'logs reason transport_error for a transport failure' do
+        raise_activity_options(Wijaya::Batteries::ErpLeadSidebar::SafeHttp::Error.new('ERPNext request failed'))
+
+        get activity_options_path, headers: auth, as: :json
+
+        expect(dependency_log).to include(source: 'lead_activity_master', reason: :transport_error)
+      end
+
+      it 'logs reason upstream_http_error with the safe status for a non-2xx upstream response' do
+        stub_safe_http(Net::HTTPInternalServerError, '500', 'Server Error', 'exception' => 'raw ERP secret detail')
+
+        get activity_options_path, headers: auth, as: :json
+
+        expect(response).to have_http_status(:bad_gateway)
+        expect(response.parsed_body).to eq('error' => 'Lead Activity options are currently unavailable.', 'options' => [])
+        expect(dependency_log).to include(
+          source: 'lead_activity_master', reason: :upstream_http_error, upstream_status: 500
+        )
+        expect(logged_text).not_to include('raw ERP secret detail')
+      end
+
+      # --- erp_user_directory -----------------------------------------------
+
+      it 'logs source erp_user_directory with a conservative sync_error and leaks no raw detail' do
+        allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).to receive(:fetch_options)
+          .and_raise(Wijaya::Batteries::ErpLeadSidebar::SyncError, 'raw ERP User detail')
+
+        get pic_options_path, headers: auth, as: :json
+
+        expect(response).to have_http_status(:bad_gateway)
+        expect(response.parsed_body).to eq('error' => 'The ERP user list is currently unavailable.', 'options' => [])
+        expect(dependency_log).to include(source: 'erp_user_directory', reason: :sync_error)
+        expect(response.body).not_to include('raw ERP User detail')
+        expect(logged_text).not_to include('raw ERP User detail')
+      end
+
+      it 'logs reason malformed_response when the directory returns a malformed successful body' do
+        # A 2xx body that is a top-level non-object (a bare JSON array) drives the
+        # real directory to raise MalformedResponseError, still a sanitized 502.
+        stub_safe_http(Net::HTTPOK, '200', 'OK', ['raw ERP User detail'])
+
+        get pic_options_path, headers: auth, as: :json
+
+        expect(response).to have_http_status(:bad_gateway)
+        expect(response.parsed_body).to eq('error' => 'The ERP user list is currently unavailable.', 'options' => [])
+        expect(dependency_log).to include(source: 'erp_user_directory', reason: :malformed_response)
+        expect(dependency_log).not_to have_key(:upstream_status)
+        expect(response.body).not_to include('raw ERP User detail')
+        expect(logged_text).not_to include('raw ERP User detail')
+      end
+
+      it 'logs reason upstream_http_error with the safe status when the directory returns a non-2xx' do
+        stub_safe_http(Net::HTTPInternalServerError, '500', 'Server Error', 'exception' => 'raw ERP User detail')
+
+        get pic_options_path, headers: auth, as: :json
+
+        expect(response).to have_http_status(:bad_gateway)
+        expect(dependency_log).to include(
+          source: 'erp_user_directory', reason: :upstream_http_error, upstream_status: 500
+        )
+        expect(logged_text).not_to include('raw ERP User detail')
+      end
+
+      it 'logs reason timeout when the directory times out' do
+        allow(Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory).to receive(:fetch_options)
+          .and_raise(Wijaya::Batteries::ErpLeadSidebar::SafeHttp::TimeoutError, 'ERPNext request timed out')
+
+        get pic_options_path, headers: auth, as: :json
+
+        expect(dependency_log).to include(source: 'erp_user_directory', reason: :timeout)
+      end
+    end
+
     # --- create (unchanged) -------------------------------------------------
 
     it 'POST create renders the service result body and status' do

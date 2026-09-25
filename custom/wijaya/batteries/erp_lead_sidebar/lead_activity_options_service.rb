@@ -65,14 +65,9 @@ module Wijaya::Batteries::ErpLeadSidebar
       raise SyncError, 'ERPNext connection is not configured' unless Config.erp_configured?(@account)
 
       response = request_list
-      body = parse_body(response.body)
+      raise UpstreamHttpError, response.code.to_i unless response.is_a?(Net::HTTPSuccess)
 
-      unless response.is_a?(Net::HTTPSuccess)
-        message = body['exception'] || body['exc'] || body['message'] || response.message
-        raise SyncError, "ERPNext Lead Activity options fetch failed: #{message}"
-      end
-
-      body['data']
+      parse_body(response.body)['data']
     end
 
     # Tolerant projection for the POST path: skip anything that is not a hash row
@@ -125,10 +120,4 @@ module Wijaya::Batteries::ErpLeadSidebar
       {}
     end
   end
-
-  # A 2xx ERPNext response whose body lacks a well-formed `data` array. Raised
-  # ONLY by the strict read path (fetch_activity_names) so the options endpoint
-  # can surface an error/retry instead of a misleading "no activities". A subclass
-  # of SyncError so existing `rescue SyncError` callers keep degrading safely.
-  class MalformedResponseError < SyncError; end
 end

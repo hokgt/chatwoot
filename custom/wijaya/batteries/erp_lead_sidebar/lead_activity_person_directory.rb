@@ -96,18 +96,18 @@ module Wijaya::Batteries::ErpLeadSidebar
         api_key: Config.erp_api_key(account),
         api_secret: Config.erp_api_secret(account)
       )
-      raise SyncError, 'ERPNext User directory fetch failed' unless response.is_a?(Net::HTTPSuccess)
+      raise UpstreamHttpError, response.code.to_i unless response.is_a?(Net::HTTPSuccess)
 
       parse_object(response.body)
     end
 
     def parse_object(raw)
       parsed = JSON.parse(raw.presence || '{}')
-      raise SyncError, 'ERPNext User directory returned an unexpected response' unless parsed.is_a?(Hash)
+      raise MalformedResponseError, 'ERPNext User directory returned an unexpected response' unless parsed.is_a?(Hash)
 
       parsed
     rescue JSON::ParserError
-      raise SyncError, 'ERPNext User directory returned an unparseable response'
+      raise MalformedResponseError, 'ERPNext User directory returned an unparseable response'
     end
 
     def list_uri(account)

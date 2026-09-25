@@ -30,8 +30,9 @@ class Api::V1::Accounts::Wijaya::LeadActivitiesController < Api::V1::Accounts::B
 
     names = ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService.new(Current.account).fetch_activity_names
     render json: { options: names }
-  rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError
+  rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError => e
     # Never surface the raw ERPNext response/exception to the agent.
+    log_dependency_failure('lead_activity_master', e)
     render json: { error: 'Lead Activity options are currently unavailable.', options: [] }, status: :bad_gateway
   end
 
@@ -45,7 +46,8 @@ class Api::V1::Accounts::Wijaya::LeadActivitiesController < Api::V1::Accounts::B
 
     options = ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory.fetch_options(Current.account)
     render json: { options: options }
-  rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError
+  rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError => e
+    log_dependency_failure('erp_user_directory', e)
     render json: { error: 'The ERP user list is currently unavailable.', options: [] }, status: :bad_gateway
   end
 
@@ -98,6 +100,45 @@ class Api::V1::Accounts::Wijaya::LeadActivitiesController < Api::V1::Accounts::B
 
   def render_lead_required
     render json: { error: 'Create or link an ERP Lead before adding an activity.' }, status: :unprocessable_entity
+  end
+
+  # Emit one structured, sanitized diagnostic when a Lead Activity dependency
+  # fetch fails as a 502. It identifies the specific dependency (`source`) and a
+  # safe reason category derived ONLY from our own typed error classes — never the
+  # upstream body, exception message, URL, or credentials. Best-effort: a logging
+  # failure must never affect the sanitized response. The API response is unchanged.
+  def log_dependency_failure(source, error)
+    Rails.logger.error(
+      {
+        event: 'wijaya.erp_lead_sidebar.lead_activity_dependency_failure',
+        account_id: Current.account&.id,
+        conversation_id: @conversation&.id,
+        conversation_display_id: @conversation&.display_id,
+        source: source,
+        reason: sync_error_reason(error),
+        upstream_status: upstream_status_for(error),
+        exception_class: error.class.name
+      }.compact
+    )
+  rescue StandardError
+    nil
+  end
+
+  # Map a rescued SyncError to a safe, allowlisted reason category using only the
+  # typed error class (order matters: TimeoutError is a subclass of Error).
+  def sync_error_reason(error)
+    case error
+    when ::Wijaya::Batteries::ErpLeadSidebar::SafeHttp::TimeoutError then :timeout
+    when ::Wijaya::Batteries::ErpLeadSidebar::SafeHttp::Error then :transport_error
+    when ::Wijaya::Batteries::ErpLeadSidebar::MalformedResponseError then :malformed_response
+    when ::Wijaya::Batteries::ErpLeadSidebar::UpstreamHttpError then :upstream_http_error
+    else :sync_error
+    end
+  end
+
+  # The upstream HTTP status code, present only for a non-2xx upstream response.
+  def upstream_status_for(error)
+    error.status if error.is_a?(::Wijaya::Batteries::ErpLeadSidebar::UpstreamHttpError)
   end
 
   # Strong params: the structural keys (doctype/parenttype/parent/parentfield)
