@@ -1,0 +1,8 @@
+id:
+  marine:
+    catalog:
+      # price-display-v1 deterministic price_available fallback (Indonesian display facts:
+      # currency Rp, dot thousands grouping, lowercase unit). Built by PriceReplyComposer
+      # from the approved display facts; never embeds an illustrative amount.
+      price:
+        price_available: 'Harga %{product} adalah %{currency} %{amount} per %{uom}.'

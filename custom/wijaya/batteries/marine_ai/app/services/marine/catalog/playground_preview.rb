@@ -57,9 +57,7 @@ module Marine
 
         bounded = bounded_history(history)
         prior = decode_state(state_token)
-        plan = orchestrator.process(text: query.to_s, context: bounded,
-                                    flow: store.snapshot_for_planning(prior) || {}, suppressed: false,
-                                    knowledge_available: knowledge_available)
+        plan = plan_for(query, bounded, prior, knowledge_available)
         return nil if plan[:action] == :not_product
 
         log_event('preview.plan', action: plan[:action], language: plan[:language])
@@ -82,6 +80,15 @@ module Marine
       private
 
       attr_reader :assistant, :account
+
+      # Run the SAME deterministic orchestrator the conversation path uses over the bounded transcript
+      # and prior in-memory snapshot, supplying the configured assistant language so the shared
+      # language resolver has the same last-resort fallback both surfaces provide.
+      def plan_for(query, bounded, prior, knowledge_available)
+        orchestrator.process(text: query.to_s, context: bounded,
+                             flow: store.snapshot_for_planning(prior) || {}, suppressed: false,
+                             knowledge_available: knowledge_available, configured_language: configured_reply_language)
+      end
 
       # Untrusted transcript re-bounded/allowlisted: only user/assistant roles, blank content
       # dropped, each turn truncated, newest turns kept (oldest-to-newest order preserved).
@@ -106,6 +113,8 @@ module Marine
       def build_payload(plan, query, history, prior)
         snapshot = apply_state(plan, prior)
         return stock_payload(plan, query, history, snapshot) if stock_reply?(plan)
+        return price_payload(plan, query, history, snapshot) if price_reply?(plan)
+        return range_payload(plan, query, history, snapshot) if range_reply?(plan)
 
         english, catalog_card, next_snapshot = render(plan, snapshot)
         text = localize(english: english, protection: localization_protection(plan),
@@ -155,6 +164,67 @@ module Marine
 
       def stock_composer
         @stock_composer ||= Marine::Catalog::StockReplyComposer.new(account: account)
+      end
+
+      # A pure price_available reply is resolved through the shared Marine::Catalog::PriceReplyComposer
+      # — the SAME dynamic price boundary the real conversation (ResponseBuilderJob) consumes — so the
+      # source-less preview reaches the IDENTICAL DELIVER/HANDOFF conclusion for the same account/
+      # assistant/context/catalog/language state. It never localizes via ReplyLocalizer.
+      def price_reply?(plan)
+        plan[:action] == :reply &&
+          plan.dig(:reply, :kind) == Marine::Catalog::PriceReplyComposer::PRICE_KIND
+      end
+
+      # DELIVER -> the composer's accepted dynamic in-language price line, or its deterministic
+      # same-language fallback (both built from the approved display facts). SILENT handoff -> the
+      # source-less preview cannot perform a real transfer, and the handoff is precisely the composer's
+      # decision that no supported-language price can be stated, so it must NOT be routed through
+      # ReplyLocalizer/TranslateResponseService (which would produce a visible English fallback). It
+      # shows the factless handoff acknowledgement WITHOUT translation — demonstrably not a price and
+      # never a wrong-language delivered price — the same non-delivering safe business decision the
+      # conversation reaches (a factless transfer, no price line). No assignment/handoff/persistence
+      # mutation ever happens.
+      def price_payload(plan, query, history, snapshot)
+        decision = price_composer.compose(
+          descriptor: plan[:reply], reply_language: plan[:language],
+          customer_request: query.to_s, configured_language: configured_reply_language,
+          message_history: history, opening: opening?(history)
+        )
+        return reply_payload(decision.text, next_state: snapshot) if decision.deliver?
+
+        reply_payload(presenter.handoff_ack_text(nil), next_state: snapshot)
+      end
+
+      def price_composer
+        @price_composer ||= Marine::Catalog::PriceReplyComposer.new(account: account)
+      end
+
+      # A family-only PRICE turn grounds a catalog-assisted clarification with a deterministic price
+      # RANGE, resolved through the shared Marine::Catalog::PriceRangeReplyComposer so the source-less
+      # preview renders the IDENTICAL locale-safe range caption the real conversation would. The
+      # preview never delivers a native attachment, so catalog_attached is always false: the caption
+      # asks for the exact code WITHOUT claiming a catalog was shown. A composer fallback (unresolved/
+      # unsupported reply language or an unformattable range) degrades to the existing safe catalog-free
+      # variant clarification — never a raw or wrong-language range.
+      def range_reply?(plan)
+        plan[:action] == :send_catalog && plan.dig(:reply, :kind) == :price_range
+      end
+
+      def range_payload(plan, query, history, snapshot)
+        decision = range_composer.compose(
+          descriptor: plan[:reply], reply_language: plan[:language],
+          customer_request: query.to_s, configured_language: configured_reply_language,
+          message_history: history, catalog_attached: false
+        )
+        return reply_payload(decision.text, next_state: snapshot) if decision.deliver?
+
+        text = localize(english: presenter.reply_text(plan.merge(reply: nil)), protection: [nil, nil],
+                        language: plan[:language], query: query, history: history)
+        reply_payload(text, next_state: snapshot)
+      end
+
+      def range_composer
+        @range_composer ||= Marine::Catalog::PriceRangeReplyComposer.new(account: account)
       end
 
       # Apply the plan's deterministic state operation to the prior IN-MEMORY snapshot — the exact

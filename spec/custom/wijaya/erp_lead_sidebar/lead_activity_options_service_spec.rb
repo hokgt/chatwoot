@@ -56,6 +56,91 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService do
       expect { described_class.new(account).fetch_names }
         .to raise_error(Wijaya::Batteries::ErpLeadSidebar::SyncError)
     end
+
+    # The POST insert-validation path stays tolerant: a malformed 2xx body (no
+    # `data` array) collapses to [] exactly as before, so its contract is unchanged.
+    it 'tolerates a malformed successful body as an empty list (POST path contract)' do
+      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(ok('unexpected' => true))
+
+      expect(described_class.new(account).fetch_names).to eq([])
+    end
+
+    it 'tolerates a top-level JSON array body as an empty list (never raises on the POST path)' do
+      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(ok([{ 'name' => 'Call' }]))
+
+      expect(described_class.new(account).fetch_names).to eq([])
+    end
+
+    it 'tolerates malformed rows as an empty list (POST path contract)' do
+      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(ok('data' => ['bad', {}]))
+
+      expect(described_class.new(account).fetch_names).to eq([])
+    end
+  end
+
+  describe '#fetch_activity_names' do
+    it 'returns the master names on a well-formed success' do
+      expect(described_class.new(account).fetch_activity_names).to eq(%w[Call WhatsApp])
+    end
+
+    it 'returns a genuinely empty data array as a valid empty list' do
+      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(ok('data' => []))
+
+      expect(described_class.new(account).fetch_activity_names).to eq([])
+    end
+
+    it 'raises MalformedResponseError (never a silent empty list) when a 2xx body lacks a data array' do
+      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(ok('message' => 'ok'))
+
+      expect { described_class.new(account).fetch_activity_names }
+        .to raise_error(Wijaya::Batteries::ErpLeadSidebar::MalformedResponseError)
+    end
+
+    it 'raises MalformedResponseError when the top-level body is a JSON array (never a 500)' do
+      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(ok([{ 'name' => 'Call' }]))
+
+      expect { described_class.new(account).fetch_activity_names }
+        .to raise_error(Wijaya::Batteries::ErpLeadSidebar::MalformedResponseError)
+    end
+
+    it 'raises MalformedResponseError when a row is not a well-formed object' do
+      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(ok('data' => ['bad']))
+
+      expect { described_class.new(account).fetch_activity_names }
+        .to raise_error(Wijaya::Batteries::ErpLeadSidebar::MalformedResponseError)
+    end
+
+    it 'raises MalformedResponseError when a row has a blank name' do
+      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request)
+        .and_return(ok('data' => [{ 'name' => 'Call' }, { 'name' => '  ' }]))
+
+      expect { described_class.new(account).fetch_activity_names }
+        .to raise_error(Wijaya::Batteries::ErpLeadSidebar::MalformedResponseError)
+    end
+
+    it 'raises MalformedResponseError when a row is missing the name key' do
+      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request)
+        .and_return(ok('data' => [{ 'other' => 'x' }]))
+
+      expect { described_class.new(account).fetch_activity_names }
+        .to raise_error(Wijaya::Batteries::ErpLeadSidebar::MalformedResponseError)
+    end
+
+    # A non-2xx failure is a typed UpstreamHttpError (a SyncError) carrying ONLY the
+    # status code, raised before the body is parsed — so the safe status is captured
+    # even from an HTML/malformed error body and the raw upstream body never leaks.
+    it 'raises UpstreamHttpError carrying the status code (never the raw upstream body)' do
+      html_error = server_error('exc' => 'raw ERP secret detail')
+      allow(html_error).to receive(:body).and_return('<html>raw ERP secret detail</html>')
+      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(html_error)
+
+      expect { described_class.new(account).fetch_activity_names }
+        .to raise_error(Wijaya::Batteries::ErpLeadSidebar::UpstreamHttpError) do |error|
+          expect(error).to be_a(Wijaya::Batteries::ErpLeadSidebar::SyncError)
+          expect(error.status).to eq(500)
+          expect(error.message).not_to include('raw ERP secret detail')
+        end
+    end
   end
 
   describe '#default_date' do

@@ -24,7 +24,7 @@ module Marine
       # against this allowlist so an unexpected shape can never slip through.
       KINDS = %i[
         parent_info variant_info
-        price_available price_unavailable price_conflict
+        price_available price_unavailable price_conflict price_range
         stock_available stock_empty stock_unavailable
         clarify_family clarify_variant
         catalog catalog_unavailable unsupported
@@ -73,6 +73,27 @@ module Marine
 
       def price_unavailable = descriptor(:price_unavailable)
       def price_conflict = descriptor(:price_conflict)
+
+      # A deterministic GENERAL selling price RANGE across a validated family's active variants, plus
+      # the family the range is FOR so the range caption can name it. Carries ONLY the exact min/max
+      # amount strings, currency, and UOM the range repository already validated (homogeneous across
+      # variants); nothing else from any row is copied through. The min and max are repository-derived
+      # exact decimal strings — never a Float. Rendered as a catalog caption, never a standalone price.
+      # EVERY scalar crosses the same trust boundary as the other descriptors (bounded, control-char
+      # cleaned); a blank/malformed REQUIRED range fact (min, max, currency, or uom) fails CLOSED to
+      # nil so the caller hands off rather than letting an invalid fact become customer text.
+      def price_range(range, family)
+        price_min = safe_scalar(range[:min], MAX_CODE_NAME_LENGTH)
+        price_max = safe_scalar(range[:max], MAX_CODE_NAME_LENGTH)
+        currency = safe_scalar(range[:currency], MAX_CODE_NAME_LENGTH)
+        uom = safe_scalar(range[:uom], MAX_CODE_NAME_LENGTH)
+        return nil if price_min.nil? || price_max.nil? || currency.nil? || uom.nil?
+
+        descriptor(:price_range,
+                   family_code: safe_scalar(family[:code], MAX_CODE_NAME_LENGTH),
+                   family_name: safe_scalar(family[:name], MAX_CODE_NAME_LENGTH),
+                   price_min: price_min, price_max: price_max, currency: currency, uom: uom)
+      end
 
       # Stock is a binary availability status ONLY — never a quantity. The validated variant
       # code the availability is FOR rides along (bounded/cleaned like the price code) so a

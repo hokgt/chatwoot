@@ -42,6 +42,16 @@ module Marine
         'exact_quantity' => "I'm sorry, I can't confirm the exact quantity available for you directly. Let me bring in a colleague to help with this."
       }.freeze
 
+      # Raised when a STANDALONE :price_available reply reaches this presenter's deterministic text
+      # path. A pure price reply is locale-sensitive and MUST be resolved through the shared
+      # Marine::Catalog::PriceReplyComposer (as both ResponseBuilderJob and PlaygroundPreview already
+      # do), which owns the account/language context this pure presenter deliberately lacks. Letting
+      # the presenter answer it would leak a hardcoded English price sentence, so the path fails
+      # closed with this narrowly named error instead of ever emitting one. (A composite price+stock
+      # reply is a DIFFERENT descriptor kind whose price clause is still rendered internally here.)
+      # marker: price-standalone-fail-closed-v1
+      PriceReplyNotPresentable = Class.new(StandardError)
+
       # Renders the caption/text for a plan. A DIRECT catalog request carries a :catalog reply
       # descriptor and renders a catalog caption; a catalog-ASSISTED send_catalog (reply nil)
       # renders the deterministic variant clarification, used both as its no-usable-catalog text
@@ -77,6 +87,11 @@ module Marine
       # The deterministic sentence for ONE child descriptor (the same mapping reply_text applies to a
       # standalone reply, excluding the plan-level send_catalog branch a composite part never uses).
       def single_descriptor_text(descriptor)
+        # A composite price leg still renders its deterministic price clause here (the composite as a
+        # whole is naturalized/localized downstream, not routed through the PriceReplyComposer), so it
+        # calls the internal builder directly and never trips the standalone price fail-closed guard.
+        return price_available_text(descriptor) if descriptor[:kind] == :price_available
+
         dynamic_product_text(descriptor) || STATIC_PRODUCT_TEXT[descriptor[:kind]] || GENERIC_PRODUCT_TEXT
       end
 
@@ -130,13 +145,29 @@ module Marine
         descriptor[:family_name].presence || descriptor[:family_code] || 'that product'
       end
 
+      # The deterministic caption for a family price RANGE, grounding the range (from the already
+      # display-formatted facts the descriptor carries) and then asking the customer for the exact
+      # variant code. The ask clause is OUTCOME-AWARE: when a native catalog is actually attached this
+      # turn (`catalog_attached: true`) it points the customer at the code shown in that catalog;
+      # otherwise it never claims a catalog was shown/attached — it simply asks for the exact code.
+      # Equal min and max render a SINGLE amount (handled by #price_range_grounded).
+      def price_range_text(descriptor, catalog_attached:)
+        ask = catalog_attached ? PRICE_RANGE_ASK_WITH_CATALOG : PRICE_RANGE_ASK_WITHOUT_CATALOG
+        "#{price_range_grounded(descriptor)}. #{ask}"
+      end
+
+      # The two outcome-aware ask clauses. The with-catalog clause is delivered ONLY alongside a real
+      # native catalog attachment; the without-catalog clause makes no claim that a catalog is visible.
+      PRICE_RANGE_ASK_WITH_CATALOG = "Please reply with the exact variant code shown in the catalog and I'll confirm the exact price for you.".freeze
+      PRICE_RANGE_ASK_WITHOUT_CATALOG = "Please reply with the exact variant code and I'll confirm the exact price for you.".freeze
+
       private
 
       def dynamic_product_text(descriptor) # rubocop:disable Metrics/CyclomaticComplexity -- a flat per-kind dispatch
         case descriptor[:kind]
         when :parent_info then parent_info_text(descriptor)
         when :variant_info then "Here are the details for #{descriptor[:variant_code]}. Would you like the price or availability?"
-        when :price_available then price_available_text(descriptor)
+        when :price_available then raise PriceReplyNotPresentable, 'price_available must be resolved via PriceReplyComposer, not presented here'
         when :stock_available, :stock_empty then stock_text(descriptor)
         when :clarify_family then clarify_family_text(descriptor[:candidates])
         when :clarify_variant then clarify_variant_text(descriptor[:attribute_names])
@@ -195,11 +226,37 @@ module Marine
         "Here is the product catalog for #{catalog_family_name(descriptor)}."
       end
 
+      # The GROUNDED range clause only (no ask): "Prices for <family> range from <A> to <B> per <uom>"
+      # (or a single amount when min == max). Currency and both amounts are the display facts the
+      # PriceRangeReplyComposer already formatted; the family name is a translatable display label.
+      def price_range_grounded(descriptor)
+        family = catalog_family_name(descriptor)
+        min = descriptor[:price_min]
+        max = descriptor[:price_max]
+        if min == max
+          "The price for #{family} is #{range_amount(descriptor, min)}#{range_per(descriptor)}"
+        else
+          "Prices for #{family} range from #{range_amount(descriptor, min)} to #{range_amount(descriptor, max)}#{range_per(descriptor)}"
+        end
+      end
+
+      def range_amount(descriptor, value)
+        [descriptor[:currency], value].compact.join(' ')
+      end
+
+      def range_per(descriptor)
+        descriptor[:uom].present? ? " per #{descriptor[:uom]}" : ''
+      end
+
       def parent_info_text(descriptor)
         name = descriptor[:family_name].presence || descriptor[:family_code]
         "You're asking about #{name}. Which specific variant would you like to know about?"
       end
 
+      # The deterministic English price clause for a composite price+stock reply ONLY (a standalone
+      # :price_available reply fails closed in #dynamic_product_text — see PriceReplyNotPresentable).
+      # Reached solely by #same_variant_price_stock_text and #single_descriptor_text's composite leg,
+      # never for a pure price reply, which the shared PriceReplyComposer resolves in a locale-safe way.
       def price_available_text(descriptor)
         amount = [descriptor[:currency], descriptor[:price_list_rate]].compact.join(' ')
         subject = descriptor[:variant_code].presence

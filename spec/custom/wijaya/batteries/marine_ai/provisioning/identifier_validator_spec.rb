@@ -47,4 +47,50 @@ RSpec.describe Marine::Provisioning::IdentifierValidator do
       expect(e.i18n_key).to eq('PROVISIONING.ERRORS.INVALID_IDENTIFIER')
     end
   end
+
+  # Regression: with cache_classes/eager_load off, a captured (stale) reference to the
+  # validator can outlive a Rails reload that swaps the Marine::Provisioning namespace.
+  # If the error is referenced un-qualified, resolution runs against the stale namespace
+  # (whose sibling constants Zeitwerk has removed) and raises NameError instead of the
+  # intended InvalidIdentifierError. Fully-qualifying both the raise and the rescue keeps
+  # a stale reference correct after a reload.
+  describe 'stale reference after Rails reload' do
+    # Rails.application.reloader.reload! swaps the whole Marine::Provisioning subtree and
+    # mutates global autoloader/constant state, which would otherwise leak into sibling
+    # examples. Run the reload inside a forked child so the parent's Zeitwerk bookkeeping
+    # is never touched; the child reports the outcome purely via its exit status.
+    it 'still raises InvalidIdentifierError, not NameError, from a stale reference' do
+      skip 'fork-based isolation requires a platform with fork' unless Process.respond_to?(:fork)
+
+      reader, writer = IO.pipe
+
+      pid = fork do
+        reader.close
+        outcome =
+          begin
+            stale_validator = described_class
+            Rails.application.reloader.reload!
+
+            stale_validator.validate!('Bad-Name', label: 'Database name')
+            'no-error-raised'
+          rescue Marine::Provisioning::Errors::InvalidIdentifierError
+            # Also exercise the rescue path in .valid? against the reloaded namespace.
+            stale_validator.valid?('Bad-Name') == false ? 'ok' : 'valid?-not-false'
+          rescue NameError => e
+            "name-error: #{e.message}"
+          rescue Exception => e # rubocop:disable Lint/RescueException
+            "unexpected: #{e.class}: #{e.message}"
+          end
+        writer.write(outcome)
+        writer.close
+      end
+
+      writer.close
+      outcome = reader.read
+      reader.close
+      Process.wait(pid)
+
+      expect(outcome).to eq('ok')
+    end
+  end
 end

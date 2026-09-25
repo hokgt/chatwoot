@@ -31,8 +31,15 @@ class Api::V1::Accounts::AgentsController < Api::V1::Accounts::BaseController
   end
 
   def destroy
-    @agent.current_account_user.destroy!
-    delete_user_record(@agent)
+    # WIJAYA_CUSTOM_START deferred_auto_assignment
+    # Serialize the orphaned-User deletion behind Agents::DestroyJob (enqueued by the
+    # account-user destroy callback) instead of firing a sibling DeleteObjectJob here: the
+    # sibling could FK-clear conversations.assignee_id before the job captured deletion
+    # provenance. The intent rides the destroy chain; the job deletes the User last.
+    account_user = @agent.current_account_user
+    account_user.wijaya_delete_user_when_orphaned = true
+    account_user.destroy!
+    # WIJAYA_CUSTOM_END deferred_auto_assignment
     head :ok
   end
 
@@ -113,10 +120,6 @@ class Api::V1::Accounts::AgentsController < Api::V1::Accounts::BaseController
 
   def can_add_agent?
     available_agent_count.positive?
-  end
-
-  def delete_user_record(agent)
-    DeleteObjectJob.perform_later(agent) if agent.reload.account_users.blank?
   end
 end
 

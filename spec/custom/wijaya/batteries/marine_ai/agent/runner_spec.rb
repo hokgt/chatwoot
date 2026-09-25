@@ -203,6 +203,16 @@ RSpec.describe Marine::Agent::Runner do
       expect(orchestrator).to have_received(:process).with(hash_including(text: 'price for impeller 3 inch', suppressed: false))
     end
 
+    it 'forwards the assistant configured language to the shared orchestrator resolver seam' do
+      allow(assistant).to receive(:config).and_return('language' => 'id')
+      allow(orchestrator).to receive(:process).and_return(action: :not_product, reply: nil, state: { operation: :none, changes: {} })
+      allow(generator).to receive(:generate).and_return(reply_payload)
+
+      runner.run(additional_message: 'ignored — text comes from the trigger message')
+
+      expect(orchestrator).to have_received(:process).with(hash_including(configured_language: 'id'))
+    end
+
     it 'falls through to the unchanged retrieval path on a not_product plan' do
       allow(orchestrator).to receive(:process).and_return(action: :not_product, reply: nil, state: { operation: :none, changes: {} })
       allow(generator).to receive(:generate).and_return(reply_payload)
@@ -210,6 +220,44 @@ RSpec.describe Marine::Agent::Runner do
       payload = runner.run(additional_message: 'just saying hello')
 
       expect(payload).to include('response' => 'Your order is on the way', 'orchestration_path' => 'retrieval')
+    end
+  end
+
+  # A broad product-overview turn must reach grounded RAG generation, never a catalog family
+  # clarification. This exercises the REAL orchestrator (only the untrusted IntentExtractor is
+  # stubbed to classify product_overview) so the end-to-end route — product_overview -> :not_product
+  # -> fall through to the RAG ResponseGenerator — is proven at the runner boundary, even when the
+  # Knowledge Base confidently (but non-exactly) answers the turn.
+  describe 'product overview reaches grounded knowledge, not clarify_family' do
+    let(:account) { build_stubbed(:account) }
+    let(:conversation) { build_stubbed(:conversation, account: account) }
+    let(:message) { build_stubbed(:message, conversation: conversation, message_type: :incoming, content: 'What products does Textilindo sell?') }
+    let(:runner) { described_class.new(assistant: assistant, conversation: conversation, source: message) }
+    let(:intent_extractor) { instance_double(Marine::Catalog::IntentExtractor) }
+
+    before do
+      allow(Marine::Catalog::IntentExtractor).to receive(:new).and_return(intent_extractor)
+      allow(intent_extractor).to receive(:extract).and_return(
+        { product_related: true, intent: 'product_overview', family_mention: nil,
+          requested_intents: [], quantity_inquiry: false, customer_language: nil }
+      )
+      # KB confidently answers (non-fallback) but NOT an exact match, so Gate G does not preempt and
+      # knowledge_available? is true — the informational overview should still land in RAG.
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(
+        instance_double(Marine::Cell::KnowledgeBaseService,
+                        retrieve: instance_double(Marine::Cell::RetrievalResult,
+                                                  fallback_reason: nil, confidence: 0.8, source_type: 'faq'))
+      )
+    end
+
+    it 'falls through to the RAG ResponseGenerator instead of emitting a product/clarify payload' do
+      allow(generator).to receive(:generate).and_return(reply_payload)
+
+      payload = runner.run(additional_message: 'What products does Textilindo sell?')
+
+      expect(generator).to have_received(:generate)
+      expect(payload['action']).not_to eq('product')
+      expect(payload['orchestration_path']).to eq('retrieval')
     end
   end
 

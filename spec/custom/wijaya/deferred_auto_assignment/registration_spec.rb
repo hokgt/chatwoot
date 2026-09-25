@@ -29,6 +29,7 @@ RSpec.describe 'Deferred auto-assignment registration', type: :model do
   end
 
   before do
+    account.disable_features!(:assignment_v2) # legacy battery path; assignment_v2 now defaults on
     allow(AutoAssignment::InboxRoundRobinService).to receive(:new).and_return(round_robin_picker)
     allow(OnlineStatusTracker).to receive(:get_available_users) { online_ids.index_with { 'online' } }
     # Guard the V2 after_save branch from touching live Redis if an example enables V2.
@@ -67,6 +68,9 @@ RSpec.describe 'Deferred auto-assignment registration', type: :model do
     let(:online_ids) { [] }
 
     it 'stays open + human/bot-unassigned and records a deferred marker' do
+      # The normal battery setup exercises the legacy path (assignment_v2 disabled).
+      expect(inbox.auto_assignment_v2_enabled?).to be(false)
+
       conversation = create_conversation
 
       expect(conversation).to be_open

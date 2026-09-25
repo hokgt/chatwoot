@@ -20,7 +20,6 @@ import {
   JENIS_PAKAIAN_OPTIONS,
 } from './fieldConfig';
 import {
-  AGENT_TO_ERP_USER,
   SOURCE_MAPPING,
   CAMPAIGN_MAPPING,
   INDUSTRY_OPTIONS,
@@ -47,9 +46,17 @@ const openModal = () => {
 
 // Two isolated views inside the same modal. 'details' is the default and hosts
 // the unchanged Lead Details create/update flow; 'activity' mounts the fully
-// separate LeadActivityForm (v-if, so its runtime options only fetch when the
-// tab is opened). Reset to 'details' on conversation switch.
+// separate LeadActivityForm. Reset to 'details' on conversation switch.
 const activeTab = ref('details');
+
+// The Activity form is mounted on first visit and then kept mounted (toggled with
+// v-show), so switching back and forth between the two tabs preserves the unsaved
+// Activity form state and its loaded option caches. It is unmounted/reset only on
+// a conversation change (activityVisited returns to false below).
+const activityVisited = ref(false);
+watch(activeTab, tab => {
+  if (tab === 'activity') activityVisited.value = true;
+});
 
 // When ERP is unconfigured the backend never persists a draft on open; mirror
 // that on the client by disabling all autosave so opening the panel creates zero
@@ -57,7 +64,6 @@ const activeTab = ref('details');
 const configured = ref(false);
 
 const fields = reactive({
-  lead_owner: '',
   first_name: '',
   company_name: '',
   whatsapp_no: '',
@@ -109,11 +115,16 @@ const SearchableSelect = defineComponent({
   name: 'SearchableSelect',
   props: {
     modelValue: { type: String, default: '' },
+    // Either plain strings (Source/Campaign/Industry/Territory) or
+    // { value, label } objects (Lead Owner: value = the Chatwoot agent email).
     options: { type: Array, default: () => [] },
     placeholder: { type: String, default: 'Search…' },
     id: { type: String, default: '' },
     describedby: { type: String, default: '' },
     invalid: { type: Boolean, default: false },
+    // The Lead Owner picker disables the leading "— Clear —" row: an owner is
+    // reset through the dedicated "Use assigned agent" action, never blanked here.
+    allowClear: { type: Boolean, default: true },
   },
   emits: ['update:modelValue', 'change'],
   setup(selectProps, { emit }) {
@@ -126,10 +137,30 @@ const SearchableSelect = defineComponent({
     // the menu does not close-then-reopen; it is released on the next tick.
     let suppressReopen = false;
 
-    const displayOptions = computed(() => ['', ...selectProps.options]);
+    const optionValue = option =>
+      option !== null && typeof option === 'object' ? option.value : option;
 
-    const optionLabel = option =>
-      option === '' ? '— Clear —' : String(option);
+    const displayOptions = computed(() =>
+      selectProps.allowClear
+        ? ['', ...selectProps.options]
+        : [...selectProps.options]
+    );
+
+    const optionLabel = option => {
+      if (option === '') return '— Clear —';
+      if (option !== null && typeof option === 'object')
+        return String(option.label || option.value);
+      return String(option);
+    };
+
+    // Label of the currently selected value (objects store value≠label), falling
+    // back to the raw value so a stored owner not in the list still shows.
+    const selectedLabel = computed(() => {
+      const match = selectProps.options.find(
+        option => optionValue(option) === selectProps.modelValue
+      );
+      return match ? optionLabel(match) : selectProps.modelValue;
+    });
 
     const filtered = computed(() => {
       const q = query.value.trim().toLowerCase();
@@ -153,8 +184,9 @@ const SearchableSelect = defineComponent({
     };
 
     const select = option => {
-      emit('update:modelValue', option);
-      emit('change', option);
+      const value = optionValue(option);
+      emit('update:modelValue', value);
+      emit('change', value);
       close();
       // Block the focus/click that follows an option mousedown from reopening
       // the menu; release on the next tick so genuine reopens still work.
@@ -172,7 +204,9 @@ const SearchableSelect = defineComponent({
         return;
       }
       const q = query.value.trim().toLowerCase();
-      const exact = list.find(option => String(option).toLowerCase() === q);
+      const exact = list.find(
+        option => optionLabel(option).toLowerCase() === q
+      );
       select(exact || list[0]);
     };
 
@@ -199,8 +233,8 @@ const SearchableSelect = defineComponent({
           'aria-expanded': open.value ? 'true' : 'false',
           'aria-describedby': selectProps.describedby || undefined,
           'aria-invalid': selectProps.invalid ? 'true' : undefined,
-          value: open.value ? query.value : selectProps.modelValue,
-          placeholder: selectProps.modelValue || selectProps.placeholder,
+          value: open.value ? query.value : selectedLabel.value,
+          placeholder: selectedLabel.value || selectProps.placeholder,
           onFocus: openMenu,
           onClick: openMenu,
           onInput: event => {
@@ -235,7 +269,7 @@ const SearchableSelect = defineComponent({
                     h(
                       'li',
                       {
-                        key: option || '__empty__',
+                        key: optionValue(option) || '__empty__',
                         class: [
                           'cursor-pointer px-2 py-1 text-n-slate-12',
                           index === highlight.value
@@ -320,21 +354,123 @@ const sourceFromMapping = () => {
   return channel ? SOURCE_MAPPING[channel] || '' : '';
 };
 
-const leadOwnerFromMapping = () => {
-  const id = assignee.value.id;
-  const name = assignee.value.name;
-  return (
-    AGENT_TO_ERP_USER[id] ||
-    AGENT_TO_ERP_USER[name] ||
-    assignee.value.email ||
-    ''
+// Lead Owner. By default it follows the committed conversation assignee (synced to
+// ERP server-side by the erp_lead_owner_sync battery after the Lead links, from the
+// assignee email and only after ERP-User validation). The agent may also pick any
+// current-account Chatwoot agent as a sticky manual override through the dedicated,
+// server-validated #owner endpoint: the browser only ever submits an agent email
+// chosen from the fetched list, never free text, and the backend reconfirms every
+// nonblank value is a current-account Chatwoot agent before storing it (the ERP owner
+// write stays fail-closed ERP-User validated downstream). The owner is intentionally
+// NOT part of `fields`, `buildAutofill` or the Create/Update Lead payload — it has
+// its own path and never rides the generic field allowlist.
+const ownerValue = ref(''); // confirmed owner (agent email); '' when auto + unsynced
+const ownerOverride = ref(false); // sticky manual override active
+const ownerPending = ref(false); // confirmed owner not yet reached ERP (pending/failed)
+const ownerOptions = ref([]); // [{ value, label }] selectable Chatwoot agents (email)
+const ownerAvailable = ref(true); // agent directory reachable
+const ownerError = ref('');
+const ownerMessage = ref('');
+const ownerSaving = ref(false);
+
+const assigneeEmail = computed(() => assignee.value.email || '');
+
+// The assigned agent is a valid automatic default ONLY when it resolves to a
+// selectable Chatwoot agent (an exact value match in the fetched owner list). An
+// arbitrary assignee email — including any while the directory is unavailable, so the
+// list is empty — is never treated as a selected/valid owner.
+const assigneeIsSelectable = computed(() =>
+  ownerOptions.value.some(option => option.value === assigneeEmail.value)
+);
+
+// Displayed owner value: the confirmed stored/ERP owner when present (shown even if it
+// is not currently in the options list), otherwise the assignee email only when it is a
+// selectable Chatwoot agent. Never an unresolved assignee email.
+const leadOwnerDisplay = computed(() => {
+  if (ownerValue.value) return ownerValue.value;
+  if (ownerOverride.value) return '';
+  return assigneeIsSelectable.value ? assigneeEmail.value : '';
+});
+
+const ownerHelp = computed(() => {
+  if (!ownerAvailable.value)
+    return 'The agent list is unavailable right now; the Lead Owner cannot be changed.';
+  if (ownerOverride.value)
+    return 'Set manually. Use "Use assigned agent" to follow the assignee again.';
+  if (!ownerValue.value && assigneeEmail.value && !assigneeIsSelectable.value)
+    return 'The assigned agent is not in the agent list, so the Lead Owner is unset. Pick an agent from the list.';
+  return 'Set automatically from the assigned agent. Pick an agent to override it.';
+});
+
+const applyOwnerResponse = data => {
+  const stored = data.fields || {};
+  ownerValue.value = data.lead_owner ?? stored.lead_owner ?? '';
+  ownerOverride.value = Boolean(
+    data.lead_owner_override ?? stored.lead_owner_override
   );
+  ownerPending.value = Boolean(
+    data.lead_owner_sync_pending ?? stored.lead_owner_sync_pending
+  );
+};
+
+const onOwnerSelect = async value => {
+  if (!value || value === ownerValue.value) return;
+  ownerSaving.value = true;
+  ownerError.value = '';
+  ownerMessage.value = '';
+  try {
+    const { data } = await ErpLeadDraftsAPI.setOwner(
+      props.conversationId,
+      value
+    );
+    applyOwnerResponse(data);
+    ownerMessage.value = data.message || '';
+  } catch (e) {
+    ownerError.value =
+      e?.response?.data?.error || 'Unable to update the Lead Owner.';
+  } finally {
+    ownerSaving.value = false;
+  }
+};
+
+const resetOwner = async () => {
+  ownerSaving.value = true;
+  ownerError.value = '';
+  ownerMessage.value = '';
+  try {
+    const { data } = await ErpLeadDraftsAPI.resetOwner(props.conversationId);
+    applyOwnerResponse(data);
+    ownerMessage.value = data.message || '';
+  } catch (e) {
+    ownerError.value =
+      e?.response?.data?.error || 'Unable to reset the Lead Owner.';
+  } finally {
+    ownerSaving.value = false;
+  }
+};
+
+// Explicit retry for a pending/failed owner sync on a linked Lead: the server re-derives and
+// revalidates the current desired owner (manual override or assignee), so the same confirmed
+// owner can be resent without re-picking it from the list.
+const retryOwner = async () => {
+  ownerSaving.value = true;
+  ownerError.value = '';
+  ownerMessage.value = '';
+  try {
+    const { data } = await ErpLeadDraftsAPI.retryOwner(props.conversationId);
+    applyOwnerResponse(data);
+    ownerMessage.value = data.message || '';
+  } catch (e) {
+    ownerError.value =
+      e?.response?.data?.error || 'Unable to retry the Lead Owner sync.';
+  } finally {
+    ownerSaving.value = false;
+  }
 };
 
 const buildAutofill = () => {
   const phone = contactPhone.value || '';
   return {
-    lead_owner: leadOwnerFromMapping(),
     first_name: contactName.value || '',
     company_name: '',
     whatsapp_no: phone,
@@ -359,9 +495,16 @@ const loadDraft = async () => {
   if (!props.conversationId) return;
   loading.value = true;
   error.value = '';
+  ownerError.value = '';
+  ownerMessage.value = '';
   try {
     const { data } = await ErpLeadDraftsAPI.show(props.conversationId);
     applyOptions(data.options);
+    ownerOptions.value = Array.isArray(data.owner_options)
+      ? data.owner_options
+      : [];
+    ownerAvailable.value = data.owner_options_available !== false;
+    applyOwnerResponse(data);
     const existingFields = data.fields || {};
     const hasExisting = Object.keys(existingFields).length > 0;
     // Stored/ERP-refreshed fields are applied as-is; only a first-time draft with
@@ -571,10 +714,31 @@ watch(
   () => {
     isModalOpen.value = false;
     activeTab.value = 'details';
+    // Drop the mounted Activity form so a new conversation starts fresh; a later
+    // visit remounts it with reset caches.
+    activityVisited.value = false;
     loadDraft();
   },
   { immediate: true }
 );
+
+// A conversation can be reassigned to another agent WITHOUT switching conversations
+// (so the conversationId watch above never re-runs and the last-loaded owner stays on
+// screen). A genuine reassignment to a present agent is authoritative: the backend
+// clears any prior manual override and re-syncs the Lead Owner to the new assignee. So
+// drop the now-stale synced owner AND the manual override here too, letting
+// leadOwnerDisplay fall back to the newly assigned agent. The backend has recorded a
+// pending owner intent for this reassignment, so mark it pending immediately until a
+// response/reload confirms the ERP sync (a linked Lead then offers retry; an unlinked
+// Lead shows the "syncs after the Lead is created" note). Unassignment (blank next)
+// leaves the owner as ERP has it, matching the backend which only syncs on a change to
+// a present assignee. The agent can still pick a new manual owner afterwards.
+watch(assigneeEmail, (next, prev) => {
+  if (!next || next === prev) return;
+  ownerOverride.value = false;
+  ownerValue.value = '';
+  ownerPending.value = true;
+});
 // WIJAYA_CUSTOM_END erp_lead_sidebar
 </script>
 
@@ -646,15 +810,19 @@ watch(
         </p>
 
         <!-- Activity tab: the form owns its own scroll body + footer, so it must
-             not be wrapped in another overflow scroller here. -->
+             not be wrapped in another overflow scroller here. The panel toggles
+             with v-show; the form itself is mounted on first visit (v-if) and then
+             kept mounted, so the unsaved form state and loaded option caches
+             survive tab switching until the conversation changes. -->
         <div
-          v-if="activeTab === 'activity'"
+          v-show="activeTab === 'activity'"
           id="erp-tabpanel-activity"
           role="tabpanel"
           aria-labelledby="erp-tab-activity"
           class="flex min-h-0 flex-1 flex-col pt-2"
         >
           <LeadActivityForm
+            v-if="activityVisited"
             :conversation-id="conversationId"
             :current-chat="currentChat"
             :erp-lead-id="erpLeadId"
@@ -663,9 +831,10 @@ watch(
         </div>
 
         <!-- Details tab: compact status region, a single scroll body, and a
-             stable non-scrolling footer sibling below it. -->
+             stable non-scrolling footer sibling below it. Toggled with v-show so
+             it stays mounted alongside the Activity form. -->
         <div
-          v-else
+          v-show="activeTab === 'details'"
           id="erp-tabpanel-details"
           role="tabpanel"
           aria-labelledby="erp-tab-details"
@@ -700,13 +869,67 @@ watch(
               <div class="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2">
                 <label class="flex flex-col gap-1" for="erp-lead-owner">
                   <span>Lead Owner</span>
-                  <input
+                  <SearchableSelect
                     id="erp-lead-owner"
-                    v-model="fields.lead_owner"
-                    class="input"
-                    type="text"
-                    @input="scheduleSave()"
+                    :model-value="leadOwnerDisplay"
+                    :options="ownerOptions"
+                    :allow-clear="false"
+                    placeholder="Search ERP users…"
+                    describedby="erp-lead-owner-help"
+                    @change="onOwnerSelect"
                   />
+                  <div class="flex items-start justify-between gap-2">
+                    <span
+                      id="erp-lead-owner-help"
+                      class="text-xs text-n-slate-10"
+                    >
+                      {{ ownerHelp }}
+                    </span>
+                    <button
+                      v-if="ownerOverride"
+                      type="button"
+                      class="shrink-0 text-xs font-medium text-n-brand hover:underline disabled:opacity-50"
+                      :disabled="ownerSaving"
+                      @click="resetOwner"
+                    >
+                      Use assigned agent
+                    </button>
+                  </div>
+                  <span
+                    v-if="ownerError"
+                    class="text-xs text-n-ruby-10"
+                    role="alert"
+                  >
+                    {{ ownerError }}
+                  </span>
+                  <span v-else-if="ownerMessage" class="text-xs text-n-teal-11">
+                    {{ ownerMessage }}
+                  </span>
+                  <!-- Owner not yet confirmed in ERP: on a linked Lead offer an explicit
+                       retry; on an unlinked Lead explain it syncs after the Lead is created. -->
+                  <div
+                    v-if="ownerPending && erpLeadId"
+                    class="flex items-start justify-between gap-2"
+                  >
+                    <span class="text-xs text-n-amber-11">
+                      Lead Owner saved; not yet confirmed in ERP.
+                    </span>
+                    <button
+                      type="button"
+                      class="shrink-0 text-xs font-medium text-n-brand hover:underline disabled:opacity-50"
+                      :disabled="ownerSaving"
+                      @click="retryOwner"
+                    >
+                      Retry Lead Owner sync
+                    </button>
+                  </div>
+                  <span
+                    v-else-if="ownerPending"
+                    class="text-xs text-n-amber-11"
+                  >
+                    Lead Owner saved; it will sync to ERP after the Lead is
+                    created.
+                  </span>
                 </label>
 
                 <label class="flex flex-col gap-1" for="erp-first-name">
