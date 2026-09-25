@@ -26,6 +26,10 @@ module Wijaya::Batteries::ErpLeadSidebar
   module LeadActivityPersonDirectory
     DOCTYPE = 'User'
     GUEST = 'Guest'
+    # Only Users holding this exact ERPNext role are selectable / valid persons in
+    # charge. Enforced server-side via a `Has Role` (User.roles) child-table filter
+    # on BOTH the picker list query and the pre-insert exact-name validation.
+    REQUIRED_ROLE = 'TEX - Marketing'
     LIST_FIELDS = '["name","full_name"]'
     EXACT_FIELDS = '["name"]'
     ORDER_BY = 'full_name asc'
@@ -40,7 +44,9 @@ module Wijaya::Batteries::ErpLeadSidebar
     module_function
 
     # Sanitized, deterministically sorted [{ value:, label: }] for every
-    # selectable ERP User (enabled=1, name != Guest). value is the exact
+    # selectable ERP User (enabled=1, name != Guest, holding REQUIRED_ROLE).
+    # Deduplicated by exact User.name so a child-table role join never surfaces a
+    # user twice. value is the exact
     # User.name (the Link value); label is full_name, falling back to name.
     # Raises SyncError when the directory is unavailable so the caller can
     # degrade to an empty, optional list.
@@ -48,11 +54,12 @@ module Wijaya::Batteries::ErpLeadSidebar
       body = get_json(account, list_uri(account))
       Array(body['data'])
         .filter_map { |row| option_for(row) }
+        .uniq { |option| option[:value] }
         .sort_by { |option| [option[:label].downcase, option[:value]] }
     end
 
     # True only when `name` is an exact, currently-selectable ERP User
-    # (enabled=1, name != Guest). A blank name is never valid here (the caller
+    # (enabled=1, name != Guest, holding REQUIRED_ROLE). A blank name is never valid here (the caller
     # treats blank as the permitted "no person in charge"); an oversized value
     # (> MAX_NAME_LENGTH) is a definite invalid and never touches the directory.
     # Raises SyncError when
@@ -124,10 +131,12 @@ module Wijaya::Batteries::ErpLeadSidebar
       uri
     end
 
-    # Strict server-side allowlist: only enabled, non-Guest Users are ever
+    # Strict server-side allowlist: only enabled, non-Guest Users holding the
+    # exact REQUIRED_ROLE (matched via the `Has Role` child table) are ever
     # queried; callers may append one extra exact-name filter.
     def enabled_non_guest_filters(extra = [])
-      ([['User', 'enabled', '=', 1], ['User', 'name', '!=', GUEST]] + extra).to_json
+      ([['User', 'enabled', '=', 1], ['User', 'name', '!=', GUEST],
+        ['Has Role', 'role', '=', REQUIRED_ROLE]] + extra).to_json
     end
 
     def base_user_uri(account)
