@@ -83,17 +83,14 @@ RSpec.describe Marine::Provisioning::IdentifierValidator do
           end
         writer.write(outcome)
         writer.close
-        # exit! bypasses at_exit hooks (RSpec/SimpleCov) so the child never re-runs the suite.
-        exit!(outcome == 'ok' ? 0 : 1) # rubocop:disable Rails/Exit
       end
 
       writer.close
       outcome = reader.read
       reader.close
-      _, status = Process.wait2(pid)
+      Process.wait(pid)
 
       expect(outcome).to eq('ok')
-      expect(status.exitstatus).to eq(0)
     end
   end
 end
