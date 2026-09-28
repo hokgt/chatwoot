@@ -10,9 +10,15 @@ module Wijaya::Batteries::ErpLeadSidebar
     # enabled non-Guest ERP User. Keeping owner out of this generic list guarantees no unvalidated
     # browser value rides the full-field payload; the owner reaches ERP solely through that
     # dedicated path, even if a stale draft still carries fields['lead_owner'].
+    # product_requirements (Text, multiline) and product_requirement (Link to the
+    # existing "Lead Product Requirements" DocType, value = ERP document name) ride
+    # the normal Lead payload here so draft save, Create/Update Lead and refresh all
+    # handle them. product_name/product_price are DELIBERATELY absent: they belong
+    # only to the Product Requirements create path and must never enter the Lead payload.
     DIRECT_FIELDS = %w[
       first_name company_name whatsapp_no mobile_no status
       utm_source industry territory utm_campaign
+      product_requirements product_requirement
     ].freeze
 
     def initialize(fields)

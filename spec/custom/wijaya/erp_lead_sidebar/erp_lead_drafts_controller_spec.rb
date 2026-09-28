@@ -123,6 +123,47 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       expect(draft.fields).not_to have_key('lead_owner')
       expect(draft.fields['first_name']).to eq('Bob')
     end
+
+    # Requirements card fields ride the strict draft allowlist; the create-only
+    # product_name/product_price can never be persisted onto the Lead draft.
+    it 'persists product_requirements/product_requirement and drops product_name/product_price' do
+      patch update_path,
+            params: { fields: {
+              first_name: 'Bob',
+              product_requirements: "Need\ncustom sizing",
+              product_requirement: 'LPR-0001',
+              product_name: 'HACK',
+              product_price: 999
+            } },
+            headers: auth, as: :json
+
+      expect(response).to have_http_status(:success)
+      draft = Wijaya::ErpLeadDraft.find_by(conversation: conversation)
+      expect(draft.fields['product_requirements']).to eq("Need\ncustom sizing")
+      expect(draft.fields['product_requirement']).to eq('LPR-0001')
+      expect(draft.fields).not_to have_key('product_name')
+      expect(draft.fields).not_to have_key('product_price')
+    end
+
+    # Opening a linked draft reconciles from ERP; both Requirements fields map back.
+    it 'maps product_requirements/product_requirement from the ERP Lead on refresh' do
+      Wijaya::ErpLeadDraft.create!(
+        account: account, conversation: conversation, erp_lead_id: 'LEAD-1', sync_status: 'synced',
+        fields: { 'first_name' => 'Old' }
+      )
+      lead_doc = Net::HTTPOK.new('1.1', '200', 'OK')
+      allow(lead_doc).to receive(:body).and_return(
+        { 'data' => { 'first_name' => 'Bob', 'product_requirements' => "A\nB", 'product_requirement' => 'LPR-0001' } }.to_json
+      )
+      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(lead_doc)
+
+      open_sidebar
+
+      expect(response).to have_http_status(:success)
+      fields = response.parsed_body['fields']
+      expect(fields['product_requirements']).to eq("A\nB")
+      expect(fields['product_requirement']).to eq('LPR-0001')
+    end
   end
 
   # Dedicated, validated Lead Owner set/reset endpoint. The owner is never trusted from

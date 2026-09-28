@@ -31,6 +31,10 @@ module Wijaya::Batteries::ErpLeadSidebar::Routes
             end
           end
         end
+        # Account-scoped Product Requirements master data for the ERP Lead
+        # "Product Requirement" Link field: bounded searchable list + guarded
+        # create. Not conversation-scoped (master data), any account agent may use it.
+        resources :product_requirements, only: %i[index create]
         # Account-scoped singleton ERPNext connection settings (admin-only).
         resource :erp_setting, only: %i[show update] do
           post :test

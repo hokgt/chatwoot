@@ -13,6 +13,7 @@ import {
 } from 'vue';
 import ErpLeadDraftsAPI from '@wijaya/erp_lead_sidebar/frontend/api/wijayaErpLeadDrafts';
 import LeadActivityForm from './LeadActivityForm.vue';
+import ProductRequirementSelect from './ProductRequirementSelect.vue';
 import NextButton from 'dashboard/components-next/button/Button.vue';
 import {
   STATUS_OPTIONS,
@@ -73,6 +74,11 @@ const fields = reactive({
   industry: '',
   territory: '',
   utm_campaign: '',
+  // Requirements card. product_requirements is multiline Text; product_requirement
+  // is a Link storing the ERP "Lead Product Requirements" document name. Both ride
+  // the normal draft/create/update/refresh flow (see PayloadBuilder::DIRECT_FIELDS).
+  product_requirements: '',
+  product_requirement: '',
 });
 
 [...MARKET_CUSTOMER_OPTIONS, ...JENIS_PAKAIAN_OPTIONS].forEach(([, key]) => {
@@ -1101,6 +1107,47 @@ watch(assigneeEmail, (next, prev) => {
                     @change="scheduleSave(0)"
                   />
                 </label>
+              </div>
+            </section>
+
+            <section
+              class="flex flex-col gap-3 rounded-lg border border-n-weak bg-n-solid-1 p-4"
+            >
+              <h3
+                class="border-b border-n-weak pb-1 font-semibold text-n-slate-12"
+              >
+                Requirements
+              </h3>
+              <div class="grid grid-cols-1 gap-x-4 gap-y-3">
+                <label
+                  class="flex flex-col gap-1"
+                  for="erp-product-requirements"
+                >
+                  <span>Product Requirements</span>
+                  <textarea
+                    id="erp-product-requirements"
+                    v-model="fields.product_requirements"
+                    class="input"
+                    rows="5"
+                    @input="scheduleSave()"
+                  />
+                </label>
+
+                <!-- Not a wrapping <label>: ProductRequirementSelect renders a
+                     nested create dialog (its own inputs/buttons), so the label
+                     associates via `for` to the combobox input's id instead. -->
+                <div class="flex flex-col gap-1">
+                  <label for="erp-product-requirement">
+                    <span>Product Requirement</span>
+                  </label>
+                  <ProductRequirementSelect
+                    id="erp-product-requirement"
+                    v-model="fields.product_requirement"
+                    :configured="configured"
+                    :conversation-id="conversationId"
+                    @change="scheduleSave(0)"
+                  />
+                </div>
               </div>
             </section>
 

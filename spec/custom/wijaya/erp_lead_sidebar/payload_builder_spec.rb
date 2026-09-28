@@ -76,4 +76,27 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder do
     expect { described_class.new(valid_fields.merge('first_name' => '', 'company_name' => '')).payload }
       .to raise_error(Wijaya::Batteries::ErpLeadSidebar::ValidationError, /first_name or company_name/)
   end
+
+  describe 'Requirements fields' do
+    it 'carries product_requirements (multiline preserved) and product_requirement (Link = ERP name)' do
+      multiline = "Line one\nLine two\nLine three"
+      payload = described_class.new(
+        valid_fields.merge('product_requirements' => multiline, 'product_requirement' => 'LPR-0001')
+      ).payload
+
+      expect(payload['product_requirements']).to eq(multiline)
+      expect(payload['product_requirement']).to eq('LPR-0001')
+    end
+
+    # product_name/product_price belong ONLY to the Product Requirements create
+    # path; the browser must never be able to inject them into the Lead payload.
+    it 'never emits product_name/product_price even when the draft carries them' do
+      payload = described_class.new(
+        valid_fields.merge('product_name' => 'HACK', 'product_price' => 999_999)
+      ).payload
+
+      expect(payload).not_to have_key('product_name')
+      expect(payload).not_to have_key('product_price')
+    end
+  end
 end

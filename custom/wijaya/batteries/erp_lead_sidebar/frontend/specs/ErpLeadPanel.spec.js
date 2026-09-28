@@ -27,6 +27,19 @@ vi.mock('@wijaya/erp_lead_sidebar/frontend/api/wijayaErpLeadDrafts', () => ({
   },
 }));
 
+// The Requirements card mounts the real ProductRequirementSelect, which owns the
+// Product Requirements master-data API. Mock it so the Lead Details specs never
+// reach that network surface (it only fetches when its dropdown is opened anyway).
+vi.mock(
+  '@wijaya/erp_lead_sidebar/frontend/api/wijayaErpProductRequirements',
+  () => ({
+    default: {
+      list: vi.fn().mockResolvedValue({ data: { options: [] } }),
+      create: vi.fn(),
+    },
+  })
+);
+
 // The global NextButton stub renders only its default slot; the real Button
 // renders :label instead. Mirror that here now the panel passes :label with no
 // redundant slot, so text-based button lookups keep working.
@@ -339,6 +352,7 @@ describe('ErpLeadPanel modal presentation', () => {
       'Informasi Lead',
       'Kontak',
       'Sumber dan Klasifikasi',
+      'Requirements',
       'Market Customer',
       'Jenis Pakaian',
     ]);
@@ -488,7 +502,7 @@ describe('ErpLeadPanel modal presentation', () => {
       .map(b => b.text())
       .filter(t => t === 'Lead Details' || t === 'Lead Activity');
     expect(tabLabels).toEqual(['Lead Details', 'Lead Activity']);
-    expect(wrapper.findAll('h3').length).toBe(5);
+    expect(wrapper.findAll('h3').length).toBe(6);
     expect(wrapper.find('.lead-activity-form-stub').exists()).toBe(false);
   });
 
@@ -563,7 +577,7 @@ describe('ErpLeadPanel modal presentation', () => {
 
     // Back on details after the conversation switch.
     expect(wrapper.find('.lead-activity-form-stub').exists()).toBe(false);
-    expect(wrapper.findAll('h3').length).toBe(5);
+    expect(wrapper.findAll('h3').length).toBe(6);
   });
 
   it('renders the exact ordered Status options', async () => {
@@ -1175,5 +1189,81 @@ describe('ErpLeadPanel Lead Owner pending/retry', () => {
       wrapper.findAll('button').find(b => b.text() === 'Retry Lead Owner sync')
     ).toBeFalsy();
     expect(wrapper.text()).not.toContain('not yet confirmed in ERP');
+  });
+});
+
+describe('ErpLeadPanel Requirements card', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    // Existing draft so opening does not schedule the brand-new-draft autosave.
+    showSpy.mockResolvedValue({
+      data: {
+        configured: true,
+        fields: { first_name: 'Bob', industry: 'Retail', status: 'Lead' },
+      },
+    });
+    saveSpy.mockResolvedValue({ data: { sync_status: 'draft' } });
+  });
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
+  });
+
+  const mountReq = () =>
+    mount(ErpLeadPanel, {
+      props: { conversationId: 42 },
+      global: {
+        stubs: { WootModal, WootModalHeader, NextButton, LeadActivityForm },
+      },
+    });
+
+  const open = async wrapper => {
+    await vi.runOnlyPendingTimersAsync();
+    await wrapper.find('.erp-trigger').trigger('click');
+    await vi.runOnlyPendingTimersAsync();
+  };
+
+  it('renders the Requirements card between Sumber dan Klasifikasi and Market Customer with exact labels', async () => {
+    const wrapper = mountReq();
+    await open(wrapper);
+
+    const headings = wrapper.findAll('h3').map(h => h.text());
+    const iSumber = headings.indexOf('Sumber dan Klasifikasi');
+    const iReq = headings.indexOf('Requirements');
+    const iMarket = headings.indexOf('Market Customer');
+    expect(iSumber).toBeGreaterThanOrEqual(0);
+    expect(iReq).toBe(iSumber + 1);
+    expect(iMarket).toBe(iReq + 1);
+
+    const labels = wrapper.findAll('label span').map(s => s.text());
+    expect(labels).toContain('Product Requirements');
+    expect(labels).toContain('Product Requirement');
+  });
+
+  it('autosaves the Product Requirements textarea (multiline) and survives close/reopen', async () => {
+    const wrapper = mountReq();
+    await open(wrapper);
+
+    const textarea = wrapper.find('#erp-product-requirements');
+    await textarea.setValue('Need custom sizing\nand embroidery');
+    await vi.advanceTimersByTimeAsync(600);
+
+    expect(saveSpy).toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({
+        product_requirements: 'Need custom sizing\nand embroidery',
+      })
+    );
+
+    // Close and reopen the modal: the in-memory draft state is preserved.
+    await wrapper.find('.modal-close').trigger('click');
+    await wrapper.find('.erp-trigger').trigger('click');
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(wrapper.find('#erp-product-requirements').element.value).toBe(
+      'Need custom sizing\nand embroidery'
+    );
   });
 });

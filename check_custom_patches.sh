@@ -242,6 +242,14 @@ require_file custom/wijaya/batteries/erp_lead_sidebar/sync_service.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/safe_http.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/refresh_service.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/options_service.rb
+# Product Requirements: dedicated bounded/searchable service + account-scoped
+# controller + searchable dropdown/create-dialog component (value=ERP name,
+# label=product_name; raw numeric price; server-side normalized duplicate lookup).
+require_file custom/wijaya/batteries/erp_lead_sidebar/product_requirements_service.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/app/controllers/api/v1/accounts/wijaya/product_requirements_controller.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/ProductRequirementSelect.vue
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/priceFormat.js
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/api/wijayaErpProductRequirements.js
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/ErpLeadPanel.vue
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/fieldConfig.js
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/mappings.js
@@ -291,6 +299,11 @@ require_file spec/custom/wijaya/erp_lead_sidebar/lead_activity_options_service_s
 require_file spec/custom/wijaya/erp_lead_sidebar/lead_activity_service_spec.rb
 require_file spec/custom/wijaya/erp_lead_sidebar/lead_activities_controller_spec.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/LeadActivityForm.spec.js
+# Product Requirements specs (backend service + controller; frontend component + price formatter).
+require_file spec/custom/wijaya/erp_lead_sidebar/product_requirements_service_spec.rb
+require_file spec/custom/wijaya/erp_lead_sidebar/product_requirements_controller_spec.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/ProductRequirementSelect.spec.js
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/priceFormat.spec.js
 
 for file in \
   app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue \

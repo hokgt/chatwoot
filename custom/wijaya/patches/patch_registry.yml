@@ -524,6 +524,23 @@ patches:
       - custom/wijaya/batteries/erp_lead_sidebar/safe_http.rb
       - custom/wijaya/batteries/erp_lead_sidebar/refresh_service.rb
       - custom/wijaya/batteries/erp_lead_sidebar/options_service.rb
+      # Product Requirements master data for the ERP Lead "Product Requirement"
+      # Link field, backed by the EXISTING ERPNext DocType "Lead Product
+      # Requirements". Kept as a dedicated bounded/searchable service + account-scoped
+      # controller (never folding the simple OptionsService into an unbounded master-data
+      # loader). list -> {value: ERP name, label: product_name}; create writes only
+      # product_name + raw numeric product_price, with a server-side normalized
+      # (trim/case-insensitive/whitespace-collapse) duplicate lookup that returns the
+      # existing record with zero POST. The searchable dropdown displays product_name but
+      # stores/sends the ERP name, offers an inline "Create a new Lead Product Requirement"
+      # action (no Advanced Search) with a focused create dialog, and the Indonesian
+      # whole-number price display (50000 -> 50.000) is a standalone testable formatter
+      # while ERP only ever receives raw digits.
+      - custom/wijaya/batteries/erp_lead_sidebar/product_requirements_service.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/app/controllers/api/v1/accounts/wijaya/product_requirements_controller.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/ProductRequirementSelect.vue
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/priceFormat.js
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/api/wijayaErpProductRequirements.js
       # Account-scoped Chatwoot agent directory for the Lead Owner picker: the
       # owner options are THIS account's own Chatwoot agents (account.users —
       # administrators + agents, value + label = agent email), never the ERPNext
@@ -651,6 +668,15 @@ patches:
       - spec/custom/wijaya/erp_lead_sidebar/lead_activities_controller_spec.rb
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/LeadActivityForm.spec.js
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/dateValidation.spec.js
+      # Product Requirements coverage: bounded searchable list (value=name/label=product_name),
+      # raw numeric price create, server-side normalized duplicate lookup (zero POST),
+      # pre-network invalid rejection, sanitized ERP failures, account scoping; the payload
+      # allowlist (product_requirements/product_requirement in, product_name/product_price out)
+      # and refresh mapping ride the existing payload_builder + drafts controller specs.
+      - spec/custom/wijaya/erp_lead_sidebar/product_requirements_service_spec.rb
+      - spec/custom/wijaya/erp_lead_sidebar/product_requirements_controller_spec.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/ProductRequirementSelect.spec.js
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/priceFormat.spec.js
 
   - id: erp_lead_owner_sync
     name: ERPNext Lead Owner Sync on Assignment
