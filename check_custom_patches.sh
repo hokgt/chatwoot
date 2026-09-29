@@ -419,6 +419,7 @@ require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/embedding
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/config.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/provider_config.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/connection_test_service.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/settings_store.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/base_service.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/prompt_renderer.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/json_response_parser.rb

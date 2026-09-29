@@ -27,7 +27,16 @@
     },
     "LLM_SETTINGS": {
       "TITLE": "AI Provider Settings",
-      "DESCRIPTION": "Configure the AI model and API credentials that Marine AI uses to generate responses.",
+      "DESCRIPTION": "Configure the AI models and API credentials that Marine AI uses for routing decisions and for generating responses.",
+      "DECISION_MAKER": {
+        "TITLE": "Decision Maker Model (Routing & Intent)",
+        "SUBTITLE": "Konfigurasikan model AI yang bertugas mengekstrak niat pelanggan, mengidentifikasi skenario, dan mendeteksi varian produk secara terstruktur (JSON). Disarankan menggunakan model cepat (low-latency).",
+        "MODEL_PLACEHOLDER": "google/gemini-2.5-flash"
+      },
+      "RESPONSE_GENERATOR": {
+        "TITLE": "Response Generator Model (Persona & Presentation)",
+        "SUBTITLE": "Konfigurasikan model AI yang bertugas menyusun respons percakapan ramah kepada pelanggan berdasarkan fakta tervalidasi dari backend."
+      },
       "PROVIDER": {
         "LABEL": "Provider",
         "PLACEHOLDER": "Select a provider",
@@ -52,6 +61,7 @@
         "MASKED": "API key is saved and masked",
         "CHANGE": "Change",
         "CANCEL": "Cancel",
+        "INHERITED": "Inherited from the Response Generator. Saving stores an independent copy for this model.",
         "HINT": "The API key used to authenticate with the AI provider. Stored securely and never displayed in plaintext after saving."
       },
       "EMBEDDING_MODEL": {

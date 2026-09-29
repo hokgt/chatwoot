@@ -889,6 +889,7 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/config.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/provider_config.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/connection_test_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/llm/settings_store.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/base_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/prompt_renderer.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/json_response_parser.rb
@@ -1155,6 +1156,7 @@ patches:
       - custom/wijaya/batteries/marine_ai/frontend/api/preferences.js
       - custom/wijaya/batteries/marine_ai/frontend/api/llmSettings.js
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/llm-settings/Index.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/llm-settings/LlmProviderCard.vue
       - custom/wijaya/batteries/marine_ai/frontend/i18n/marine.json
       # Marine backend locale is battery-owned; loader registers these on the i18n load path
       # (config/locales/**/*.yml glob — no core edit needed). id.yml carries the price-display-v1
@@ -1239,6 +1241,7 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/llm/config_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/llm/provider_config_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/llm/connection_test_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/llm/settings_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/llm_settings_controller_spec.rb
       # RBAC regression: administrator-only Marine Inboxes + Settings (preferences)
       # management endpoints reject non-admins (plain agent + custom-role agent).
@@ -1449,6 +1452,10 @@ patches:
       # Provider / Settings) and their route metadata restrict non-administrators.
       - custom/wijaya/batteries/marine_ai/frontend/specs/marineSidebarSection.spec.js
       - custom/wijaya/batteries/marine_ai/frontend/specs/marine.routes.spec.js
+      # Dual-model AI Provider UI: two independent provider cards (Decision Maker +
+      # Response Generator), per-card Test, single atomic Save, masked-key change.
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/llm-settings/specs/Index.spec.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/llm-settings/specs/LlmProviderCard.spec.js
       # Product-knowledge grounding regression: a non-transactional attribute question with an
       # unresolvable family defers to grounded KB (orchestrator :not_product) instead of a generic
       # family clarification, and the RAG grounding block leads with the top query-matched approved
