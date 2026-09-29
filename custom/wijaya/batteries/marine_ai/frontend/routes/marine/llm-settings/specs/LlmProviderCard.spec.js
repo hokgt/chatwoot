@@ -7,10 +7,10 @@ import LlmProviderCard from '../LlmProviderCard.vue';
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: key => key }) }));
 
 const InputStub = {
-  props: ['modelValue', 'label', 'placeholder', 'type'],
+  props: ['modelValue', 'label', 'placeholder', 'type', 'message'],
   emits: ['update:modelValue'],
   template:
-    '<input :type="type" :data-label="label" :placeholder="placeholder" :value="modelValue" ' +
+    '<input :type="type" :data-label="label" :data-message="message" :placeholder="placeholder" :value="modelValue" ' +
     '@input="$emit(\'update:modelValue\', $event.target.value)" />',
 };
 
@@ -42,6 +42,15 @@ const PROVIDERS = [
     default_endpoint: 'https://openrouter.ai/api',
   },
 ];
+
+const openrouterConfig = (overrides = {}) => ({
+  provider: 'openrouter',
+  model: 'nemo',
+  endpoint: 'https://openrouter.ai/api',
+  api_key: '',
+  api_mode: 'chat_completions',
+  ...overrides,
+});
 
 const mountCard = (props = {}) =>
   mount(LlmProviderCard, {
@@ -133,6 +142,117 @@ describe('LlmProviderCard', () => {
     const owned = mountCard({ apiKeyInherited: false });
     expect(owned.text()).not.toContain(
       'MARINE_AI.LLM_SETTINGS.API_KEY.INHERITED'
+    );
+  });
+
+  const endpointMessage = wrapper =>
+    wrapper
+      .findAll('input')
+      .find(
+        i =>
+          i.attributes('data-label') === 'MARINE_AI.LLM_SETTINGS.ENDPOINT.LABEL'
+      )
+      .attributes('data-message');
+
+  it('shows the API Mode selector only when showApiMode is set', () => {
+    expect(mountCard().findAll('select')).toHaveLength(1);
+    expect(
+      mountCard({ showApiMode: true, config: openrouterConfig() }).findAll(
+        'select'
+      )
+    ).toHaveLength(2);
+  });
+
+  it('omits the OpenRouter Decisions mode option for a non-openrouter provider', () => {
+    // The default mountCard config uses the gemini provider.
+    const modeSelect = mountCard({ showApiMode: true }).findAll('select')[1];
+    const values = modeSelect.findAll('option').map(o => o.attributes('value'));
+    expect(values).toEqual(['chat_completions']);
+  });
+
+  it('offers the OpenRouter Decisions mode option for the openrouter provider', () => {
+    const modeSelect = mountCard({
+      showApiMode: true,
+      config: openrouterConfig(),
+    }).findAll('select')[1];
+    const values = modeSelect.findAll('option').map(o => o.attributes('value'));
+    expect(values).toEqual(['chat_completions', 'openrouter_decisions']);
+  });
+
+  it('resets decisions mode and its known-default endpoint when leaving openrouter', async () => {
+    const wrapper = mountCard({
+      showApiMode: true,
+      config: openrouterConfig({
+        api_mode: 'openrouter_decisions',
+        endpoint: 'https://openrouter.ai/api/alpha/decisions',
+      }),
+    });
+
+    // The provider ComboBox is the first select.
+    await wrapper.findAll('select')[0].setValue('gemini');
+
+    expect(wrapper.emitted('update:provider')[0]).toEqual(['gemini']);
+    expect(wrapper.emitted('update:apiMode')[0]).toEqual(['chat_completions']);
+    // The Decisions endpoint is a known default, so it is replaced by the gemini one.
+    expect(wrapper.emitted('update:endpoint')[0]).toEqual(['https://gg']);
+  });
+
+  it('resets decisions mode but never a custom endpoint when leaving openrouter', async () => {
+    const wrapper = mountCard({
+      showApiMode: true,
+      config: openrouterConfig({
+        api_mode: 'openrouter_decisions',
+        endpoint: 'https://my-proxy.example',
+      }),
+    });
+
+    await wrapper.findAll('select')[0].setValue('gemini');
+
+    expect(wrapper.emitted('update:apiMode')[0]).toEqual(['chat_completions']);
+    expect(wrapper.emitted('update:endpoint')).toBeUndefined();
+  });
+
+  it('auto-adjusts a known-default endpoint when switching to decisions mode', async () => {
+    const wrapper = mountCard({
+      showApiMode: true,
+      config: openrouterConfig({ endpoint: 'https://openrouter.ai/api' }),
+    });
+
+    // The mode ComboBox is the second select (provider is the first).
+    await wrapper.findAll('select')[1].setValue('openrouter_decisions');
+
+    expect(wrapper.emitted('update:apiMode')[0]).toEqual([
+      'openrouter_decisions',
+    ]);
+    expect(wrapper.emitted('update:endpoint')[0]).toEqual([
+      'https://openrouter.ai/api/alpha/decisions',
+    ]);
+  });
+
+  it('never overwrites a custom endpoint when the mode changes', async () => {
+    const wrapper = mountCard({
+      showApiMode: true,
+      config: openrouterConfig({ endpoint: 'https://my-proxy.example' }),
+    });
+
+    await wrapper.findAll('select')[1].setValue('openrouter_decisions');
+
+    expect(wrapper.emitted('update:apiMode')[0]).toEqual([
+      'openrouter_decisions',
+    ]);
+    expect(wrapper.emitted('update:endpoint')).toBeUndefined();
+  });
+
+  it('shows a mode-specific endpoint hint', () => {
+    const chat = mountCard({ showApiMode: true, config: openrouterConfig() });
+    expect(endpointMessage(chat)).toBe('MARINE_AI.LLM_SETTINGS.ENDPOINT.HINT');
+
+    const decisions = mountCard({
+      showApiMode: true,
+      config: openrouterConfig({ api_mode: 'openrouter_decisions' }),
+    });
+    expect(endpointMessage(decisions)).toBe(
+      'MARINE_AI.LLM_SETTINGS.ENDPOINT.HINT_DECISIONS'
     );
   });
 

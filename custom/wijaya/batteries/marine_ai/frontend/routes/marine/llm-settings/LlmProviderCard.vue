@@ -15,6 +15,7 @@ const props = defineProps({
   apiKeyPresent: { type: Boolean, default: false },
   apiKeyInherited: { type: Boolean, default: false },
   modelPlaceholder: { type: String, default: '' },
+  showApiMode: { type: Boolean, default: false },
   isTesting: { type: Boolean, default: false },
   isBusy: { type: Boolean, default: false },
   testResult: { type: Object, default: null },
@@ -25,6 +26,7 @@ const emit = defineEmits([
   'update:model',
   'update:endpoint',
   'update:apiKey',
+  'update:apiMode',
   'test',
 ]);
 
@@ -65,21 +67,80 @@ const endpointPlaceholder = computed(
     t('MARINE_AI.LLM_SETTINGS.ENDPOINT.PLACEHOLDER')
 );
 
+// The Decisions endpoint uses no /v1 path, so the chat hint would be misleading.
+const isDecisionsMode = computed(
+  () => props.showApiMode && props.config.api_mode === 'openrouter_decisions'
+);
+
+const endpointHint = computed(() =>
+  isDecisionsMode.value
+    ? t('MARINE_AI.LLM_SETTINGS.ENDPOINT.HINT_DECISIONS')
+    : t('MARINE_AI.LLM_SETTINGS.ENDPOINT.HINT')
+);
+
+// OpenRouter Decisions is valid only for the OpenRouter provider, so the option is
+// omitted for any other provider — an invalid provider+mode combination can never
+// be selected here.
+const apiModeOptions = computed(() => {
+  const options = [
+    {
+      value: 'chat_completions',
+      label: t('MARINE_AI.LLM_SETTINGS.API_MODE.CHAT_COMPLETIONS'),
+    },
+  ];
+  if (props.config.provider === 'openrouter') {
+    options.push({
+      value: 'openrouter_decisions',
+      label: t('MARINE_AI.LLM_SETTINGS.API_MODE.OPENROUTER_DECISIONS'),
+    });
+  }
+  return options;
+});
+
+// The known OpenRouter Decisions endpoint, derived from the OpenRouter chat base.
+const OPENROUTER_DECISIONS_ENDPOINT =
+  'https://openrouter.ai/api/alpha/decisions';
+
+// Switching mode auto-adjusts the endpoint ONLY when it is empty or still exactly
+// the previous known default, so a custom endpoint is never overwritten.
+const handleModeChange = value => {
+  emit('update:apiMode', value);
+  const chatDefault = currentProviderInfo.value.default_endpoint || '';
+  const current = props.config.endpoint;
+
+  if (value === 'openrouter_decisions') {
+    if (!current || current === chatDefault) {
+      emit('update:endpoint', OPENROUTER_DECISIONS_ENDPOINT);
+    }
+  } else if (!current || current === OPENROUTER_DECISIONS_ENDPOINT) {
+    emit('update:endpoint', chatDefault);
+  }
+};
+
 const handleProviderChange = value => {
   const previous = props.providers.find(p => p.value === props.config.provider);
   const next = props.providers.find(p => p.value === value);
   emit('update:provider', value);
   if (!next) return;
 
+  // Leaving OpenRouter invalidates the Decisions mode, so reset it to chat
+  // completions. The Decisions endpoint is a known default and is treated as such
+  // below so it (but never a custom endpoint) is replaced too.
+  const leavingDecisions =
+    value !== 'openrouter' && props.config.api_mode === 'openrouter_decisions';
+  if (leavingDecisions) emit('update:apiMode', 'chat_completions');
+
   // Only auto-fill defaults when the field is empty or still on the previous
   // provider's default, so a customized value is never clobbered.
   if (!props.config.model || props.config.model === previous?.default_model) {
     emit('update:model', next.default_model || '');
   }
-  if (
+  const onKnownEndpoint =
     !props.config.endpoint ||
-    props.config.endpoint === previous?.default_endpoint
-  ) {
+    props.config.endpoint === previous?.default_endpoint ||
+    (leavingDecisions &&
+      props.config.endpoint === OPENROUTER_DECISIONS_ENDPOINT);
+  if (onKnownEndpoint) {
     emit('update:endpoint', next.default_endpoint || '');
   }
 };
@@ -117,6 +178,18 @@ const cancelEditingApiKey = () => {
       />
     </div>
 
+    <div v-if="showApiMode" class="flex flex-col gap-1">
+      <label class="mb-0.5 text-sm font-medium text-n-slate-12">
+        {{ t('MARINE_AI.LLM_SETTINGS.API_MODE.LABEL') }}
+      </label>
+      <ComboBox
+        :model-value="config.api_mode"
+        :options="apiModeOptions"
+        class="[&>div>button]:bg-n-alpha-black2"
+        @update:model-value="handleModeChange"
+      />
+    </div>
+
     <Input
       :model-value="config.model"
       :label="t('MARINE_AI.LLM_SETTINGS.MODEL.LABEL')"
@@ -128,7 +201,7 @@ const cancelEditingApiKey = () => {
       :model-value="config.endpoint"
       :label="t('MARINE_AI.LLM_SETTINGS.ENDPOINT.LABEL')"
       :placeholder="endpointPlaceholder"
-      :message="t('MARINE_AI.LLM_SETTINGS.ENDPOINT.HINT')"
+      :message="endpointHint"
       message-type="info"
       @update:model-value="value => emit('update:endpoint', value)"
     />

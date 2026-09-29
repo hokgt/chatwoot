@@ -134,6 +134,32 @@ RSpec.describe Marine::Llm::SettingsStore do
     end
   end
 
+  describe 'api_mode' do
+    it 'defaults to chat_completions for a legacy install with no mode key' do
+      expect(described_class.for(:decision_maker).api_mode).to eq('chat_completions')
+      expect(described_class.for(:response_generator).api_mode).to eq('chat_completions')
+    end
+
+    it 'reads and writes the decision maker mode without affecting the response generator' do
+      described_class.for(:decision_maker).write(provider: 'openrouter', api_mode: 'openrouter_decisions', api_key: 'sk-or-key')
+
+      expect(InstallationConfig.find_by(name: 'MARINE_DECISION_LLM_API_MODE').value).to eq('openrouter_decisions')
+      expect(described_class.for(:decision_maker).api_mode).to eq('openrouter_decisions')
+      # The response generator is always chat completions regardless of any stored value.
+      expect(described_class.for(:response_generator).api_mode).to eq('chat_completions')
+    end
+
+    it 'degrades an unknown stored mode to the default' do
+      set_config('MARINE_DECISION_LLM_API_MODE', 'not-a-mode')
+      expect(described_class.for(:decision_maker).api_mode).to eq('chat_completions')
+    end
+
+    it 'never persists an unknown mode' do
+      described_class.for(:decision_maker).write(provider: 'openrouter', api_mode: 'bogus', api_key: 'sk-or-key')
+      expect(InstallationConfig.find_by(name: 'MARINE_DECISION_LLM_API_MODE')).to be_nil
+    end
+  end
+
   describe '#to_view' do
     it 'masks the key and exposes presence + provider metadata, never plaintext' do
       set_config('MARINE_LLM_PROVIDER', 'openrouter')
@@ -156,6 +182,7 @@ RSpec.describe Marine::Llm::SettingsStore do
       view = described_class.for(:decision_maker).to_view
 
       expect(view[:provider]).to eq('openai')
+      expect(view[:api_mode]).to eq('chat_completions')
       expect(view[:api_key_present]).to be(false)
       expect(view[:configured]).to be(false)
     end

@@ -25,23 +25,27 @@ vi.mock('dashboard/store/utils/api', () => ({
 
 const CardStub = {
   name: 'LlmProviderCard',
-  props: [
-    'title',
-    'subtitle',
-    'config',
-    'providers',
-    'apiKeyMasked',
-    'apiKeyPresent',
-    'modelPlaceholder',
-    'isTesting',
-    'isBusy',
-    'testResult',
-  ],
+  props: {
+    title: {},
+    subtitle: {},
+    config: {},
+    providers: {},
+    apiKeyMasked: {},
+    apiKeyPresent: {},
+    modelPlaceholder: {},
+    // Boolean-typed so a valueless `show-api-mode` shorthand coerces to true,
+    // matching the real component's prop declaration.
+    showApiMode: { type: Boolean, default: false },
+    isTesting: {},
+    isBusy: {},
+    testResult: {},
+  },
   emits: [
     'update:provider',
     'update:model',
     'update:endpoint',
     'update:apiKey',
+    'update:apiMode',
     'test',
   ],
   template:
@@ -68,6 +72,7 @@ const RESPONSE = {
     provider: 'gemini',
     model: 'gemini-2.5-flash',
     api_endpoint: 'https://gg',
+    api_mode: 'chat_completions',
     api_key_masked: 'AIza...abcd',
     api_key_present: true,
   },
@@ -135,6 +140,7 @@ describe('Marine AI dual-model provider page', () => {
         provider: 'gemini',
         model: 'gemini-2.5-flash',
         api_endpoint: 'https://gg',
+        api_mode: 'chat_completions',
       },
       response_generator_config: {
         provider: 'openrouter',
@@ -142,6 +148,15 @@ describe('Marine AI dual-model provider page', () => {
         api_endpoint: 'https://openrouter.ai/api',
       },
     });
+  });
+
+  it('shows the API Mode selector only on the decision card', async () => {
+    const wrapper = mountPage();
+    await flushPromises();
+
+    const [decision, response] = cards(wrapper);
+    expect(decision.props('showApiMode')).toBe(true);
+    expect(response.props('showApiMode')).toBeFalsy();
   });
 
   it('runs the Test for each card against its own target', async () => {
@@ -158,6 +173,7 @@ describe('Marine AI dual-model provider page', () => {
         provider: 'gemini',
         model: 'gemini-2.5-flash',
         api_endpoint: 'https://gg',
+        api_mode: 'chat_completions',
       },
     });
 
@@ -171,6 +187,8 @@ describe('Marine AI dual-model provider page', () => {
         api_endpoint: 'https://openrouter.ai/api',
       },
     });
+    // The response generator test never carries an api_mode.
+    expect(test.mock.calls.at(-1)[0].config.api_mode).toBeUndefined();
   });
 
   it('reflects edits to one card in its save payload without affecting the other', async () => {
@@ -190,6 +208,7 @@ describe('Marine AI dual-model provider page', () => {
       provider: 'openrouter',
       model: 'gemini-2.5-flash',
       api_endpoint: 'https://gg',
+      api_mode: 'chat_completions',
       api_key: 'new-decision-key',
     });
     // The response generator card is untouched and carries no api_key.

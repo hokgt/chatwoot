@@ -23,6 +23,7 @@ const createCard = () =>
     model: '',
     endpoint: '',
     api_key: '',
+    api_mode: 'chat_completions',
     masked: null,
     present: false,
     inherited: false,
@@ -38,6 +39,7 @@ const applyCard = (card, data = {}) => {
   card.model = data.model || '';
   card.endpoint = data.api_endpoint || '';
   card.api_key = '';
+  card.api_mode = data.api_mode || 'chat_completions';
   card.masked = data.api_key_masked;
   card.present = data.api_key_present;
   card.inherited = data.api_key_inherited || false;
@@ -59,10 +61,13 @@ const fetchSettings = async () => {
   }
 };
 
-const buildCardPayload = card => ({
+// The API mode is a Decision Maker concept only; the Response Generator is fixed
+// to chat completions and never sends a mode.
+const buildCardPayload = (card, { includeMode = false } = {}) => ({
   provider: card.provider,
   model: card.model,
   api_endpoint: card.endpoint,
+  ...(includeMode ? { api_mode: card.api_mode } : {}),
   ...(card.api_key ? { api_key: card.api_key } : {}),
 });
 
@@ -72,7 +77,9 @@ const handleTest = async (target, card) => {
   try {
     const { data } = await MarineLLMSettingsAPI.test({
       target,
-      config: buildCardPayload(card),
+      config: buildCardPayload(card, {
+        includeMode: target === 'decision_maker',
+      }),
     });
     card.testResult = data.ok
       ? { success: true, message: t('MARINE_AI.LLM_SETTINGS.TEST.SUCCESS') }
@@ -98,7 +105,7 @@ const handleSave = async () => {
   isSaving.value = true;
   try {
     const { data } = await MarineLLMSettingsAPI.update({
-      decision_maker_config: buildCardPayload(decision),
+      decision_maker_config: buildCardPayload(decision, { includeMode: true }),
       response_generator_config: buildCardPayload(response),
     });
     applyResponse(data);
@@ -142,6 +149,7 @@ onMounted(fetchSettings);
           :model-placeholder="
             t('MARINE_AI.LLM_SETTINGS.DECISION_MAKER.MODEL_PLACEHOLDER')
           "
+          show-api-mode
           :is-testing="decision.testing"
           :is-busy="decision.testing || isSaving"
           :test-result="decision.testResult"
@@ -149,6 +157,7 @@ onMounted(fetchSettings);
           @update:model="value => (decision.model = value)"
           @update:endpoint="value => (decision.endpoint = value)"
           @update:api-key="value => (decision.api_key = value)"
+          @update:api-mode="value => (decision.api_mode = value)"
           @test="handleTest('decision_maker', decision)"
         />
         <LlmProviderCard

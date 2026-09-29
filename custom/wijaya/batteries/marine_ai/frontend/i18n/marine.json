@@ -50,10 +50,16 @@
         "LABEL": "Model",
         "PLACEHOLDER": "Enter the model name"
       },
+      "API_MODE": {
+        "LABEL": "API Mode",
+        "CHAT_COMPLETIONS": "Chat Completions",
+        "OPENROUTER_DECISIONS": "OpenRouter Decisions"
+      },
       "ENDPOINT": {
         "LABEL": "API Endpoint URL",
         "PLACEHOLDER": "https://api.openai.com",
-        "HINT": "The base URL for the provider's API. The /v1 path is appended automatically for OpenAI-compatible endpoints."
+        "HINT": "The base URL for the provider's API. The /v1 path is appended automatically for OpenAI-compatible endpoints.",
+        "HINT_DECISIONS": "The OpenRouter Decisions endpoint. Requests are sent to /api/alpha/decisions; no /v1 path is appended."
       },
       "API_KEY": {
         "LABEL": "API Key",

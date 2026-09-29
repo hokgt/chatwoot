@@ -889,6 +889,7 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/config.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/provider_config.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/connection_test_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/llm/openrouter_decisions_client.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/settings_store.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/base_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/prompt_renderer.rb
@@ -1241,6 +1242,7 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/llm/config_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/llm/provider_config_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/llm/connection_test_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/llm/openrouter_decisions_client_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/llm/settings_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/llm_settings_controller_spec.rb
       # RBAC regression: administrator-only Marine Inboxes + Settings (preferences)

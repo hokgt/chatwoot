@@ -22,6 +22,13 @@ class Marine::Llm::SettingsStore
   TARGETS = %i[decision_maker response_generator].freeze
   WRITABLE_FIELDS = %i[provider model endpoint api_key].freeze
 
+  # The Decision Maker can speak one of two protocols. The Response Generator is
+  # always chat-completions and never exposes a mode. A legacy install with no key
+  # behaves as chat_completions.
+  DEFAULT_API_MODE = 'chat_completions'.freeze
+  API_MODES = %w[chat_completions openrouter_decisions].freeze
+  DECISION_API_MODE_KEY = 'MARINE_DECISION_LLM_API_MODE'.freeze
+
   RESPONSE_KEYS = {
     provider: 'MARINE_LLM_PROVIDER',
     model: 'MARINE_OPEN_AI_MODEL',
@@ -76,6 +83,16 @@ class Marine::Llm::SettingsStore
     config[:api_key]
   end
 
+  # Protocol/API mode. Only the decision maker is configurable; the response
+  # generator is always chat-completions. An unknown/blank stored value degrades
+  # to the default so a legacy install behaves as chat_completions.
+  def api_mode
+    return DEFAULT_API_MODE unless @target == :decision_maker
+
+    value = Marine::Llm::Config.installation_value(DECISION_API_MODE_KEY).presence
+    API_MODES.include?(value) ? value : DEFAULT_API_MODE
+  end
+
   # UI-facing view: masked key + presence + provider metadata. Never plaintext.
   def to_view
     {
@@ -83,6 +100,7 @@ class Marine::Llm::SettingsStore
       provider_label: Marine::Llm::ProviderConfig.provider_info(config[:provider])[:label],
       model: config[:model],
       api_endpoint: config[:endpoint],
+      api_mode: api_mode,
       api_key_masked: mask(config[:api_key]),
       api_key_present: config[:api_key].present?,
       supports_embeddings: Marine::Llm::ProviderConfig.supports_embeddings?(config[:provider]),
@@ -104,15 +122,24 @@ class Marine::Llm::SettingsStore
     persist(:provider, attrs[:provider]) if attrs[:provider].present?
     persist(:model, attrs[:model]) if attrs.key?(:model)
     persist(:endpoint, attrs[:endpoint]) if attrs.key?(:endpoint)
-
-    if attrs[:api_key].present?
-      persist(:api_key, attrs[:api_key])
-    elsif @target == :decision_maker
-      seed_decision_api_key
-    end
+    persist_api_mode(attrs[:api_mode]) if decision_maker? && attrs[:api_mode].present?
+    write_api_key(attrs[:api_key])
   end
 
   private
+
+  def decision_maker?
+    @target == :decision_maker
+  end
+
+  # A present key is written; a blank key keeps the existing one, except that the
+  # decision maker seeds its own key from the fallback the first time (see
+  # #seed_decision_api_key).
+  def write_api_key(api_key)
+    return persist(:api_key, api_key) if api_key.present?
+
+    seed_decision_api_key if decision_maker?
+  end
 
   # True when the decision maker has no key of its own and is reading through the
   # response-generator fallback — used by the UI to label the key as inherited.
@@ -165,7 +192,17 @@ class Marine::Llm::SettingsStore
   end
 
   def persist(field, value)
-    config = InstallationConfig.where(name: @keys.fetch(field)).first_or_initialize
+    write_config(@keys.fetch(field), value)
+  end
+
+  # Only allowlisted modes are stored; the controller validates first, this is a
+  # final guard so an unknown mode never reaches InstallationConfig.
+  def persist_api_mode(mode)
+    write_config(DECISION_API_MODE_KEY, mode) if API_MODES.include?(mode)
+  end
+
+  def write_config(name, value)
+    config = InstallationConfig.where(name: name).first_or_initialize
     config.value = value
     config.locked = false
     config.save!
