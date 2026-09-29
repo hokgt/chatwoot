@@ -55,14 +55,21 @@ class Marine::Charge::ResponseGenerator
   # prohibited). Defaults to true so legacy / direct-unit callers keep the prior greeting
   # behavior. It gates the generated-RAG greeting and the Phase 5 contextual exact-FAQ wording
   # greeting; retrieval, the exact approved fallback, and all metadata remain unaffected.
-  def generate(additional_message: nil, message_history: [], opening: true) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
+  #
+  # `exact_knowledge_result:` is the OPTIONAL exact, non-fallback RetrievalResult the runner's Gate G
+  # already found (in the customer's own language) for this turn. When present it is reused verbatim
+  # instead of re-retrieving with the translated query, so translation can never discard the curated
+  # exact match and substitute a document-backed result for the translated text. nil (every legacy /
+  # direct / non-exact caller) keeps the unchanged self-retrieval, so behavior is identical there.
+  # Query/response translation and all metadata still derive from the reused result exactly as before.
+  def generate(additional_message: nil, message_history: [], opening: true, exact_knowledge_result: nil) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity
     @opening = opening
     customer_query = additional_message.presence || extract_last_user_message(message_history)
     query_translation = translate_query(customer_query)
     retrieval_query = query_translation[:text].presence || customer_query.to_s
 
     @retrieval_query = retrieval_query
-    result = knowledge_base.retrieve(retrieval_query, limit: 1)
+    result = exact_knowledge_result || knowledge_base.retrieve(retrieval_query, limit: 1)
 
     if result.fallback_reason.present?
       llm_payload = llm_fallback_payload(customer_query, message_history, result.fallback_reason, query_translation)

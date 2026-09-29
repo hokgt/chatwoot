@@ -58,12 +58,13 @@ class Marine::Agent::Runner
   # and RAG paths ground on the SAME prior turns and receive the trigger exactly once. A legacy
   # (source-less) or direct-unit run has no trigger and falls back to the caller-supplied
   # additional_message / message_history unchanged.
-  def run(additional_message: nil, message_history: [])
+  def run(additional_message: nil, message_history: []) # rubocop:disable Metrics/MethodLength
     # Reset the per-run Gate-G signal before routing so a prior turn's EXACT approved-FAQ hit can
     # never silently bypass the domain-boundary classifier for a later unrelated turn if this Runner
     # instance is ever reused (a fresh instance is created per call today; this keeps that invariant
     # explicit and safe regardless of caller).
     @faq_precedence_hit = false
+    @faq_precedence_result = nil
     context = canonical_context
     history = context ? context.history : Array(message_history)
     trigger = context ? context.trigger : additional_message
@@ -80,7 +81,8 @@ class Marine::Agent::Runner
     tool_slugs = resolved_tool_slugs(scenario)
 
     payload = response_generator.generate(additional_message: trigger, message_history: history,
-                                          opening: interaction_opening?(context, history))
+                                          opening: interaction_opening?(context, history),
+                                          exact_knowledge_result: @faq_precedence_result)
     enriched = preserve_playground_state(enrich(payload, scenario, tool_slugs))
 
     log_result(enriched)
@@ -184,7 +186,11 @@ class Marine::Agent::Runner
 
     # Remember the EXACT approved match so the shared domain-boundary gate bypasses classification for
     # this highest-trust, curated, in-domain turn (see #domain_boundary_payload) — no extra retrieval.
+    # Also retain the RetrievalResult itself so the RAG ResponseGenerator reuses this exact, curated
+    # match (found in the customer's own language) instead of independently re-retrieving with the
+    # translated query, which could replace it with a document-backed match. See #run.
     @faq_precedence_hit = true
+    @faq_precedence_result = result
     log_event('faq.precedence', confidence: result.confidence, source_type: result.source_type)
     true
   end

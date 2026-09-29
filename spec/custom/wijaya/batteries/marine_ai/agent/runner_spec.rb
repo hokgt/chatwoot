@@ -261,6 +261,74 @@ RSpec.describe Marine::Agent::Runner do
     end
   end
 
+  # Phase 1 regression — an EXACT approved, UI-created FAQ that Gate G already matched in the
+  # customer's OWN language must survive to the delivered reply. Before the fix, the RAG
+  # ResponseGenerator translated the query to the knowledge language and independently re-retrieved
+  # with the translated text, which could replace the exact FAQ with a document-backed match for the
+  # translated query. This drives the REAL Runner -> ResponseGenerator path (the generator is NOT
+  # stubbed) and asserts the final payload still cites the original FAQ, not the competing document.
+  describe 'exact Gate G FAQ survives query translation (Phase 1)' do
+    let(:account) { create(:account) }
+    let(:marine) { create(:marine_assistant, account: account) }
+    let(:conversation) { create(:conversation, account: account) }
+    let(:trigger) do
+      create(:message, conversation: conversation, account: account, inbox: conversation.inbox,
+                       message_type: :incoming, content: 'Apa jam operasional?')
+    end
+    let(:runner) { described_class.new(assistant: marine, conversation: conversation, source: trigger) }
+    let(:knowledge_base) { instance_double(Marine::Cell::KnowledgeBaseService) }
+
+    # An approved FAQ authored in the UI: a User-documentable response -> source_type 'user'.
+    let(:faq_response) do
+      Marine::AssistantResponse.new(id: 42, question: 'Apa jam operasional?',
+                                    answer: 'Kami buka Senin sampai Jumat, pukul 09.00-17.00.',
+                                    documentable_type: 'User')
+    end
+    let(:faq_result) { Marine::Cell::RetrievalResult.new(responses: [faq_response], confidence: 1.0) }
+
+    # The competing document-backed match the TRANSLATED English query would otherwise retrieve.
+    let(:document) { build_stubbed(:marine_document, assistant: marine) }
+    let(:document_response) do
+      Marine::AssistantResponse.new(id: 77, question: 'Operating hours', answer: 'See the attached brochure PDF.').tap do |resp|
+        allow(resp).to receive(:documentable).and_return(document)
+      end
+    end
+    let(:doc_result) { Marine::Cell::RetrievalResult.new(responses: [document_response], confidence: 1.0) }
+
+    before do
+      # Exercise the REAL ResponseGenerator so the Runner -> generator integration is covered.
+      allow(Marine::Charge::ResponseGenerator).to receive(:new).and_call_original
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(knowledge_base)
+      # Indonesian query (customer language, used by the runner's Gate G) -> exact FAQ.
+      # English query (the ResponseGenerator translated re-retrieval) -> competing document.
+      allow(knowledge_base).to receive(:retrieve) do |query, **|
+        query.to_s.include?('operasional') ? faq_result : doc_result
+      end
+      # Query translated ID -> EN so the (unfixed) re-retrieval used the English text.
+      allow(Marine::Llm::TranslateQueryService).to receive(:new).and_return(
+        double(call: { text: 'What are the operating hours?', source_language: 'id', translated: true, error: nil })
+      )
+      # Reply delivered back in the customer's language; nil text keeps the approved answer verbatim.
+      allow(Marine::Llm::TranslateResponseService).to receive(:new).and_return(
+        double(call: { text: nil, source_language: 'id', target_language: 'id', translated: false, error: nil })
+      )
+    end
+
+    it 'delivers the exact FAQ (source_type user, its response id, no document replacement)' do
+      payload = runner.run
+
+      expect(payload).to include(
+        'response' => 'Kami buka Senin sampai Jumat, pukul 09.00-17.00.',
+        'action' => 'reply',
+        'marine_cell_response_id' => 42,
+        'source_type' => 'user',
+        'response_ids' => [42],
+        'document_ids' => [],
+        'orchestration_path' => 'retrieval'
+      )
+    end
+  end
+
   # Phase 2 — the trigger-bound runner derives canonical prior history + a separately bounded
   # current trigger from the real Conversation, and feeds the SAME history and the trigger
   # (once) to both the product-intent path and the RAG path. Uses persisted records so the
@@ -310,7 +378,8 @@ RSpec.describe Marine::Agent::Runner do
       # A prior public Marine reply exists (prior_marine), so this is a follow-up turn and the
       # opening/greeting signal threaded to the generator is false (Phase 4).
       expect(generator).to have_received(:generate).with(
-        additional_message: 'current customer turn', message_history: canonical_history, opening: false
+        additional_message: 'current customer turn', message_history: canonical_history, opening: false,
+        exact_knowledge_result: nil
       )
     end
   end
