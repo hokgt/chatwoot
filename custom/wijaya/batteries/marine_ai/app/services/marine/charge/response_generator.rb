@@ -116,10 +116,13 @@ class Marine::Charge::ResponseGenerator
 
   # Phase 5 applies contextual wording ONLY to an exact approved-FAQ entry: a perfect
   # match (confidence 1.0 == ConfidenceScorer::EXACT_MATCH_SCORE, the query equals the
-  # FAQ question) whose source is a manual response (documentable_type blank). An exact
+  # FAQ question) whose source is an approved FAQ response (documentable_type blank →
+  # 'manual', or a UI-created FAQ with documentable_type=User → 'user'; Phase 2). An exact
   # document-backed match keeps its raw answer, and a non-exact match that fell through
-  # to its raw answer (confidence < 1.0) is never contextualized.
-  def exact_faq?(result) = result.confidence >= 1.0 && result.source_type == 'manual'
+  # to its raw answer (confidence < 1.0) is never contextualized. Provenance is preserved:
+  # 'user' is never relabeled 'manual'; only wording eligibility is shared.
+  FAQ_SOURCE_TYPES = %w[manual user].freeze
+  def exact_faq?(result) = result.confidence >= 1.0 && FAQ_SOURCE_TYPES.include?(result.source_type)
 
   # Phase 5 — offer the STORED approved answer (the sole authoritative factual source) to
   # the grounded wording composer, which returns validated contextual wording or nil. The
