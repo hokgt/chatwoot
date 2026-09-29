@@ -932,6 +932,21 @@ patches:
       # normalized, allowlisted intent hash. Candidate-only, no repository/DB access,
       # no state mutation; every LLM failure collapses to a safe unknown result.
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/intent_extractor.rb
+      # Phase 2 / Stage 1 — battery-local, side-effect-free, versioned Candidate Plan
+      # contract for the future Decision Maker. Structure & normalization ONLY: folds a
+      # fully UNTRUSTED parsed provider hash into a strict, bounded, deep-frozen candidate
+      # plan (schema_version marine_decision_v1) or fails closed with InvalidCandidatePlan.
+      # A candidate plan is a bounded SUGGESTION (scenario/intent candidates, candidate-only
+      # product/variant strings, language hint) — never backend authority: it can never
+      # carry a validated fact (validated_variant_code/family/price/stock/quantity/warehouse),
+      # a final action, reply text, a tool, or SQL (those are rejected as unknown fields).
+      # No provider call, settings read, DB/catalog access, runner/scenario-selector touch,
+      # or state mutation; not wired to any runtime hook. CandidatePlan.unknown gives a safe
+      # allowlisted-reason fallback carrying no raw exception/provider prose.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/errors.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/schema.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/normalizer.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/candidate_plan.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility primitives.
       # Battery-contained, not yet wired to hooks/jobs/orchestration. State lives in
       # a Marine-owned namespace inside Conversation/Message additional_attributes
@@ -1317,6 +1332,11 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/catalog/stock_repository_spec.rb
       # Phase 2 — Contextual Product Intent Understanding spec.
       - spec/custom/wijaya/batteries/marine_ai/catalog/intent_extractor_spec.rb
+      # Phase 2 / Stage 1 — Decision Maker Candidate Plan contract spec (valid plans,
+      # multi-intent dedupe/order, set/replace/clear, deep-frozen immutability, schema
+      # rejection, unknown keys/enums, duplicate/incompatible ops, control-char/bounds,
+      # prohibited authority fields, safe unknown reason, input left unmutated).
+      - spec/custom/wijaya/batteries/marine_ai/decision/candidate_plan_spec.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb

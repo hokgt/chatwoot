@@ -453,6 +453,12 @@ require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/error
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/config.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/connection.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_family_repository.rb
+# Phase 2 / Stage 1 — Decision Maker Candidate Plan contract (structure & normalization only).
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/errors.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/schema.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/normalizer.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/candidate_plan.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/candidate_plan_spec.rb
 require_file custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
 require_file custom/wijaya/batteries/marine_ai/docs/product_catalog_db.md
 # Commit 1C — SOP extraction + OCR foundation
