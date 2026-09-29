@@ -1,12 +1,13 @@
 <script setup>
 // WIJAYA_CUSTOM_START erp_lead_sidebar
-// Searchable dropdown for the ERP Lead "Product Requirement" Link field. It is a
-// dedicated component (kept separate from the inline SearchableSelect used by
-// Source/Campaign/Industry/Territory/Owner) so that field's behaviour is never
-// regressed. It displays only product_name but stores/sends the ERP document
-// `name`, offers an inline "Create a new Lead Product Requirement" action (no
-// Advanced Search), and hosts a focused create dialog that POSTs to ERP and then
-// auto-selects the returned record. On a conversation change all transient
+// Searchable multi-select for the ERP Lead "Product Requirement" Table MultiSelect
+// field. It is a dedicated component (kept separate from the inline SearchableSelect
+// used by Source/Campaign/Industry/Territory/Owner) so that field's behaviour is
+// never regressed. v-model is an ordered array of unique ERP document `name`s; each
+// selection renders as a removable chip showing its product_name (never the raw ERP
+// name). It offers an inline "Create a new Lead Product Requirement" action (no
+// Advanced Search) and a focused create dialog that POSTs to ERP and then appends the
+// returned record to the selection. On a conversation change all transient
 // option/create state is cleared so a selection never leaks between conversations.
 import {
   computed,
@@ -22,7 +23,9 @@ import { parsePriceInput } from './priceFormat';
 const props = defineProps({
   // The parent binds `id` to the actual combobox input (label `for` target).
   id: { type: String, default: '' },
-  modelValue: { type: String, default: '' },
+  // Ordered array of unique ERP document names. A legacy scalar string is accepted
+  // and normalized safely to a one-item array.
+  modelValue: { type: [Array, String], default: () => [] },
   configured: { type: Boolean, default: false },
   conversationId: { type: [Number, String], default: '' },
 });
@@ -38,28 +41,39 @@ const query = ref('');
 const highlight = ref(-1);
 const rootEl = ref(null);
 const inputEl = ref(null);
-// The last known { value, label } for the current selection, cached so a remote
-// search that no longer returns the selected record still shows its product_name
-// (never the raw ERP document name). Cleared on a conversation change.
-const selectedOption = ref(null);
+// name -> product_name label, cached so a chip keeps showing its product_name even
+// after a remote search drops that record. Cleared on a conversation change.
+const labelCache = ref({});
 
-// The label shown for the current value: the matching option's product_name, the
-// cached selected label if the search list no longer holds it, or the raw stored
-// name only until the list first resolves it (never blanked).
-const selectedLabel = computed(() => {
-  const match = options.value.find(o => o.value === props.modelValue);
-  if (match) return match.label;
-  if (selectedOption.value && selectedOption.value.value === props.modelValue) {
-    return selectedOption.value.label;
-  }
-  return props.modelValue;
+// The current selection as an ordered array of unique names. Legacy scalar props are
+// normalized safely, so the picker never operates on a raw string.
+const selectedNames = computed(() => {
+  const raw = Array.isArray(props.modelValue)
+    ? props.modelValue
+    : [props.modelValue];
+  const names = [];
+  raw.forEach(value => {
+    const name = typeof value === 'string' ? value.trim() : '';
+    if (name && !names.includes(name)) names.push(name);
+  });
+  return names;
 });
 
-// Cache the product_name label whenever the resolved list contains the current
-// value, so it survives later remote searches that drop the record.
+const labelFor = name => labelCache.value[name] || name;
+
+// Chips shown for the current selection: product_name label + the stored name.
+const selectedChips = computed(() =>
+  selectedNames.value.map(name => ({ value: name, label: labelFor(name) }))
+);
+
+const isSelected = value => selectedNames.value.includes(value);
+
+// Cache the product_name label for every resolved option so chips survive later
+// remote searches that drop the record.
 watch(options, list => {
-  const match = list.find(o => o.value === props.modelValue);
-  if (match) selectedOption.value = { value: match.value, label: match.label };
+  list.forEach(o => {
+    labelCache.value[o.value] = o.label;
+  });
 });
 
 const isLoading = computed(() => listState.value === 'loading');
@@ -121,12 +135,23 @@ const onSearchInput = event => {
   searchTimer = setTimeout(() => fetchList(query.value.trim()), 250);
 };
 
+// Append a selection (never replace). Selecting an already-selected option is a
+// no-op so a name can never be duplicated. The menu stays open so several
+// requirements can be added in a row; the search remains usable throughout.
 const select = option => {
-  selectedOption.value = { value: option.value, label: option.label };
-  emit('update:modelValue', option.value);
-  emit('change', option.value);
+  labelCache.value[option.value] = option.label;
   selectMessage.value = '';
-  close();
+  if (isSelected(option.value)) return;
+  const next = [...selectedNames.value, option.value];
+  emit('update:modelValue', next);
+  emit('change', next);
+};
+
+// Remove one chip and immediately emit the remaining array (triggers autosave).
+const remove = value => {
+  const next = selectedNames.value.filter(name => name !== value);
+  emit('update:modelValue', next);
+  emit('change', next);
 };
 
 const move = delta => {
@@ -208,13 +233,17 @@ const submitCreate = async () => {
       productPrice: price.raw,
     });
     const option = { value: data.value, label: data.label };
-    // Add (or refresh) the option, auto-select it, and surface a truthful note.
+    // Add (or refresh) the option, append it to the selection (never replacing the
+    // existing chips), and surface a truthful note.
     if (!options.value.some(o => o.value === option.value)) {
       options.value = [option, ...options.value];
     }
-    selectedOption.value = { value: option.value, label: option.label };
-    emit('update:modelValue', option.value);
-    emit('change', option.value);
+    labelCache.value[option.value] = option.label;
+    if (!isSelected(option.value)) {
+      const next = [...selectedNames.value, option.value];
+      emit('update:modelValue', next);
+      emit('change', next);
+    }
     selectMessage.value = data.message || '';
     dialogOpen.value = false;
     nextTick(() => inputEl.value?.focus());
@@ -240,7 +269,7 @@ watch(
     listState.value = 'idle';
     listError.value = '';
     selectMessage.value = '';
-    selectedOption.value = null;
+    labelCache.value = {};
     open.value = false;
     query.value = '';
     highlight.value = -1;
@@ -258,6 +287,29 @@ watch(
   <!-- eslint-disable vue/no-bare-strings-in-template, @intlify/vue-i18n/no-raw-text -->
   <!-- WIJAYA_CUSTOM_START erp_lead_sidebar -->
   <div ref="rootEl" class="relative">
+    <!-- Selected requirements as removable chips. Each chip shows product_name and
+         carries an accessible remove control. -->
+    <ul
+      v-if="selectedChips.length"
+      class="mb-1 flex flex-wrap gap-1"
+      aria-label="Selected product requirements"
+    >
+      <li
+        v-for="chip in selectedChips"
+        :key="chip.value"
+        class="flex items-center gap-1 rounded-md bg-n-alpha-2 px-2 py-0.5 text-sm text-n-slate-12"
+      >
+        <span>{{ chip.label }}</span>
+        <button
+          type="button"
+          class="leading-none text-n-slate-11 hover:text-n-ruby-10"
+          :aria-label="`Remove ${chip.label}`"
+          @click="remove(chip.value)"
+        >
+          ×
+        </button>
+      </li>
+    </ul>
     <input
       :id="id || undefined"
       ref="inputEl"
@@ -268,11 +320,9 @@ watch(
       :aria-expanded="open ? 'true' : 'false'"
       :aria-describedby="selectMessage ? `${id}-msg` : undefined"
       :disabled="!configured"
-      :value="open ? query : selectedLabel"
+      :value="query"
       :placeholder="
-        configured
-          ? selectedLabel || 'Search product requirements…'
-          : selectedLabel || 'ERP is not configured'
+        configured ? 'Search product requirements…' : 'ERP is not configured'
       "
       @focus="openMenu"
       @click="openMenu"
@@ -299,13 +349,22 @@ watch(
           v-for="(option, index) in options"
           :key="option.value"
           role="option"
-          :aria-selected="option.value === modelValue ? 'true' : 'false'"
-          class="cursor-pointer px-2 py-1 text-n-slate-12"
-          :class="index === highlight ? 'bg-n-alpha-2' : 'hover:bg-n-alpha-1'"
+          :aria-selected="isSelected(option.value) ? 'true' : 'false'"
+          :aria-disabled="isSelected(option.value) ? 'true' : undefined"
+          class="flex items-center justify-between px-2 py-1 text-n-slate-12"
+          :class="[
+            isSelected(option.value)
+              ? 'cursor-default text-n-slate-10'
+              : 'cursor-pointer',
+            index === highlight && !isSelected(option.value)
+              ? 'bg-n-alpha-2'
+              : 'hover:bg-n-alpha-1',
+          ]"
           @mousedown.prevent="select(option)"
           @mouseenter="highlight = index"
         >
-          {{ option.label }}
+          <span>{{ option.label }}</span>
+          <span v-if="isSelected(option.value)" aria-hidden="true">✓</span>
         </li>
       </template>
       <!-- Inline create action (no Advanced Search). Always available. -->

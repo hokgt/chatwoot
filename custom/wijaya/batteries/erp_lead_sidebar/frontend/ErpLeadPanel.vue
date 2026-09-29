@@ -75,10 +75,11 @@ const fields = reactive({
   territory: '',
   utm_campaign: '',
   // Requirements card. product_requirements is multiline Text; product_requirement
-  // is a Link storing the ERP "Lead Product Requirements" document name. Both ride
-  // the normal draft/create/update/refresh flow (see PayloadBuilder::DIRECT_FIELDS).
+  // is an ERP Table MultiSelect stored as an ordered array of unique "Lead Product
+  // Requirements" document names. Both ride the normal draft/create/update/refresh
+  // flow (see PayloadBuilder::DIRECT_FIELDS).
   product_requirements: '',
-  product_requirement: '',
+  product_requirement: [],
 });
 
 [...MARKET_CUSTOMER_OPTIONS, ...JENIS_PAKAIAN_OPTIONS].forEach(([, key]) => {
@@ -489,10 +490,34 @@ const buildAutofill = () => {
   };
 };
 
+// product_requirement is a Table MultiSelect: normalize any stored/legacy shape (a
+// legacy scalar string, nil/blank, an array of names, or ERP child rows) into the
+// canonical ordered array of unique names before it reaches the picker.
+const normalizeRequirementNames = value => {
+  const list = Array.isArray(value) ? value : [value];
+  const names = [];
+  list.forEach(row => {
+    let name = '';
+    if (typeof row === 'string') name = row;
+    else if (
+      row &&
+      typeof row === 'object' &&
+      typeof row.product_requirement === 'string'
+    )
+      name = row.product_requirement;
+    name = name.trim();
+    if (name && !names.includes(name)) names.push(name);
+  });
+  return names;
+};
+
 const applyFields = values => {
   Object.keys(fields).forEach(key => {
     if (Object.prototype.hasOwnProperty.call(values, key)) {
-      fields[key] = values[key];
+      fields[key] =
+        key === 'product_requirement'
+          ? normalizeRequirementNames(values[key])
+          : values[key];
     }
   });
 };

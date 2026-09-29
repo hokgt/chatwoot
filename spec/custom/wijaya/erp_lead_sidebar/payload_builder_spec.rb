@@ -78,14 +78,83 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder do
   end
 
   describe 'Requirements fields' do
-    it 'carries product_requirements (multiline preserved) and product_requirement (Link = ERP name)' do
+    it 'keeps product_requirements as a multiline string (unchanged)' do
       multiline = "Line one\nLine two\nLine three"
-      payload = described_class.new(
-        valid_fields.merge('product_requirements' => multiline, 'product_requirement' => 'LPR-0001')
-      ).payload
+      payload = described_class.new(valid_fields.merge('product_requirements' => multiline)).payload
 
       expect(payload['product_requirements']).to eq(multiline)
-      expect(payload['product_requirement']).to eq('LPR-0001')
+    end
+
+    # product_requirement is a Table MultiSelect: an ordered array of unique names is
+    # sent as child rows [{ product_requirement: name }, ...].
+    it 'builds ordered Table MultiSelect child rows from an array of names' do
+      payload = described_class.new(
+        valid_fields.merge('product_requirement' => ['rayon twill biru muda', 'rayon twill'])
+      ).payload
+
+      expect(payload['product_requirement']).to eq(
+        [{ 'product_requirement' => 'rayon twill biru muda' }, { 'product_requirement' => 'rayon twill' }]
+      )
+    end
+
+    # Backward compatibility: a legacy scalar Link string normalizes to one row.
+    it 'normalizes a legacy scalar string into a single canonical row' do
+      payload = described_class.new(valid_fields.merge('product_requirement' => 'LPR-0001')).payload
+
+      expect(payload['product_requirement']).to eq([{ 'product_requirement' => 'LPR-0001' }])
+    end
+
+    it 'drops blanks and duplicates while preserving order' do
+      payload = described_class.new(
+        valid_fields.merge('product_requirement' => ['rayon twill', ' ', 'rayon twill', 'katun', ''])
+      ).payload
+
+      expect(payload['product_requirement']).to eq(
+        [{ 'product_requirement' => 'rayon twill' }, { 'product_requirement' => 'katun' }]
+      )
+    end
+
+    # Presence of the key, not of a value, decides emission. An explicit empty selection
+    # ([]) must ride the payload as [] so removing the final chip on a linked Lead clears
+    # the ERP Table MultiSelect child rows on update (an omitted field would let ERP keep
+    # the old rows while the sidebar looks empty).
+    it 'emits product_requirement: [] when the selection is explicitly empty' do
+      payload = described_class.new(valid_fields.merge('product_requirement' => [])).payload
+
+      expect(payload).to have_key('product_requirement')
+      expect(payload['product_requirement']).to eq([])
+    end
+
+    # A legacy scalar draft whose value was blanked still carries the key, so it too emits
+    # [] and clears ERP rather than being silently omitted.
+    it 'emits product_requirement: [] for an explicit blank legacy value' do
+      payload = described_class.new(valid_fields.merge('product_requirement' => '')).payload
+
+      expect(payload).to have_key('product_requirement')
+      expect(payload['product_requirement']).to eq([])
+    end
+
+    # Only a truly absent key (a legacy/server-created draft that never had the field) is
+    # omitted, so an unrelated field update never unexpectedly wipes existing ERP data.
+    it 'omits product_requirement entirely when the key is absent' do
+      absent = valid_fields.except('product_requirement')
+      payload = described_class.new(absent).payload
+
+      expect(payload).not_to have_key('product_requirement')
+    end
+
+    # A manipulated child-row hash must not be able to inject extra DocType fields:
+    # only the product_requirement name (and only when it is a String) is ever read.
+    it 'cannot inject extra child-row fields from a manipulated hash/object input' do
+      manipulated = [
+        { 'product_requirement' => 'rayon twill', 'idx' => 5, 'parentfield' => 'evil' },
+        { 'product_requirement' => { 'nested' => 'x' } },
+        { 'evil' => 'no name' },
+        42
+      ]
+      payload = described_class.new(valid_fields.merge('product_requirement' => manipulated)).payload
+
+      expect(payload['product_requirement']).to eq([{ 'product_requirement' => 'rayon twill' }])
     end
 
     # product_name/product_price belong ONLY to the Product Requirements create
@@ -97,6 +166,26 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder do
 
       expect(payload).not_to have_key('product_name')
       expect(payload).not_to have_key('product_price')
+    end
+  end
+
+  # The refresh path (RefreshService) converts ERP Table MultiSelect child rows back
+  # into the draft's ordered array of names via this shared normalizer.
+  describe '.requirement_names' do
+    it 'converts remote child rows into an ordered array of unique names' do
+      rows = [
+        { 'product_requirement' => 'rayon twill biru muda', 'idx' => 1 },
+        { 'product_requirement' => 'rayon twill', 'idx' => 2 },
+        { 'product_requirement' => 'rayon twill', 'idx' => 3 }
+      ]
+
+      expect(described_class.requirement_names(rows)).to eq(['rayon twill biru muda', 'rayon twill'])
+    end
+
+    it 'normalizes a legacy scalar string and blank/nil safely' do
+      expect(described_class.requirement_names('LPR-0001')).to eq(['LPR-0001'])
+      expect(described_class.requirement_names('')).to eq([])
+      expect(described_class.requirement_names(nil)).to eq([])
     end
   end
 end

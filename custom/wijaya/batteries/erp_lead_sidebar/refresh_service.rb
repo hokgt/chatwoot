@@ -124,14 +124,18 @@ module Wijaya::Batteries::ErpLeadSidebar
       map_fields(data)
     end
 
-    # ERP doc -> draft fields. Direct fields pass through as returned (nil ->
-    # ''); checkbox groups are coerced to booleans so the UI reflects ERP for
-    # every known key.
+    # ERP doc -> draft fields. Direct scalar fields pass through as returned (nil ->
+    # ''); the product_requirement Table MultiSelect converts its returned child rows
+    # back into the draft's ordered array of names; checkbox groups are coerced to
+    # booleans so the UI reflects ERP for every known key.
     def map_fields(data)
       mapped = {}
       PayloadBuilder::DIRECT_FIELDS.each do |field|
+        next if field == PayloadBuilder::MULTISELECT_FIELD
+
         mapped[field] = data[field].nil? ? '' : data[field]
       end
+      mapped[PayloadBuilder::MULTISELECT_FIELD] = PayloadBuilder.requirement_names(data[PayloadBuilder::MULTISELECT_FIELD])
       checkbox_fields.each do |field|
         mapped[field] = truthy?(data[field])
       end

@@ -98,6 +98,58 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::SyncService do
     end
   end
 
+  context 'with product_requirement selections' do
+    let(:fields) do
+      {
+        'first_name' => 'Ana',
+        'whatsapp_no' => '+628123456789',
+        'status' => 'Lead',
+        'industry' => 'Garment',
+        'product_requirement' => ['rayon twill biru muda', 'rayon twill'],
+        'product_name' => 'HACK',
+        'product_price' => 999
+      }
+    end
+
+    it 'POSTs the canonical Table MultiSelect array (not a string) with no create-only leakage' do
+      described_class.new(draft).perform
+
+      post = requests.find { |r| r.method == 'POST' }
+      body = JSON.parse(post.body)
+      expect(body['product_requirement']).to eq(
+        [{ 'product_requirement' => 'rayon twill biru muda' }, { 'product_requirement' => 'rayon twill' }]
+      )
+      expect(body).not_to have_key('product_name')
+      expect(body).not_to have_key('product_price')
+    end
+  end
+
+  # Removing the final chip on a linked Lead must clear the ERP child rows: the draft still
+  # carries the product_requirement key (now []), so the PUT forwards an explicit [] rather
+  # than omitting the field (which would let ERP keep the stale rows).
+  context 'when a linked lead has its product_requirement cleared to []' do
+    let(:erp_lead_id) { 'LEAD-0001' }
+    let(:fields) do
+      {
+        'first_name' => 'Ana',
+        'whatsapp_no' => '+628123456789',
+        'status' => 'Lead',
+        'industry' => 'Garment',
+        'product_requirement' => []
+      }
+    end
+    let(:responder) { ->(_request) { ok('data' => { 'name' => 'LEAD-0001' }) } }
+
+    it 'PUTs product_requirement: [] so ERP clears its Table MultiSelect child rows' do
+      described_class.new(draft).perform
+
+      put = requests.find { |r| r.method == 'PUT' }
+      body = JSON.parse(put.body)
+      expect(body).to have_key('product_requirement')
+      expect(body['product_requirement']).to eq([])
+    end
+  end
+
   context 'when the stored lead is missing in ERP' do
     let(:erp_lead_id) { 'LEAD-GONE' }
     let(:responder) { ->(_request) { not_found('exc' => 'DoesNotExistError') } }

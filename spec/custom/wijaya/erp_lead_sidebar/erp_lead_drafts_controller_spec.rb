@@ -126,12 +126,12 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
 
     # Requirements card fields ride the strict draft allowlist; the create-only
     # product_name/product_price can never be persisted onto the Lead draft.
-    it 'persists product_requirements/product_requirement and drops product_name/product_price' do
+    it 'persists product_requirements/product_requirement (array) and drops product_name/product_price' do
       patch update_path,
             params: { fields: {
               first_name: 'Bob',
               product_requirements: "Need\ncustom sizing",
-              product_requirement: 'LPR-0001',
+              product_requirement: ['rayon twill biru muda', 'rayon twill'],
               product_name: 'HACK',
               product_price: 999
             } },
@@ -140,12 +140,13 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       expect(response).to have_http_status(:success)
       draft = Wijaya::ErpLeadDraft.find_by(conversation: conversation)
       expect(draft.fields['product_requirements']).to eq("Need\ncustom sizing")
-      expect(draft.fields['product_requirement']).to eq('LPR-0001')
+      expect(draft.fields['product_requirement']).to eq(['rayon twill biru muda', 'rayon twill'])
       expect(draft.fields).not_to have_key('product_name')
       expect(draft.fields).not_to have_key('product_price')
     end
 
-    # Opening a linked draft reconciles from ERP; both Requirements fields map back.
+    # Opening a linked draft reconciles from ERP; the Table MultiSelect child rows map
+    # back into the draft's array of names.
     it 'maps product_requirements/product_requirement from the ERP Lead on refresh' do
       Wijaya::ErpLeadDraft.create!(
         account: account, conversation: conversation, erp_lead_id: 'LEAD-1', sync_status: 'synced',
@@ -153,7 +154,9 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       )
       lead_doc = Net::HTTPOK.new('1.1', '200', 'OK')
       allow(lead_doc).to receive(:body).and_return(
-        { 'data' => { 'first_name' => 'Bob', 'product_requirements' => "A\nB", 'product_requirement' => 'LPR-0001' } }.to_json
+        { 'data' => { 'first_name' => 'Bob', 'product_requirements' => "A\nB",
+                      'product_requirement' => [{ 'product_requirement' => 'rayon twill biru muda' },
+                                                { 'product_requirement' => 'rayon twill' }] } }.to_json
       )
       allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(lead_doc)
 
@@ -162,7 +165,7 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       expect(response).to have_http_status(:success)
       fields = response.parsed_body['fields']
       expect(fields['product_requirements']).to eq("A\nB")
-      expect(fields['product_requirement']).to eq('LPR-0001')
+      expect(fields['product_requirement']).to eq(['rayon twill biru muda', 'rayon twill'])
     end
   end
 

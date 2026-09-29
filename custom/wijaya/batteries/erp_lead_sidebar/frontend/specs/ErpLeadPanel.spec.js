@@ -1266,4 +1266,34 @@ describe('ErpLeadPanel Requirements card', () => {
       'Need custom sizing\nand embroidery'
     );
   });
+
+  it('normalizes a legacy scalar product_requirement into a chip and autosaves an array on removal', async () => {
+    showSpy.mockResolvedValue({
+      data: {
+        configured: true,
+        fields: {
+          first_name: 'Bob',
+          industry: 'Retail',
+          status: 'Lead',
+          // Legacy scalar Link value from before the Table MultiSelect change.
+          product_requirement: 'rayon twill',
+        },
+      },
+    });
+    const wrapper = mountReq();
+    await open(wrapper);
+
+    // The legacy scalar renders as a single removable chip.
+    const removeBtn = wrapper.find('button[aria-label="Remove rayon twill"]');
+    expect(removeBtn.exists()).toBe(true);
+
+    // Removing it autosaves product_requirement as an array (here emptied), never a string.
+    await removeBtn.trigger('click');
+    await vi.advanceTimersByTimeAsync(600);
+
+    expect(saveSpy).toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({ product_requirement: [] })
+    );
+  });
 });

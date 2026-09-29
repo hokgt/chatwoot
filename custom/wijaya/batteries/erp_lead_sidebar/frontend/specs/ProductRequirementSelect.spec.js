@@ -45,16 +45,80 @@ describe('ProductRequirementSelect', () => {
     });
   });
 
-  it('displays product_name but stores/emits the ERP document name', async () => {
+  it('displays product_name but stores/emits an array of ERP document names', async () => {
     const wrapper = mountSelect();
     await openMenu(wrapper);
 
     const option = findByText(wrapper, 'li[role="option"]', 'Blue Shirt');
-    expect(option.text()).toBe('Blue Shirt');
+    expect(option.text()).toContain('Blue Shirt');
 
     await option.trigger('mousedown');
-    expect(wrapper.emitted('update:modelValue')[0]).toEqual(['LPR-1']);
-    expect(wrapper.emitted('change')[0]).toEqual(['LPR-1']);
+    expect(wrapper.emitted('update:modelValue')[0]).toEqual([['LPR-1']]);
+    expect(wrapper.emitted('change')[0]).toEqual([['LPR-1']]);
+  });
+
+  it('selects two options and renders both chips without replacing the first', async () => {
+    listSpy.mockResolvedValue({
+      data: {
+        options: [
+          { value: 'LPR-1', label: 'Blue Shirt' },
+          { value: 'LPR-2', label: 'Green Hat' },
+        ],
+      },
+    });
+    const wrapper = mountSelect();
+    await openMenu(wrapper);
+
+    await findByText(wrapper, 'li[role="option"]', 'Blue Shirt').trigger(
+      'mousedown'
+    );
+    expect(wrapper.emitted('update:modelValue').at(-1)).toEqual([['LPR-1']]);
+    await wrapper.setProps({ modelValue: ['LPR-1'] });
+
+    await findByText(wrapper, 'li[role="option"]', 'Green Hat').trigger(
+      'mousedown'
+    );
+    // Appended, not replaced.
+    expect(wrapper.emitted('update:modelValue').at(-1)).toEqual([
+      ['LPR-1', 'LPR-2'],
+    ]);
+    await wrapper.setProps({ modelValue: ['LPR-1', 'LPR-2'] });
+
+    const chips = wrapper
+      .find('ul[aria-label="Selected product requirements"]')
+      .findAll('li');
+    expect(chips.map(c => c.text())).toEqual(
+      expect.arrayContaining(['Blue Shirt ×', 'Green Hat ×'])
+    );
+  });
+
+  it('does not duplicate an already-selected option', async () => {
+    const wrapper = mountSelect({ modelValue: ['LPR-1'] });
+    await openMenu(wrapper);
+
+    await findByText(wrapper, 'li[role="option"]', 'Blue Shirt').trigger(
+      'mousedown'
+    );
+    expect(wrapper.emitted('update:modelValue')).toBeFalsy();
+  });
+
+  it('removes one chip and emits/autosaves the remaining array', async () => {
+    const wrapper = mountSelect({ modelValue: ['LPR-1', 'LPR-2'] });
+    const removeBtn = wrapper.find('button[aria-label="Remove LPR-1"]');
+    expect(removeBtn.exists()).toBe(true);
+
+    await removeBtn.trigger('click');
+    expect(wrapper.emitted('update:modelValue').at(-1)).toEqual([['LPR-2']]);
+    expect(wrapper.emitted('change').at(-1)).toEqual([['LPR-2']]);
+  });
+
+  it('normalizes a legacy scalar modelValue into a single chip', () => {
+    const wrapper = mountSelect({ modelValue: 'rayon twill' });
+    const chips = wrapper
+      .find('ul[aria-label="Selected product requirements"]')
+      .findAll('li');
+    expect(chips).toHaveLength(1);
+    expect(chips[0].text()).toContain('rayon twill');
   });
 
   it('binds the id prop to the combobox input so a parent label `for` associates', () => {
@@ -118,7 +182,7 @@ describe('ProductRequirementSelect', () => {
     });
   });
 
-  it('auto-selects the created record and closes the dialog on success', async () => {
+  it('appends the created record to the selection and closes the dialog on success', async () => {
     createSpy.mockResolvedValue({
       data: {
         value: 'LPR-9',
@@ -127,7 +191,8 @@ describe('ProductRequirementSelect', () => {
         message: 'Product Requirement created.',
       },
     });
-    const wrapper = mountSelect();
+    // An existing selection must be preserved: the created record is appended.
+    const wrapper = mountSelect({ modelValue: ['LPR-1'] });
     await openCreateDialog(wrapper);
     await wrapper.find('#erp-pr-name').setValue('Red Cap');
 
@@ -136,8 +201,10 @@ describe('ProductRequirementSelect', () => {
     );
     await flushPromises();
 
-    expect(wrapper.emitted('update:modelValue').at(-1)).toEqual(['LPR-9']);
-    expect(wrapper.emitted('change').at(-1)).toEqual(['LPR-9']);
+    expect(wrapper.emitted('update:modelValue').at(-1)).toEqual([
+      ['LPR-1', 'LPR-9'],
+    ]);
+    expect(wrapper.emitted('change').at(-1)).toEqual([['LPR-1', 'LPR-9']]);
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
     expect(wrapper.text()).toContain('Product Requirement created.');
   });
@@ -160,7 +227,7 @@ describe('ProductRequirementSelect', () => {
     );
     await flushPromises();
 
-    expect(wrapper.emitted('update:modelValue').at(-1)).toEqual(['LPR-1']);
+    expect(wrapper.emitted('update:modelValue').at(-1)).toEqual([['LPR-1']]);
     expect(wrapper.text()).toContain('already exists');
   });
 
@@ -215,15 +282,15 @@ describe('ProductRequirementSelect', () => {
     expect(wrapper.find('ul[role="listbox"]').exists()).toBe(false);
   });
 
-  it('keeps the selected product_name label across a remote search that drops it', async () => {
+  it('keeps the selected product_name chip label across a remote search that drops it', async () => {
     const wrapper = mountSelect();
     await openMenu(wrapper);
     await findByText(wrapper, 'li[role="option"]', 'Blue Shirt').trigger(
       'mousedown'
     );
-    expect(wrapper.emitted('update:modelValue').at(-1)).toEqual(['LPR-1']);
+    expect(wrapper.emitted('update:modelValue').at(-1)).toEqual([['LPR-1']]);
     // Simulate the parent v-model committing the selected value.
-    await wrapper.setProps({ modelValue: 'LPR-1' });
+    await wrapper.setProps({ modelValue: ['LPR-1'] });
 
     // A later search returns a list WITHOUT the selected record.
     listSpy.mockResolvedValueOnce({
@@ -235,10 +302,12 @@ describe('ProductRequirementSelect', () => {
     await vi.advanceTimersByTimeAsync(300); // fire the debounced fetch
     vi.useRealTimers();
     await flushPromises();
-    await input.trigger('keydown', { key: 'Escape' });
 
-    // The closed control still shows the product_name, never the raw ERP name.
-    expect(input.element.value).toBe('Blue Shirt');
+    // The chip still shows the product_name, never the raw ERP name.
+    const chips = wrapper
+      .find('ul[aria-label="Selected product requirements"]')
+      .findAll('li');
+    expect(chips[0].text()).toContain('Blue Shirt');
   });
 
   it('clears transient option state on a conversation change', async () => {
