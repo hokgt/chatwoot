@@ -978,6 +978,27 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/chat_response_parser.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/decisions_response_mapper.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/runner.rb
+      # Phase 2 / Stage 4 — DEFAULT-OFF, ASYNCHRONOUS, SHADOW-ONLY integration of the isolated
+      # Decision Runner. ShadowConfig is a strictly read-only config seam (MARINE_DECISION_SHADOW_ENABLED
+      # on only for the exact 'true'; MARINE_DECISION_SCENARIO_CAPABILITIES a bounded JSON scenario_<id>
+      # -> allowlisted-intents map that fails the WHOLE map closed to {} on any anomaly, never writing
+      # or raising). ScenarioAdapter maps enabled, id-ordered Marine::Scenario rows to the InputContract
+      # seam with the stable scenario_<database id> key and capabilities ONLY from the explicit registry
+      # (never inferred from title/description/instruction/tools). ShadowExecution validates the four
+      # records belong together + public-incoming, then computes the legacy ScenarioSelector choice and
+      # the Decision Runner CandidatePlan on the SAME canonical trigger/scenarios, returning a small
+      # deep-frozen comparison and mutating no state. ShadowJob (scalar IDs only) re-checks the flag,
+      # loads account-scoped records fail-closed, runs ShadowExecution and DISCARDS the result, swallowing
+      # every failure with no reply/routing/state/log. ShadowEnqueuer — called from Wijaya::Marine::Hooks
+      # ONLY after the normal Marine response was scheduled — does nothing when off, else NX+TTL
+      # deduplicates per account+message with a feature-prefixed Redis::Alfred marker, enqueues ShadowJob
+      # with scalar IDs, releases only its own token on enqueue failure, and never propagates into the
+      # primary hook. No Stage 5 metrics/persistence and no Stage 6 cutover/authority.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_config.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/scenario_adapter.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_execution.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_enqueuer.rb
+      - custom/wijaya/batteries/marine_ai/app/jobs/marine/decision/shadow_job.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility primitives.
       # Battery-contained, not yet wired to hooks/jobs/orchestration. State lives in
       # a Marine-owned namespace inside Conversation/Message additional_attributes
@@ -1387,6 +1408,18 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/decision/chat_response_parser_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/decision/decisions_response_mapper_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/decision/runner_spec.rb
+      # Phase 2 / Stage 4 — DEFAULT-OFF asynchronous shadow integration specs (config default-off +
+      # exact-true-only + fail-closed capability parsing; adapter enabled-only/id-order/stable
+      # scenario_<id>/registry-only capabilities/bounds/ownership; execution relationship + public-
+      # incoming validation, same-trigger legacy+runner call, deep-frozen result, source-scan no-writes;
+      # job flag recheck + scoped loads + private/outgoing/missing skip + swallowed failure + discarded
+      # result; enqueuer off=>no-Redis/no-job, on=>NX+TTL+scalar args, duplicate suppressed, token-safe
+      # release on enqueue failure, never-raise). Hook shadow-integration specs live in hooks_spec.rb.
+      - spec/custom/wijaya/batteries/marine_ai/decision/shadow_config_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/scenario_adapter_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/shadow_execution_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/shadow_job_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/shadow_enqueuer_spec.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb

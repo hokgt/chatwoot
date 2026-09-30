@@ -114,10 +114,36 @@ module Wijaya::Marine::Hooks
   # the trigger-bound product/RAG flow with per-message idempotency.
   def schedule_marine_response(conversation, message)
     job_args = [conversation, conversation.inbox.marine_assistant, message.id]
-    if message.attachments.blank?
-      ::Marine::Conversation::ResponseBuilderJob.perform_later(*job_args)
-    else
-      ::Marine::Conversation::ResponseBuilderJob.set(wait: 2.seconds).perform_later(*job_args)
-    end
+    scheduled =
+      if message.attachments.blank?
+        ::Marine::Conversation::ResponseBuilderJob.perform_later(*job_args)
+      else
+        ::Marine::Conversation::ResponseBuilderJob.set(wait: 2.seconds).perform_later(*job_args)
+      end
+
+    # Phase 2 / Stage 4 — DEFAULT-OFF, asynchronous, fire-and-forget shadow of the isolated
+    # Marine Decision Runner. Fired ONLY when the primary enqueue above genuinely succeeded
+    # (see primary_enqueue_succeeded?), and enqueues nothing (no Redis, no job) unless
+    # MARINE_DECISION_SHADOW_ENABLED is exactly on. The enqueuer swallows every config/Redis/job
+    # error and returns a boolean we discard, so the shadow never influences this method's return
+    # value (`scheduled`) or the caller's rescue/error behavior.
+    ::Marine::Decision::ShadowEnqueuer.enqueue(conversation: conversation, message: message) if primary_enqueue_succeeded?(scheduled)
+    scheduled
+  end
+
+  # True only when the primary ResponseBuilderJob enqueue proved successful, so the shadow is
+  # never fired for a response that did not actually enqueue. ActiveJob's perform_later returns
+  # false when a before_enqueue callback halts the chain, and returns the job (responding to
+  # #successfully_enqueued? / carrying #enqueue_error) otherwise. A legacy/test truthy object
+  # exposing neither API counts as success for backward compatibility. Any error while checking
+  # fails closed to no shadow and never replaces or alters the primary return object.
+  def primary_enqueue_succeeded?(scheduled)
+    return false unless scheduled
+    return scheduled.successfully_enqueued? if scheduled.respond_to?(:successfully_enqueued?)
+    return false if scheduled.respond_to?(:enqueue_error) && !scheduled.enqueue_error.nil?
+
+    true
+  rescue StandardError
+    false
   end
 end
