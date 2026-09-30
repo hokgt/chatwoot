@@ -1056,6 +1056,27 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/cutover_gate.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/scenario_resolver.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/cutover_scenario_selector.rb
+      # Fase 3A-1 — Isolated product pipeline (Product Authority Seam -> repository
+      # validation/execution -> marine_evidence_v1 Evidence Packet -> Model 2 presentation
+      # seam). Mock-only, ALL flags OFF, ZERO runtime wiring: no reference from Agent::Runner /
+      # ResponseBuilderJob / the live product path. The adapter maps an untrusted normalized
+      # marine_decision_v1 candidate plan into the existing IntentExtractor-shaped product-intent
+      # input under per-scenario capability authority; the planner revalidates every candidate
+      # against the injected read-only repositories (family/variant/price/stock + PriceDisplayFormatter)
+      # and owns all facts (binary stock, immutable price envelope, fail-closed omission); the pure
+      # state transition computes A6-01 invalidation via the store's in-memory snapshot twin
+      # (no persistence, schema_version separate from the revision version); the packet builder emits
+      # a deep-frozen, closed-key/closed-enum, bounded product-only packet; and the presenter runs the
+      # bounded packet-only prompt through an INJECTED generator + deterministic fact/persona gates,
+      # failing closed to a deterministic/handoff fallback (no live provider constructed).
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/candidate_plan_to_product_intent_adapter.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/product_execution_planner.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/product_state_transition.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_packet_builder.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_prompt_builder.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_packet_presenter.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/post_generation_fact_validator.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/persona_validator.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility primitives.
       # Battery-contained, not yet wired to hooks/jobs/orchestration. State lives in
       # a Marine-owned namespace inside Conversation/Message additional_attributes
@@ -1501,6 +1522,21 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/decision/cutover_gate_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/decision/scenario_resolver_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/decision/cutover_scenario_selector_spec.rb
+      # Fase 3A-1 — Isolated product pipeline specs (adapter capability authority + fail-closed;
+      # repository validation/execution facts; pure A6-01 state invalidation + separate schema_version;
+      # marine_evidence_v1 bounds/enum/omission/byte-ceiling; packet-only prompt; deterministic
+      # fact/persona gates; injected-generator presenter fail-closed fallback; static isolation proof
+      # that the live product path has ZERO references to Marine::Backend).
+      - spec/custom/wijaya/batteries/marine_ai/backend/candidate_plan_to_product_intent_adapter_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/product_execution_planner_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/product_state_transition_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/evidence_packet_builder_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/evidence_prompt_builder_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/evidence_packet_presenter_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/post_generation_fact_validator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/persona_validator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/backend_isolation_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/backend_pipeline_integration_spec.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb
