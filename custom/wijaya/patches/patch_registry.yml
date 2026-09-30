@@ -960,6 +960,24 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/client.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/chat_completions_client.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/openrouter_decisions_client.rb
+      # Phase 2 / Stage 3 — battery-local, ISOLATED, UNWIRED Decision Maker Runner and its
+      # protocol request/response mapping. The Runner reads ONLY SettingsStore.for(:decision_maker)
+      # + api_mode, talks to the network solely through the Stage 2 Client, and returns EXACTLY
+      # one canonical deep-frozen CandidatePlan — never raising: every failure (bad input,
+      # transport error, malformed builder/mapper/parser output, mode race, normalizer rejection)
+      # folds to CandidatePlan.unknown with an allowlisted opaque reason and no leaked body/
+      # exception/input. InputContract bounds the untrusted message/context/coarse-state-hints/
+      # scenario-capability seam; RequestBuilder emits a closed chat JSON schema OR a Jev
+      # choice/noul questions body (scenario text as DATA only, NEVER free-text extraction);
+      # ChatResponseParser strictly parses one JSON object (dup-key-rejecting); DecisionsResponseMapper
+      # maps typed choice/noul answers (slot_operations always [], language nil). Intents are
+      # intersected with the declared capability union + unsupported. No Agent::Runner/ScenarioSelector/
+      # DB/catalog/job/reply/state-mutation; not wired to any runtime hook.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/input_contract.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/request_builder.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/chat_response_parser.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/decisions_response_mapper.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/runner.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility primitives.
       # Battery-contained, not yet wired to hooks/jobs/orchestration. State lives in
       # a Marine-owned namespace inside Conversation/Message additional_attributes
@@ -1358,6 +1376,17 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/decision/client_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/decision/chat_completions_client_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/decision/openrouter_decisions_client_spec.rb
+      # Phase 2 / Stage 3 — Decision Runner + request/response mapping specs (bounded input
+      # contract; exact chat schema + Jev choice/noul request bodies; typed answer mapping with
+      # thresholds; multi-intent noul; capability intersection; dup-key/fenced/oversized chat
+      # rejection; transport/mode/collaborator failure folding to allowlisted unknown reasons;
+      # deep-frozen result; caller ownership; and a source-scan proof of no Agent::Runner/
+      # ScenarioSelector/DB/reply/state-mutation collaborator).
+      - spec/custom/wijaya/batteries/marine_ai/decision/input_contract_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/request_builder_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/chat_response_parser_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/decisions_response_mapper_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/runner_spec.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb

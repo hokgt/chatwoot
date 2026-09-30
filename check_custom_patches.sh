@@ -468,6 +468,17 @@ require_file spec/custom/wijaya/batteries/marine_ai/decision/transport_result_sp
 require_file spec/custom/wijaya/batteries/marine_ai/decision/client_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/decision/chat_completions_client_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/decision/openrouter_decisions_client_spec.rb
+# Phase 2 / Stage 3 — Decision Runner + request/response mapping (ISOLATED, UNWIRED).
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/input_contract.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/request_builder.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/chat_response_parser.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/decisions_response_mapper.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/runner.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/input_contract_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/request_builder_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/chat_response_parser_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/decisions_response_mapper_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/runner_spec.rb
 require_file custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
 require_file custom/wijaya/batteries/marine_ai/docs/product_catalog_db.md
 # Commit 1C — SOP extraction + OCR foundation
