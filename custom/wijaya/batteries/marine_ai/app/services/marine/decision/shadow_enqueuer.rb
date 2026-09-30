@@ -1,15 +1,17 @@
 require 'securerandom'
 
 # DEFAULT-OFF, fail-safe scheduler for the asynchronous Marine Decision shadow (Phase 2 /
-# Stage 4). Called by Wijaya::Marine::Hooks ONLY after the normal Marine response job was
-# successfully scheduled. It never influences the primary hook: every config/Redis/job error
+# Stage 4 + Stage 5). Called by Wijaya::Marine::Hooks ONLY after the normal Marine response job
+# was successfully scheduled. It never influences the primary hook: every config/Redis/job error
 # returns false and never propagates.
 #
-#   * Default-off: when the shadow flag is not the exact true representation it does NOTHING —
-#     no Redis call and no job enqueue at all.
-#   * When enabled it deduplicates per account+message with a feature-specific, bounded-TTL
-#     NX marker so the same inbound turn is shadowed at most once per window, passes SCALAR
-#     IDs only to the job, and enqueues Marine::Decision::ShadowJob.
+#   * Opt-in and assistant-scoped: it resolves the inbox's Marine assistant FIRST and does
+#     NOTHING — no Redis dedupe call and no job enqueue — unless ShadowConfig.enabled_for? is
+#     true for THAT assistant id (the exact global flag AND the assistant present in the valid,
+#     non-empty allowlist). A missing/invalid/empty allowlist keeps the shadow off.
+#   * When enabled for the assistant it deduplicates per account+message with a feature-specific,
+#     bounded-TTL NX marker so the same inbound turn is shadowed at most once per window, passes
+#     SCALAR IDs only to the job, and enqueues Marine::Decision::ShadowJob.
 #   * It returns true ONLY when the job genuinely enqueued: a false/nil perform_later result,
 #     a job whose #successfully_enqueued? is false, or a job carrying a non-nil #enqueue_error
 #     all count as a failed enqueue. On any failed OR raised enqueue the NX marker is released
@@ -32,14 +34,13 @@ class Marine::Decision::ShadowEnqueuer
     @message = message
   end
 
-  # Returns true only when a ShadowJob was enqueued; false on default-off, a duplicate, or
-  # ANY config/Redis/job failure. Never raises.
+  # Returns true only when a ShadowJob was enqueued; false when the shadow is not enabled for
+  # this assistant, on a duplicate, or on ANY config/Redis/job failure. Never raises.
   def enqueue
-    return false unless Marine::Decision::ShadowConfig.enabled?
-
     account = @conversation.account
     assistant = @conversation.inbox&.try(:marine_assistant)
     return false if account.nil? || assistant.nil?
+    return false unless Marine::Decision::ShadowConfig.enabled_for?(assistant.id)
 
     schedule(account, assistant)
   rescue StandardError

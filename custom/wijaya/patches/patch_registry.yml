@@ -993,12 +993,33 @@ patches:
       # ONLY after the normal Marine response was scheduled — does nothing when off, else NX+TTL
       # deduplicates per account+message with a feature-prefixed Redis::Alfred marker, enqueues ShadowJob
       # with scalar IDs, releases only its own token on enqueue failure, and never propagates into the
-      # primary hook. No Stage 5 metrics/persistence and no Stage 6 cutover/authority.
+      # primary hook (now gated by ShadowConfig.enabled_for? the resolved assistant, see Stage 5 below).
+      # Phase 2 / Stage 5 — PRIVACY-SAFE aggregate metrics + ADVISORY acceptance (observation-only, NEVER
+      # authority). ShadowConfig gains MARINE_DECISION_SHADOW_ASSISTANT_IDS (a bounded JSON array of unique
+      # positive integer ids, fail-closed) and enabled_for?, making the live shadow opt-in and
+      # assistant-scoped (missing/invalid/empty allowlist => no Redis/job/provider/metrics). ShadowJob is
+      # the ONLY Stage 5 runtime wiring: it re-checks enabled_for? on the LOADED assistant before the
+      # Runner/provider, converts a successful ShadowExecution into a ShadowObservation, and records
+      # AGGREGATE counters via ShadowMetricsStore — a nil execution records nothing and every observation/
+      # metrics failure is swallowed. ShadowObservation is a deep-frozen value exposing ONLY aggregate-safe
+      # allowlisted codes (stable scenario keys/none, comparable/match booleans, reason, confidence, intent
+      # codes, slot operation+slot code pairs) — never raw trigger/history, any message/conversation/
+      # contact/inbox id, customer_language, a slot raw_candidate/candidate_type, a provider body/error, or
+      # a record. ShadowMetricsStore records validated INTEGER counters into a UTC daily hash
+      # (marine:decision:shadow:metrics:v1:<account>:<assistant>:YYYYMMDD) via ONE MULTI + 14-day TTL (no
+      # SCAN/KEYS/broad delete; Redis failure => false), and snapshot reads only the explicit <=14 daily
+      # keys, merging integer counters fail-closed into a deep-frozen aggregate. ShadowAcceptance is a pure
+      # advisory gate over a snapshot with fixed conservative thresholds + integer basis-point rates; its
+      # status is only insufficient_data/hold/eligible_for_review — never cutover — and it mutates nothing.
+      # No Stage 6 cutover/authority/rollback switching.
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_config.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/scenario_adapter.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_execution.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_enqueuer.rb
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/decision/shadow_job.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_observation.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_metrics_store.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_acceptance.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility primitives.
       # Battery-contained, not yet wired to hooks/jobs/orchestration. State lives in
       # a Marine-owned namespace inside Conversation/Message additional_attributes
@@ -1415,11 +1436,20 @@ patches:
       # job flag recheck + scoped loads + private/outgoing/missing skip + swallowed failure + discarded
       # result; enqueuer off=>no-Redis/no-job, on=>NX+TTL+scalar args, duplicate suppressed, token-safe
       # release on enqueue failure, never-raise). Hook shadow-integration specs live in hooks_spec.rb.
+      # Stage 5 adds: config assistant allowlist + enabled_for? (opt-in, assistant-scoped, fail-closed);
+      # job enabled_for? recheck on the loaded assistant, observation-record-once, nil-execution no
+      # metrics, swallowed observation/metrics failure; enqueuer enabled_for? gating; observation
+      # privacy/strip/reject + deep-frozen ownership; metrics exact key/date/TTL/MULTI counters +
+      # snapshot <=14-key merge/fail-closed + source-scan no-persist proof; acceptance boundary/basis-point
+      # /status/never-cutover.
       - spec/custom/wijaya/batteries/marine_ai/decision/shadow_config_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/decision/scenario_adapter_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/decision/shadow_execution_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/decision/shadow_job_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/decision/shadow_enqueuer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/shadow_observation_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/shadow_metrics_store_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/shadow_acceptance_spec.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb

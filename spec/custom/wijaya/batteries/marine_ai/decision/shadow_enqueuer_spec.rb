@@ -2,11 +2,11 @@
 
 require 'rails_helper'
 
-# Phase 2 / Stage 4 — the DEFAULT-OFF, fail-safe ShadowEnqueuer. These examples drive it with
-# record doubles + a stubbed flag and pin: default-off does NO Redis and NO enqueue; enabled
-# uses an NX+TTL feature-prefixed marker, passes SCALAR IDs only, suppresses a duplicate, and
-# releases only its own token (compare-and-delete) when the enqueue fails; and every
-# config/Redis/job failure returns false and never raises.
+# Phase 2 / Stage 4 + Stage 5 — the DEFAULT-OFF, fail-safe ShadowEnqueuer. These examples drive
+# it with record doubles + a stubbed assistant-scoped flag and pin: not-enabled-for-assistant
+# does NO Redis and NO enqueue; enabled uses an NX+TTL feature-prefixed marker, passes SCALAR IDs
+# only, suppresses a duplicate, and releases only its own token (compare-and-delete) when the
+# enqueue fails; and every config/Redis/job failure returns false and never raises.
 RSpec.describe Marine::Decision::ShadowEnqueuer do
   let(:assistant) { double('assistant', id: 3) }
   let(:inbox) { double('inbox', marine_assistant: assistant) }
@@ -18,8 +18,8 @@ RSpec.describe Marine::Decision::ShadowEnqueuer do
     described_class.enqueue(conversation: conversation, message: message)
   end
 
-  context 'when the shadow is off (default)' do
-    before { allow(Marine::Decision::ShadowConfig).to receive(:enabled?).and_return(false) }
+  context 'when the shadow is not enabled for this assistant' do
+    before { allow(Marine::Decision::ShadowConfig).to receive(:enabled_for?).with(3).and_return(false) }
 
     it 'touches no Redis and enqueues no job, returning false' do
       expect(Redis::Alfred).not_to receive(:set)
@@ -29,7 +29,7 @@ RSpec.describe Marine::Decision::ShadowEnqueuer do
   end
 
   context 'when the shadow is on' do
-    before { allow(Marine::Decision::ShadowConfig).to receive(:enabled?).and_return(true) }
+    before { allow(Marine::Decision::ShadowConfig).to receive(:enabled_for?).with(3).and_return(true) }
 
     it 'sets an NX+TTL feature-prefixed marker and enqueues the job with scalar IDs, retaining the token' do
       expect(Redis::Alfred).to receive(:set)
@@ -104,15 +104,16 @@ RSpec.describe Marine::Decision::ShadowEnqueuer do
       expect { expect(enqueue).to be(false) }.not_to raise_error
     end
 
-    it 'returns false when the inbox exposes no marine assistant' do
+    it 'returns false when the inbox exposes no marine assistant (never checks the flag)' do
       allow(inbox).to receive(:marine_assistant).and_return(nil)
+      expect(Marine::Decision::ShadowConfig).not_to receive(:enabled_for?)
       expect(Redis::Alfred).not_to receive(:set)
       expect(enqueue).to be(false)
     end
   end
 
   it 'returns false (never raises) when the config check itself fails' do
-    allow(Marine::Decision::ShadowConfig).to receive(:enabled?).and_raise(StandardError, 'boom')
+    allow(Marine::Decision::ShadowConfig).to receive(:enabled_for?).and_raise(StandardError, 'boom')
     expect { expect(enqueue).to be(false) }.not_to raise_error
   end
 end

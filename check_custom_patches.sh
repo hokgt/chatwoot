@@ -482,16 +482,25 @@ require_file spec/custom/wijaya/batteries/marine_ai/decision/runner_spec.rb
 # Phase 2 / Stage 4 — DEFAULT-OFF, asynchronous, shadow-only Decision Runner integration
 # (read-only config seam, scenario adapter, shadow execution/job, fail-safe enqueuer) fired
 # from the existing Wijaya::Marine::Hooks touchpoint (already required above at line ~409).
+# Phase 2 / Stage 5 — PRIVACY-SAFE aggregate metrics + ADVISORY acceptance (observation-only,
+# never authority): assistant allowlist + enabled_for? opt-in gating, ShadowObservation,
+# ShadowMetricsStore (UTC daily counters, no scan), ShadowAcceptance (advisory-only status).
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_config.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/scenario_adapter.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_execution.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_enqueuer.rb
 require_file custom/wijaya/batteries/marine_ai/app/jobs/marine/decision/shadow_job.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_observation.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_metrics_store.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_acceptance.rb
 require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_config_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/decision/scenario_adapter_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_execution_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_job_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_enqueuer_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_observation_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_metrics_store_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_acceptance_spec.rb
 require_file custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
 require_file custom/wijaya/batteries/marine_ai/docs/product_catalog_db.md
 # Commit 1C — SOP extraction + OCR foundation
