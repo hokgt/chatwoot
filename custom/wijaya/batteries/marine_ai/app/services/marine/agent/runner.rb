@@ -77,7 +77,7 @@ class Marine::Agent::Runner
     orchestrated = pre_rag_payload(context, query, history)
     return orchestrated if orchestrated
 
-    scenario = select_scenario(query)
+    scenario = select_scenario(query, history)
     tool_slugs = resolved_tool_slugs(scenario)
 
     payload = response_generator.generate(additional_message: trigger, message_history: history,
@@ -342,16 +342,34 @@ class Marine::Agent::Runner
     )
   end
 
-  def select_scenario(query)
-    return nil if query.blank?
+  # Post-pre-RAG scenario selection through the controlled cutover wrapper. When the fail-closed
+  # cutover gate is CLOSED (the default), this is byte-for-byte the legacy token-overlap selection
+  # over the already-derived query — no ScenarioAdapter/Decision Runner/provider/metrics work. When
+  # the gate is OPEN for this account+assistant, the Decision Maker may choose the scenario from the
+  # already-bounded history/context (no second ContextBuilder / customer-history query); an
+  # unaccepted or failed decision falls back to legacy. Only the scenario changes — never the reply,
+  # routing, product/handoff/state path. The safe source/reason enums are logged as routing metadata;
+  # no candidate plan/intents/slots/raw values are ever exposed.
+  def select_scenario(query, history)
+    selection = Marine::Decision::CutoverScenarioSelector
+                .new(assistant: assistant, account_id: scenario_account_id)
+                .select(query, context: history)
 
-    scenario = Marine::Agent::ScenarioSelector.new(assistant: assistant).select(query)
+    scenario = selection.scenario
     if scenario
-      log_event('scenario.selected', scenario_id: scenario.id)
+      log_event('scenario.selected', scenario_id: scenario.id, source: selection.source, reason: selection.reason)
     else
-      log_event('scenario.none')
+      log_event('scenario.none', source: selection.source, reason: selection.reason)
     end
     scenario
+  end
+
+  # The account id for the cutover gate (config + advisory metrics are account+assistant scoped).
+  # Mirrors #product_account's derivation; nil when neither the conversation nor the assistant
+  # exposes an account, in which case the gate fails closed to legacy.
+  def scenario_account_id
+    account = conversation&.account || (assistant.account if assistant.respond_to?(:account))
+    account&.id
   end
 
   # Custom HTTP tools have been removed to eliminate all direct outbound

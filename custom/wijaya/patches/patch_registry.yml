@@ -1020,6 +1020,42 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_observation.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_metrics_store.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_acceptance.rb
+      # Phase 2 / Stage 6 — CONTROLLED Decision Maker cutover for scenario selection (backend authority
+      # + immediate rollback). This is the ONLY stage where the Decision Maker's canonical CandidatePlan
+      # may drive a live decision, and ONLY the post-pre-RAG scenario-selection seam that previously
+      # called the token-overlap Marine::Agent::ScenarioSelector — never reply, routing, product/price/
+      # stock/quantity, handoff, or state. Default behavior is byte-for-byte legacy when the gate is
+      # closed. CutoverConfig is a strict fail-closed config seam: MARINE_DECISION_CUTOVER_ENABLED (exact
+      # trimmed 'true'), MARINE_DECISION_CUTOVER_ASSISTANT_IDS (bounded JSON array of unique positive
+      # integer ids, max 50, whole-list-closed on any anomaly), and MARINE_DECISION_CUTOVER_ROLLBACK
+      # (exact trimmed 'true', HIGHEST precedence, forces closed); enabled_for? ALSO requires the existing
+      # ShadowConfig.enabled_for? so a cut-over assistant stays under the live shadow + allowlist. Every
+      # read is fresh (no memoized switch), so rollback takes effect on the very next selection with no
+      # metrics/provider work. CutoverGate opens ONLY when the config is open AND the ADVISORY
+      # ShadowAcceptance report over a fixed 14-day ShadowMetricsStore snapshot is EXACTLY eligible_for_
+      # review/thresholds_met; a closed config never reads metrics (immediate rollback); it never writes
+      # config or auto-enables. ScenarioResolver is backend-authoritative: it re-queries
+      # assistant.scenarios.enabled by the exact stable scenario_<id> key at resolution time and returns
+      # the real enabled row or nil (wrong format / zero / out-of-range / disabled / cross-assistant /
+      # error => nil). CutoverScenarioSelector wraps the legacy selector: a blank query or a closed gate
+      # runs the legacy selector directly (no adapter/runner/provider/metrics beyond the gate); an open
+      # gate builds the full enabled scenario seam via ScenarioAdapter and calls Marine::Decision::Runner
+      # exactly once (message=query, bounded role/content context, state={}, adapter scenarios), accepting
+      # the Decision choice ONLY when the plan is canonical-normalized, both confidences are medium/high,
+      # a candidate key is present, and ScenarioResolver re-resolves it — else legacy. The legacy selector
+      # and Decision Runner each run at most once; decision-side failures (gate/adapter/runner/plan/
+      # resolver) NEVER escape — they fall back to legacy — while a legacy selector error is NOT swallowed
+      # and propagates to Marine::Agent::Runner#run, degrading to the historical safe handoff (pre-Stage-6
+      # semantics). It never handoffs/changes the reply from a decision error and returns a
+      # small immutable Selection (scenario + closed source/reason enums) with an optional privacy-safe
+      # ActiveSupport::Notifications event (ids + source/reason only). The internal
+      # Marine::Agent::Runner#select_scenario touchpoint (agent/runner.rb, listed below) routes through it,
+      # passing the already-derived query + already-bounded history (no second ContextBuilder); product
+      # path still returns before scenario selection; no CandidatePlan/intents/slots/cutover metadata leak.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/cutover_config.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/cutover_gate.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/scenario_resolver.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/cutover_scenario_selector.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility primitives.
       # Battery-contained, not yet wired to hooks/jobs/orchestration. State lives in
       # a Marine-owned namespace inside Conversation/Message additional_attributes
@@ -1450,6 +1486,21 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/decision/shadow_observation_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/decision/shadow_metrics_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/decision/shadow_acceptance_spec.rb
+      # Phase 2 / Stage 6 — CONTROLLED cutover specs. Config: exact-trimmed flag/rollback precedence,
+      # bounded JSON allowlist (max 50, whole-list-closed), cross-shadow enabled_for? gating, malformed/
+      # fail-closed. Gate: eligible ONLY on the exact genuine eligible/thresholds_met report; hold/
+      # insufficient/invalid/malformed/error close; config-closed => no metrics read; fixed 14-day window.
+      # Resolver: exact scenario_<id> format/positive/bounds/enabled/same-assistant/current re-query/
+      # missing/error. Selector: closed path legacy-once + no decision work; rollback/gate-closed; accepted
+      # valid decision; medium/high boundaries; low/unknown/nil/malformed/overflow/empty-seam/provider-error/
+      # resolver-miss fallback; candidate intents/slots never used; bounded context; decision + legacy
+      # at-most-once; notification privacy/failure isolation. Agent::Runner integration (runner_spec.rb):
+      # product path never invokes cutover, closed payload == legacy, a valid decision changes only
+      # scenario id/title/path, no candidate-plan leak.
+      - spec/custom/wijaya/batteries/marine_ai/decision/cutover_config_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/cutover_gate_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/scenario_resolver_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/cutover_scenario_selector_spec.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb

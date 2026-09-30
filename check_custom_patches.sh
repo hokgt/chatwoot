@@ -501,6 +501,27 @@ require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_enqueuer_spe
 require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_observation_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_metrics_store_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_acceptance_spec.rb
+# Phase 2 / Stage 6 — CONTROLLED Decision Maker cutover for scenario selection (backend authority +
+# immediate rollback). CutoverConfig is a strict fail-closed config seam (MARINE_DECISION_CUTOVER_
+# ENABLED/ASSISTANT_IDS/ROLLBACK; rollback highest precedence; enabled_for? also requires the existing
+# ShadowConfig.enabled_for?). CutoverGate opens ONLY on the exact eligible/thresholds_met advisory
+# ShadowAcceptance report over a 14-day ShadowMetricsStore snapshot; config closed => no metrics read
+# => immediate rollback. ScenarioResolver re-queries assistant.scenarios.enabled by the stable
+# scenario_<id> key (backend-authoritative). CutoverScenarioSelector wraps the legacy ScenarioSelector:
+# closed/blank => legacy directly; open => ScenarioAdapter seam + Decision Runner (once) accepted ONLY
+# on a canonical normalized medium/high plan whose candidate key re-resolves; else legacy. Decision-side
+# failures never escape (they fall back to legacy), while a legacy selector error propagates to
+# Agent::Runner#run and preserves its historical safe-handoff fail-safe. The internal
+# Agent::Runner#select_scenario touchpoint (custom/.../agent/runner.rb, already required above) now
+# routes through it. Scenario-only authority; never reply/routing/product/handoff/state.
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/cutover_config.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/cutover_gate.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/scenario_resolver.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/cutover_scenario_selector.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/cutover_config_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/cutover_gate_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/scenario_resolver_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/cutover_scenario_selector_spec.rb
 require_file custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
 require_file custom/wijaya/batteries/marine_ai/docs/product_catalog_db.md
 # Commit 1C — SOP extraction + OCR foundation

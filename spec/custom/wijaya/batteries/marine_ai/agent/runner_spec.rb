@@ -572,7 +572,7 @@ RSpec.describe Marine::Agent::Runner do
   # previews the SAME product orchestration a real turn uses, so a valid catalog request is
   # grounded in the catalog BEFORE the RAG path (which would otherwise answer "unavailable").
   describe 'source-less Playground catalog preview' do
-    let(:account) { instance_double(Account) }
+    let(:account) { instance_double(Account, id: 501) }
     let(:assistant) { double('assistant', id: 1, name: 'Marine Bot', account: account) }
     let(:runner) { described_class.new(assistant: assistant, source: 'playground') }
     let(:preview) { instance_double(Marine::Catalog::PlaygroundPreview) }
@@ -752,7 +752,7 @@ RSpec.describe Marine::Agent::Runner do
 
   describe 'source-less run gating' do
     it 'never previews for a non-playground source-less caller even with a product account (source gate)' do
-      account = instance_double(Account)
+      account = instance_double(Account, id: 502)
       assistant = double('assistant', id: 1, name: 'Marine Bot', account: account)
       runner = described_class.new(assistant: assistant, source: nil)
       allow(generator).to receive(:generate).and_return(reply_payload)
@@ -775,6 +775,117 @@ RSpec.describe Marine::Agent::Runner do
       runner.run(additional_message: 'ada katalog baby doll ?')
 
       expect(generator).to have_received(:generate)
+    end
+  end
+
+  # Phase 2 / Stage 6 — the runner routes scenario selection through the controlled cutover wrapper.
+  # When the cutover gate is closed (the default) the payload is byte-for-byte legacy; when the
+  # Decision Maker chooses a scenario ONLY the scenario metadata (id/title/path) changes and response
+  # generation is untouched. The product path returns BEFORE scenario selection, so it never invokes
+  # the wrapper. No candidate plan / intents / slots / cutover metadata ever reaches the payload.
+  describe 'Decision Maker scenario cutover integration (Phase 2 / Stage 6)' do
+    let(:cutover) { instance_double(Marine::Decision::CutoverScenarioSelector) }
+    let(:decision_scenario) { double('scenario', id: 55, title: 'Stock desk') }
+
+    def selection(scenario, source, reason)
+      Marine::Decision::CutoverScenarioSelector::Selection.new(scenario, source, reason)
+    end
+
+    before do
+      allow(generator).to receive(:generate).and_return(reply_payload)
+    end
+
+    it 'routes selection through the wrapper with the derived query and the already-bounded history' do
+      allow(Marine::Decision::CutoverScenarioSelector).to receive(:new).and_return(cutover)
+      allow(cutover).to receive(:select).and_return(selection(nil, 'legacy', 'gate_closed'))
+
+      runner.run(additional_message: 'where is my order')
+
+      expect(Marine::Decision::CutoverScenarioSelector).to have_received(:new).with(assistant: assistant, account_id: nil)
+      expect(cutover).to have_received(:select).with('where is my order', context: [])
+    end
+
+    it 'produces a payload with legacy scenario semantics when the cutover is closed' do
+      allow(Marine::Decision::CutoverScenarioSelector).to receive(:new).and_return(cutover)
+      allow(cutover).to receive(:select).and_return(selection(nil, 'legacy', 'gate_closed'))
+
+      payload = runner.run(additional_message: 'where is my order')
+
+      expect(payload).to include('orchestration_path' => 'retrieval', 'marine_scenario_id' => nil,
+                                 'marine_scenario_title' => nil, 'response' => 'Your order is on the way')
+    end
+
+    it 'changes only the scenario metadata (id/title/path) when the Decision Maker chooses a scenario' do
+      allow(Marine::Decision::CutoverScenarioSelector).to receive(:new).and_return(cutover)
+      allow(cutover).to receive(:select).and_return(selection(decision_scenario, 'decision', 'decision_accepted'))
+
+      payload = runner.run(additional_message: 'stock for impeller')
+
+      expect(payload).to include('orchestration_path' => 'scenario_retrieval', 'marine_scenario_id' => 55,
+                                 'marine_scenario_title' => 'Stock desk')
+      # Response generation is unchanged: same reply body/action/confidence as legacy.
+      expect(payload).to include('response' => 'Your order is on the way', 'action' => 'reply', 'confidence' => 0.9)
+      expect(generator).to have_received(:generate)
+    end
+
+    it 'never exposes candidate plan / intents / slots / cutover metadata in the payload' do
+      allow(Marine::Decision::CutoverScenarioSelector).to receive(:new).and_return(cutover)
+      allow(cutover).to receive(:select).and_return(selection(decision_scenario, 'decision', 'decision_accepted'))
+
+      payload = runner.run(additional_message: 'stock for impeller')
+
+      %w[scenario_candidate candidate_plan intents slot_operations customer_language
+         cutover_source cutover_reason product_plan].each do |leak|
+        expect(payload).not_to have_key(leak)
+      end
+    end
+
+    it 'never invokes the cutover wrapper on the product path (product returns before selection)' do
+      account = build_stubbed(:account)
+      conversation = build_stubbed(:conversation, account: account)
+      message = build_stubbed(:message, conversation: conversation, message_type: :incoming, content: 'price for impeller')
+      product_runner = described_class.new(assistant: assistant, conversation: conversation, source: message)
+      orchestrator = instance_double(Marine::Catalog::ProductQueryOrchestrator)
+      allow(Marine::Catalog::ProductQueryOrchestrator).to receive(:new).and_return(orchestrator)
+      allow(orchestrator).to receive(:process).and_return(action: :reply, reply: { kind: :price_available },
+                                                          state: { operation: :none, changes: {} })
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(
+        instance_double(Marine::Cell::KnowledgeBaseService,
+                        retrieve: Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match'))
+      )
+      expect(Marine::Decision::CutoverScenarioSelector).not_to receive(:new)
+
+      payload = product_runner.run(additional_message: 'price for impeller')
+
+      expect(payload['action']).to eq('product')
+    end
+  end
+
+  # Phase 2 / Stage 6 blocking-review remediation — the controlled cutover wrapper must preserve the
+  # pre-Stage-6 fail-safe. On the CLOSED path (the default) the wrapper defers to the legacy
+  # ScenarioSelector; if that legacy selector raises, the error must still propagate to the Runner's
+  # top-level rescue and degrade to the historical safe handoff — never a silently swallowed nil that
+  # continues into RAG generation. Uses the REAL CutoverScenarioSelector (only its gate dependency is
+  # stubbed closed; the wrapper's own output is NOT stubbed).
+  describe 'legacy scenario selector failure degrades to the historical safe handoff (Stage 6 closed path)' do
+    before do
+      allow(Marine::Decision::CutoverGate).to receive(:new).and_return(
+        instance_double(Marine::Decision::CutoverGate, open?: false)
+      )
+      allow(selector).to receive(:select).and_raise(StandardError, 'legacy boom')
+      allow(generator).to receive(:generate).and_return(reply_payload)
+    end
+
+    it 'returns the runner_error safe handoff and never invokes the ResponseGenerator' do
+      payload = runner.run(additional_message: 'where is my order')
+
+      expect(payload).to include(
+        'response' => 'conversation_handoff',
+        'action' => 'handoff',
+        'action_reason' => 'runner_error',
+        'orchestration_path' => 'handoff'
+      )
+      expect(generator).not_to have_received(:generate)
     end
   end
 
