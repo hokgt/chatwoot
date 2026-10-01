@@ -22,8 +22,9 @@
 #   2. ShadowConfig.shadow_enabled_for?(assistant_id) — rollback NOT engaged, explicit flag on, id
 #      allowlisted (revalidated fresh, so an immediate rollback takes effect on the very next call),
 #   3. the candidate mode for the assistant is exactly 'shadow' (an operator has staged it), and
-#   4. the advisory ShadowAcceptance report over the 14-day ShadowMetricsStore snapshot is EXACTLY
-#      eligible_for_review / thresholds_met.
+#   4. the advisory ShadowAcceptance report over the 14-day ShadowMetricsStore snapshot — evaluated
+#      with the separately-supplied, evaluator-produced mutation proof (advisory only; see #readiness)
+#      — is EXACTLY eligible_for_review / thresholds_met.
 # Any other outcome, a Redis read error, or any exception closes it. Dependencies are injected for
 # tests; there is deliberately NO cache that could delay a rollback.
 class Marine::ProductAuthority::CandidateGate
@@ -55,9 +56,10 @@ class Marine::ProductAuthority::CandidateGate
   # Advisory-only readiness for a human reviewer. NEVER consulted by any execution/response/state/
   # action path. `would_open` reflects what a future (unlocked) phase would decide via the pure
   # ReadinessPolicy; `phase_locked` makes the current hard guarantee explicit. Even when `would_open`
-  # is true, #open? stays hard false this phase.
-  def readiness(account_id:, assistant_id:)
-    would_open = @readiness_policy.ready?(account_id: account_id, assistant_id: assistant_id)
+  # is true, #open? stays hard false this phase. The optional evaluator-produced `mutation_proof` is
+  # threaded to the policy's acceptance evaluation; a nil/invalid proof keeps the verdict fail-closed.
+  def readiness(account_id:, assistant_id:, mutation_proof: nil)
+    would_open = @readiness_policy.ready?(account_id: account_id, assistant_id: assistant_id, mutation_proof: mutation_proof)
     { phase_locked: PHASE_LOCKED, would_open: would_open }.freeze
   rescue StandardError
     { phase_locked: PHASE_LOCKED, would_open: false }.freeze
@@ -80,22 +82,24 @@ class Marine::ProductAuthority::CandidateGate
       @acceptance = acceptance
     end
 
-    # True ONLY when every conjunctive condition holds. Never raises.
-    def ready?(account_id:, assistant_id:)
+    # True ONLY when every conjunctive condition holds. Never raises. The evaluator-produced
+    # `mutation_proof` (advisory only) is threaded to the acceptance evaluation; a nil/invalid proof
+    # keeps acceptance fail-closed.
+    def ready?(account_id:, assistant_id:, mutation_proof: nil)
       return false unless positive_int?(account_id) && positive_int?(assistant_id)
       return false unless @config.shadow_enabled_for?(assistant_id)
       return false unless @config.candidate_mode_for(assistant_id) == CANDIDATE_MODE_STAGED
 
-      eligible?(acceptance_report(account_id, assistant_id))
+      eligible?(acceptance_report(account_id, assistant_id, mutation_proof))
     rescue StandardError
       false
     end
 
     private
 
-    def acceptance_report(account_id, assistant_id)
+    def acceptance_report(account_id, assistant_id, mutation_proof)
       snapshot = @store.snapshot(account_id: account_id, assistant_id: assistant_id, days: DAYS)
-      @acceptance.evaluate(snapshot)
+      @acceptance.evaluate(snapshot, mutation_proof: mutation_proof)
     end
 
     def eligible?(report)

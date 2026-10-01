@@ -110,4 +110,108 @@ RSpec.describe Marine::ProductAuthority::CandidateGate do
       expect(policy.ready?(account_id: 1, assistant_id: 3)).to be(false)
     end
   end
+
+  # Mutation-proof wiring (this phase's fix): the evaluator-produced mutation proof is threaded through
+  # #readiness / ReadinessPolicy#ready? into the acceptance evaluation. A nil/invalid proof, or one
+  # reporting an observed mutation, stays fail-closed; the gate stays phase-locked regardless of the
+  # advisory verdict. The REAL ShadowAcceptance is injected so the end-to-end consumption is proven,
+  # not merely the threading. All ids/counters SYNTHETIC.
+  describe 'mutation-proof wiring' do
+    # The validated, evaluator-produced proof artifact acceptance requires to reach eligible.
+    def valid_proof
+      { schema_version: Marine::ProductAuthority::ShadowAcceptance::MUTATION_PROOF_SCHEMA,
+        source: 'evaluator', runs: 19, mutation_observed: false }
+    end
+
+    # A GENUINE ShadowMetricsStore ok-snapshot honouring every conservation law with thresholds met.
+    def genuine_snapshot
+      { schema_version: Marine::ProductAuthority::ShadowMetricsStore::SCHEMA_VERSION, ok: true,
+        account_id: 1, assistant_id: 3, days: 14,
+        counters: { 'total' => 100, 'legacy_status.product' => 100, 'candidate_status.product' => 100,
+                    'comparable' => 100, 'exact_agreement' => 100, 'matrix.product.product' => 100 } }
+    end
+
+    def staged_config
+      double('config').tap do |config|
+        allow(config).to receive(:shadow_enabled_for?).and_return(true)
+        allow(config).to receive(:candidate_mode_for).and_return('shadow')
+      end
+    end
+
+    def real_acceptance
+      Marine::ProductAuthority::ShadowAcceptance.new
+    end
+
+    def store_returning(snapshot)
+      double('store').tap { |store| allow(store).to receive(:snapshot).and_return(snapshot) }
+    end
+
+    it 'threads the evaluator mutation proof into the acceptance evaluation' do
+      snapshot = genuine_snapshot
+      proof = valid_proof
+      acceptance = double('acceptance')
+      allow(acceptance).to receive(:evaluate).and_return(status: 'eligible_for_review', reason: 'thresholds_met')
+      policy = described_class::ReadinessPolicy.new(config: staged_config, store: store_returning(snapshot), acceptance: acceptance)
+      expect(policy.ready?(account_id: 1, assistant_id: 3, mutation_proof: proof)).to be(true)
+      expect(acceptance).to have_received(:evaluate).with(snapshot, mutation_proof: proof)
+    end
+
+    it 'with a REAL ShadowAcceptance a valid proof reaches eligible and would_open is true end-to-end' do
+      policy = described_class::ReadinessPolicy.new(config: staged_config, store: store_returning(genuine_snapshot), acceptance: real_acceptance)
+      expect(policy.ready?(account_id: 1, assistant_id: 3, mutation_proof: valid_proof)).to be(true)
+    end
+
+    it 'with a REAL ShadowAcceptance a missing (nil) proof is fail-closed, real report reason mutation_proof_missing' do
+      acceptance = real_acceptance
+      policy = described_class::ReadinessPolicy.new(config: staged_config, store: store_returning(genuine_snapshot), acceptance: acceptance)
+      expect(policy.ready?(account_id: 1, assistant_id: 3, mutation_proof: nil)).to be(false)
+      expect(acceptance.evaluate(genuine_snapshot, mutation_proof: nil)[:reason]).to eq('mutation_proof_missing')
+    end
+
+    it 'gate.readiness with a missing proof reports would_open false, phase_locked true' do
+      gate = described_class.new(config: staged_config, store: store_returning(genuine_snapshot), acceptance: real_acceptance)
+      expect(gate.readiness(account_id: 1, assistant_id: 3)).to eq(phase_locked: true, would_open: false)
+      expect(gate.readiness(account_id: 1, assistant_id: 3, mutation_proof: nil)[:would_open]).to be(false)
+    end
+
+    it 'is fail-closed for every invalid or mutation-claiming proof (REAL acceptance)' do
+      policy = described_class::ReadinessPolicy.new(config: staged_config, store: store_returning(genuine_snapshot), acceptance: real_acceptance)
+      [
+        valid_proof.merge(schema_version: 'nope'),
+        valid_proof.merge(source: 'forged'),
+        valid_proof.merge(runs: 0),
+        valid_proof.merge(runs: 'x'),
+        valid_proof.except(:runs),
+        valid_proof.merge(extra: 'x'),
+        valid_proof.merge(mutation_observed: true)
+      ].each do |bad|
+        expect(policy.ready?(account_id: 1, assistant_id: 3, mutation_proof: bad)).to be(false)
+      end
+    end
+
+    it 'a proof claiming an observed mutation is fail-closed, real report reason mutation_detected' do
+      report = real_acceptance.evaluate(genuine_snapshot, mutation_proof: valid_proof.merge(mutation_observed: true))
+      expect(report[:reason]).to eq('mutation_detected')
+    end
+
+    it 'stays phase-locked (open? false) even when the advisory would_open verdict is true' do
+      gate = described_class.new(config: staged_config, store: store_returning(genuine_snapshot), acceptance: real_acceptance)
+      readiness = gate.readiness(account_id: 1, assistant_id: 3, mutation_proof: valid_proof)
+      expect(readiness).to eq(phase_locked: true, would_open: true)
+      expect(readiness).to be_frozen
+      expect(described_class::PHASE_LOCKED).to be(true)
+      expect(gate.open?(account_id: 1, assistant_id: 3)).to be(false)
+    end
+
+    it 'never reads the snapshot or evaluates when the config is closed, even with a valid proof' do
+      config = double('config')
+      allow(config).to receive(:shadow_enabled_for?).and_return(false)
+      store = double('store')
+      acceptance = double('acceptance')
+      policy = described_class::ReadinessPolicy.new(config: config, store: store, acceptance: acceptance)
+      expect(store).not_to receive(:snapshot)
+      expect(acceptance).not_to receive(:evaluate)
+      expect(policy.ready?(account_id: 1, assistant_id: 3, mutation_proof: valid_proof)).to be(false)
+    end
+  end
 end
