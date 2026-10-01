@@ -66,19 +66,11 @@ module Marine::ProductAuthority::Parity
         failure
       end
 
-      # A deterministic, fully-synthetic, control-clean customer turn derived from the case: its id,
-      # its candidate intents, and a summary of its slot operations. Bounded well within the
-      # contract's MAX_MESSAGE_CHARS. Shared verbatim with the Playground surface query.
+      # A deterministic, fully-synthetic, control-clean customer turn derived from the case. Bounded well
+      # within the contract's MAX_MESSAGE_CHARS, shared verbatim with the Playground surface query AND
+      # (via the shared SyntheticCaseMessage projection) with the acceptance IntentExtractorSeam.
       def self.synthetic_message(kase)
-        intents = plan_intents(kase).join(',')
-        slots = Array(kase.dig(:plan, 'slot_operations')).filter_map { |op| slot_summary(op) }.join(',')
-        "SYN-PARITY #{kase[:id]} intents=#{intents} slots=#{slots}"
-      end
-
-      def self.slot_summary(operation)
-        return nil unless operation.is_a?(Hash)
-
-        "#{operation['operation']}:#{operation['slot']}"
+        Marine::ProductAuthority::SyntheticCaseMessage.synthetic_message(kase)
       end
 
       # No prior turns are projected — the acceptance envelope is a single synthetic turn.
@@ -182,10 +174,19 @@ module Marine::ProductAuthority::Parity
     Planner = Fakes::Planner
     EvidenceBuilder = Fakes::EvidenceBuilder
     FIXED_CLOCK = Fakes::FIXED_CLOCK
+    # The acceptance-side adapter over the REAL runtime intent seam (the DEFAULT canonical
+    # quantity-inquiry source, shared across BOTH surface folds); ShadowAcceptance supplies only the
+    # mutation-proof schema constant for the optional retention projection.
+    Seam = Marine::ProductAuthority::IntentExtractorSeam
+    Acceptance = Marine::ProductAuthority::ShadowAcceptance
 
     SCHEMA_VERSION = 'marine_product_authority_parity_run_v1'
     CONVERSATION_SURFACE = 'conversation'
     PLAYGROUND_SURFACE = 'playground'
+
+    # Deterministic, bounded correlation id + kind for the OPT-IN retention of a full parity run.
+    RETENTION_RUN_ID = 'parity_runtime_run'
+    RETENTION_KIND = 'parity'
 
     # Default real intake adapters; injectable (one keyword) so a spec can supply a lossy/crafted
     # adapter for a single surface to prove the primary contract catches outcome loss.
@@ -198,14 +199,16 @@ module Marine::ProductAuthority::Parity
     # closed lists) — used only when the per-case rescue fires, never on a well-formed executable case.
     UNKNOWN_OUTCOME = { status: Outcome::STATUS_UNKNOWN, intents: [], slot_ops: [], response_goals: [] }.freeze
 
-    def self.run(cases = Corpus.cases, extractor: nil, mutation_probe: nil, intakes: nil)
-      new.run(cases, extractor: extractor, mutation_probe: mutation_probe, intakes: intakes)
+    def self.run(cases = Corpus.cases, extractor: Seam.new, mutation_probe: nil, intakes: nil, retention: nil)
+      new.run(cases, extractor: extractor, mutation_probe: mutation_probe, intakes: intakes, retention: retention)
     end
 
     # A deep-frozen advisory parity report over the given case set. Never raises. `extractor` is the
-    # injectable canonical quantity-inquiry seam; `mutation_probe` the injectable observer; `intakes`
-    # the injectable per-surface intake adapters.
-    def run(cases = Corpus.cases, extractor: nil, mutation_probe: nil, intakes: nil)
+    # injectable canonical quantity-inquiry seam (DEFAULT: the real IntentExtractor seam); `mutation_probe`
+    # the injectable observer; `intakes` the injectable per-surface intake adapters; `retention` an
+    # OPTIONAL bounded evidence store (anything responding to #save) that retains this run's evidence
+    # post-fold (default nil -> nothing stored, behavior identical).
+    def run(cases = Corpus.cases, extractor: Seam.new, mutation_probe: nil, intakes: nil, retention: nil)
       return invalid_report('invalid_cases') unless cases.is_a?(Array)
 
       probe = mutation_probe || Fakes::MutationProbe.new
@@ -219,7 +222,9 @@ module Marine::ProductAuthority::Parity
           not_executed += 1
         end
       end
-      report(evidence, not_executed, cases.length)
+      result = report(evidence, not_executed, cases.length)
+      retain(retention, result, evidence, probe)
+      result
     rescue StandardError
       invalid_report('run_error')
     end
@@ -437,6 +442,46 @@ module Marine::ProductAuthority::Parity
         parity_ok_count: 0, parity_failed_ids: [], fail_closed_ids: [],
         reason_divergence_count: 0, reason_divergence_ids: [], both_passed_count: 0, case_evidence: []
       )
+    end
+
+    # Acceptance-only, post-fold, fail-closed retention hook. When a bounded evidence store (anything
+    # responding to #save) is injected, project THIS run's parity aggregate + the per-SURFACE CaseResults
+    # + the mutation proof into it; a nil retention (the default) stores nothing and leaves the run
+    # identical. A save failure NEVER affects the returned report.
+    def retain(retention, result, evidence, probe)
+      return unless retention.respond_to?(:save)
+
+      retention.save(
+        run_id: RETENTION_RUN_ID,
+        kind: RETENTION_KIND,
+        aggregate: result,
+        mutation_proof: mutation_proof(probe, result[:executed]),
+        case_results: surface_case_results(evidence),
+        clock: FIXED_CLOCK
+      )
+    rescue StandardError
+      nil
+    end
+
+    # The flat list of per-surface CaseResults across the run (each surface's result carries its own
+    # `surface` tag so a correlated pair stays distinguishable); a fail-closed surface (nil) is dropped.
+    def surface_case_results(evidence)
+      evidence.flat_map { |entry| [entry[:conversation], entry[:playground]] }.compact
+    end
+
+    # A mutation-proof artifact (the mutation_proof_v1 shape) emitted ONLY when the probe observed every
+    # folded case and reported zero mutations; otherwise nil (retention records the absence marker). It
+    # is acceptance-run provenance (source 'parity_runtime') for the audit projection — never fed to
+    # ShadowAcceptance.
+    def mutation_proof(probe, executed)
+      return nil unless probe.runs.positive? && probe.runs >= executed && !probe.mutations.positive?
+
+      {
+        schema_version: Acceptance::MUTATION_PROOF_SCHEMA,
+        source: 'parity_runtime',
+        runs: probe.runs,
+        mutation_observed: false
+      }
     end
 
     def deep_freeze(value)

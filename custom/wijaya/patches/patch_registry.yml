@@ -1126,6 +1126,28 @@ patches:
       # into any live runtime path; reads no settings/Redis; touches no ShadowMetricsStore; leaves
       # CandidateGate phase-locked.
       - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/acceptance_runner.rb
+      # Fase 3A-2c — the SINGLE pure source of the deterministic synthetic (SYN-PARITY) customer turn
+      # projected from a corpus acceptance case. Shared verbatim by the parity intake adapters and the
+      # acceptance IntentExtractorSeam so the real intent seam receives EXACTLY the synthetic message the
+      # intake surfaces use (no new text, no dataset). Side-effect-free; reads only id/intents/slot-op
+      # summary; validates/looks up/mutates nothing.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/synthetic_case_message.rb
+      # Fase 3A-2c — ACCEPTANCE-ONLY thin adapter over the REAL runtime intent seam
+      # (Marine::Catalog::IntentExtractor#extract). Projects the EXISTING parity synthetic customer turn
+      # from a corpus case, calls the real #extract, and returns the closed { source, quantity_inquiry,
+      # reason_code } signal ONLY for a NORMALIZED (extracted/not_product) result — a degraded/malformed
+      # extraction or any exception yields nil so the acceptance surfaces fall back to the corpus safety
+      # metadata (fail-closed). NOT wired into any live runtime path; no DB/Redis/settings; mutates
+      # nothing; leaves CandidateGate phase-locked.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/intent_extractor_seam.rb
+      # Fase 3A-2c — BOUNDED, DETERMINISTIC in-Redis retention of ONE acceptance RUN's evidence for audit
+      # (ShadowMetricsStore precedent). One versioned hash per run (meta + integer/boolean aggregate
+      # scalars + closed mutation-proof projection or 'mutation_proof_missing' marker + per-case rows
+      # carrying ONLY AcceptanceCaseResult's closed #to_h FIELDS), a bounded FIFO run-id index
+      # (LREM+LPUSH+LTRIM, MAX_RUNS), and a TTL_DAYS TTL. Stores NO plan payloads/text/prompts/customer
+      # data; fail-closed on any invalid id/kind/aggregate/Redis error; no SCAN/KEYS/reset. Acceptance-
+      # only; NOT wired into any live runtime path; leaves CandidateGate phase-locked.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/acceptance_evidence_store.rb
       # Fase 3A-2b — Conversation↔Playground PARITY RUNTIME (acceptance-only, advisory, in-memory).
       # One cohesive file: two REAL-intake projection adapters (ConversationIntake validates a synthetic
       # envelope through the PUBLIC Marine::Decision::InputContract.build fail-closed REJECT; PlaygroundIntake
@@ -1625,6 +1647,14 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_case_result_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_pipeline_coordinator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_runner_spec.rb
+      # Fase 3A-2c — real IntentExtractor seam adapter (normalized -> canonical boolean; degraded/
+      # malformed/raising -> nil fallback; synthetic-message projection) + end-to-end acceptance
+      # consumption via AcceptanceRunner/Parity::Runtime default seam.
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/intent_extractor_seam_spec.rb
+      # Fase 3A-2c — bounded Redis acceptance-evidence retention: save/fetch roundtrip, FIFO MAX_RUNS
+      # index, TTL, fail-closed, no-raw-data sanitization, mutation-proof-missing marker, clock
+      # injection, and the AcceptanceRunner/Parity retention wiring.
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_evidence_store_spec.rb
       # Fase 3A-2b — parity runtime specs: ConversationIntake real-InputContract round-trip (valid,
       # oversize/control-heavy/bad-state-key/unknown-role reject) + plan-unchanged; PlaygroundIntake
       # ok/blank/non-String query + bounded_history truncate-500/last-10/role-filter + mirror-equivalence

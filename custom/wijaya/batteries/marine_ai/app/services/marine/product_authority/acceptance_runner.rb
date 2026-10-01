@@ -44,8 +44,20 @@ class Marine::ProductAuthority::AcceptanceRunner
   Planner = Fakes::Planner
   EvidenceBuilder = Fakes::EvidenceBuilder
   FIXED_CLOCK = Fakes::FIXED_CLOCK
+  # The acceptance-side adapter over the REAL runtime intent seam (Marine::Catalog::IntentExtractor#
+  # extract). It is the DEFAULT canonical quantity-inquiry source; when it yields no canonical signal
+  # (degraded/malformed extraction) the runner falls back to the corpus safety metadata exactly as
+  # before. ShadowAcceptance is referenced ONLY for its mutation-proof schema constant.
+  Seam = Marine::ProductAuthority::IntentExtractorSeam
+  Acceptance = Marine::ProductAuthority::ShadowAcceptance
 
   SCHEMA_VERSION = 'marine_product_authority_acceptance_run_v1'
+
+  # Deterministic, bounded correlation id + kind for the OPT-IN retention of a full runner run (the
+  # aggregate carries no run identifier, so the caller-supplied id IS the correlation key). A re-save
+  # overwrites the same run hash deterministically.
+  RETENTION_RUN_ID = 'acceptance_runner_run'
+  RETENTION_KIND = 'runner'
 
   # The single controlled acceptance surface (the existing evaluator convention). Conversation /
   # Playground parity is out of scope, so every case is folded on the `evaluator` surface.
@@ -55,14 +67,16 @@ class Marine::ProductAuthority::AcceptanceRunner
   # closed lists) — used only when the per-case rescue fires, never on a well-formed executable case.
   UNKNOWN_OUTCOME = { status: Outcome::STATUS_UNKNOWN, intents: [], slot_ops: [], response_goals: [] }.freeze
 
-  def self.run(cases = Corpus.cases, extractor: nil, mutation_probe: nil)
-    new.run(cases, extractor: extractor, mutation_probe: mutation_probe)
+  def self.run(cases = Corpus.cases, extractor: Seam.new, mutation_probe: nil, retention: nil)
+    new.run(cases, extractor: extractor, mutation_probe: mutation_probe, retention: retention)
   end
 
   # A deep-frozen advisory report over the given explicit case set. Never raises. `extractor` is the
-  # injectable canonical quantity-inquiry seam; `mutation_probe` is the injectable observer. Production
-  # callers may pass the deterministic defaults (no extractor -> corpus safety fallback).
-  def run(cases = Corpus.cases, extractor: nil, mutation_probe: nil)
+  # injectable canonical quantity-inquiry seam (DEFAULT: the real IntentExtractor seam); `mutation_probe`
+  # is the injectable observer; `retention` is an OPTIONAL bounded evidence store (anything responding
+  # to #save) that retains this run's evidence post-run (default nil -> nothing stored, behavior
+  # identical). A degraded seam result falls back to the corpus safety metadata exactly as before.
+  def run(cases = Corpus.cases, extractor: Seam.new, mutation_probe: nil, retention: nil)
     return invalid_report('invalid_cases') unless cases.is_a?(Array)
 
     probe = mutation_probe || Fakes::MutationProbe.new
@@ -78,7 +92,9 @@ class Marine::ProductAuthority::AcceptanceRunner
         not_executed += 1
       end
     end
-    report(evidence, not_executed, cases.length)
+    result = report(evidence, not_executed, cases.length)
+    retain(retention, result, evidence, probe)
+    result
   rescue StandardError
     invalid_report('run_error')
   end
@@ -101,6 +117,7 @@ class Marine::ProductAuthority::AcceptanceRunner
   # exploding injected extraction seam) is captured as a bounded internal_error CaseResult — never an
   # exception message/class/backtrace — so other cases keep their results.
   def run_case(kase, extractor, probe)
+    probe.note_run
     quantity_inquiry = resolve_quantity_inquiry(kase, extractor)
     run_coordinator(kase, quantity_inquiry, probe)
   rescue StandardError
@@ -221,6 +238,40 @@ class Marine::ProductAuthority::AcceptanceRunner
       total_executed: 0, passed: 0, failed: 0, not_executed: 0,
       all_evaluated: false, failures: [], failure_reasons: {}, case_evidence: []
     )
+  end
+
+  # Acceptance-only, post-run, fail-closed retention hook. When a bounded evidence store (anything
+  # responding to #save) is injected, project THIS run's aggregate + per-case CaseResults + mutation
+  # proof into it; a nil retention (the default) stores nothing and leaves the run identical. A save
+  # failure NEVER affects the returned report.
+  def retain(retention, result, evidence, probe)
+    return unless retention.respond_to?(:save)
+
+    retention.save(
+      run_id: RETENTION_RUN_ID,
+      kind: RETENTION_KIND,
+      aggregate: result,
+      mutation_proof: mutation_proof(probe, result[:total_executed]),
+      case_results: evidence,
+      clock: FIXED_CLOCK
+    )
+  rescue StandardError
+    nil
+  end
+
+  # A mutation-proof artifact (the mutation_proof_v1 shape) emitted ONLY when the injected probe
+  # observed every executed case and reported zero mutations; otherwise nil, so retention records the
+  # explicit absence marker. It is acceptance-run provenance (source 'acceptance_runner') for the audit
+  # projection — it is NEVER fed to ShadowAcceptance, which requires the evaluator source.
+  def mutation_proof(probe, total_executed)
+    return nil unless probe.runs.positive? && probe.runs >= total_executed && !probe.mutations.positive?
+
+    {
+      schema_version: Acceptance::MUTATION_PROOF_SCHEMA,
+      source: 'acceptance_runner',
+      runs: probe.runs,
+      mutation_observed: false
+    }
   end
 
   def deep_freeze(value)
