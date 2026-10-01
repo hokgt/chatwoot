@@ -1104,6 +1104,16 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/candidate_gate.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/corpus.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/evaluator.rb
+      # Acceptance-only, advisory per-case pipeline coordinator + its closed-schema CaseResult
+      # artifact. The coordinator folds ONE synthetic case through the real Fase 3A-1 backend
+      # pipeline (adapter -> planner -> evidence packet builder) for acceptance evidence; it is NOT
+      # wired into any live runtime path, reads no settings/Redis, performs NO DB writes, and touches
+      # no ShadowMetricsStore. The default ProductExecutionPlanner it wires MAY perform read-only
+      # catalog DB access (its default read-only repositories); injected in-memory fakes make a
+      # deterministic, DB-free run. It leaves CandidateGate phase-locked. AcceptanceCaseResult is a
+      # bounded, deep-frozen, closed-enum artifact carrying no raw customer/provider/DB data.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/acceptance_case_result.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/acceptance_pipeline_coordinator.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility primitives.
       # Battery-contained, not yet wired to hooks/jobs/orchestration. State lives in
       # a Marine-owned namespace inside Conversation/Message additional_attributes
@@ -1587,6 +1597,8 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/product_authority/corpus_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/product_authority/evaluator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/product_authority/product_authority_isolation_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_case_result_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_pipeline_coordinator_spec.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb

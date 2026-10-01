@@ -25,8 +25,8 @@ RSpec.describe 'Marine::ProductAuthority Fase 3A-2 isolation' do
     end
   end
 
-  describe 'the only runtime consumers of Marine::Backend are the product-authority shadow + evaluator' do
-    it 'restricts every Marine::Backend reference to the backend services and the two product-authority files' do
+  describe 'the only runtime consumers of Marine::Backend are the product-authority shadow + evaluator + acceptance coordinator' do
+    it 'restricts every Marine::Backend reference to the backend services and the advisory product-authority files' do
       scan_dirs = [root.join('app/services/marine'), root.join('app/jobs/marine')]
       referencing = scan_dirs.flat_map { |dir| Dir[dir.join('**/*.rb').to_s] }
                              .select { |path| File.read(path).include?('Marine::Backend') }
@@ -35,6 +35,8 @@ RSpec.describe 'Marine::ProductAuthority Fase 3A-2 isolation' do
       allowed_product_authority = %w[
         app/services/marine/product_authority/shadow_execution.rb
         app/services/marine/product_authority/evaluator.rb
+        app/services/marine/product_authority/acceptance_pipeline_coordinator.rb
+        app/services/marine/product_authority/acceptance_case_result.rb
       ]
 
       referencing.each do |relative|
@@ -42,7 +44,7 @@ RSpec.describe 'Marine::ProductAuthority Fase 3A-2 isolation' do
         expect(permitted).to be(true), "unexpected Marine::Backend consumer: #{relative}"
       end
 
-      # And the two advisory consumers really are present in the set.
+      # And the advisory consumers really are present in the set.
       expect(referencing).to include(*allowed_product_authority)
     end
   end
