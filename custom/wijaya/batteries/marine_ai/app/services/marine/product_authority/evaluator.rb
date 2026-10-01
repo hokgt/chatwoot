@@ -1,9 +1,10 @@
 # Fase 3A-2 — DETERMINISTIC, ADVISORY evaluator for the product-authority corpus. It folds every
-# synthetic labelled case through the REAL Fase 3A-1 pipeline —
-# Marine::Backend::CandidatePlanToProductIntentAdapter then Marine::Backend::ProductExecutionPlanner —
-# with the case's INJECTED read-only repository fixtures (the repository revalidation), projects the
-# result through ProductOutcome, and scores it against the backend-owned label. Legacy output is never
-# consulted; the labels are the acceptance truth.
+# synthetic labelled case ONCE through the canonical Marine::ProductAuthority::AcceptancePipelineCoordinator
+# — the real Fase 3A-1 backend pipeline (adapter -> planner -> evidence packet builder) — with the
+# case's INJECTED read-only repository fixtures (the repository revalidation), producing the bounded,
+# closed-schema AcceptanceCaseResult, and DERIVES its aggregate acceptance metadata from that single
+# per-case result plus the immutable corpus label. There is NO second adapter/planner execution; the
+# labels (never any legacy output) are the acceptance truth.
 #
 # It first validates the corpus SCHEMA fail-closed and CLOSED (a malformed, unknown-keyed, duplicate,
 # out-of-vocabulary, or oversized case fails the WHOLE run closed) and enforces result conservation
@@ -15,8 +16,10 @@
 #     otherwise resolve to a normal stock answer.
 #   * Surface-aware parity (Gap 3): a `parity: true` case is folded through TWO independently-declared
 #     bounded surface adapters (Conversation and Playground) that normalize distinct surface-native
-#     envelopes into the SAME canonical backend input; parity holds only when their adapter+planner
-#     fingerprints are equal.
+#     envelopes into the SAME canonical backend input. Each surface is run through the coordinator — the
+#     ONE intentional multi-run, since parity compares surface folds — and parity holds only when the
+#     resulting AcceptanceCaseResult fingerprints (actual outcome + bounded reason) are equal. The report
+#     still exposes exactly ONE canonical AcceptanceCaseResult per corpus case.
 #   * Measured mutation evidence (Gap 4): an injected MutationProbe observes every repository read, and
 #     `mutation_capability` is a structural property of the read-only repository fakes. The report
 #     carries MEASURED `mutation_observed` (never a hardcoded 0) plus, when the run is genuinely clean,
@@ -33,9 +36,15 @@
 class Marine::ProductAuthority::Evaluator
   Corpus = Marine::ProductAuthority::Corpus
   Outcome = Marine::ProductAuthority::ProductOutcome
-  Adapter = Marine::Backend::CandidatePlanToProductIntentAdapter
   Planner = Marine::Backend::ProductExecutionPlanner
+  EvidenceBuilder = Marine::Backend::EvidencePacketBuilder
   Acceptance = Marine::ProductAuthority::ShadowAcceptance
+  # The canonical per-case acceptance executor + its closed-schema artifact. The Evaluator folds each
+  # valid corpus case through this SAME coordinator (with the case's injected read-only fixtures) ONCE
+  # and derives the aggregate from the resulting AcceptanceCaseResult; it NEVER builds a second pipeline
+  # or a second result schema.
+  Coordinator = Marine::ProductAuthority::AcceptancePipelineCoordinator
+  CaseResult = Marine::ProductAuthority::AcceptanceCaseResult
   CatalogUnavailable = Marine::Catalog::Errors::CatalogUnavailableError
 
   SCHEMA_VERSION = 'marine_product_authority_evaluator_v1'.freeze
@@ -63,11 +72,31 @@ class Marine::ProductAuthority::Evaluator
                              capability_malformed capability_mismatch unsupported_intent].freeze
   BLOCK_REASONS = (ADAPTER_BLOCK_REASONS + [EXACT_QUANTITY_REASON]).freeze
 
+  # Tiny, explicit legacy-compatibility map from a corpus label's bounded block_reason to the
+  # coordinator's CaseResult reason — ONLY for the stages whose ownership intentionally moved under the
+  # plan-first coordinator. A malformed plan is now rejected at the candidate-plan stage (before the
+  # adapter), so the label's `unsupported_schema` maps to `malformed_candidate_plan`; exact-quantity
+  # maps to itself (listed explicitly for intent). Every other adapter bounded reason maps to itself via
+  # the #fetch default, so this stays minimal and never widens the vocabulary.
+  BLOCK_REASON_MAP = {
+    'unsupported_schema' => CaseResult::REASON_MALFORMED_CANDIDATE_PLAN,
+    EXACT_QUANTITY_REASON => CaseResult::EXACT_QUANTITY_REASON
+  }.freeze
+
   # Defensive ceilings so a hostile/oversized case fails the schema closed rather than blowing up.
   MAX_STRING = 128
   MAX_COLLECTION = 64
   SURFACES_ALLOWED = %w[conversation playground both].freeze
   REPOSITORY_KEYS = %i[family variant price stock].freeze
+
+  # The single controlled acceptance surface the Evaluator serves when folding a case through the
+  # coordinator for per-case evidence. The corpus `surface` ("both") is a parity-harness selector, NOT
+  # a coordinator surface, so the canonical per-case evidence is always tagged `evaluator`.
+  ACCEPTANCE_SURFACE = 'evaluator'.freeze
+
+  # The bounded fallback outcome for the defensive internal-error CaseResult (status unknown, empty
+  # closed lists) — used only when the per-case rescue fires, never on a schema-valid corpus.
+  UNKNOWN_OUTCOME = { status: Outcome::STATUS_UNKNOWN, intents: [], slot_ops: [], response_goals: [] }.freeze
 
   # Write-shaped methods a read-only repository fake must never expose (structural mutation capability).
   WRITE_METHOD_DENYLIST = %i[save save! update update! create create! destroy destroy! delete delete!
@@ -85,6 +114,8 @@ class Marine::ProductAuthority::Evaluator
 
     probe = mutation_probe || MutationProbe.new
     surface_adapters = surfaces || SURFACES
+    # ONE canonical coordinator execution per case (parity folds once per surface); every Result carries
+    # the canonical AcceptanceCaseResult it derives from, so there is no second, parallel scoring engine.
     results = cases.map { |kase| score(kase, surface_adapters, probe) }
     aggregate(results, probe)
   rescue StandardError
@@ -199,125 +230,194 @@ class Marine::ProductAuthority::Evaluator
     value.is_a?(String) && !value.empty? && value.length <= MAX_STRING
   end
 
-  # --- per-case scoring -----------------------------------------------------------------
+  # --- per-case scoring (single canonical coordinator execution) -------------------------
 
-  # A frozen per-case result: whether it passed, and the classification flags the aggregate needs.
-  # `parity_ok` is nil for non-parity cases and a boolean for parity cases (cross-surface agreement).
-  Result = Struct.new(:id, :passed, :critical, :supported, :blocked, :planner_ran, :parity_ok, keyword_init: true)
+  # A frozen per-case aggregate result. It carries the classification flags the aggregate needs PLUS
+  # the canonical AcceptanceCaseResult the SINGLE coordinator run produced — aggregate metadata only,
+  # NOT a second public contract. `parity_ok` is nil for non-parity cases and a boolean for parity
+  # cases (cross-surface agreement). `case_result` is the ONE canonical artifact exposed per case.
+  Result = Struct.new(:id, :passed, :critical, :supported, :blocked, :planner_ran, :parity_ok, :case_result,
+                      keyword_init: true)
 
+  # Execute the case ONCE through the coordinator and DERIVE the aggregate Result from the canonical
+  # AcceptanceCaseResult + the immutable corpus label. `note_run` fires exactly once per corpus case.
   def score(kase, surfaces, probe)
     probe.note_run
-    return score_exact_quantity(kase) if exact_quantity_guarded?(kase)
+    return score_exact_quantity(kase, probe) if exact_quantity_guarded?(kase)
     return score_parity(kase, surfaces, probe) if kase[:parity]
 
-    run = run_single(kase, kase[:plan], kase[:scenario_key], kase[:capabilities], probe)
-    build_result(kase, passed: run[:passed], blocked: run[:blocked], planner_ran: run[:planner_ran], parity_ok: nil)
+    case_result = run_coordinator(kase, canonical_input(kase), quantity_inquiry: false, probe: probe)
+    build_derived_result(kase, case_result, passed: derive_passed(kase, case_result), parity_ok: nil)
   rescue StandardError
-    failed_result(kase, planner_ran: false)
+    failed_result(kase, internal_error_case_result(kase))
   end
 
   def exact_quantity_guarded?(kase)
     kase[:safety].is_a?(Hash) && kase[:safety][:exact_quantity_request] == true
   end
 
-  # Gap 2 — enforce the pre-existing no-exact-quantity policy BEFORE any adapter/planner/stock work.
-  # The adapter and planner are NEVER constructed for this case (proving the stock repository does not
-  # run); the label must expect a safe blocked/handoff outcome with the exact-quantity reason.
-  def score_exact_quantity(kase)
-    label = kase[:label]
-    passed = label[:status] == Outcome::STATUS_BLOCKED && label[:block_reason] == EXACT_QUANTITY_REASON
-    build_result(kase, passed: passed, blocked: true, planner_ran: false, parity_ok: nil)
+  # Gap 2 — the coordinator receives the strict safety-seam boolean as quantity_inquiry and short-circuits
+  # to a blocked result BEFORE invoking the adapter/planner/stock repository (proven by the skipped stage
+  # statuses and zero repository reads); the label must expect the blocked exact-quantity outcome. The
+  # source is strictly corpus `safety.exact_quantity_request == true` — never parsed from plan text.
+  def score_exact_quantity(kase, probe)
+    case_result = run_coordinator(kase, canonical_input(kase), quantity_inquiry: true, probe: probe)
+    build_derived_result(kase, case_result, passed: derive_passed(kase, case_result), parity_ok: nil)
   end
 
-  # Gap 3 — fold the ONE turn through both surface adapters; parity holds only when their adapter+planner
-  # fingerprints are identical AND each surface independently matches the label.
+  # Gap 3 — fold the ONE turn through each surface adapter and run the coordinator PER surface. This is
+  # the one intentional multi-run: parity itself compares surface folds. Parity holds only when the
+  # resulting AcceptanceCaseResult fingerprints agree AND every surface result matches the label. The
+  # report still exposes exactly ONE canonical result (see #canonical_parity_result).
   def score_parity(kase, surfaces, probe)
-    turn = { plan: kase[:plan], scenario_key: kase[:scenario_key], capabilities: kase[:capabilities] }
-    runs = surfaces.map do |surface|
-      input = surface.adapt(turn)
-      run_single(kase, input[:plan], input[:scenario_key], input[:capabilities], probe)
-    end
-    parity_ok = runs.pluck(:fingerprint).uniq.length == 1
-    build_result(
-      kase, passed: parity_ok && runs.all? { |run| run[:passed] },
-            blocked: runs.first[:blocked], planner_ran: runs.all? { |run| run[:planner_ran] }, parity_ok: parity_ok
+    turn = canonical_input(kase)
+    surface_results = surfaces.map { |surface| run_coordinator(kase, surface.adapt(turn), quantity_inquiry: false, probe: probe) }
+    canonical = canonical_parity_result(kase, surface_results, probe)
+    parity_ok = parity_agrees?(surface_results)
+    passed = parity_ok && surface_results.any? && surface_results.all? { |result| derive_passed(kase, result) }
+    build_derived_result(kase, canonical, passed: passed, parity_ok: parity_ok)
+  end
+
+  # Exactly ONE canonical AcceptanceCaseResult per corpus case: the first FAILING surface result when
+  # any surface fails, else the first successful one. NARROW parity-only edge case: for an empty or
+  # malformed surface set there is no surface result to expose, so a single bounded canonical result is
+  # produced from the ORIGINAL canonical case input; parity still fails (parity_agrees? is false), so in
+  # that injected edge case parity is aggregate-only and the bounded canonical evidence may itself pass.
+  def canonical_parity_result(kase, surface_results, probe)
+    return run_coordinator(kase, canonical_input(kase), quantity_inquiry: false, probe: probe) if surface_results.empty?
+
+    surface_results.find { |result| !result.pass? } || surface_results.first
+  end
+
+  # Parity agreement over the CaseResult fingerprints — the actual NORMALIZED outcome + bounded reason,
+  # NOT a second business pipeline. An empty surface set never agrees.
+  def parity_agrees?(surface_results)
+    return false if surface_results.empty?
+
+    surface_results.map { |result| [result.actual_outcome, result.reason] }.uniq.length == 1
+  end
+
+  # The canonical backend input for a case: the raw plan, selected scenario, and capability map. It is
+  # both the non-parity coordinator input and the `turn` each surface adapter projects + normalizes.
+  def canonical_input(kase)
+    { plan: kase[:plan], scenario_key: kase[:scenario_key], capabilities: kase[:capabilities] }
+  end
+
+  # Fold ONE bounded backend input through the canonical AcceptancePipelineCoordinator — the real Fase
+  # 3A-1 backend pipeline (adapter -> planner -> evidence packet builder) — with the case's injected
+  # read-only repository fakes AND the shared mutation probe, so the per-case execution stays DB-free
+  # and observed. Returns the bounded, closed-schema AcceptanceCaseResult the coordinator emits. This is
+  # the ONLY business execution per case; the aggregate Result is DERIVED from it, never from a second
+  # adapter/planner run.
+  #
+  # The planner and the evidence builder share ONE deterministic price formatter + the FIXED_CLOCK so a
+  # reconstructed price fact's display + checked_at agree between the two stages; otherwise the default
+  # builder would re-format with Time.current and reject the valid packet. For a quantity-guarded case
+  # the coordinator short-circuits BEFORE invoking the adapter/planner (their statuses stay `skipped`):
+  # constructing the planner here is allowed; its invocation never happens.
+  def run_coordinator(kase, input, quantity_inquiry:, probe:)
+    formatter = FakePriceFormatter.new
+    Coordinator.new(
+      planner: Planner.new(**planner_repositories(kase, probe, formatter)),
+      evidence_builder: EvidenceBuilder.new(clock: FIXED_CLOCK, price_formatter: formatter)
+    ).run(
+      candidate_plan: input[:plan],
+      scenario_key: input[:scenario_key],
+      scenario_capabilities: input[:capabilities],
+      quantity_inquiry: quantity_inquiry,
+      case_id: kase[:id],
+      surface: ACCEPTANCE_SURFACE,
+      expected_outcome: expected_outcome(kase[:label])
     )
   end
 
-  # Fold one bounded backend input through the adapter and (when accepted) the planner, and score it
-  # against the label. Returns the pass flag, the blocked/planner flags, and the outcome+goals
-  # fingerprint the parity harness compares.
-  def run_single(kase, plan, scenario_key, capabilities, probe)
-    label = kase[:label]
-    adapter_result = Adapter.new.call(plan: plan, scenario_key: scenario_key, scenario_capabilities: capabilities)
-    return run_blocked(label, adapter_result) unless adapter_result.ok?
-
-    outcome = Outcome.project(adapter_result.product_intent)
-    goals = run_planner(kase, adapter_result, probe)
-    passed = label[:status] != Outcome::STATUS_BLOCKED &&
-             outcome_matches?(outcome, label) && goals_match?(goals, label[:response_goals])
-    { passed: passed, blocked: false, planner_ran: true, fingerprint: [outcome, goals&.sort] }
-  end
-
-  def run_blocked(label, adapter_result)
-    passed = label[:status] == Outcome::STATUS_BLOCKED && label[:block_reason] == adapter_result.reason
-    { passed: passed, blocked: true, planner_ran: false, fingerprint: [Outcome.blocked, adapter_result.reason] }
-  end
-
-  # Run the planner with the case's injected fixtures (threaded through the mutation probe) and return
-  # its deduped response goals, or nil on any planner/repository error (a nil never matches a non-nil
-  # label, so the case fails closed).
-  def run_planner(kase, adapter_result, probe)
-    evidence = Planner.new(**planner_repositories(kase, probe)).call(
-      product_intent: adapter_result.product_intent,
-      intents: adapter_result.intents,
-      scenario: adapter_result.scenario
-    )
-    evidence[:response_goals]
-  rescue StandardError
-    nil
-  end
-
-  def planner_repositories(kase, probe)
+  # `price_formatter` is injectable so the planner and the coordinator's evidence builder share ONE
+  # deterministic formatter for a case's single fold.
+  def planner_repositories(kase, probe, price_formatter = FakePriceFormatter.new)
     repos = kase[:repositories]
     {
       family_repository: FakeFamilyRepository.new(repos[:family] || {}, probe),
       variant_resolver: FakeVariantResolver.new(repos[:variant] || {}, probe),
       price_repository: FakePriceRepository.new(repos[:price] || {}, probe),
       stock_repository: FakeStockRepository.new(repos[:stock] || {}, probe),
-      price_formatter: FakePriceFormatter.new,
+      price_formatter: price_formatter,
       clock: FIXED_CLOCK
     }
   end
 
-  def outcome_matches?(outcome, label)
-    outcome[:status] == label[:status] &&
-      outcome[:intents] == label[:intents] &&
-      outcome[:slot_ops] == label[:slot_ops]
+  # Project the corpus label into the coordinator's canonical normalized-outcome shape. The ONLY
+  # boundary normalization: a blocked label's nil `response_goals` becomes the canonical empty array
+  # the closed AcceptanceCaseResult outcome requires. Corpus schema validation is unchanged (a nil
+  # response_goals stays valid there).
+  def expected_outcome(label)
+    { status: label[:status], intents: label[:intents], slot_ops: label[:slot_ops],
+      response_goals: label[:response_goals] || [] }
   end
 
-  # Order-independent goal comparison; nil-vs-nil matches, nil-vs-list does not.
-  def goals_match?(goals, expected)
-    return goals.nil? if expected.nil?
-    return false if goals.nil?
+  # --- deriving the aggregate Result from the canonical CaseResult -----------------------
 
-    goals.sort == expected.sort
+  # The aggregate pass flag. A non-blocked label passes exactly when the coordinator's outcome-based
+  # verdict passed. A blocked label additionally requires the legacy-expected block reason (via the
+  # bounded BLOCK_REASON_MAP, for the stages whose ownership moved) to equal the CaseResult reason, so
+  # the aggregate keeps the legacy block_reason check WITHOUT a second execution or a new schema field.
+  def derive_passed(kase, case_result)
+    label = kase[:label]
+    return case_result.pass? unless label[:status] == Outcome::STATUS_BLOCKED
+
+    case_result.pass? && expected_block_reason(label) == case_result.reason
   end
 
-  def build_result(kase, passed:, blocked:, planner_ran:, parity_ok:)
+  def expected_block_reason(label)
+    BLOCK_REASON_MAP.fetch(label[:block_reason], label[:block_reason])
+  end
+
+  # A coordinator block BEFORE the planner: the exact-quantity seam, a blocked adapter, or a malformed
+  # candidate plan (the plan-first coordinator's equivalent of the legacy adapter unsupported_schema
+  # block). This drives the aggregate `supported` classification, matching the legacy blocked meaning.
+  def coordinator_blocked?(case_result)
+    case_result.exact_quantity_status == 'blocked' ||
+      case_result.adapter_status == 'blocked' ||
+      case_result.candidate_plan_status == 'malformed'
+  end
+
+  # planner_ran means the coordinator's planner was INVOKED: true for a planned OR errored planner,
+  # false for a skipped one (a pre-planner short-circuit). Invocation-compatible with the legacy flag;
+  # the stronger per-case revalidation status stays in the CaseResult.
+  def planner_invoked?(case_result)
+    %w[planned errored].include?(case_result.planner_status)
+  end
+
+  def build_derived_result(kase, case_result, passed:, parity_ok:)
+    blocked = coordinator_blocked?(case_result)
     Result.new(
       id: kase[:id], passed: passed, critical: kase[:critical],
       supported: !blocked && kase[:label][:status] != Outcome::STATUS_BLOCKED,
-      blocked: blocked, planner_ran: planner_ran, parity_ok: parity_ok
+      blocked: blocked, planner_ran: planner_invoked?(case_result), parity_ok: parity_ok,
+      case_result: case_result
     ).freeze
   end
 
-  def failed_result(kase, planner_ran:)
+  def failed_result(kase, case_result)
     Result.new(
       id: kase[:id], passed: false, critical: kase[:critical],
       supported: kase[:label][:status] != Outcome::STATUS_BLOCKED, blocked: false,
-      planner_ran: planner_ran, parity_ok: (kase[:parity] ? false : nil)
+      planner_ran: false, parity_ok: (kase[:parity] ? false : nil), case_result: case_result
     ).freeze
+  end
+
+  # A bounded internal-error AcceptanceCaseResult built WITHOUT re-running the pipeline, for the
+  # defensive per-case rescue only. It mirrors the coordinator's own internal_error shape (all stages
+  # skipped) so the per-case evidence collection stays uniform even if deriving a result unexpectedly
+  # raised. Not reachable for a schema-valid corpus; it exists solely to keep the run fail-closed.
+  def internal_error_case_result(kase)
+    CaseResult.build(
+      case_id: CaseResult.valid_case_id?(kase[:id]) ? kase[:id] : 'unknown_case',
+      surface: ACCEPTANCE_SURFACE,
+      candidate_plan_status: 'skipped', exact_quantity_status: 'skipped', adapter_status: 'skipped',
+      planner_status: 'skipped', repository_revalidation_status: 'skipped', evidence_packet_status: 'skipped',
+      expected_outcome: UNKNOWN_OUTCOME, actual_outcome: UNKNOWN_OUTCOME,
+      reason: CaseResult::REASON_INTERNAL_ERROR, passed: false
+    )
   end
 
   # --- aggregation + acceptance policy --------------------------------------------------
@@ -411,7 +511,14 @@ class Marine::ProductAuthority::Evaluator
         schema_valid_bps: Corpus::SCHEMA_VALID_BPS
       },
       meets_policy: meets_policy?(counts, supported_bps, critical_bps),
-      failures: results.reject(&:passed).map(&:id)
+      failures: results.reject(&:passed).map(&:id),
+      # Ordered, bounded canonical per-case evidence — one AcceptanceCaseResult per corpus case, in
+      # corpus order, each the SAME result its aggregate Result derived from (results.map(&:case_result)).
+      # Deep-freezing leaves each already-frozen AcceptanceCaseResult object intact (never replaced by
+      # its to_h), so contract identity is provable. NOTE: these are live in-process objects; any
+      # serialization boundary (log/JSON/transport) MUST project each through #to_h, never dump the raw
+      # object.
+      case_evidence: results.map(&:case_result)
     )
   end
 
@@ -448,8 +555,10 @@ class Marine::ProductAuthority::Evaluator
   end
 
   def invalid_report(reason)
+    # A fail-closed invalid report claims NO per-case evidence: the collection is present but empty so
+    # the report shape stays uniform for a later per-case runner.
     deep_freeze(schema_version: SCHEMA_VERSION, ok: false, reason: reason,
-                mutation_observed: nil, mutation_proof: nil, meets_policy: false)
+                mutation_observed: nil, mutation_proof: nil, meets_policy: false, case_evidence: [])
   end
 
   def deep_freeze(value)
