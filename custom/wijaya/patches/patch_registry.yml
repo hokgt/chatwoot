@@ -1445,6 +1445,7 @@ patches:
       - custom/wijaya/batteries/marine_ai/loader.rb
     tests:
       - spec/custom/wijaya/batteries/marine_ai/account_extensions_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/settings_consumption_contract_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/llm/config_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/llm/provider_config_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/llm/connection_test_service_spec.rb
