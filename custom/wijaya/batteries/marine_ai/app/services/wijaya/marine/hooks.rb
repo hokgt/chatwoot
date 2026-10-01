@@ -127,7 +127,20 @@ module Wijaya::Marine::Hooks
     # MARINE_DECISION_SHADOW_ENABLED is exactly on. The enqueuer swallows every config/Redis/job
     # error and returns a boolean we discard, so the shadow never influences this method's return
     # value (`scheduled`) or the caller's rescue/error behavior.
-    ::Marine::Decision::ShadowEnqueuer.enqueue(conversation: conversation, message: message) if primary_enqueue_succeeded?(scheduled)
+    if primary_enqueue_succeeded?(scheduled)
+      ::Marine::Decision::ShadowEnqueuer.enqueue(conversation: conversation, message: message)
+      # Fase 3A-2 — DEFAULT-OFF, asynchronous, fire-and-forget PRODUCT-authority shadow. Independent
+      # of the scenario-level decision shadow above (separate flag/allowlist/Redis namespace/job).
+      # Enqueues nothing unless MARINE_PRODUCT_AUTHORITY_SHADOW_ENABLED is exactly on for THIS
+      # assistant; it re-runs the legacy IntentExtractor vs the Fase 3A-1 adapter outcome in a job
+      # and records only aggregate metrics. The enqueuer swallows every config/Redis/job error and
+      # returns a boolean we discard, so it never influences `scheduled` or the caller's behavior.
+      # The ONLY provider/legacy-extractor work (no NEW provider call is added here) happens later
+      # inside Marine::ProductAuthority::ShadowJob, AFTER a fresh allowlist/rollback re-check on the
+      # loaded assistant id, where every timeout/error is swallowed and no metric is fabricated — so
+      # it can never add latency to, or alter the result of, the primary reply path.
+      ::Marine::ProductAuthority::ShadowEnqueuer.enqueue(conversation: conversation, message: message)
+    end
     scheduled
   end
 

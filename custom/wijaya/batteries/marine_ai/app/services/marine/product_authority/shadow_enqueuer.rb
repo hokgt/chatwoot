@@ -1,0 +1,87 @@
+require 'securerandom'
+
+# Fase 3A-2 — DEFAULT-OFF, fail-safe scheduler for the asynchronous PRODUCT-authority shadow. Called
+# by Wijaya::Marine::Hooks ONLY after the normal Marine response job was successfully scheduled. It
+# never influences the primary hook: every config/Redis/job error returns false and never propagates.
+#
+#   * Opt-in and assistant-scoped: it resolves the inbox's Marine assistant FIRST and does NOTHING —
+#     no Redis dedupe call and no job enqueue — unless ShadowConfig.shadow_enabled_for? is true for
+#     THAT assistant id (rollback not engaged, the explicit product flag on, the id in the valid,
+#     non-empty product allowlist). A missing/invalid/empty allowlist keeps the shadow off.
+#   * When enabled it deduplicates per account+message with a PRODUCT-specific, bounded-TTL NX marker
+#     (a namespace distinct from the decision shadow, so the two never collide) so the same inbound
+#     turn is shadowed at most once per window, passes SCALAR IDs only to the job, and enqueues
+#     Marine::ProductAuthority::ShadowJob.
+#   * It returns true ONLY when the job genuinely enqueued: a false/nil perform_later result, a job
+#     whose #successfully_enqueued? is false, or a job carrying a non-nil #enqueue_error all count as
+#     a failed enqueue. On any failed OR raised enqueue the NX marker is released with a
+#     compare-and-delete of the token THIS attempt wrote (so a safe retry remains possible and no
+#     unrelated key is touched) and the method returns false.
+#
+# No broad Redis scan/delete: only the one prefixed, per-message key is set or released.
+class Marine::ProductAuthority::ShadowEnqueuer
+  Config = Marine::ProductAuthority::ShadowConfig
+
+  # Product-specific, versioned key prefix — never a broad pattern, never the decision namespace.
+  KEY_PREFIX = 'marine:product_authority:shadow:v1'.freeze
+  DEDUPE_TTL_SECONDS = 3600
+
+  def self.enqueue(conversation:, message:)
+    new(conversation: conversation, message: message).enqueue
+  end
+
+  def initialize(conversation:, message:)
+    @conversation = conversation
+    @message = message
+  end
+
+  # Returns true only when a ShadowJob was enqueued; false when the shadow is not enabled for this
+  # assistant, on a duplicate, or on ANY config/Redis/job failure. Never raises.
+  def enqueue
+    account = @conversation.account
+    assistant = @conversation.inbox&.try(:marine_assistant)
+    return false if account.nil? || assistant.nil?
+    return false unless Config.shadow_enabled_for?(assistant.id)
+
+    schedule(account, assistant)
+  rescue StandardError
+    false
+  end
+
+  private
+
+  def schedule(account, assistant)
+    key = dedupe_key(account.id, @message.id)
+    token = SecureRandom.hex(16)
+    return false unless Redis::Alfred.set(key, token, nx: true, ex: DEDUPE_TTL_SECONDS)
+
+    enqueued =
+      begin
+        Marine::ProductAuthority::ShadowJob.perform_later(account.id, assistant.id, @conversation.id, @message.id)
+      rescue StandardError
+        nil
+      end
+    return true if enqueue_succeeded?(enqueued)
+
+    # The job did not genuinely enqueue: release ONLY the marker this attempt owns
+    # (compare-and-delete) so a safe retry can re-claim it, then fail closed.
+    Redis::Alfred.delete_if_equals(key, token)
+    false
+  end
+
+  # True only when perform_later's result proves a genuine enqueue. A legacy/test truthy object
+  # exposing neither API counts as success. Any error while checking fails closed to false.
+  def enqueue_succeeded?(enqueued)
+    return false unless enqueued
+    return enqueued.successfully_enqueued? if enqueued.respond_to?(:successfully_enqueued?)
+    return false if enqueued.respond_to?(:enqueue_error) && !enqueued.enqueue_error.nil?
+
+    true
+  rescue StandardError
+    false
+  end
+
+  def dedupe_key(account_id, message_id)
+    "#{KEY_PREFIX}:#{account_id}:#{message_id}"
+  end
+end

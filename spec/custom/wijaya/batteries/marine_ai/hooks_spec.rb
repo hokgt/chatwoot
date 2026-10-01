@@ -379,14 +379,19 @@ RSpec.describe Wijaya::Marine::Hooks do
         ordered << :shadow
         true
       end
+      allow(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue) do
+        ordered << :product_shadow
+        true
+      end
 
       described_class.schedule_marine_response(conversation, message)
-      expect(ordered).to eq(%i[response shadow])
+      expect(ordered).to eq(%i[response shadow product_shadow])
     end
 
     it 'passes the exact ResponseBuilderJob args and returns the scheduled job, not the shadow result' do
       job = double('job')
       allow(Marine::Decision::ShadowEnqueuer).to receive(:enqueue).and_return(false)
+      allow(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue).and_return(false)
       expect(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later)
         .with(conversation, assistant, 4242).and_return(job)
 
@@ -399,6 +404,7 @@ RSpec.describe Wijaya::Marine::Hooks do
       expect(Marine::Conversation::ResponseBuilderJob).to receive(:set).with(wait: 2.seconds).and_return(set_double)
       expect(set_double).to receive(:perform_later).with(conversation, assistant, 4242).and_return(double('job'))
       expect(Marine::Decision::ShadowEnqueuer).to receive(:enqueue).with(conversation: conversation, message: message)
+      expect(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue).with(conversation: conversation, message: message)
 
       described_class.schedule_marine_response(conversation, message)
     end
@@ -415,6 +421,7 @@ RSpec.describe Wijaya::Marine::Hooks do
 
       expect(Marine::Conversation::ResponseBuilderJob).not_to receive(:perform_later)
       expect(Marine::Decision::ShadowEnqueuer).not_to receive(:enqueue)
+      expect(Marine::ProductAuthority::ShadowEnqueuer).not_to receive(:enqueue)
       described_class.claim_message_templates!(conversation: convo, inbox: inbox, message: msg)
     end
   end
@@ -458,6 +465,7 @@ RSpec.describe Wijaya::Marine::Hooks do
       job = double('job', successfully_enqueued?: true)
       allow(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later).and_return(job)
       expect(Marine::Decision::ShadowEnqueuer).to receive(:enqueue).with(conversation: conversation, message: message)
+      expect(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue).with(conversation: conversation, message: message)
 
       expect(described_class.schedule_marine_response(conversation, message)).to be(job)
     end

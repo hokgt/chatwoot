@@ -1077,6 +1077,33 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_packet_presenter.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/post_generation_fact_validator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/persona_validator.rb
+      # Fase 3A-2 — Product Shadow Authority. DEFAULT-OFF, fail-closed observation-only layer that
+      # compares the LEGACY Marine::Catalog::IntentExtractor product outcome against the Fase 3A-1
+      # CandidatePlanToProductIntentAdapter outcome, aggregates privacy-safe metrics, and stages a
+      # FUTURE (never-opening this phase) candidate gate. Live product authority stays LEGACY.
+      # INDEPENDENT of the scenario-level Marine::Decision shadow/cutover: separate
+      # MARINE_PRODUCT_AUTHORITY_* config keys, Redis namespaces, allowlist, and job — it never
+      # reads or reinterprets MARINE_DECISION_CUTOVER_*. ProductOutcome is the shared privacy-safe
+      # projection; ShadowConfig owns the explicit shadow flag + bounded assistant allowlist (max
+      # 50) + future candidate mode + immediate rollback (revalidated every turn/job, no cache);
+      # ShadowExecution is the adapter-only (no catalog-DB, no ProductExecutionPlanner) comparison
+      # harness with injected seams; ShadowObservation/ShadowMetricsStore record aggregate counters
+      # only (UTC daily, 14-day TTL, one MULTI, no scan, mutations:0 proof); ShadowAcceptance is the
+      # advisory basis-point readiness gate; CandidateGate is phase-locked CLOSED; Corpus is the
+      # synthetic labelled acceptance data and Evaluator the deterministic adapter+planner scorer.
+      # Wired ONLY at Wijaya::Marine::Hooks#schedule_marine_response after the primary enqueue
+      # succeeded; the live reply/product path has ZERO references to Marine::Backend.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/product_outcome.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/shadow_config.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/shadow_execution.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/shadow_enqueuer.rb
+      - custom/wijaya/batteries/marine_ai/app/jobs/marine/product_authority/shadow_job.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/shadow_observation.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/shadow_metrics_store.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/shadow_acceptance.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/candidate_gate.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/corpus.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/evaluator.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility primitives.
       # Battery-contained, not yet wired to hooks/jobs/orchestration. State lives in
       # a Marine-owned namespace inside Conversation/Message additional_attributes
@@ -1537,6 +1564,29 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/backend/persona_validator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/backend_isolation_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/backend_pipeline_integration_spec.rb
+      # Fase 3A-2 — Product Shadow Authority specs. ProductOutcome projection/compare; ShadowConfig
+      # default-off + exact-true + fail-closed allowlist (max 50) + candidate-mode + rollback
+      # precedence; ShadowObservation privacy/strip/reject + frozen; ShadowMetricsStore exact
+      # key/date/TTL/MULTI counters + snapshot <=14 merge/fail-closed + mutations:0 + source no-persist;
+      # ShadowAcceptance boundary/basis-point/never-cutover; CandidateGate phase-locked-closed + rollback
+      # short-circuit before metrics; ShadowExecution injected-seam comparison + relationship/overflow
+      # fail-closed + state:nil + adapter-only; ShadowEnqueuer off=>no-Redis/no-job, on=>NX+TTL+scalar,
+      # dupe/enqueue-failure token-safe release; ShadowJob flag recheck + scoped loads + private/outgoing
+      # skip + record-once idempotency + swallowed failure; Corpus synthetic-labelled coverage; Evaluator
+      # deterministic adapter+planner scoring meets fixed policy (critical 100% / supported >=95% / repo
+      # revalidation / parity / mutations 0); static isolation proof (live path ZERO Marine::Backend refs).
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/product_outcome_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/shadow_config_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/shadow_execution_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/shadow_enqueuer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/shadow_job_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/shadow_observation_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/shadow_metrics_store_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/shadow_acceptance_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/candidate_gate_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/corpus_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/evaluator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/product_authority_isolation_spec.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb
