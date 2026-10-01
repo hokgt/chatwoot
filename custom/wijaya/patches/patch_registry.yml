@@ -1114,6 +1114,18 @@ patches:
       # bounded, deep-frozen, closed-enum artifact carrying no raw customer/provider/DB data.
       - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/acceptance_case_result.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/acceptance_pipeline_coordinator.rb
+      # Controlled, deterministic, ADVISORY acceptance RUNNER over an explicitly-given case set. It
+      # folds each case EXACTLY ONCE through the same AcceptancePipelineCoordinator the Evaluator uses
+      # (reusing the Evaluator's DB-free fakes + shared price formatter + FIXED_CLOCK + MutationProbe),
+      # produces exactly one closed-schema AcceptanceCaseResult per executed case (input order), and
+      # derives a bounded aggregate (total_executed/passed/failed/not_executed/failures/failure_reasons/
+      # all_evaluated/case_evidence) from ONLY those results — never recomputing pass/fail, never a
+      # second pipeline. quantity_inquiry comes from an injectable canonical extraction seam (the
+      # Marine::Catalog::IntentExtractor contract boolean) with precedence over the corpus
+      # safety.exact_quantity_request fallback. Evidence is IN-MEMORY only (no persistence). NOT wired
+      # into any live runtime path; reads no settings/Redis; touches no ShadowMetricsStore; leaves
+      # CandidateGate phase-locked.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/acceptance_runner.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility primitives.
       # Battery-contained, not yet wired to hooks/jobs/orchestration. State lives in
       # a Marine-owned namespace inside Conversation/Message additional_attributes
@@ -1599,6 +1611,7 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/product_authority/product_authority_isolation_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_case_result_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_pipeline_coordinator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_runner_spec.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb
