@@ -1126,6 +1126,18 @@ patches:
       # into any live runtime path; reads no settings/Redis; touches no ShadowMetricsStore; leaves
       # CandidateGate phase-locked.
       - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/acceptance_runner.rb
+      # Fase 3A-2b — Conversation↔Playground PARITY RUNTIME (acceptance-only, advisory, in-memory).
+      # One cohesive file: two REAL-intake projection adapters (ConversationIntake validates a synthetic
+      # envelope through the PUBLIC Marine::Decision::InputContract.build fail-closed REJECT; PlaygroundIntake
+      # bounds its query/history against the PUBLIC Marine::Catalog::PlaygroundPreview constants, mirroring
+      # its TRUNCATE semantics) plus the Runtime fold driver. Each corpus case is projected through BOTH
+      # surfaces and folded through the SAME AcceptancePipelineCoordinator per surface (reusing the
+      # Evaluator's DB-free fakes + shared price formatter + FIXED_CLOCK + MutationProbe). Parity is the
+      # equality of the normalized actual_outcome across surfaces (PRIMARY); the bounded reason is DIAGNOSTIC
+      # ONLY and never fails parity by itself. NO legacy-plan→CandidatePlan converter, NO full orchestrator
+      # run, NO provider/DB/Redis/settings/reply/mutation, NO ShadowMetricsStore. NOT wired into any live
+      # runtime path; leaves CandidateGate phase-locked and Shadow off; evidence IN-MEMORY only.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/parity/intake_adapters.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility primitives.
       # Battery-contained, not yet wired to hooks/jobs/orchestration. State lives in
       # a Marine-owned namespace inside Conversation/Message additional_attributes
@@ -1612,6 +1624,15 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_case_result_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_pipeline_coordinator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_runner_spec.rb
+      # Fase 3A-2b — parity runtime specs: ConversationIntake real-InputContract round-trip (valid,
+      # oversize/control-heavy/bad-state-key/unknown-role reject) + plan-unchanged; PlaygroundIntake
+      # ok/blank/non-String query + bounded_history truncate-500/last-10/role-filter + mirror-equivalence
+      # vs the live PlaygroundPreview#bounded_history (send, spec-only); Runtime full-corpus 38-fold parity,
+      # lossy-intake primary-contract catch, reason-divergence-stays-parity, exact-quantity reads-0,
+      # extractor precedence, skip/rescue/invalid-set, deep-frozen report + CaseResult identity, and
+      # source/namespace isolation (no live Parity references, no Agent/orchestrator/metrics/gate wiring).
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/parity/intake_adapters_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/parity/parity_runtime_spec.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb
