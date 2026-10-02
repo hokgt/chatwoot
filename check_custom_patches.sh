@@ -392,6 +392,9 @@ require_file custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batt
 require_file custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/provision_job.rb
 require_file custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/cleanup_job.rb
 require_file custom/wijaya/batteries/whatsapp_web_inbox/app/controllers/api/v1/accounts/wijaya/whatsapp_web/inboxes_controller.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/hooks.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/public_routes.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/controllers/public/api/v1/wijaya/whatsapp_web/provider_events_controller.rb
 require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/channel/whatsappWebChannel.js
 require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/whatsappWebInbox.js
 require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/connectionStatus.js
@@ -414,6 +417,8 @@ require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/cleanup_job_spec.rb
 require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/record_spec.rb
 require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/safe_dto_spec.rb
 require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/inboxes_controller_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/hooks_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/provider_events_controller_spec.rb
 # Idempotent core-hook applicator (reattaches the marker blocks after an upstream pull),
 # its block spec, and its tests.
 require_file custom/wijaya/batteries/whatsapp_web_inbox/patch/apply_patches.py
@@ -421,6 +426,14 @@ require_file custom/wijaya/batteries/whatsapp_web_inbox/patch/blocks.json
 require_file custom/wijaya/batteries/whatsapp_web_inbox/patch/test_apply_patches.py
 # Generic battery route-module registration.
 require_marker custom/wijaya/batteries/core/routes.rb "whatsapp_web_inbox:"
+# Transport-parity backend hooks: the Feature A public-message attribute hook is
+# registered in the core Hooks dispatcher; the Feature C public status callback is
+# mounted by a battery-owned marker in the public routes namespace.
+require_marker custom/wijaya/batteries/core/hooks.rb "whatsapp_web_inbox:"
+require_marker_count app/controllers/public/api/v1/inboxes/messages_controller.rb "WIJAYA_CUSTOM_START whatsapp_web_inbox" 1
+require_marker_count app/controllers/public/api/v1/inboxes/messages_controller.rb "WIJAYA_CUSTOM_END whatsapp_web_inbox" 1
+require_marker_count config/routes.rb "WIJAYA_CUSTOM_START whatsapp_web_inbox" 1
+require_marker_count config/routes.rb "WIJAYA_CUSTOM_END whatsapp_web_inbox" 1
 # Marker-wrapped migration (1 block) + the five minimal native frontend seams, each
 # validated at its EXACT expected block count (not mere presence): a START and an END
 # per block. Counts must match the applicator's blocks.json and apply_patches.py.

@@ -853,6 +853,12 @@ patches:
       - custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/provision_job.rb
       - custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/cleanup_job.rb
       - custom/wijaya/batteries/whatsapp_web_inbox/app/controllers/api/v1/accounts/wijaya/whatsapp_web/inboxes_controller.rb
+      # Transport parity (private-chat media/quoted/status): Feature A inbound
+      # public-message attribute hook, Feature C signed provider status callback
+      # controller + its battery-owned public route module.
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/hooks.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/public_routes.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/controllers/public/api/v1/wijaya/whatsapp_web/provider_events_controller.rb
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/channel/whatsappWebChannel.js
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/whatsappWebInbox.js
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/connectionStatus.js
@@ -879,9 +885,20 @@ patches:
         app/javascript/dashboard/i18n/locale/en/index.js: 2
         app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue: 5
         db/migrate/20261002000000_create_wijaya_whatsapp_web_inboxes.rb: 1
+        # Backend transport-parity hooks (Ruby #-comment marker blocks).
+        app/controllers/public/api/v1/inboxes/messages_controller.rb: 1
+        config/routes.rb: 1
     core_hook_touchpoints:
       # Marker-wrapped migration (db/migrate is outside the app/config addition scan).
       - db/migrate/20261002000000_create_wijaya_whatsapp_web_inboxes.rb
+      # Feature A: a single guarded dispatch in the public API-Inbox message
+      # create boundary (sets source_id + in_reply_to_external_id for whatsapp_web
+      # inboxes only). The hook module is registered in the core Hooks dispatcher.
+      - app/controllers/public/api/v1/inboxes/messages_controller.rb
+      - custom/wijaya/batteries/core/hooks.rb
+      # Feature C: a battery-owned marker in the public/api/v1 routes namespace
+      # mounting the signed provider status callback (public_routes.rb).
+      - config/routes.rb
       # Generated schema touchpoint for the mapping table.
       - db/schema.rb
       # Generic battery route-module registration (ROUTE_MODULES).
@@ -910,6 +927,8 @@ patches:
       - spec/custom/wijaya/batteries/whatsapp_web_inbox/record_spec.rb
       - spec/custom/wijaya/batteries/whatsapp_web_inbox/safe_dto_spec.rb
       - spec/custom/wijaya/batteries/whatsapp_web_inbox/inboxes_controller_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/hooks_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/provider_events_controller_spec.rb
       - custom/wijaya/batteries/whatsapp_web_inbox/patch/test_apply_patches.py
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/whatsappWebChannel.spec.js
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/channelFactory.spec.js

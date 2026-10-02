@@ -25,8 +25,9 @@ _spec.loader.exec_module(applicator)
 with open(BLOCKS_PATH, encoding="utf-8") as _fh:
     BLOCKS = json.load(_fh)
 FEATURE = BLOCKS["feature"]
-START_RE = re.compile(r"^\s*(?://|<!--)\s*WIJAYA_CUSTOM_START " + re.escape(FEATURE) + r"\b")
-END_RE = re.compile(r"^\s*(?://|<!--)\s*WIJAYA_CUSTOM_END " + re.escape(FEATURE) + r"\b")
+# Markers live in JS (//), HTML/Vue (<!--) and Ruby (#) comments.
+START_RE = re.compile(r"^\s*(?://|<!--|#)\s*WIJAYA_CUSTOM_START " + re.escape(FEATURE) + r"\b")
+END_RE = re.compile(r"^\s*(?://|<!--|#)\s*WIJAYA_CUSTOM_END " + re.escape(FEATURE) + r"\b")
 
 
 def strip_feature(text):
@@ -103,7 +104,8 @@ class PatchApplicatorTest(unittest.TestCase):
     def test_only_missing_block_is_reinserted(self):
         # Remove exactly one block from Settings.vue; everything else stays patched.
         target = "app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue"
-        victim = BLOCKS["files"][-1]["blocks"][2]["block"]  # the tabs-building block
+        settings_spec = next(f for f in BLOCKS["files"] if f["path"] == target)
+        victim = settings_spec["blocks"][2]["block"]  # the tabs-building block
         self.assertIn(victim, self.patched[target])
         contents = dict(self.patched)
         contents[target] = self.patched[target].replace(victim, "", 1)
@@ -164,6 +166,9 @@ class PatchApplicatorTest(unittest.TestCase):
             "app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue": 2,
             "app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue": 2,
             "app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue": 5,
+            # Backend core hook markers (Ruby #-comment blocks).
+            "app/controllers/public/api/v1/inboxes/messages_controller.rb": 1,
+            "config/routes.rb": 1,
         }
         by_path = {f["path"]: f for f in BLOCKS["files"]}
         self.assertEqual(set(by_path), set(expected))

@@ -590,6 +590,14 @@ Rails.application.routes.draw do
         end
 
         resources :csat_survey, only: [:show, :update]
+        # WIJAYA_CUSTOM_START whatsapp_web_inbox
+        begin
+          require Rails.root.join('custom/wijaya/batteries/whatsapp_web_inbox/public_routes').to_s
+          Wijaya::Batteries::WhatsappWebInbox::PublicRoutes.draw(self)
+        rescue StandardError, ScriptError => e
+          Rails.logger.error("[Wijaya] whatsapp_web public routes failed: #{e.class}")
+        end
+        # WIJAYA_CUSTOM_END whatsapp_web_inbox
       end
     end
   end

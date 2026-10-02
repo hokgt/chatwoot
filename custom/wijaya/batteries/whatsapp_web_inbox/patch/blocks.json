@@ -82,6 +82,26 @@
           "block": "        <!-- WIJAYA_CUSTOM_START whatsapp_web_inbox -->\n        <div\n          v-if=\"selectedTabKey === 'whatsapp-web' && isWhatsappWebInbox\"\n          class=\"mx-6 max-w-4xl\"\n        >\n          <WhatsappWebConnectionPanel :inbox=\"inbox\" />\n        </div>\n        <!-- WIJAYA_CUSTOM_END whatsapp_web_inbox -->\n"
         }
       ]
+    },
+    {
+      "path": "app/controllers/public/api/v1/inboxes/messages_controller.rb",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "    build_attachment\n",
+          "block": "    # WIJAYA_CUSTOM_START whatsapp_web_inbox\n    if defined?(Wijaya::Batteries::Core::Hooks)\n      Wijaya::Batteries::Core::Hooks.dispatch(\n        :whatsapp_web_inbox, :apply_public_inbound_message_attributes,\n        default: nil, message: @message, channel: @inbox_channel, params: params\n      )\n    end\n    # WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        }
+      ]
+    },
+    {
+      "path": "config/routes.rb",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "        resources :csat_survey, only: [:show, :update]\n",
+          "block": "        # WIJAYA_CUSTOM_START whatsapp_web_inbox\n        begin\n          require Rails.root.join('custom/wijaya/batteries/whatsapp_web_inbox/public_routes').to_s\n          Wijaya::Batteries::WhatsappWebInbox::PublicRoutes.draw(self)\n        rescue StandardError, ScriptError => e\n          Rails.logger.error(\"[Wijaya] whatsapp_web public routes failed: #{e.class}\")\n        end\n        # WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        }
+      ]
     }
   ]
 }
