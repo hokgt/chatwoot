@@ -1206,6 +1206,16 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/family_price_range_authority.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/authority_coordinator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/authority_shadow_execution.rb
+      # Langkah 3 — DEFAULT-OFF, NON-DELIVERING Evidence Packet -> Model 2 (Response Generator) shadow.
+      # For the ACCEPTED exact-price evidence packet ONLY: a generator adapter + a SEPARATE semantic
+      # fact+language verifier, both over the EXISTING Marine::Llm::BaseService Response Generator
+      # config (no new provider/model), drive the existing EvidencePacketPresenter; the Model2
+      # shadow execution reuses the Phase 2A AuthorityCoordinator::Result and returns ONLY a bounded,
+      # deep-frozen closed status/reason (never the generated text). Wired after AuthorityShadowExecution
+      # in Marine::Decision::ShadowJob, independently rescued; no state write, no delivery, no cutover.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_reply_generator.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_fact_verifier.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/model2_shadow_execution.rb
       # Fase 3A-2 — Product Shadow Authority. DEFAULT-OFF, fail-closed observation-only layer that
       # compares the LEGACY Marine::Catalog::IntentExtractor product outcome against the Fase 3A-1
       # CandidatePlanToProductIntentAdapter outcome, aggregates privacy-safe metrics, and stages a
@@ -1769,6 +1779,16 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/backend/family_price_range_authority_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/authority_coordinator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/authority_shadow_execution_spec.rb
+      # Langkah 3 — Evidence Packet -> Model 2 shadow specs: generator adapter envelope/temp-0/fail-closed;
+      # SEPARATE six-field fact+language verifier (all-true accept; malformed/duplicate/missing/extra/
+      # non-boolean/false/uncertain/wrong-language/provider-error/unconfigured fail closed); Model2 shadow
+      # execution (accepted packet => generator once + verifier once, text discarded; non-accepted/invalid
+      # packet/bad relationship => zero providers; deterministic/persona/verifier rejection => closed
+      # rejected). Packet customer_language authoritative in the prompt builder; ShadowJob reuses one
+      # Decision + one Authority result and independently rescues Model 2.
+      - spec/custom/wijaya/batteries/marine_ai/backend/evidence_reply_generator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/evidence_fact_verifier_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/model2_shadow_execution_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/resolve_any_spec.rb
       # Fase 3A-2 — Product Shadow Authority specs. ProductOutcome projection/compare; ShadowConfig
       # default-off + exact-true + fail-closed allowlist (max 50) + candidate-mode + rollback

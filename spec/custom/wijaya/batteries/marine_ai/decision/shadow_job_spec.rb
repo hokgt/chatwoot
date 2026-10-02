@@ -275,6 +275,11 @@ RSpec.describe Marine::Decision::ShadowJob do
       stub_marker
       allow(Marine::Decision::ShadowObservation).to receive(:build).and_return(double('observation'))
       allow(Marine::Decision::ShadowMetricsStore).to receive(:record).and_return(true)
+      # Keep these examples focused on the Authority hook; the Langkah 3 Model 2 hook has its own
+      # describe below. Default it to a no-op so a non-nil authority result does not drive the real
+      # Model 2 execution against these bare record doubles.
+      allow(Marine::Backend::Model2ShadowExecution).to receive(:new)
+        .and_return(instance_double(Marine::Backend::Model2ShadowExecution, call: nil))
     end
 
     it 'invokes AuthorityShadowExecution with the full records + the REUSED candidate_plan' do
@@ -308,6 +313,62 @@ RSpec.describe Marine::Decision::ShadowJob do
     it 'does not run the authority hook when the execution returned nil' do
       stub_execution(returns: nil)
       expect(Marine::Backend::AuthorityShadowExecution).not_to receive(:new)
+
+      job.perform(1, 3, 5, 9)
+    end
+  end
+
+  # Langkah 3 (Evidence Packet -> Model 2 SHADOW) — the additive, independently-rescued Model 2 shadow
+  # hook. It runs AFTER AuthorityShadowExecution inside the same enabled_for? gate, REUSING that hook's
+  # single AuthorityCoordinator::Result (no second Authority/Decision/JEV call), and can never affect
+  # the Authority shadow, Decision metrics, or the primary flow.
+  describe 'model 2 shadow hook (Langkah 3)' do
+    let(:authority_result) { double('authority_result') }
+
+    before do
+      stub_loads
+      stub_execution(returns: result)
+      stub_marker
+      allow(Marine::Decision::ShadowObservation).to receive(:build).and_return(double('observation'))
+      allow(Marine::Decision::ShadowMetricsStore).to receive(:record).and_return(true)
+      allow(Marine::Backend::AuthorityShadowExecution).to receive(:new)
+        .and_return(instance_double(Marine::Backend::AuthorityShadowExecution, call: authority_result))
+    end
+
+    it 'invokes Model2ShadowExecution with the full records + the REUSED authority result' do
+      model2 = instance_double(Marine::Backend::Model2ShadowExecution, call: double('result'))
+      expect(Marine::Backend::Model2ShadowExecution).to receive(:new).with(
+        account: account, assistant: assistant, conversation: conversation, message: message,
+        authority_result: authority_result
+      ).and_return(model2)
+
+      expect(job.perform(1, 3, 5, 9)).to be_nil
+    end
+
+    it 'does not run Model 2 when the authority hook returned nil' do
+      allow(Marine::Backend::AuthorityShadowExecution).to receive(:new)
+        .and_return(instance_double(Marine::Backend::AuthorityShadowExecution, call: nil))
+      expect(Marine::Backend::Model2ShadowExecution).not_to receive(:new)
+
+      job.perform(1, 3, 5, 9)
+    end
+
+    it 'swallows a Model 2 failure without re-raising or disturbing metrics' do
+      model2 = instance_double(Marine::Backend::Model2ShadowExecution)
+      allow(Marine::Backend::Model2ShadowExecution).to receive(:new).and_return(model2)
+      allow(model2).to receive(:call).and_raise(StandardError, 'boom')
+      expect(ChatwootExceptionTracker).not_to receive(:new)
+
+      expect { job.perform(1, 3, 5, 9) }.not_to raise_error
+    end
+
+    it 'reuses one Decision result and one Authority result (no second Runner call)' do
+      allow(Marine::Backend::Model2ShadowExecution).to receive(:new)
+        .and_return(instance_double(Marine::Backend::Model2ShadowExecution, call: nil))
+      expect(Marine::Decision::Runner).not_to receive(:new)
+      expect(Marine::Backend::AuthorityShadowExecution).to receive(:new).once
+                                                                        .and_return(instance_double(Marine::Backend::AuthorityShadowExecution,
+                                                                                                    call: authority_result))
 
       job.perform(1, 3, 5, 9)
     end

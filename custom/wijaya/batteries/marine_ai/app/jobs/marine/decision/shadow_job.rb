@@ -66,14 +66,37 @@ class Marine::Decision::ShadowJob < ApplicationJob
   # the existing metrics attempt, inside the same enabled_for? gate, passing the FULL loaded records
   # plus the reused plan — it never runs the Decision Runner / a second provider call. Fire-and-forget:
   # its result is discarded and any failure is swallowed, so it can never affect the Decision shadow /
-  # metrics behavior or the primary flow.
+  # metrics behavior or the primary flow. Its deep-frozen AuthorityCoordinator::Result is then REUSED
+  # by the Langkah 3 Model 2 shadow (no second Authority/Decision/JEV call).
   def run_authority_shadow(records, result)
-    Marine::Backend::AuthorityShadowExecution.new(
+    authority_result = Marine::Backend::AuthorityShadowExecution.new(
       account: records[:account],
       assistant: records[:assistant],
       conversation: records[:conversation],
       message: records[:message],
       candidate_plan: result[:candidate_plan]
+    ).call
+    run_model2_shadow(records, authority_result)
+    nil
+  rescue StandardError
+    nil
+  end
+
+  # Langkah 3 (Evidence Packet -> Model 2 SHADOW) — the read-only, independently-rescued hook that
+  # REUSES the Phase 2A AuthorityCoordinator::Result. It runs ONLY the accepted exact-price evidence
+  # packet through the existing Response Generator (Model 2) for shadow observation; every other
+  # outcome skips with zero Model 2 calls. NON-DELIVERING: the bounded closed result is discarded and
+  # any failure is swallowed, so it can never affect the Authority shadow, Decision metrics, or the
+  # primary flow. A nil authority result (no-work / relationship fail) runs nothing.
+  def run_model2_shadow(records, authority_result)
+    return if authority_result.nil?
+
+    Marine::Backend::Model2ShadowExecution.new(
+      account: records[:account],
+      assistant: records[:assistant],
+      conversation: records[:conversation],
+      message: records[:message],
+      authority_result: authority_result
     ).call
     nil
   rescue StandardError

@@ -29,12 +29,22 @@ RSpec.describe 'Marine::Backend isolation' do
     authority_coordinator.rb authority_shadow_execution.rb
   ].freeze
 
+  # Langkah 3 (Evidence Packet -> Model 2 SHADOW) ADAPTERS. ONLY these two DELIBERATELY call the
+  # EXISTING Response Generator (Model 2) via Marine::Llm::BaseService, so the live-provider ban is
+  # lifted for them alone. Everything else (ERP, writes, direct InstallationConfig, a second Decision
+  # provider/runner, live-product-path wiring) stays forbidden.
+  STEP_3_ADAPTER_FILES = %w[evidence_reply_generator.rb evidence_fact_verifier.rb].freeze
+  # The Model 2 shadow EXECUTION is an ORCHESTRATOR: it injects the generator/verifier but must NEVER
+  # reference a live provider itself, so the live-provider ban applies to it too (see MODEL2_FORBIDDEN).
+  MODEL2_SHADOW_FILE = 'model2_shadow_execution.rb'
+  STEP_3_FILES = [*STEP_3_ADAPTER_FILES, MODEL2_SHADOW_FILE].freeze
+
   it 'ships the expected backend services' do
     expect(backend_files.map { |path| File.basename(path) }).to include(
       'candidate_plan_to_product_intent_adapter.rb', 'product_execution_planner.rb',
       'product_state_transition.rb', 'evidence_packet_builder.rb',
       'evidence_packet_presenter.rb', 'evidence_prompt_builder.rb',
-      'post_generation_fact_validator.rb', 'persona_validator.rb', *PHASE_2A_FILES
+      'post_generation_fact_validator.rb', 'persona_validator.rb', *PHASE_2A_FILES, *STEP_3_FILES
     )
   end
 
@@ -61,10 +71,38 @@ RSpec.describe 'Marine::Backend isolation' do
     'live product path wiring' => /Marine::Agent::Runner\.new|ResponseBuilderJob|Marine::Catalog::ProductQueryOrchestrator\.new/
   }.freeze
 
+  # Langkah 3 ADAPTERS (generator/verifier): the live Response Generator provider is ALLOWED (it is
+  # the whole point — generate + separately verify wording); ERP, writes, direct InstallationConfig, a
+  # second Decision provider/runner, and live-product-path wiring stay forbidden.
+  STEP_3_FORBIDDEN = {
+    'ERP services' => /Frappe|ErpLead|LeadActivityService|ProductRequirementsService|OwnerSyncService|Wijaya::ErpSetting/,
+    'persistence (write)' => /\.create!|\.update!|\.save!|\.destroy!?\b|with_lock|ActiveRecord::Base/,
+    'direct installation config' => /InstallationConfig/,
+    'second decision provider/runner' =>
+      /Marine::Decision::Runner\.new|Marine::Decision::ScenarioAdapter\.new|Marine::Decision::ShadowExecution\.new/,
+    'live product path wiring' => /Marine::Agent::Runner\.new|ResponseBuilderJob|Marine::Catalog::ProductQueryOrchestrator\.new/
+  }.freeze
+
+  # Langkah 3 Model 2 shadow EXECUTION (orchestrator): it injects the generator/verifier but must
+  # NEVER touch a live provider itself, so the live-provider ban applies in ADDITION to every Step-3
+  # adapter ban above. This is the defense that keeps the orchestrator off the raw provider path.
+  MODEL2_FORBIDDEN = {
+    'live provider' => /Marine::Llm::BaseService|RubyLLM|\.chat\(|\.complete\(/,
+    **STEP_3_FORBIDDEN
+  }.freeze
+
   backend_files.each do |path|
     relative = Pathname.new(path).relative_path_from(Rails.root)
     basename = File.basename(path)
-    forbidden = PHASE_2A_FILES.include?(basename) ? PHASE_2A_FORBIDDEN : FORBIDDEN
+    forbidden = if basename == MODEL2_SHADOW_FILE
+                  MODEL2_FORBIDDEN
+                elsif STEP_3_ADAPTER_FILES.include?(basename)
+                  STEP_3_FORBIDDEN
+                elsif PHASE_2A_FILES.include?(basename)
+                  PHASE_2A_FORBIDDEN
+                else
+                  FORBIDDEN
+                end
 
     context basename do
       source = File.read(path)

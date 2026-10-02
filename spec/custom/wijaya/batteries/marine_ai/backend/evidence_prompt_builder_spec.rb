@@ -37,6 +37,11 @@ RSpec.describe Marine::Backend::EvidencePromptBuilder do
     expect(prompt[:system]).to include('12.500')
   end
 
+  it 'makes the packet customer_language the authoritative output language, not a prose guess' do
+    expect(prompt[:system]).to include('Required target language (authoritative): id')
+    expect(prompt[:system]).not_to include('SAME language')
+  end
+
   it 'contains no CandidatePlan / raw DB / internal input' do
     %w[raw_candidate candidate_type family_mention explicit_child_code slot_operations schema_version marine_decision_v1 SELECT].each do |forbidden|
       expect(prompt[:system]).not_to include(forbidden)
