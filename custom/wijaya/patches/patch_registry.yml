@@ -814,6 +814,89 @@ patches:
       - custom/wijaya/batteries/persistent_agent_presence/frontend/specs/createPresenceHeartbeat.spec.js
       - custom/wijaya/batteries/persistent_agent_presence/frontend/specs/BaseActionCableConnector.integration.spec.js
 
+  - id: whatsapp_web_inbox
+    name: WhatsApp Web (Unofficial) Inbox
+    battery: custom/wijaya/batteries/whatsapp_web_inbox
+    description: >
+      Dedicated native-looking creation + management experience for an unofficial
+      WhatsApp Web (Baileys) inbox that sits on top of a normal Channel::Api. The
+      browser talks ONLY to account-scoped, admin-only Rails endpoints
+      (/api/v1/accounts/:id/wijaya/whatsapp_web/inboxes); Rails alone signs and calls
+      the external connector (service HMAC over method\npath\nts\nnonce\nsha256(body)).
+      Provisioning is durable/idempotent: one DB transaction creates the Channel::Api
+      (hmac_mandatory, provider marker wijaya_provider=whatsapp_web), the Inbox, and a
+      pending mapping keyed by the client request token; AFTER commit a job reconciles
+      by signed list/get on the exact inboxIdentifier (ambiguous-create recovery),
+      creates the connector session only if none exists, sets the channel webhook_url to
+      the connector callback only once a session id exists, and marks the mapping
+      provisioned. A connector outage leaves a recoverable error mapping (the inbox is
+      never deleted) resumable via a retry endpoint. Deletion enqueues an idempotent,
+      bounded-retry connector-session cleanup (has_one dependent: :destroy; FK cascade
+      is the DB safety net); logout wipes connector auth but keeps the inbox for
+      re-pairing. The mapping row stores only sanitized lifecycle metadata — never the
+      service secret, raw QR, Baileys credentials, channel secret/hmac_token, phone
+      number, or message content. The QR data URL is proxied; the raw QR string never
+      crosses the Rails boundary. Management fails closed when connector env is absent
+      while boot and unrelated inboxes stay healthy. The channel is marked generically so
+      a future cross-channel auto_translate battery can detect it; no translation logic
+      is added here.
+    custom_files:
+      - custom/wijaya/batteries/whatsapp_web_inbox/loader.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/routes.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/inbox_extensions.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/models/wijaya/batteries/whatsapp_web_inbox/record.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/config.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/request_signer.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/connector_client.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/provisioner.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/safe_dto.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/provision_job.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/cleanup_job.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/controllers/api/v1/accounts/wijaya/whatsapp_web/inboxes_controller.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/channel/whatsappWebChannel.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/whatsappWebInbox.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/connectionStatus.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/api/whatsappWeb.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/composables/useConnectorPolling.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/i18n/whatsappWebInbox.json
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/CreateWhatsappWebInbox.vue
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/WhatsappWebConnectionPanel.vue
+    core_hook_touchpoints:
+      # Marker-wrapped migration (db/migrate is outside the app/config addition scan).
+      - db/migrate/20261002000000_create_wijaya_whatsapp_web_inboxes.rb
+      # Generated schema touchpoint for the mapping table.
+      - db/schema.rb
+      # Generic battery route-module registration (ROUTE_MODULES).
+      - custom/wijaya/batteries/core/routes.rb
+      # Style/ClassAndModuleChildren (nested battery files) + Metrics/ParameterLists
+      # (the 6-input request signer) excludes; tooling config, no WIJAYA marker.
+      - .rubocop.yml
+      # Minimal frontend seams: Add-Inbox card, clickability gate, wizard mapping,
+      # inbox-settings panel, and the i18n namespace spread.
+      - app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue
+      - app/javascript/dashboard/components/widgets/ChannelItem.vue
+      - app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue
+      - app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue
+      - app/javascript/dashboard/i18n/locale/en/index.js
+    loader_touchpoints:
+      # Inbox has_one mapping + dependent: :destroy is attached via the battery
+      # InboxExtensions concern (loader to_prepare), so app/models/inbox.rb has no markers.
+      - custom/wijaya/batteries/whatsapp_web_inbox/loader.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/inbox_extensions.rb
+    tests:
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/request_signer_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/config_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/connector_client_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/provisioner_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/cleanup_job_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/record_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/inboxes_controller_spec.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/whatsappWebChannel.spec.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/channelFactory.spec.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/isWhatsappWebInbox.spec.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/useConnectorPolling.spec.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/CreateWhatsappWebInbox.spec.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/WhatsappWebConnectionPanel.spec.js
 
   - id: test_database_safety
     name: Containerized Test Database Isolation

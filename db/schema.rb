@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_09_12_000008) do
+ActiveRecord::Schema[7.1].define(version: 2026_10_02_000000) do
   # These extensions should be enabled to support this database
   enable_extension "pg_stat_statements"
   enable_extension "pg_trgm"
@@ -1548,6 +1548,22 @@ ActiveRecord::Schema[7.1].define(version: 2026_09_12_000008) do
     t.index ["team_id"], name: "index_wijaya_meta_ads_team_routing_rules_on_team_id"
   end
 
+  create_table "wijaya_whatsapp_web_inboxes", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.bigint "inbox_id", null: false
+    t.string "connector_session_id"
+    t.string "request_token", null: false
+    t.string "provisioning_state", default: "pending", null: false
+    t.string "status", default: "unconfigured", null: false
+    t.string "last_error_code"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_wijaya_whatsapp_web_inboxes_on_account_id"
+    t.index ["connector_session_id"], name: "index_wijaya_whatsapp_web_inboxes_on_connector_session_id", unique: true, where: "(connector_session_id IS NOT NULL)"
+    t.index ["inbox_id"], name: "index_wijaya_whatsapp_web_inboxes_on_inbox_id", unique: true
+    t.index ["request_token"], name: "index_wijaya_whatsapp_web_inboxes_on_request_token", unique: true
+  end
+
   create_table "working_hours", force: :cascade do |t|
     t.bigint "inbox_id"
     t.bigint "account_id"
@@ -1594,6 +1610,8 @@ ActiveRecord::Schema[7.1].define(version: 2026_09_12_000008) do
   add_foreign_key "wijaya_erp_settings", "accounts"
   add_foreign_key "wijaya_meta_ads_team_routing_rules", "accounts"
   add_foreign_key "wijaya_meta_ads_team_routing_rules", "teams"
+  add_foreign_key "wijaya_whatsapp_web_inboxes", "accounts", on_delete: :cascade
+  add_foreign_key "wijaya_whatsapp_web_inboxes", "inboxes", on_delete: :cascade
   create_trigger("accounts_after_insert_row_tr", :generated => true, :compatibility => 1).
       on("accounts").
       after(:insert).

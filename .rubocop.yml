@@ -264,6 +264,27 @@ Style/ClassAndModuleChildren:
     # runtime; the job's `rescue StandardError` then swallowed it and every document
     # was silently marked failed with nil content. Scoped to this one file only.
     - 'custom/wijaya/batteries/marine_ai/app/jobs/marine/documents/process_job.rb'
+    # WIJAYA: whatsapp_web_inbox battery. loader.rb is required directly before its
+    # Wijaya parent exists; the model/services/jobs are Zeitwerk-autoloaded but
+    # reference unqualified sibling constants (Record/Config/RequestSigner/
+    # ConnectorClient/Provisioner/ProvisionJob/CleanupJob) that resolve lexically only
+    # under nested declarations. Kept nested and uniform across the battery.
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/loader.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/models/wijaya/batteries/whatsapp_web_inbox/record.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/config.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/request_signer.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/connector_client.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/provisioner.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/safe_dto.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/provision_job.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/cleanup_job.rb'
+
+# WIJAYA: the WhatsApp Web connector request signer builds the service HMAC from six
+# irreducible inputs (method, path, raw_body, secret, timestamp, nonce — the last two
+# injectable for deterministic signing tests). Scoped to this one file only.
+Metrics/ParameterLists:
+  Exclude:
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/request_signer.rb'
 
 Style/MapToHash:
   Enabled: false

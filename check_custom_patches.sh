@@ -359,6 +359,58 @@ for file in \
   require_marker "$file" "WIJAYA_CUSTOM_END persistent_agent_presence"
 done
 
+# whatsapp_web_inbox
+# Unofficial WhatsApp Web (Baileys) inbox on top of a Channel::Api. All logic lives in
+# the battery; the browser reaches only Rails, which alone signs/calls the connector.
+# The Inbox has_one mapping + dependent: :destroy is attached via the battery
+# InboxExtensions concern (loader to_prepare), so app/models/inbox.rb carries no markers.
+require_file custom/wijaya/batteries/whatsapp_web_inbox/loader.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/routes.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/inbox_extensions.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/models/wijaya/batteries/whatsapp_web_inbox/record.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/config.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/request_signer.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/connector_client.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/provisioner.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/safe_dto.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/provision_job.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/cleanup_job.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/controllers/api/v1/accounts/wijaya/whatsapp_web/inboxes_controller.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/channel/whatsappWebChannel.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/whatsappWebInbox.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/connectionStatus.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/api/whatsappWeb.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/composables/useConnectorPolling.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/i18n/whatsappWebInbox.json
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/CreateWhatsappWebInbox.vue
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/WhatsappWebConnectionPanel.vue
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/whatsappWebChannel.spec.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/channelFactory.spec.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/isWhatsappWebInbox.spec.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/useConnectorPolling.spec.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/CreateWhatsappWebInbox.spec.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/WhatsappWebConnectionPanel.spec.js
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/request_signer_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/config_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/connector_client_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/provisioner_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/cleanup_job_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/record_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/inboxes_controller_spec.rb
+# Generic battery route-module registration.
+require_marker custom/wijaya/batteries/core/routes.rb "whatsapp_web_inbox:"
+# Marker-wrapped migration + the five minimal native frontend seams.
+for file in \
+  db/migrate/20261002000000_create_wijaya_whatsapp_web_inboxes.rb \
+  app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue \
+  app/javascript/dashboard/components/widgets/ChannelItem.vue \
+  app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue \
+  app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue \
+  app/javascript/dashboard/i18n/locale/en/index.js; do
+  require_marker "$file" "WIJAYA_CUSTOM_START whatsapp_web_inbox"
+  require_marker "$file" "WIJAYA_CUSTOM_END whatsapp_web_inbox"
+done
+
 # test_database_safety
 require_file custom/wijaya/batteries/test_database_safety/guard.rb
 require_file custom/wijaya/batteries/test_database_safety/bin/run_test_specs.sh

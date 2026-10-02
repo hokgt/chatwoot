@@ -13,6 +13,10 @@ import Telegram from './channels/Telegram.vue';
 import Instagram from './channels/Instagram.vue';
 import Tiktok from './channels/Tiktok.vue';
 import Voice from './channels/Voice.vue';
+// WIJAYA_CUSTOM_START whatsapp_web_inbox
+import WhatsappWebUnofficial from '@wijaya/whatsapp_web_inbox/frontend/CreateWhatsappWebInbox.vue';
+import { WHATSAPP_WEB_CHANNEL_KEY } from '@wijaya/whatsapp_web_inbox/frontend/channel/whatsappWebChannel';
+// WIJAYA_CUSTOM_END whatsapp_web_inbox
 
 const channelViewList = {
   facebook: Facebook,
@@ -28,6 +32,9 @@ const channelViewList = {
   instagram: Instagram,
   tiktok: Tiktok,
   voice: Voice,
+  // WIJAYA_CUSTOM_START whatsapp_web_inbox
+  [WHATSAPP_WEB_CHANNEL_KEY]: WhatsappWebUnofficial,
+  // WIJAYA_CUSTOM_END whatsapp_web_inbox
 };
 
 export default defineComponent({
