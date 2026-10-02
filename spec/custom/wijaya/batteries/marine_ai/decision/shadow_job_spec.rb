@@ -20,7 +20,14 @@ RSpec.describe Marine::Decision::ShadowJob do
   let(:messages) { double('messages') }
   let(:result) { { legacy_scenario_key: 'scenario_3', candidate_plan: {} }.freeze }
 
-  before { allow(Marine::Decision::ShadowConfig).to receive(:enabled_for?).with(3).and_return(true) }
+  before do
+    allow(Marine::Decision::ShadowConfig).to receive(:enabled_for?).with(3).and_return(true)
+    # The Phase 2A authority hook is now part of #perform; default it to a no-op double so the
+    # Decision metrics examples below stay focused on the metrics contract. The dedicated
+    # 'authority shadow hook (Phase 2A)' describe overrides this with concrete expectations.
+    allow(Marine::Backend::AuthorityShadowExecution).to receive(:new)
+      .and_return(instance_double(Marine::Backend::AuthorityShadowExecution, call: nil))
+  end
 
   # Account-scoped finders: account -> assistant (scoped by account_id) -> conversation
   # (via account.conversations) -> message (via conversation.messages).
@@ -254,6 +261,55 @@ RSpec.describe Marine::Decision::ShadowJob do
       key = job.send(:completion_key, job.job_id)
       # The only dynamic segment is the job_id; the account/conversation/message ids never appear.
       expect(key.split(':')).to eq(%w[marine decision shadow done v1] + [job.job_id])
+    end
+  end
+
+  # Phase 2A (PRICE-ONLY shadow bridge) — the additive, independently-rescued AuthorityShadowExecution
+  # hook. It runs AFTER the existing metrics attempt, inside the same enabled_for? gate, reusing the
+  # already-computed result[:candidate_plan] (no second Decision Runner / provider call), and can never
+  # affect the Decision shadow/metrics behavior or the primary flow.
+  describe 'authority shadow hook (Phase 2A)' do
+    before do
+      stub_loads
+      stub_execution(returns: result)
+      stub_marker
+      allow(Marine::Decision::ShadowObservation).to receive(:build).and_return(double('observation'))
+      allow(Marine::Decision::ShadowMetricsStore).to receive(:record).and_return(true)
+    end
+
+    it 'invokes AuthorityShadowExecution with the full records + the REUSED candidate_plan' do
+      authority = instance_double(Marine::Backend::AuthorityShadowExecution, call: double('authority_result'))
+      expect(Marine::Backend::AuthorityShadowExecution).to receive(:new).with(
+        account: account, assistant: assistant, conversation: conversation, message: message,
+        candidate_plan: result[:candidate_plan]
+      ).and_return(authority)
+
+      expect(job.perform(1, 3, 5, 9)).to be_nil
+    end
+
+    it 'never runs a second Decision Runner / shadow execution (reuses the plan)' do
+      allow(Marine::Backend::AuthorityShadowExecution).to receive(:new).and_return(double('authority', call: nil))
+      # ShadowExecution.new was already stubbed once by stub_execution; the hook must not build another.
+      expect(Marine::Decision::Runner).not_to receive(:new)
+
+      job.perform(1, 3, 5, 9)
+    end
+
+    it 'swallows an authority-hook failure without re-raising or disturbing metrics' do
+      allow(Marine::Decision::ShadowMetricsStore).to receive(:record).and_return(true)
+      authority = instance_double(Marine::Backend::AuthorityShadowExecution)
+      allow(Marine::Backend::AuthorityShadowExecution).to receive(:new).and_return(authority)
+      allow(authority).to receive(:call).and_raise(StandardError, 'boom')
+      expect(ChatwootExceptionTracker).not_to receive(:new)
+
+      expect { job.perform(1, 3, 5, 9) }.not_to raise_error
+    end
+
+    it 'does not run the authority hook when the execution returned nil' do
+      stub_execution(returns: nil)
+      expect(Marine::Backend::AuthorityShadowExecution).not_to receive(:new)
+
+      job.perform(1, 3, 5, 9)
     end
   end
 end

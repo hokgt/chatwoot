@@ -39,13 +39,20 @@ RSpec.describe 'Marine::ProductAuthority Fase 3A-2 isolation' do
         app/services/marine/product_authority/acceptance_case_result.rb
       ]
 
+      # Phase 2A — the DEFAULT-OFF, read-only Decision shadow job is the single runtime consumer that
+      # bridges the reused JEV CandidatePlan into Marine::Backend::AuthorityShadowExecution (no live
+      # product path; inside the existing shadow gate).
+      allowed_decision_bridge = %w[app/jobs/marine/decision/shadow_job.rb]
+
       referencing.each do |relative|
-        permitted = relative.start_with?('app/services/marine/backend/') || allowed_product_authority.include?(relative)
+        permitted = relative.start_with?('app/services/marine/backend/') ||
+                    allowed_product_authority.include?(relative) ||
+                    allowed_decision_bridge.include?(relative)
         expect(permitted).to be(true), "unexpected Marine::Backend consumer: #{relative}"
       end
 
       # And the advisory consumers really are present in the set.
-      expect(referencing).to include(*allowed_product_authority)
+      expect(referencing).to include(*allowed_product_authority, *allowed_decision_bridge)
     end
   end
 

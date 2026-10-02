@@ -51,6 +51,7 @@ class Marine::Decision::ShadowJob < ApplicationJob
     return if result.nil? # nil execution: record NO fake comparison.
 
     record_metrics(records, result)
+    run_authority_shadow(records, result)
     nil
   rescue StandardError
     # Fire-and-forget: swallow everything so the shadow can never affect the primary flow.
@@ -59,6 +60,25 @@ class Marine::Decision::ShadowJob < ApplicationJob
   end
 
   private
+
+  # Phase 2A (PRICE-ONLY shadow bridge) — the read-only, independently-rescued hook that REUSES the
+  # already-computed JEV plan (`result[:candidate_plan]`) through the Backend Authority. It runs AFTER
+  # the existing metrics attempt, inside the same enabled_for? gate, passing the FULL loaded records
+  # plus the reused plan — it never runs the Decision Runner / a second provider call. Fire-and-forget:
+  # its result is discarded and any failure is swallowed, so it can never affect the Decision shadow /
+  # metrics behavior or the primary flow.
+  def run_authority_shadow(records, result)
+    Marine::Backend::AuthorityShadowExecution.new(
+      account: records[:account],
+      assistant: records[:assistant],
+      conversation: records[:conversation],
+      message: records[:message],
+      candidate_plan: result[:candidate_plan]
+    ).call
+    nil
+  rescue StandardError
+    nil
+  end
 
   # Convert the deep-frozen comparison into a privacy-safe observation and record AGGREGATE
   # counters only, once per ActiveJob delivery. The metrics return is ignored; any observation/
