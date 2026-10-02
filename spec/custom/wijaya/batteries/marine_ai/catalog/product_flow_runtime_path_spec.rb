@@ -220,7 +220,10 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
     it 'reuses the active validated family on a DISTINCT follow-up turn without re-sending or switching' do
       document = usable_catalog('FAM-CAT')
       seed_stale_flow!
-      stub_cld3('jv')
+      # The customer's language is Indonesian throughout; the follow-up stays STRICTLY STICKY to that
+      # prior history rather than re-deriving language from the current turn, so the detector reads the
+      # prior Indonesian turn as `id` (the wrong-CLD3 provider override is covered by the opener above).
+      stub_cld3('id')
 
       # First turn: recover + deliver the native catalog for FAM-CAT.
       Marine::Conversation::ResponseBuilderJob.perform_now(conversation, assistant, trigger.id)
@@ -239,7 +242,8 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
       expect(second_reply.attachments).to be_empty
       expect(conversation.messages.outgoing.sum { |m| m.attachments.count }).to eq(1)
 
-      # The existing already-shared response, emitted THROUGH localization (provider id).
+      # The existing already-shared response, emitted THROUGH localization in the sticky prior-history
+      # language (id) — the follow-up inherits the conversation's established language, not a re-derivation.
       expect(second_reply.content).to eq(TRANSLATED_MARKER)
       expect(translation_calls.length).to eq(2)
       expect(translation_calls.last[:system]).to include('to id')

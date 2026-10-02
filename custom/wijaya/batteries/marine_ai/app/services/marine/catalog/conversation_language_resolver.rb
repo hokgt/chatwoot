@@ -1,26 +1,32 @@
 # Shared, Marine-owned Conversation Language Resolver for the DETERMINISTIC product flow.
 #
-# The deterministic catalog reply must be delivered in the customer's own language. The per-turn
-# provider (IntentExtractor#customer_language) reads that language from the SAME extraction, but it
-# guesses a language even for a turn that carries NO linguistic evidence — a bare product code /
-# slot answer / entity-only continuation (classifying a code as English inside an Indonesian
-# conversation). Copying that guess straight to plan[:language] then delivers a wrong-language reply.
+# The deterministic catalog reply must be delivered in the customer's own language, and that language
+# is STRICTLY STICKY: it is fixed by the customer's PRIOR chat history and NEVER switches
+# mid-conversation. Product decision (final): the bot supports replying in the customer's own language
+# (in practice Indonesian or English, but the supported set is data-driven and never hardcoded here),
+# yet an Indonesian history keeps replies Indonesian and an English history keeps them English — a
+# single current turn, even a full meaningful sentence in the OTHER language, must NOT flip the
+# conversation. Intentional mid-conversation switching is therefore DELIBERATELY not honored. The
+# current turn only decides the language when there is NO reliable prior customer language to be
+# sticky to: a conversation opener, or prior customer turns that are unreadable/unreliable.
 #
 # This resolver decides the product-flow delivery language deterministically and purely over its
 # supplied inputs (no DB read, no provider call, no state mutation), reusing the bounded
 # role-labelled context the caller already built, the IntentExtractor output, and the local
 # Marine::Llm::LanguageDetector. Precedence:
 #
-#   1. Current turn WITH meaningful linguistic evidence is authoritative (permits intentional
-#      switching): the provider language read from that same turn wins, else a reliable local
-#      detection of it. "Meaningful evidence" is generic — enough word tokens to be language-bearing
-#      AFTER the turn's own extracted entity/code/attribute candidates AND the caller-supplied trusted
-#      catalog tokens (row-derived family codes/names) are removed — never a language/phrase/product
-#      list; the trusted tokens are injected by the caller, so the resolver still reads no catalog.
-#   2. An entity/code/slot-only turn (no meaningful evidence once its candidates are removed) trusts
-#      NEITHER the provider guess NOR a local detection of the bare entity, and instead inherits the
-#      nearest reliable prior CUSTOMER-role turn from the bounded context (assistant/history turns
-#      never determine customer language).
+#   1. The nearest reliable prior CUSTOMER-role turn in the bounded context is AUTHORITATIVE whenever
+#      one exists — the sticky history language wins over the current turn, so an intentional switch is
+#      not honored (assistant/history and role-less turns never determine customer language).
+#   2. ONLY when no reliable prior customer language exists (an opener / unreadable history) does the
+#      current turn decide: the provider language read from that turn wins, else a reliable local
+#      detection of it. A turn with no meaningful linguistic evidence (an entity/code/slot-only
+#      continuation) still yields nothing here — so a bare code / product-name opener never fixes the
+#      opener language off non-linguistic tokens. "Meaningful evidence" is generic — enough word tokens
+#      to be language-bearing AFTER the turn's own extracted entity/code/attribute candidates AND the
+#      caller-supplied trusted catalog tokens (row-derived family codes/names) are removed — never a
+#      language/phrase/product list; the trusted tokens are injected by the caller, so the resolver
+#      still reads no catalog.
 #   3. Otherwise the assistant's configured operating language.
 #   4. Otherwise nil — the caller preserves its existing fail-closed unresolved/unsupported handling
 #      (never a silent force to English or Indonesian).
@@ -91,11 +97,11 @@ module Marine
       # rubocop:enable Metrics/ParameterLists
 
       def resolve
-        current = current_turn_language
-        return Result.new(language: current, reason: :current_turn) if current
-
         prior = prior_customer_language
         return Result.new(language: prior, reason: :prior_customer) if prior
+
+        current = current_turn_language
+        return Result.new(language: current, reason: :current_turn) if current
 
         return Result.new(language: @configured_language, reason: :configured) if @configured_language
 
@@ -104,12 +110,14 @@ module Marine
 
       private
 
-      # The authoritative current-turn language, or nil when the turn carries no meaningful linguistic
-      # evidence (an entity/code/slot-only continuation). For such a turn NEITHER the provider guess
-      # NOR a local detection of the bare entity is trusted — both are unreliable for a code — so the
-      # caller inherits the nearest prior customer turn. A turn with real wording (even alongside an
-      # entity candidate) keeps its provider language, else a locally reliable reading of it, so an
-      # intentional language switch is honored.
+      # The current-turn language, consulted ONLY when no reliable prior customer language exists (an
+      # opener or unreadable history) — mid-conversation the sticky prior history has already won, so the
+      # current turn never switches it. It is nil when the turn carries no meaningful linguistic evidence
+      # (an entity/code/slot-only continuation): for such a turn NEITHER the provider guess NOR a local
+      # detection of the bare entity is trusted — both are unreliable for a code — so the caller falls
+      # through to the configured language rather than fixing the opener language off a bare entity. A
+      # turn with real wording (even alongside an entity candidate) keeps its provider language, else a
+      # locally reliable reading of it.
       def current_turn_language
         return nil if entity_only?
 
@@ -118,9 +126,11 @@ module Marine
 
       # An entity/code/slot-only turn: once the turn's own extracted entity candidates AND the
       # caller-supplied trusted catalog tokens are removed, too few word tokens remain to be
-      # language-bearing. This is the condition — a scope label alone never erases the authority of a
-      # genuinely meaningful current sentence. Trusting the injected catalog tokens closes the gap where
-      # the extractor's entity fields were incomplete yet a product name still sits in the turn.
+      # language-bearing. On the opener path (the only path that consults the current turn) this stops a
+      # bare code / product name from fixing the reply language off non-linguistic tokens — a scope label
+      # alone never erases the evidence of a genuinely meaningful current sentence. Trusting the injected
+      # catalog tokens closes the gap where the extractor's entity fields were incomplete yet a product
+      # name still sits in the turn.
       def entity_only?
         (text_tokens - candidate_tokens - trusted_token_set).length < MIN_MEANINGFUL_TOKENS
       end

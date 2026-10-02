@@ -1170,12 +1170,13 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
   end
 
   # The shared ConversationLanguageResolver runs at the #process seam and sets plan[:language]
-  # authoritatively — a provider guess for a bare code (no linguistic evidence, even a multi-segment
-  # code) is overridden by the nearest reliable prior CUSTOMER turn, while #plan_for_intent's direct
-  # (test) path keeps the raw per-turn provider language. The turn's bounded extracted entity
-  # candidates flow through the seam so the resolver can recognize a code of any shape. The local
-  # detector is stubbed so the block is deterministic regardless of CLD3's presence. All codes are
-  # synthetic and no behavior is keyed to any code.
+  # authoritatively with STRICT STICKY precedence: whenever a reliable prior CUSTOMER turn exists it
+  # wins, so not only a bare-code provider guess but a meaningful current turn in the OTHER language is
+  # overridden (the language never switches mid-conversation), while #plan_for_intent's direct (test)
+  # path keeps the raw per-turn provider language. The turn's bounded extracted entity candidates flow
+  # through the seam so the resolver can recognize a code of any shape. The local detector is stubbed so
+  # the block is deterministic regardless of CLD3's presence. All codes are synthetic and no behavior is
+  # keyed to any code.
   describe '#process language resolution (shared resolver at the seam)' do
     subject(:orchestrator) do
       described_class.new(
@@ -1207,7 +1208,7 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(plan[:language]).to eq('id')
     end
 
-    it 'keeps a candidate PLUS meaningful English wording as an intentional switch' do
+    it 'stays sticky to the Indonesian prior turn for a candidate PLUS meaningful English wording (no switch)' do
       allow(extractor).to receive(:extract).and_return(
         intent(intent: 'parent_info', family_mention: 'Impeller', explicit_child_code: 'QLR-2200', customer_language: 'en')
       )
@@ -1215,7 +1216,7 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       plan = orchestrator.process(text: 'QLR-2200 what is the price please',
                                   context: [{ role: 'user', content: 'halo berapa harganya semuanya' }], flow: nil)
 
-      expect(plan[:language]).to eq('en')
+      expect(plan[:language]).to eq('id')
     end
 
     it 'falls back to the configured assistant language when no customer language is reliable' do
@@ -1296,11 +1297,13 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(family_repository).to have_received(:active_candidates).with(query: 'velvet', limit: 50)
     end
 
-    it 'degrades to NO trusted tokens on catalog unavailability (legacy per-turn provider guess stands)' do
+    it 'degrades to NO trusted tokens on catalog unavailability (opener per-turn provider guess stands)' do
+      # On an OPENER (no reliable prior history to be sticky to) the current turn decides. With the
+      # catalog unavailable there are no trusted tokens to subtract, so the product-name tokens survive
+      # as evidence and the legacy per-turn provider guess fixes the opener language — never a raise.
       allow(family_repository).to receive(:active_candidates).and_raise(Marine::Catalog::Errors::CatalogUnavailableError)
 
-      plan = orchestrator.process(text: 'satin velvet kakak',
-                                  context: [{ role: 'user', content: 'halo kak mau tanya produknya' }], flow: nil)
+      plan = orchestrator.process(text: 'satin velvet kakak', context: [], flow: nil)
 
       expect(plan[:language]).to eq('no')
     end

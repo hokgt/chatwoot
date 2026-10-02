@@ -97,24 +97,32 @@ RSpec.describe Marine::Catalog::ConversationLanguageResolver do
       expect(result.reason).to eq(:prior_customer)
     end
 
-    # Companion regression guard: with NO trusted tokens AND the same empty extraction, the old wrong
-    # behavior still occurs — the two product-name tokens count as evidence and the volatile provider
-    # guess wins. This proves the injected trusted tokens are exactly what closes the gap.
-    it 'without trusted tokens the empty-extraction turn still takes the volatile provider guess (the bug)' do
-      detections['halo kak mau tanya produknya'] = reliable('id')
-
-      result = resolve(text: 'satin velvet kakak', provider_language: 'no', entity_candidates: [],
-                       context: [user('halo kak mau tanya produknya')])
+    # Companion regression guard on the OPENER path (where the current turn still decides, as there is
+    # no sticky prior history): with NO trusted tokens AND the same empty extraction, the two
+    # product-name tokens survive as "evidence", the opener is NOT entity-only, and the volatile provider
+    # guess fixes the opener language. This is exactly the gap the injected trusted tokens close.
+    it 'without trusted tokens an opener product-name turn still takes the volatile provider guess (the gap)' do
+      result = resolve(text: 'satin velvet kakak', provider_language: 'no', entity_candidates: [])
 
       expect(result.language).to eq('no')
       expect(result.reason).to eq(:current_turn)
     end
 
-    it 'still honors an intentional switch: an English sentence that NAMES a product keeps "en"' do
-      # "is satin velvet available in blue please" subtracts the product tokens yet retains enough
-      # meaningful wording (available / blue / please) to stay an authoritative current-turn switch.
+    it 'a product-naming English sentence mid-Indonesian conversation stays "id" (sticky, no switch)' do
+      # "is satin velvet available in blue please" subtracts the product tokens yet retains meaningful
+      # wording; even so, the reliable Indonesian prior history is sticky and the turn does NOT switch.
+      detections['halo kak mau tanya produknya'] = reliable('id')
+
       result = resolve(text: 'is satin velvet available in blue please', provider_language: 'en',
                        trusted_tokens: %w[satin velvet], context: [user('halo kak mau tanya produknya')])
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:prior_customer)
+    end
+
+    it 'the SAME product-naming English sentence as an OPENER (no reliable history) yields "en"' do
+      result = resolve(text: 'is satin velvet available in blue please', provider_language: 'en',
+                       trusted_tokens: %w[satin velvet])
 
       expect(result.language).to eq('en')
       expect(result.reason).to eq(:current_turn)
@@ -128,32 +136,67 @@ RSpec.describe Marine::Catalog::ConversationLanguageResolver do
     end
   end
 
-  describe 'meaningful current turn is authoritative (intentional switching)' do
-    it 'keeps the current-turn provider language for a meaningful Indonesian message' do
+  describe 'strict sticky: a reliable prior customer language outranks the current turn (no switch)' do
+    # Product decision (final): the reply language is fixed by the customer's PRIOR history and never
+    # switches mid-conversation. A meaningful current turn in the OTHER language does NOT flip a
+    # conversation that already has a reliable prior customer language.
+    it 'does NOT switch on a candidate PLUS meaningful English wording over Indonesian history' do
+      detections['halo apa kabar semuanya'] = reliable('id')
+
+      result = resolve(text: 'QLR-2200 what is the price please', provider_language: 'en',
+                       entity_candidates: ['QLR-2200'], context: [user('halo apa kabar semuanya')])
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:prior_customer)
+    end
+
+    # (a) a full meaningful English sentence mid-Indonesian conversation stays Indonesian.
+    it 'keeps "id" for a meaningful English turn mid-Indonesian conversation' do
+      detections['halo kak mau tanya produk ini'] = reliable('id')
+
+      result = resolve(text: 'what is the total price for this item', provider_language: 'en',
+                       context: [user('halo kak mau tanya produk ini')])
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:prior_customer)
+    end
+
+    # (b) symmetric: a full meaningful Indonesian sentence mid-English conversation stays English.
+    it 'keeps "en" for a meaningful Indonesian turn mid-English conversation (symmetric)' do
+      detections['hello could you help me today'] = reliable('en')
+
+      result = resolve(text: 'berapa harga produk ini semua', provider_language: 'id',
+                       context: [user('hello could you help me today')])
+
+      expect(result.language).to eq('en')
+      expect(result.reason).to eq(:prior_customer)
+    end
+
+    # (c) a mid-conversation provider MISCLASSIFICATION cannot hijack the sticky history.
+    it 'ignores a provider misclassification mid-conversation — reliable Indonesian history wins' do
+      detections['halo berapa harganya kak'] = reliable('id')
+
+      result = resolve(text: 'what is the price please', provider_language: 'no',
+                       context: [user('halo berapa harganya kak')])
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:prior_customer)
+    end
+  end
+
+  describe 'current turn decides ONLY when there is no reliable prior customer language (openers)' do
+    it 'keeps the current-turn provider language for a meaningful Indonesian opener' do
       result = resolve(text: 'Berapa harga produk ini?', provider_language: 'id')
 
       expect(result.language).to eq('id')
       expect(result.reason).to eq(:current_turn)
     end
 
-    it 'lets a candidate PLUS meaningful English wording switch from Indonesian history' do
-      detections['halo apa kabar semuanya'] = reliable('id')
-
-      result = resolve(text: 'QLR-2200 what is the price please', provider_language: 'en',
-                       entity_candidates: ['QLR-2200'], context: [user('halo apa kabar semuanya')])
-
-      expect(result.language).to eq('en')
-      expect(result.reason).to eq(:current_turn)
-    end
-
-    it 'keeps authority for a full meaningful sentence even when it also supplies a slot value' do
+    it 'keeps the current turn even when it also supplies a slot value (opener)' do
       # A slot answer that is itself a meaningful sentence is NOT erased just because it answered a
-      # slot: entity/slot-only content is the condition, not a scope label. The attribute candidate is
-      # stripped, but the surrounding real wording keeps the turn authoritative.
-      detections['halo berapa harganya semuanya'] = reliable('id')
-
-      result = resolve(text: 'yes please give me the blue one', provider_language: 'en',
-                       entity_candidates: ['blue'], context: [user('halo berapa harganya semuanya')])
+      # slot: entity/slot-only content is the condition, not a scope label. With no reliable prior
+      # history the current turn still decides, and the surrounding real wording keeps it authoritative.
+      result = resolve(text: 'yes please give me the blue one', provider_language: 'en', entity_candidates: ['blue'])
 
       expect(result.language).to eq('en')
       expect(result.reason).to eq(:current_turn)
@@ -165,6 +208,26 @@ RSpec.describe Marine::Catalog::ConversationLanguageResolver do
       result = resolve(text: 'Boleh minta harganya semuanya?', provider_language: nil)
 
       expect(result.language).to eq('id')
+    end
+
+    # (d) opener: no history, a meaningful English turn fixes the opener language to English.
+    it 'fixes a meaningful English opener to "en" (:current_turn)' do
+      result = resolve(text: 'what is the price of this item please', provider_language: 'en')
+
+      expect(result.language).to eq('en')
+      expect(result.reason).to eq(:current_turn)
+    end
+
+    # (e) unreadable/noisy history (no reliable prior CUSTOMER turn) lets the current turn decide.
+    it 'lets the current turn decide when the history carries no reliable customer language' do
+      detections['what is the price please'] = reliable('en')
+
+      # An assistant-only turn plus an unreliable (undetectable) customer turn: no sticky prior language.
+      context = [assistant('willkommen'), user('xy')]
+      result = resolve(text: 'what is the price please', provider_language: 'en', context: context)
+
+      expect(result.language).to eq('en')
+      expect(result.reason).to eq(:current_turn)
     end
   end
 
