@@ -2,7 +2,8 @@
 
 # Durable, per-inbox mapping between a native Channel::Api inbox and its WhatsApp Web
 # (unofficial, Baileys) connector session. One row per inbox, keyed uniquely by
-# inbox_id; the client-supplied request_token makes creation idempotent.
+# inbox_id; the client-supplied request_token makes creation idempotent per account
+# (the token is unique within an account, so two accounts may reuse the same value).
 #
 # This row deliberately stores ONLY sanitized lifecycle metadata. It never holds the
 # connector service secret, the raw QR, Baileys credentials, the Chatwoot channel
@@ -36,7 +37,7 @@ module Wijaya
         belongs_to :inbox
 
         validates :inbox_id, uniqueness: true
-        validates :request_token, presence: true, uniqueness: true
+        validates :request_token, presence: true, uniqueness: { scope: :account_id }
         validates :provisioning_state, inclusion: { in: PROVISIONING_STATES }
         validates :status, inclusion: { in: STATUSES }
 

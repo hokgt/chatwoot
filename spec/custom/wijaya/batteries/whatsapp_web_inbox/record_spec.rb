@@ -22,12 +22,22 @@ RSpec.describe Wijaya::Batteries::WhatsappWebInbox::Record do
       expect(dup).not_to be_valid
     end
 
-    it 'requires a unique request_token' do
+    it 'requires a request_token unique within the account' do
       build_mapping(token: 'same')
       channel = account.api_channels.create!
       inbox = account.inboxes.create!(name: 'WA2', channel: channel)
       dup = described_class.new(account: account, inbox: inbox, request_token: 'same')
       expect(dup).not_to be_valid
+    end
+
+    it 'allows the same request_token in a different account (scoped uniqueness)' do
+      build_mapping(token: 'same')
+      other = create(:account)
+      channel = other.api_channels.create!
+      inbox = other.inboxes.create!(name: 'WA-other', channel: channel)
+      twin = described_class.new(account: other, inbox: inbox, request_token: 'same',
+                                 status: 'unconfigured', provisioning_state: 'pending')
+      expect(twin).to be_valid
     end
 
     it 'rejects an out-of-set status or provisioning_state' do
@@ -70,6 +80,26 @@ RSpec.describe Wijaya::Batteries::WhatsappWebInbox::Record do
       inbox = record.inbox
       expect(inbox.wijaya_whatsapp_web_inbox).to eq(record)
       inbox.destroy
+      expect(described_class.exists?(record.id)).to be(false)
+    end
+  end
+
+  describe 'destroy transaction (real callback chain, not a private-method call)' do
+    it 'Inbox#destroy! -> dependent mapping destroy -> after_destroy_commit -> CleanupJob with the session id' do
+      record = build_mapping(session_id: 'sess-destroy', token: 'g')
+      inbox = record.inbox
+
+      expect { inbox.destroy! }
+        .to have_enqueued_job(cleanup_job).with(connector_session_id: 'sess-destroy')
+      expect(described_class.exists?(record.id)).to be(false)
+      expect(Inbox.exists?(inbox.id)).to be(false)
+    end
+
+    it 'enqueues no cleanup when the mapping never held a session id' do
+      record = build_mapping(session_id: nil, token: 'h')
+      inbox = record.inbox
+
+      expect { inbox.destroy! }.not_to have_enqueued_job(cleanup_job)
       expect(described_class.exists?(record.id)).to be(false)
     end
   end

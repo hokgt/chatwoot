@@ -1558,10 +1558,10 @@ ActiveRecord::Schema[7.1].define(version: 2026_10_02_000000) do
     t.string "last_error_code"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.index ["account_id", "request_token"], name: "idx_wijaya_wa_web_inboxes_account_request_token", unique: true
     t.index ["account_id"], name: "index_wijaya_whatsapp_web_inboxes_on_account_id"
     t.index ["connector_session_id"], name: "index_wijaya_whatsapp_web_inboxes_on_connector_session_id", unique: true, where: "(connector_session_id IS NOT NULL)"
     t.index ["inbox_id"], name: "index_wijaya_whatsapp_web_inboxes_on_inbox_id", unique: true
-    t.index ["request_token"], name: "index_wijaya_whatsapp_web_inboxes_on_request_token", unique: true
   end
 
   create_table "working_hours", force: :cascade do |t|

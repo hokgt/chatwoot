@@ -77,12 +77,26 @@ RSpec.describe 'Wijaya WhatsApp Web Inboxes API', type: :request do
       expect(job_klass).to have_received(:perform_later)
     end
 
-    it 'reuses the mapping for a duplicate request token' do
+    it 'reuses the mapping for a duplicate request token (idempotent, bypasses the rate limit)' do
       2.times do
         post base_path, headers: admin.create_new_auth_token,
                         params: { name: 'WA', request_token: 'dup', acknowledged: true }, as: :json
+        expect(response).to have_http_status(:created)
       end
       expect(account.inboxes.count).to eq(1)
+    end
+
+    it 'rate-limits a second distinct create from the same admin and allocates no new rows' do
+      post base_path, headers: admin.create_new_auth_token,
+                      params: { name: 'WA one', request_token: 'tok-a', acknowledged: true }, as: :json
+      expect(response).to have_http_status(:created)
+
+      post base_path, headers: admin.create_new_auth_token,
+                      params: { name: 'WA two', request_token: 'tok-b', acknowledged: true }, as: :json
+      expect(response).to have_http_status(:too_many_requests)
+      expect(json['error']).to eq('rate_limited')
+      expect(account.inboxes.count).to eq(1)
+      expect(record_klass.count).to eq(1)
     end
 
     it 'fails closed with 503 when the connector env is absent' do
@@ -148,6 +162,18 @@ RSpec.describe 'Wijaya WhatsApp Web Inboxes API', type: :request do
       expect(response.body).not_to include('RAW-SECRET-QR')
       expect(json).not_to have_key('raw_qr')
       expect(json).not_to have_key('qr')
+    end
+
+    it 'drops a data URL that is not a bounded base64 PNG (reports unavailable)' do
+      record = mapping_for(account, status: 'waiting_for_qr')
+      allow(client).to receive(:qr)
+        .and_return('available' => true, 'data_url' => 'javascript:alert(1)')
+
+      get "#{base_path}/#{record.inbox_id}/qr", headers: admin.create_new_auth_token, as: :json
+      expect(response).to have_http_status(:success)
+      expect(json['available']).to be(false)
+      expect(json['data_url']).to be_nil
+      expect(response.body).not_to include('javascript:')
     end
   end
 

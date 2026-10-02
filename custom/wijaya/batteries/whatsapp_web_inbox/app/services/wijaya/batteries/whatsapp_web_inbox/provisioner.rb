@@ -27,16 +27,19 @@ module Wijaya
         end
 
         # Create (or return the existing) mapping, then enqueue post-commit provisioning.
+        # The request token is unique PER ACCOUNT, so the lookup is account-scoped: a
+        # duplicate within this account reuses the mapping, while another account's
+        # identical token is irrelevant here.
         def create!(name:, request_token:)
-          existing = Record.find_by(request_token: request_token)
-          return reuse(existing) if existing
+          existing = Record.find_by(account_id: account.id, request_token: request_token)
+          return existing if existing
 
           record = build_in_transaction(name: name, request_token: request_token)
           ProvisionJob.perform_later(record_id: record.id)
           record
         rescue ActiveRecord::RecordNotUnique
-          # Lost a concurrent race on the unique request_token: reuse the winner.
-          reuse(Record.find_by!(request_token: request_token))
+          # Lost a concurrent race on the per-account unique request_token: reuse the winner.
+          Record.find_by!(account_id: account.id, request_token: request_token)
         end
 
         # Idempotent: adopt an existing session, else reconcile, else create. Marks the
@@ -67,10 +70,6 @@ module Wijaya
         private
 
         attr_reader :account
-
-        def reuse(record)
-          record.account_id == account.id ? record : nil
-        end
 
         def build_in_transaction(name:, request_token:)
           ActiveRecord::Base.transaction do

@@ -861,6 +861,24 @@ patches:
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/i18n/whatsappWebInbox.json
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/CreateWhatsappWebInbox.vue
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/WhatsappWebConnectionPanel.vue
+      # Battery-owned idempotent core-hook applicator + its exact block spec.
+      - custom/wijaya/batteries/whatsapp_web_inbox/patch/apply_patches.py
+      - custom/wijaya/batteries/whatsapp_web_inbox/patch/blocks.json
+      - custom/wijaya/batteries/whatsapp_web_inbox/patch/test_apply_patches.py
+    # Deterministic, idempotent, context-safe reapply of the core marker blocks after an
+    # upstream pull. Root apply_custom_patches.sh runs this applicator (reinserts only the
+    # missing blocks at exact anchors; fails loudly on an absent/ambiguous anchor without
+    # partial writes) and then the global checker. The checker asserts these EXACT counts.
+    applicator:
+      script: custom/wijaya/batteries/whatsapp_web_inbox/patch/apply_patches.py
+      blocks: custom/wijaya/batteries/whatsapp_web_inbox/patch/blocks.json
+      expected_marker_counts:
+        app/javascript/dashboard/components/widgets/ChannelItem.vue: 2
+        app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue: 2
+        app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue: 2
+        app/javascript/dashboard/i18n/locale/en/index.js: 2
+        app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue: 5
+        db/migrate/20261002000000_create_wijaya_whatsapp_web_inboxes.rb: 1
     core_hook_touchpoints:
       # Marker-wrapped migration (db/migrate is outside the app/config addition scan).
       - db/migrate/20261002000000_create_wijaya_whatsapp_web_inboxes.rb
@@ -890,7 +908,9 @@ patches:
       - spec/custom/wijaya/batteries/whatsapp_web_inbox/provisioner_spec.rb
       - spec/custom/wijaya/batteries/whatsapp_web_inbox/cleanup_job_spec.rb
       - spec/custom/wijaya/batteries/whatsapp_web_inbox/record_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/safe_dto_spec.rb
       - spec/custom/wijaya/batteries/whatsapp_web_inbox/inboxes_controller_spec.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/patch/test_apply_patches.py
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/whatsappWebChannel.spec.js
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/channelFactory.spec.js
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/isWhatsappWebInbox.spec.js

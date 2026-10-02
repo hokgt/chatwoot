@@ -1,21 +1,33 @@
 import { mount, flushPromises } from '@vue/test-utils';
 
-const { createSpy, statusSpy, qrSpy, replaceSpy } = vi.hoisted(() => ({
-  createSpy: vi.fn(),
-  statusSpy: vi.fn(),
-  qrSpy: vi.fn(),
-  replaceSpy: vi.fn(),
-}));
+const { createSpy, statusSpy, qrSpy, connectSpy, replaceSpy, pollRef } =
+  vi.hoisted(() => ({
+    createSpy: vi.fn(),
+    statusSpy: vi.fn(),
+    qrSpy: vi.fn(),
+    connectSpy: vi.fn(),
+    replaceSpy: vi.fn(),
+    pollRef: { cb: null },
+  }));
 
 vi.mock('@wijaya/whatsapp_web_inbox/frontend/api/whatsappWeb', () => ({
-  default: { create: createSpy, status: statusSpy, qr: qrSpy },
+  default: {
+    create: createSpy,
+    status: statusSpy,
+    qr: qrSpy,
+    connect: connectSpy,
+  },
 }));
 
-// Make the poller deterministic: start() runs the poll callback exactly once.
+// Make the poller deterministic: start() runs the poll callback once, and the callback
+// is captured so a test can drive subsequent ticks by hand (real status progression).
 vi.mock(
   '@wijaya/whatsapp_web_inbox/frontend/composables/useConnectorPolling',
   () => ({
-    useConnectorPolling: cb => ({ start: () => cb(), stop: vi.fn() }),
+    useConnectorPolling: cb => {
+      pollRef.cb = cb;
+      return { start: () => cb(), stop: vi.fn() };
+    },
   })
 );
 
@@ -143,6 +155,121 @@ describe('CreateWhatsappWebInbox', () => {
         params: { page: 'new', inbox_id: 7 },
       })
     );
+  });
+
+  it('drives real pairing from a disconnected session: connects exactly once, then connecting -> waiting_for_qr -> connected', async () => {
+    // The FIRST server state is the real post-provision connector state: 'disconnected'
+    // with no QR — NOT a fabricated 'waiting_for_qr'. Pairing must not progress until the
+    // wizard explicitly calls connect in response to that disconnected state.
+    statusSpy.mockReset();
+    statusSpy.mockResolvedValueOnce({
+      data: {
+        status: 'disconnected',
+        provisioning_state: 'provisioned',
+        connector_available: true,
+      },
+    });
+    connectSpy.mockResolvedValue({
+      data: {
+        status: 'connecting',
+        provisioning_state: 'provisioned',
+        connector_available: true,
+      },
+    });
+
+    const wrapper = mountWizard();
+    await fillForm(wrapper);
+    await wrapper.find('form').trigger('submit.prevent');
+    await flushPromises(); // create + first tick (disconnected) -> connect called
+
+    // connect was driven by the disconnected state, not a pre-supplied waiting_for_qr.
+    expect(connectSpy).toHaveBeenCalledTimes(1);
+    expect(connectSpy).toHaveBeenCalledWith(7);
+    // The first status the wizard ever saw was 'disconnected'.
+    await expect(statusSpy.mock.results[0].value).resolves.toMatchObject({
+      data: { status: 'disconnected' },
+    });
+
+    // Tick 2: connector now reports waiting_for_qr -> the QR image appears.
+    statusSpy.mockResolvedValueOnce({
+      data: {
+        status: 'waiting_for_qr',
+        provisioning_state: 'provisioned',
+        connector_available: true,
+      },
+    });
+    await pollRef.cb();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="qr-image"]').exists()).toBe(true);
+
+    // Tick 3: connected -> success panel, and connect is never called again.
+    statusSpy.mockResolvedValueOnce({
+      data: {
+        status: 'connected',
+        provisioning_state: 'provisioned',
+        connector_available: true,
+      },
+    });
+    await pollRef.cb();
+    await flushPromises();
+    expect(wrapper.text()).toContain('WhatsApp connected');
+    expect(connectSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not call connect while the mapping is still provisioning (pending)', async () => {
+    // A provisioned+disconnected state is the ONLY trigger. A pending mapping, even if the
+    // connector momentarily reports disconnected, must not start pairing.
+    statusSpy.mockReset();
+    statusSpy.mockResolvedValue({
+      data: {
+        status: 'disconnected',
+        provisioning_state: 'pending',
+        connector_available: true,
+      },
+    });
+    const wrapper = mountWizard();
+    await fillForm(wrapper);
+    await wrapper.find('form').trigger('submit.prevent');
+    await flushPromises();
+    expect(connectSpy).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an actionable error and allows an intentional retry when connect fails', async () => {
+    statusSpy.mockReset();
+    statusSpy.mockResolvedValue({
+      data: {
+        status: 'disconnected',
+        provisioning_state: 'provisioned',
+        connector_available: true,
+      },
+    });
+    connectSpy.mockRejectedValueOnce({ response: { status: 500 } });
+
+    const wrapper = mountWizard();
+    await fillForm(wrapper);
+    await wrapper.find('form').trigger('submit.prevent');
+    await flushPromises();
+
+    expect(connectSpy).toHaveBeenCalledTimes(1);
+    const retry = wrapper.find('[data-testid="retry-connect"]');
+    expect(retry.exists()).toBe(true);
+
+    // A further poll tick must NOT auto-retry connect (no spin/flood).
+    await pollRef.cb();
+    await flushPromises();
+    expect(connectSpy).toHaveBeenCalledTimes(1);
+
+    // Intentional retry re-arms and calls connect again.
+    connectSpy.mockResolvedValueOnce({
+      data: {
+        status: 'connecting',
+        provisioning_state: 'provisioned',
+        connector_available: true,
+      },
+    });
+    await retry.trigger('click');
+    await flushPromises();
+    expect(connectSpy).toHaveBeenCalledTimes(2);
   });
 
   it('surfaces a connector-unavailable error on a 503 create', async () => {

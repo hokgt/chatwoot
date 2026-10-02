@@ -17,6 +17,10 @@ class Api::V1::Accounts::Wijaya::WhatsappWeb::InboxesController < Api::V1::Accou
   # Server-side bounds on browser-driven connector calls (per inbox, per operation).
   POLL_COOLDOWN_SECONDS = 1
   CONTROL_COOLDOWN_SECONDS = 3
+  # Abuse guard on inbox creation: a new (non-idempotent) create per account+user is
+  # admitted at most once per this window, so a flood can never allocate many
+  # Channel::Api/Inbox rows. Idempotent retries (same token) bypass this entirely.
+  CREATE_COOLDOWN_SECONDS = 5
 
   before_action :check_admin_authorization?
   before_action :ensure_connector_configured, only: %i[create connect reconnect logout retry]
@@ -36,14 +40,18 @@ class Api::V1::Accounts::Wijaya::WhatsappWeb::InboxesController < Api::V1::Accou
   end
 
   def create
-    return render_error('acknowledgement_required', :unprocessable_entity) unless acknowledged?
-    return render_error('name_required', :unprocessable_entity) if create_params[:name].blank?
-    return render_error('request_token_required', :unprocessable_entity) if create_params[:request_token].blank?
+    error_code = creation_error
+    return render_error(error_code, :unprocessable_entity) if error_code
+
+    # Idempotent retry (same account + token): reuse the existing mapping without
+    # allocating rows and without consuming the create rate limit.
+    existing = Record.find_by(account_id: Current.account.id, request_token: create_params[:request_token])
+    return render json: SafeDto.inbox(existing), status: :created if existing
+
+    return if throttle_create!
 
     record = Provisioner.create!(account: Current.account, name: create_params[:name].strip,
                                  request_token: create_params[:request_token])
-    return render_error('request_token_conflict', :unprocessable_entity) if record.nil?
-
     render json: SafeDto.inbox(record), status: :created
   end
 
@@ -121,6 +129,25 @@ class Api::V1::Accounts::Wijaya::WhatsappWeb::InboxesController < Api::V1::Accou
 
     render json: { error: 'rate_limited' }, status: :too_many_requests
     true
+  end
+
+  # Rate limit new inbox creation per account+user (never keyed by a record, which does
+  # not exist yet). Returns true after rendering 429 so the caller allocates no rows.
+  def throttle_create!
+    key = "WIJAYA_WHATSAPP_WEB_RL::create::#{Current.account.id}::#{current_user.id}"
+    return false if ::Redis::Alfred.set(key, '1', nx: true, ex: CREATE_COOLDOWN_SECONDS)
+
+    render json: { error: 'rate_limited' }, status: :too_many_requests
+    true
+  end
+
+  # Validation error code for create, or nil when the request is well-formed.
+  def creation_error
+    return 'acknowledgement_required' unless acknowledged?
+    return 'name_required' if create_params[:name].blank?
+    return 'request_token_required' if create_params[:request_token].blank?
+
+    nil
   end
 
   def acknowledged?

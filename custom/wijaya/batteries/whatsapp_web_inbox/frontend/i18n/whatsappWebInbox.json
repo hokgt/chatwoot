@@ -17,7 +17,9 @@
         "ACK": "I understand the risks and accept that the linked WhatsApp number may be permanently banned."
       },
       "ERROR": "Could not create the inbox. Please try again.",
-      "CONNECTOR_UNAVAILABLE": "The WhatsApp Web connector is not available right now. Please try again later or contact your administrator."
+      "CONNECTOR_UNAVAILABLE": "The WhatsApp Web connector is not available right now. Please try again later or contact your administrator.",
+      "CONNECT_ERROR": "Could not start WhatsApp pairing. Please retry.",
+      "RETRY_CONNECT": "Retry pairing"
     },
     "QR": {
       "TITLE": "Scan the QR code",

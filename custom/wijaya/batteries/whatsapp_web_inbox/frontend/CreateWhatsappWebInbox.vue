@@ -32,6 +32,14 @@ const canSubmit = computed(
 );
 
 const isConnected = computed(() => status.value === 'connected');
+const isProvisioned = computed(() => provisioningState.value === 'provisioned');
+
+// Guards so the connector `connect` call fires exactly once during pairing: a freshly
+// provisioned session sits at 'disconnected' and only produces a QR after we ask it to
+// connect. connectRequested prevents concurrent/repeated calls; connectError stops any
+// auto-retry loop so a failure never floods the connector — the user retries intentionally.
+const connectRequested = ref(false);
+const connectError = ref(false);
 
 const QR_STATES = ['unconfigured', 'waiting_for_qr', 'connecting', 'pending'];
 const needsQr = s => QR_STATES.includes(s);
@@ -56,11 +64,49 @@ const refreshQr = async () => {
 // use-before-define cycle.
 let stopPolling = () => {};
 
+// Ask the connector to start pairing. Called at most once (connectRequested guard); a
+// throttle (429) is transient so it re-arms, any other failure surfaces an actionable
+// error and halts auto-retry until the user explicitly retries.
+const ensureConnected = async () => {
+  if (connectRequested.value) return;
+  connectRequested.value = true;
+  try {
+    const { data } = await whatsappWebAPI.connect(inboxId.value);
+    applyDto(data);
+  } catch (error) {
+    if (error.response?.status === 429) {
+      connectRequested.value = false;
+      return;
+    }
+    connectError.value = true;
+    errorMessage.value = t('WHATSAPP_WEB_INBOX.CREATE.CONNECT_ERROR');
+  }
+};
+
+const retryConnect = () => {
+  connectRequested.value = false;
+  connectError.value = false;
+  errorMessage.value = '';
+  ensureConnected();
+};
+
 const poll = async () => {
   if (!inboxId.value) return;
   try {
     const { data } = await whatsappWebAPI.status(inboxId.value);
     applyDto(data);
+    // Pairing only begins once the mapping is provisioned; the connector then reports
+    // 'disconnected' until we explicitly connect. Fire connect once, then let polling
+    // carry the session through connecting -> waiting_for_qr -> connected.
+    if (
+      connectorAvailable.value &&
+      isProvisioned.value &&
+      status.value === 'disconnected' &&
+      !connectRequested.value &&
+      !connectError.value
+    ) {
+      await ensureConnected();
+    }
     if (connectorAvailable.value && needsQr(status.value)) {
       await refreshQr();
     } else {
@@ -206,6 +252,22 @@ const goToAgents = () => {
             blue
             :label="t('WHATSAPP_WEB_INBOX.CONNECTED.CONTINUE')"
             @click="goToAgents"
+          />
+        </div>
+      </div>
+
+      <!-- Pairing could not be started: actionable, intentional retry (no auto-spin) -->
+      <div v-else-if="connectError" class="flex flex-col gap-3">
+        <p class="text-sm text-ruby-600 m-0">
+          {{ t('WHATSAPP_WEB_INBOX.CREATE.CONNECT_ERROR') }}
+        </p>
+        <div>
+          <NextButton
+            solid
+            blue
+            :label="t('WHATSAPP_WEB_INBOX.CREATE.RETRY_CONNECT')"
+            data-testid="retry-connect"
+            @click="retryConnect"
           />
         </div>
       </div>

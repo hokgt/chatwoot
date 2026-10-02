@@ -41,10 +41,16 @@ RSpec.describe Wijaya::Batteries::WhatsappWebInbox::Provisioner do
       expect(account.inboxes.count).to eq(1)
     end
 
-    it 'refuses to reuse another account\'s request token' do
-      described_class.new(account: account).create!(name: 'A', request_token: 'shared')
+    it 'scopes the request token per account: another account reusing the same token gets its own mapping' do
+      first = described_class.new(account: account).create!(name: 'A', request_token: 'shared')
       other = create(:account)
-      expect(described_class.new(account: other).create!(name: 'B', request_token: 'shared')).to be_nil
+      second = described_class.new(account: other).create!(name: 'B', request_token: 'shared')
+
+      expect(second).to be_present
+      expect(second.id).not_to eq(first.id)
+      expect(second.account_id).to eq(other.id)
+      expect(account.inboxes.count).to eq(1)
+      expect(other.inboxes.count).to eq(1)
     end
   end
 

@@ -20,7 +20,8 @@ class CreateWijayaWhatsappWebInboxes < ActiveRecord::Migration[7.1]
       # many pending (NULL) rows never collide but a real id is globally unique.
       t.string :connector_session_id
       # Client-generated idempotency key: a duplicate create request with the same
-      # token returns/reuses the existing mapping instead of provisioning twice.
+      # token (within the SAME account) returns/reuses the existing mapping instead of
+      # provisioning twice. Scoped per account — two accounts may reuse the same value.
       t.string :request_token, null: false
 
       # Durable mapping lifecycle, independent of the remote session status:
@@ -36,7 +37,8 @@ class CreateWijayaWhatsappWebInboxes < ActiveRecord::Migration[7.1]
       t.timestamps
     end
 
-    add_index :wijaya_whatsapp_web_inboxes, :request_token, unique: true
+    add_index :wijaya_whatsapp_web_inboxes, %i[account_id request_token],
+              unique: true, name: 'idx_wijaya_wa_web_inboxes_account_request_token'
     add_index :wijaya_whatsapp_web_inboxes, :connector_session_id,
               unique: true, where: 'connector_session_id IS NOT NULL'
   end

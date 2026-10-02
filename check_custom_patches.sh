@@ -18,6 +18,22 @@ require_marker() {
     missing=1
   fi
 }
+# Exact-count assertion: a marker must appear EXACTLY `want` times (not merely present),
+# so a dropped-but-not-all block or an accidental duplicate is caught.
+require_marker_count() {
+  local file="$1" marker="$2" want="$3" got
+  if [[ ! -f "$file" ]]; then
+    echo "MISSING file: $file" >&2
+    missing=1
+    return
+  fi
+  got=$(grep -c -- "$marker" "$file" 2>/dev/null || true)
+  got=${got:-0}
+  if [[ "$got" != "$want" ]]; then
+    echo "MARKER COUNT mismatch in $file: '$marker' expected $want, found $got" >&2
+    missing=1
+  fi
+}
 # Every line mentioning a custom-owned local must sit INSIDE a feature marker block, so
 # re-applying only the marker regions can never leave a dangling reference (NameError).
 # Structural check — does not match the full file.
@@ -396,20 +412,39 @@ require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/connector_client_sp
 require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/provisioner_spec.rb
 require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/cleanup_job_spec.rb
 require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/record_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/safe_dto_spec.rb
 require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/inboxes_controller_spec.rb
+# Idempotent core-hook applicator (reattaches the marker blocks after an upstream pull),
+# its block spec, and its tests.
+require_file custom/wijaya/batteries/whatsapp_web_inbox/patch/apply_patches.py
+require_file custom/wijaya/batteries/whatsapp_web_inbox/patch/blocks.json
+require_file custom/wijaya/batteries/whatsapp_web_inbox/patch/test_apply_patches.py
 # Generic battery route-module registration.
 require_marker custom/wijaya/batteries/core/routes.rb "whatsapp_web_inbox:"
-# Marker-wrapped migration + the five minimal native frontend seams.
-for file in \
-  db/migrate/20261002000000_create_wijaya_whatsapp_web_inboxes.rb \
-  app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue \
-  app/javascript/dashboard/components/widgets/ChannelItem.vue \
-  app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue \
-  app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue \
-  app/javascript/dashboard/i18n/locale/en/index.js; do
-  require_marker "$file" "WIJAYA_CUSTOM_START whatsapp_web_inbox"
-  require_marker "$file" "WIJAYA_CUSTOM_END whatsapp_web_inbox"
-done
+# Marker-wrapped migration (1 block) + the five minimal native frontend seams, each
+# validated at its EXACT expected block count (not mere presence): a START and an END
+# per block. Counts must match the applicator's blocks.json and apply_patches.py.
+require_marker_count db/migrate/20261002000000_create_wijaya_whatsapp_web_inboxes.rb "WIJAYA_CUSTOM_START whatsapp_web_inbox" 1
+require_marker_count db/migrate/20261002000000_create_wijaya_whatsapp_web_inboxes.rb "WIJAYA_CUSTOM_END whatsapp_web_inbox" 1
+# file:block_count — ChannelItem 2, ChannelFactory 2, ChannelList 2, en/index.js 2, Settings 5.
+while read -r wa_file wa_count; do
+  require_marker_count "$wa_file" "WIJAYA_CUSTOM_START whatsapp_web_inbox" "$wa_count"
+  require_marker_count "$wa_file" "WIJAYA_CUSTOM_END whatsapp_web_inbox" "$wa_count"
+done <<'WA_BLOCKS'
+app/javascript/dashboard/components/widgets/ChannelItem.vue 2
+app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue 2
+app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue 2
+app/javascript/dashboard/i18n/locale/en/index.js 2
+app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue 5
+WA_BLOCKS
+# Validate the applicator itself: in --check mode it must see every hook block exactly at
+# its anchor. Skipped only when python3 is unavailable (the counts above still assert).
+if command -v python3 >/dev/null 2>&1; then
+  if ! python3 custom/wijaya/batteries/whatsapp_web_inbox/patch/apply_patches.py --check >/dev/null; then
+    echo "whatsapp_web_inbox patch applicator --check FAILED" >&2
+    missing=1
+  fi
+fi
 
 # test_database_safety
 require_file custom/wijaya/batteries/test_database_safety/guard.rb
