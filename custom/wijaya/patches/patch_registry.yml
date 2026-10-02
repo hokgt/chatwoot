@@ -1570,6 +1570,14 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/decision/chat_response_parser_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/decision/decisions_response_mapper_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/decision/runner_spec.rb
+      # Step 2 — proof that Model 1 (the isolated Decision Runner) emits a STRUCTURED, product-
+      # related candidate via the chat_completions structured-output path: intents + product/
+      # variant typed slots + language survive normalization + capability intersection losslessly;
+      # every slot stays a RAW untrusted candidate (a smuggled top-level/slot authority field or an
+      # unknown candidate_type folds closed); the plan is consumable by the Backend adapter under a
+      # matching explicit capability map (unconfigured/malformed/mismatch fail closed); and a source
+      # scan proves the path activates no gate/shadow/cutover and wires nothing to runtime/backend.
+      - spec/custom/wijaya/batteries/marine_ai/decision/model1_structured_product_candidate_spec.rb
       # Phase 2 / Stage 4 — DEFAULT-OFF asynchronous shadow integration specs (config default-off +
       # exact-true-only + fail-closed capability parsing; adapter enabled-only/id-order/stable
       # scenario_<id>/registry-only capabilities/bounds/ownership; execution relationship + public-
