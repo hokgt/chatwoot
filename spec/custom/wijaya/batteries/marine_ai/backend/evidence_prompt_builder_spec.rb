@@ -42,6 +42,18 @@ RSpec.describe Marine::Backend::EvidencePromptBuilder do
     expect(prompt[:system]).not_to include('SAME language')
   end
 
+  it 'requires the validated variant code to appear in a variant-supported reply' do
+    instruction = described_class::SYSTEM_INSTRUCTION
+    expect(instruction).to match(/MUST state that variant's code/)
+    expect(instruction).to match(/exactly as the packet gives it/)
+    expect(prompt[:system]).to include(instruction)
+  end
+
+  it 'requires the authorized price display amount, currency, and unit of measure in a price reply' do
+    expect(described_class::SYSTEM_INSTRUCTION)
+      .to match(/MUST include the packet's authorized display amount, currency, and unit of measure/)
+  end
+
   it 'contains no CandidatePlan / raw DB / internal input' do
     %w[raw_candidate candidate_type family_mention explicit_child_code slot_operations schema_version marine_decision_v1 SELECT].each do |forbidden|
       expect(prompt[:system]).not_to include(forbidden)
