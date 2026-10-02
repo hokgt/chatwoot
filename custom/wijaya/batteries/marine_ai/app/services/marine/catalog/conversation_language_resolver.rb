@@ -14,8 +14,9 @@
 #   1. Current turn WITH meaningful linguistic evidence is authoritative (permits intentional
 #      switching): the provider language read from that same turn wins, else a reliable local
 #      detection of it. "Meaningful evidence" is generic — enough word tokens to be language-bearing
-#      AFTER the turn's own extracted entity/code/attribute candidates are removed — never a
-#      language/phrase/product list.
+#      AFTER the turn's own extracted entity/code/attribute candidates AND the caller-supplied trusted
+#      catalog tokens (row-derived family codes/names) are removed — never a language/phrase/product
+#      list; the trusted tokens are injected by the caller, so the resolver still reads no catalog.
 #   2. An entity/code/slot-only turn (no meaningful evidence once its candidates are removed) trusts
 #      NEITHER the provider guess NOR a local detection of the bare entity, and instead inherits the
 #      nearest reliable prior CUSTOMER-role turn from the bounded context (assistant/history turns
@@ -66,13 +67,28 @@ module Marine
       #                       so a message that is EXACTLY such a candidate carries no linguistic
       #                       evidence, while a candidate PLUS real wording still does. Bounded
       #                       extractor fields only — never a product/phrase list.
-      def initialize(text:, provider_language: nil, context: [], configured_language: nil, entity_candidates: [])
+      # trusted_tokens      - trusted catalog-derived tokens (row-derived family codes/names) supplied
+      #                       by the CALLER so a product-name mention is never counted as linguistic
+      #                       evidence regardless of how complete the extractor's entity fields were:
+      #                       their tokens are subtracted from the current turn alongside
+      #                       entity_candidates. The resolver stays pure — it never reads the catalog;
+      #                       the caller does the bounded lookup and injects the result. Data-driven
+      #                       tokens only — never a product/phrase list. Defaults empty (unchanged).
+      # rubocop:disable Metrics/ParameterLists
+      # trusted_tokens is caller-injected, data-driven evidence (not behaviour): it keeps the
+      # resolver pure (no DB/provider calls) while letting the caller subtract catalog-derived
+      # tokens. The keyword API is intentionally flat rather than wrapped in a params object so
+      # each piece of evidence stays independently named and documented above; not refactored.
+      def initialize(text:, provider_language: nil, context: [], configured_language: nil,
+                     entity_candidates: [], trusted_tokens: [])
         @text = text.to_s
         @provider_language = normalize(provider_language)
         @context = Array(context)
         @configured_language = normalize(configured_language)
         @entity_candidates = Array(entity_candidates)
+        @trusted_tokens = Array(trusted_tokens)
       end
+      # rubocop:enable Metrics/ParameterLists
 
       def resolve
         current = current_turn_language
@@ -100,11 +116,13 @@ module Marine
         @provider_language || detected_reliable(@text)
       end
 
-      # An entity/code/slot-only turn: once the turn's own extracted entity candidates are removed,
-      # too few word tokens remain to be language-bearing. This is the condition — a scope label alone
-      # never erases the authority of a genuinely meaningful current sentence.
+      # An entity/code/slot-only turn: once the turn's own extracted entity candidates AND the
+      # caller-supplied trusted catalog tokens are removed, too few word tokens remain to be
+      # language-bearing. This is the condition — a scope label alone never erases the authority of a
+      # genuinely meaningful current sentence. Trusting the injected catalog tokens closes the gap where
+      # the extractor's entity fields were incomplete yet a product name still sits in the turn.
       def entity_only?
-        (text_tokens - candidate_tokens).length < MIN_MEANINGFUL_TOKENS
+        (text_tokens - candidate_tokens - trusted_token_set).length < MIN_MEANINGFUL_TOKENS
       end
 
       # Distinct 3+ char alphanumeric tokens in the current turn.
@@ -115,6 +133,11 @@ module Marine
       # The union of 3+ char alphanumeric tokens across the bounded extracted candidates.
       def candidate_tokens
         @entity_candidates.each_with_object(Set.new) { |candidate, set| set.merge(token_set(candidate)) }
+      end
+
+      # The union of 3+ char alphanumeric tokens across the caller-supplied trusted catalog tokens.
+      def trusted_token_set
+        @trusted_tokens.each_with_object(Set.new) { |token, set| set.merge(token_set(token)) }
       end
 
       def token_set(value)

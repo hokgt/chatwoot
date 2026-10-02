@@ -80,6 +80,54 @@ RSpec.describe Marine::Catalog::ConversationLanguageResolver do
     end
   end
 
+  describe 'trusted catalog tokens close the incomplete-extraction gap (session defect repro)' do
+    # The reported defect: an all-Indonesian conversation, the turn "satin velvet kakak" (a product
+    # name plus a term of address), answered in the WRONG language because the provider guessed "no"
+    # for that turn and the extractor had returned an EMPTY family_mention, so the product-name tokens
+    # survived as "linguistic evidence". The caller now injects the trusted catalog tokens for the
+    # product name so those tokens are subtracted and the turn correctly inherits the prior customer
+    # language. Synthetic — "no" stands in for the volatile provider guess.
+    it 'subtracts injected trusted tokens so the product-name turn inherits the Indonesian prior history' do
+      detections['halo kak mau tanya produknya'] = reliable('id')
+
+      result = resolve(text: 'satin velvet kakak', provider_language: 'no', entity_candidates: [],
+                       trusted_tokens: %w[satin velvet], context: [user('halo kak mau tanya produknya')])
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:prior_customer)
+    end
+
+    # Companion regression guard: with NO trusted tokens AND the same empty extraction, the old wrong
+    # behavior still occurs — the two product-name tokens count as evidence and the volatile provider
+    # guess wins. This proves the injected trusted tokens are exactly what closes the gap.
+    it 'without trusted tokens the empty-extraction turn still takes the volatile provider guess (the bug)' do
+      detections['halo kak mau tanya produknya'] = reliable('id')
+
+      result = resolve(text: 'satin velvet kakak', provider_language: 'no', entity_candidates: [],
+                       context: [user('halo kak mau tanya produknya')])
+
+      expect(result.language).to eq('no')
+      expect(result.reason).to eq(:current_turn)
+    end
+
+    it 'still honors an intentional switch: an English sentence that NAMES a product keeps "en"' do
+      # "is satin velvet available in blue please" subtracts the product tokens yet retains enough
+      # meaningful wording (available / blue / please) to stay an authoritative current-turn switch.
+      result = resolve(text: 'is satin velvet available in blue please', provider_language: 'en',
+                       trusted_tokens: %w[satin velvet], context: [user('halo kak mau tanya produknya')])
+
+      expect(result.language).to eq('en')
+      expect(result.reason).to eq(:current_turn)
+    end
+
+    it 'an entity-only product-name turn with NO history fails closed to nil' do
+      result = resolve(text: 'satin velvet kakak', provider_language: 'no', trusted_tokens: %w[satin velvet])
+
+      expect(result.language).to be_nil
+      expect(result.reason).to eq(:unresolved)
+    end
+  end
+
   describe 'meaningful current turn is authoritative (intentional switching)' do
     it 'keeps the current-turn provider language for a meaningful Indonesian message' do
       result = resolve(text: 'Berapa harga produk ini?', provider_language: 'id')

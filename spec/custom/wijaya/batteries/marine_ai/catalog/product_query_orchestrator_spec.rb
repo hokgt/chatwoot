@@ -1253,6 +1253,59 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
     end
   end
 
+  # The orchestrator sources the resolver's trusted catalog tokens per turn, data-driven, from the
+  # family repository: each meaningful turn token is searched against the active families and the
+  # matched rows' code/name tokens are injected so a product-name turn with an EMPTY extraction (the
+  # reported session defect) is not mistaken for linguistic evidence. Catalog unavailability degrades
+  # to NO trusted tokens — the language path never raises and the legacy per-turn behavior stands.
+  describe '#process trusted catalog tokens (per-turn repository lookup)' do
+    subject(:orchestrator) do
+      described_class.new(
+        intent_extractor: extractor,
+        repositories: { family: family_repository, variant: variant_repository, price: price_repository, stock: stock_repository },
+        variant_resolver: variant_resolver
+      )
+    end
+
+    let(:extractor) { instance_double(Marine::Catalog::IntentExtractor) }
+
+    before do
+      allow(Marine::Llm::LanguageDetector).to receive(:new) do |text|
+        result = case text.to_s
+                 when 'halo kak mau tanya produknya' then { language: 'id', reliable: true, confidence: 0.99 }
+                 else { language: 'unknown', reliable: false, confidence: 0.0 }
+                 end
+        instance_double(Marine::Llm::LanguageDetector, detect: result)
+      end
+      # EMPTY family_mention (the extractor miss) with a volatile provider guess for the product-name turn.
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: nil, customer_language: 'no')
+      )
+    end
+
+    it 'injects repository-derived trusted tokens so the product-name turn inherits the Indonesian prior history' do
+      allow(family_repository).to receive(:active_candidates) do |query:, **_|
+        %w[satin velvet].include?(query) ? [{ code: 'SV', name: 'Satin Velvet' }] : []
+      end
+
+      plan = orchestrator.process(text: 'satin velvet kakak',
+                                  context: [{ role: 'user', content: 'halo kak mau tanya produknya' }], flow: nil)
+
+      expect(plan[:language]).to eq('id')
+      expect(family_repository).to have_received(:active_candidates).with(query: 'satin', limit: 50)
+      expect(family_repository).to have_received(:active_candidates).with(query: 'velvet', limit: 50)
+    end
+
+    it 'degrades to NO trusted tokens on catalog unavailability (legacy per-turn provider guess stands)' do
+      allow(family_repository).to receive(:active_candidates).and_raise(Marine::Catalog::Errors::CatalogUnavailableError)
+
+      plan = orchestrator.process(text: 'satin velvet kakak',
+                                  context: [{ role: 'user', content: 'halo kak mau tanya produknya' }], flow: nil)
+
+      expect(plan[:language]).to eq('no')
+    end
+  end
+
   describe '#process end-to-end: real extractor answer-shape normalization drives routing' do
     subject(:orchestrator) do
       described_class.new(
