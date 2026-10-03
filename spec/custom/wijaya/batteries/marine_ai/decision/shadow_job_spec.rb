@@ -373,4 +373,137 @@ RSpec.describe Marine::Decision::ShadowJob do
       job.perform(1, 3, 5, 9)
     end
   end
+
+  # Langkah 3 observability — the Model 2 Result is OBSERVED (projected to a bounded status/reason
+  # aggregate counter) but NEVER delivered. These examples pin: a genuine deep-frozen Result projects
+  # to a privacy-safe observation and records ONE aggregate per delivery under an INDEPENDENT job_id
+  # marker; the raw Result object is never handed to the store; a non-Result / Redis failure is
+  # swallowed without disturbing the Decision metric or the primary flow; and perform stays nil.
+  describe 'model 2 aggregate observability (Langkah 3)' do
+    let(:authority_result) { double('authority_result') }
+
+    def model2_result(status, reason)
+      Marine::Backend::Model2ShadowExecution::Result.new(status: status, reason: reason).freeze
+    end
+
+    def stub_model2(returns:)
+      model2 = instance_double(Marine::Backend::Model2ShadowExecution, call: returns)
+      allow(Marine::Backend::Model2ShadowExecution).to receive(:new).and_return(model2)
+      model2
+    end
+
+    # In-memory NX marker store keyed exactly as the job builds it, so both the Decision and the
+    # Model 2 markers (distinct prefixes, same job_id) are exercised for real.
+    def fake_marker_store
+      store = {}
+      allow(Redis::Alfred).to receive(:set) do |key, value, nx:, ex:|
+        expect(nx).to be(true)
+        expect(ex).to eq(described_class::COMPLETION_TTL_SECONDS)
+        store.key?(key) ? nil : (store[key] = value) && true
+      end
+      allow(Redis::Alfred).to receive(:delete_if_equals) { |key, value| store.delete(key) if store[key] == value }
+      store
+    end
+
+    before do
+      stub_loads
+      stub_execution(returns: result)
+      allow(Marine::Decision::ShadowObservation).to receive(:build).and_return(double('decision_observation'))
+      allow(Marine::Decision::ShadowMetricsStore).to receive(:record).and_return(true)
+      allow(Marine::Backend::AuthorityShadowExecution).to receive(:new)
+        .and_return(instance_double(Marine::Backend::AuthorityShadowExecution, call: authority_result))
+    end
+
+    it 'projects a genuine accepted Result and records ONE aggregate carrying only status/reason' do
+      stub_model2(returns: model2_result(:accepted, :deliverable_wording))
+      fake_marker_store
+      recorded = nil
+      expect(Marine::Backend::Model2ShadowMetricsStore).to(receive(:record).once do |obs|
+        recorded = obs
+        true
+      end)
+
+      expect(job.perform(1, 3, 5, 9)).to be_nil
+      expect(recorded).to be_a(Marine::Backend::Model2ShadowObservation)
+      expect(recorded.status).to eq(:accepted)
+      expect(recorded.reason).to eq(:deliverable_wording)
+    end
+
+    it 'records a skipped.not_exact_price aggregate for a skipped Result' do
+      stub_model2(returns: model2_result(:skipped, :not_exact_price))
+      fake_marker_store
+      recorded = nil
+      expect(Marine::Backend::Model2ShadowMetricsStore).to(receive(:record).once do |obs|
+        recorded = obs
+        true
+      end)
+
+      job.perform(1, 3, 5, 9)
+      expect([recorded.status, recorded.reason]).to eq(%i[skipped not_exact_price])
+    end
+
+    it 'never hands the raw Model 2 Result object to the store (projection only)' do
+      raw = model2_result(:rejected, :fact_unverified)
+      stub_model2(returns: raw)
+      fake_marker_store
+      expect(Marine::Backend::Model2ShadowMetricsStore).to receive(:record) do |obs|
+        expect(obs).not_to be(raw)
+        expect(obs).to be_a(Marine::Backend::Model2ShadowObservation)
+        true
+      end
+
+      job.perform(1, 3, 5, 9)
+    end
+
+    it 'records the Model 2 aggregate at most once for a duplicate delivery (independent job_id marker)' do
+      stub_model2(returns: model2_result(:accepted, :deliverable_wording))
+      store = fake_marker_store
+      expect(Marine::Backend::Model2ShadowMetricsStore).to receive(:record).once.and_return(true)
+
+      job.perform(1, 3, 5, 9)
+      job.perform(1, 3, 5, 9) # same instance => same job_id => model 2 redelivery is skipped
+
+      expect(store.keys).to include("#{described_class::MODEL2_COMPLETION_KEY_PREFIX}:#{job.job_id}")
+    end
+
+    it 'claims the Decision and Model 2 aggregates under INDEPENDENT job_id markers (distinct prefixes)' do
+      stub_model2(returns: model2_result(:accepted, :deliverable_wording))
+      store = fake_marker_store
+      allow(Marine::Backend::Model2ShadowMetricsStore).to receive(:record).and_return(true)
+
+      job.perform(1, 3, 5, 9)
+
+      expect(store.keys).to contain_exactly(
+        "#{described_class::COMPLETION_KEY_PREFIX}:#{job.job_id}",
+        "#{described_class::MODEL2_COMPLETION_KEY_PREFIX}:#{job.job_id}"
+      )
+    end
+
+    it 'records nothing for a non-Result (fails closed, no raise) and leaves the Decision metric intact' do
+      stub_model2(returns: double('not_a_result'))
+      fake_marker_store
+      expect(Marine::Backend::Model2ShadowMetricsStore).not_to receive(:record)
+
+      expect { expect(job.perform(1, 3, 5, 9)).to be_nil }.not_to raise_error
+      expect(Marine::Decision::ShadowMetricsStore).to have_received(:record) # decision path still ran
+    end
+
+    it 'swallows a Model 2 metrics-store failure without re-raising or disturbing the Decision metric' do
+      stub_model2(returns: model2_result(:accepted, :deliverable_wording))
+      fake_marker_store
+      allow(Marine::Backend::Model2ShadowMetricsStore).to receive(:record).and_raise(StandardError, 'redis down')
+      expect(ChatwootExceptionTracker).not_to receive(:new)
+
+      expect { expect(job.perform(1, 3, 5, 9)).to be_nil }.not_to raise_error
+    end
+
+    it 'records no Model 2 aggregate when the authority hook returned nil (no fake comparison)' do
+      allow(Marine::Backend::AuthorityShadowExecution).to receive(:new)
+        .and_return(instance_double(Marine::Backend::AuthorityShadowExecution, call: nil))
+      expect(Marine::Backend::Model2ShadowExecution).not_to receive(:new)
+      expect(Marine::Backend::Model2ShadowMetricsStore).not_to receive(:record)
+
+      job.perform(1, 3, 5, 9)
+    end
+  end
 end

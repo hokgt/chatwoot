@@ -31,6 +31,10 @@ class Marine::Decision::ShadowJob < ApplicationJob
   # Versioned, feature-specific completion-marker prefix — never a broad pattern; the only
   # dynamic component is the validated ActiveJob job_id.
   COMPLETION_KEY_PREFIX = 'marine:decision:shadow:done:v1'.freeze
+  # Independent completion-marker prefix for the Langkah 3 Model 2 aggregate (same job_id-only
+  # pattern, distinct namespace) so the Model 2 metric records exactly once per delivery WITHOUT
+  # colliding with the Decision metric's marker.
+  MODEL2_COMPLETION_KEY_PREFIX = 'marine:model2:shadow:done:v1'.freeze
   # Same bounded 14-day lifetime as the metrics retention window.
   COMPLETION_TTL_SECONDS = Marine::Decision::ShadowMetricsStore::TTL_SECONDS
   # A bounded UUID/job-id shape: the default ActiveJob job_id is a 36-char UUID; this allows a
@@ -85,22 +89,67 @@ class Marine::Decision::ShadowJob < ApplicationJob
   # Langkah 3 (Evidence Packet -> Model 2 SHADOW) — the read-only, independently-rescued hook that
   # REUSES the Phase 2A AuthorityCoordinator::Result. It runs ONLY the accepted exact-price evidence
   # packet through the existing Response Generator (Model 2) for shadow observation; every other
-  # outcome skips with zero Model 2 calls. NON-DELIVERING: the bounded closed result is discarded and
-  # any failure is swallowed, so it can never affect the Authority shadow, Decision metrics, or the
-  # primary flow. A nil authority result (no-work / relationship fail) runs nothing.
+  # outcome skips with zero Model 2 calls. NON-DELIVERING: the bounded closed result is OBSERVED
+  # (projected to an aggregate status/reason counter) but never delivered, and any failure is
+  # swallowed, so it can never affect the Authority shadow, Decision metrics, or the primary flow. A
+  # nil authority result (no-work / relationship fail) runs nothing.
   def run_model2_shadow(records, authority_result)
     return if authority_result.nil?
 
-    Marine::Backend::Model2ShadowExecution.new(
+    result = Marine::Backend::Model2ShadowExecution.new(
       account: records[:account],
       assistant: records[:assistant],
       conversation: records[:conversation],
       message: records[:message],
       authority_result: authority_result
     ).call
+    record_model2_metrics(result)
     nil
   rescue StandardError
     nil
+  end
+
+  # Observe the deep-frozen Model 2 Result: project it to a bounded status/reason observation and
+  # record the AGGREGATE counter once per ActiveJob delivery. Only the closed status/reason pair is
+  # read — never the generated text, Evidence Packet, Candidate Plan, or any id. Independently
+  # rescued so a projection or Redis failure can never affect the Model 2 execution, the Authority
+  # shadow, the Decision metrics, or the primary flow.
+  def record_model2_metrics(result)
+    observation = Marine::Backend::Model2ShadowObservation.build(result: result)
+    record_model2_once(observation)
+    nil
+  rescue StandardError
+    nil
+  end
+
+  # Record the Model 2 aggregate at most once per ActiveJob delivery, reusing the same job_id-only
+  # NX completion-marker pattern as the Decision metric but under an independent namespace: claim the
+  # marker AFTER the valid observation but BEFORE the increment; a duplicate/failed claim skips the
+  # increment; a failed record releases only this owner's marker so a safe retry can record.
+  def record_model2_once(observation)
+    key = model2_completion_key(job_id)
+    return if key.nil? # invalid job id: no idempotent marker, so record NOTHING.
+
+    owner = SecureRandom.hex(16)
+    return unless claim_marker(key, owner) # duplicate/failed claim: skip the increment.
+
+    release_marker(key, owner) unless record_model2_metric(observation)
+  end
+
+  # Record the Model 2 aggregate counter. True ONLY on a genuine write; a false return or any raise
+  # folds to false so the caller releases the marker for a safe retry.
+  def record_model2_metric(observation)
+    Marine::Backend::Model2ShadowMetricsStore.record(observation) == true
+  rescue StandardError
+    false
+  end
+
+  # The versioned Model 2 completion-marker key for a validated job_id, or nil when the job_id is not
+  # a bounded UUID/job-id token. Only the job_id is used — never a customer/message/conversation id.
+  def model2_completion_key(identifier)
+    return nil unless identifier.is_a?(String) && identifier.match?(JOB_ID_PATTERN)
+
+    "#{MODEL2_COMPLETION_KEY_PREFIX}:#{identifier}"
   end
 
   # Convert the deep-frozen comparison into a privacy-safe observation and record AGGREGATE

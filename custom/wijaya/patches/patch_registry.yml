@@ -1263,9 +1263,15 @@ patches:
       # shadow execution reuses the Phase 2A AuthorityCoordinator::Result and returns ONLY a bounded,
       # deep-frozen closed status/reason (never the generated text). Wired after AuthorityShadowExecution
       # in Marine::Decision::ShadowJob, independently rescued; no state write, no delivery, no cutover.
+      # Observability: the closed Result is projected by Model2ShadowObservation to the two aggregate-safe
+      # codes (status, reason) and recorded by Model2ShadowMetricsStore as pure integer counters in a
+      # date-only UTC daily key (NO account/assistant/conversation/message id, text, price, or code),
+      # idempotent per ActiveJob delivery via a job_id-only NX marker; aggregate-only, never delivering.
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_reply_generator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_fact_verifier.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/model2_shadow_execution.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/model2_shadow_observation.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/model2_shadow_metrics_store.rb
       # Fase 3A-2 — Product Shadow Authority. DEFAULT-OFF, fail-closed observation-only layer that
       # compares the LEGACY Marine::Catalog::IntentExtractor product outcome against the Fase 3A-1
       # CandidatePlanToProductIntentAdapter outcome, aggregates privacy-safe metrics, and stages a
