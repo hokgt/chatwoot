@@ -909,6 +909,10 @@ patches:
       - custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/hooks.rb
       - custom/wijaya/batteries/whatsapp_web_inbox/public_routes.rb
       - custom/wijaya/batteries/whatsapp_web_inbox/app/controllers/public/api/v1/wijaya/whatsapp_web/provider_events_controller.rb
+      # Resend fix: a failed whatsapp_web outgoing message re-emits a real
+      # message.created connector delivery instead of the native update-only retry.
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/retry_delivery.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/WhatsappWebFailedMessageNotice.vue
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/channel/whatsappWebChannel.js
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/whatsappWebInbox.js
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/connectionStatus.js
@@ -938,6 +942,9 @@ patches:
         # Backend transport-parity hooks (Ruby #-comment marker blocks).
         app/controllers/public/api/v1/inboxes/messages_controller.rb: 1
         config/routes.rb: 1
+        # Resend fix: retry seam (backend) + failed-message QR shortcut (frontend, 2 blocks).
+        app/controllers/api/v1/accounts/conversations/messages_controller.rb: 1
+        app/javascript/dashboard/components-next/message/MessageError.vue: 2
     core_hook_touchpoints:
       # Marker-wrapped migration (db/migrate is outside the app/config addition scan).
       - db/migrate/20261002000000_create_wijaya_whatsapp_web_inboxes.rb
@@ -949,6 +956,13 @@ patches:
       # Feature C: a battery-owned marker in the public/api/v1 routes namespace
       # mounting the signed provider status callback (public_routes.rb).
       - config/routes.rb
+      # Resend fix: the conversation message retry action dispatches (fail-open) to the
+      # battery, which re-emits a real message.created connector delivery for a
+      # whatsapp_web outgoing message; the failed-message bubble mounts the battery QR
+      # shortcut notice. Both hook modules resolve through the core Hooks dispatcher /
+      # frontend helper, so unrelated inboxes keep native behaviour.
+      - app/controllers/api/v1/accounts/conversations/messages_controller.rb
+      - app/javascript/dashboard/components-next/message/MessageError.vue
       # Generated schema touchpoint for the mapping table.
       - db/schema.rb
       # Generic battery route-module registration (ROUTE_MODULES).
@@ -979,7 +993,11 @@ patches:
       - spec/custom/wijaya/batteries/whatsapp_web_inbox/inboxes_controller_spec.rb
       - spec/custom/wijaya/batteries/whatsapp_web_inbox/hooks_spec.rb
       - spec/custom/wijaya/batteries/whatsapp_web_inbox/provider_events_controller_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/retry_delivery_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/messages_controller_retry_spec.rb
       - custom/wijaya/batteries/whatsapp_web_inbox/patch/test_apply_patches.py
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/whatsappWebDisconnectError.spec.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/WhatsappWebFailedMessageNotice.spec.js
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/whatsappWebChannel.spec.js
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/channelFactory.spec.js
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/isWhatsappWebInbox.spec.js

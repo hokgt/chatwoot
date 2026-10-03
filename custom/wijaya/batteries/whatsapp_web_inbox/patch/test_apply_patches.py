@@ -169,6 +169,9 @@ class PatchApplicatorTest(unittest.TestCase):
             # Backend core hook markers (Ruby #-comment blocks).
             "app/controllers/public/api/v1/inboxes/messages_controller.rb": 1,
             "config/routes.rb": 1,
+            # Resend fix: conversation retry seam + failed-message QR shortcut mount.
+            "app/controllers/api/v1/accounts/conversations/messages_controller.rb": 1,
+            "app/javascript/dashboard/components-next/message/MessageError.vue": 2,
         }
         by_path = {f["path"]: f for f in BLOCKS["files"]}
         self.assertEqual(set(by_path), set(expected))

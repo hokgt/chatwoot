@@ -63,6 +63,10 @@
         "CANCEL": "Cancel"
       },
       "ERROR": "That action could not be completed. Please try again."
+    },
+    "FAILED_MESSAGE": {
+      "DISCONNECTED": "WhatsApp disconnected. Please rescan the QR code.",
+      "RESCAN_QR": "Rescan QR code"
     }
   }
 }

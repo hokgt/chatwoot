@@ -102,6 +102,30 @@
           "block": "        # WIJAYA_CUSTOM_START whatsapp_web_inbox\n        begin\n          require Rails.root.join('custom/wijaya/batteries/whatsapp_web_inbox/public_routes').to_s\n          Wijaya::Batteries::WhatsappWebInbox::PublicRoutes.draw(self)\n        rescue StandardError, ScriptError => e\n          Rails.logger.error(\"[Wijaya] whatsapp_web public routes failed: #{e.class}\")\n        end\n        # WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
         }
       ]
+    },
+    {
+      "path": "app/controllers/api/v1/accounts/conversations/messages_controller.rb",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "    return if message.blank?\n\n",
+          "block": "    # WIJAYA_CUSTOM_START whatsapp_web_inbox\n    if defined?(Wijaya::Batteries::Core::Hooks) &&\n       Wijaya::Batteries::Core::Hooks.dispatch(:whatsapp_web_inbox, :retry_message_delivery,\n                                               default: false, message: message)\n      return\n    end\n\n    # WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/components-next/message/MessageError.vue",
+      "expected_blocks": 2,
+      "blocks": [
+        {
+          "anchor": "import { ORIENTATION, MESSAGE_STATUS } from './constants';\n",
+          "block": "// WIJAYA_CUSTOM_START whatsapp_web_inbox\nimport WhatsappWebFailedMessageNotice from '@wijaya/whatsapp_web_inbox/frontend/WhatsappWebFailedMessageNotice.vue';\n// WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        },
+        {
+          "anchor": "      <Icon icon=\"i-lucide-refresh-ccw\" class=\"text-n-ruby-11 size-[14px]\" />\n    </button>\n",
+          "block": "    <!-- WIJAYA_CUSTOM_START whatsapp_web_inbox -->\n    <WhatsappWebFailedMessageNotice :error=\"error\" />\n    <!-- WIJAYA_CUSTOM_END whatsapp_web_inbox -->\n"
+        }
+      ]
     }
   ]
 }

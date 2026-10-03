@@ -37,6 +37,14 @@ module Wijaya::Batteries::WhatsappWebInbox
       nil
     end
 
+    # Native message retry seam. For a whatsapp_web Channel::Api outgoing message, re-emit
+    # a real message.created connector delivery (RetryDelivery) instead of the native
+    # update-only retry that never reaches the recipient. Returns true when handled so the
+    # native path is skipped; false for any other inbox/message so native retry runs.
+    def retry_message_delivery(message:)
+      RetryDelivery.perform(message: message)
+    end
+
     def whatsapp_web_channel?(channel)
       return false unless channel.respond_to?(:additional_attributes)
 

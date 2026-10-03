@@ -14,4 +14,13 @@ export function isWhatsappWebInbox(inbox) {
   );
 }
 
+// True for the disconnected-session send failure — the connector answers the signed
+// api_inbox webhook with a 503 when the linked phone is logged out, which Webhooks::Trigger
+// stores verbatim as the message external_error ("503 Service Unavailable"). Narrow on
+// purpose: other failures (e.g. a 4xx connector rejection) keep the native error display.
+export function isWhatsappWebDisconnectError(error) {
+  if (typeof error !== 'string' || error === '') return false;
+  return /^503\b/.test(error) || /service unavailable/i.test(error);
+}
+
 export default isWhatsappWebInbox;

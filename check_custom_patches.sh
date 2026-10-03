@@ -410,6 +410,8 @@ require_file custom/wijaya/batteries/whatsapp_web_inbox/app/controllers/api/v1/a
 require_file custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/hooks.rb
 require_file custom/wijaya/batteries/whatsapp_web_inbox/public_routes.rb
 require_file custom/wijaya/batteries/whatsapp_web_inbox/app/controllers/public/api/v1/wijaya/whatsapp_web/provider_events_controller.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/retry_delivery.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/WhatsappWebFailedMessageNotice.vue
 require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/channel/whatsappWebChannel.js
 require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/whatsappWebInbox.js
 require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/connectionStatus.js
@@ -434,6 +436,10 @@ require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/safe_dto_spec.rb
 require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/inboxes_controller_spec.rb
 require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/hooks_spec.rb
 require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/provider_events_controller_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/retry_delivery_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/messages_controller_retry_spec.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/whatsappWebDisconnectError.spec.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/WhatsappWebFailedMessageNotice.spec.js
 # Idempotent core-hook applicator (reattaches the marker blocks after an upstream pull),
 # its block spec, and its tests.
 require_file custom/wijaya/batteries/whatsapp_web_inbox/patch/apply_patches.py
@@ -449,6 +455,12 @@ require_marker_count app/controllers/public/api/v1/inboxes/messages_controller.r
 require_marker_count app/controllers/public/api/v1/inboxes/messages_controller.rb "WIJAYA_CUSTOM_END whatsapp_web_inbox" 1
 require_marker_count config/routes.rb "WIJAYA_CUSTOM_START whatsapp_web_inbox" 1
 require_marker_count config/routes.rb "WIJAYA_CUSTOM_END whatsapp_web_inbox" 1
+# Resend fix: conversation message retry seam (1 block) + failed-message QR shortcut
+# mount in the components-next message bubble (2 blocks: import + template).
+require_marker_count app/controllers/api/v1/accounts/conversations/messages_controller.rb "WIJAYA_CUSTOM_START whatsapp_web_inbox" 1
+require_marker_count app/controllers/api/v1/accounts/conversations/messages_controller.rb "WIJAYA_CUSTOM_END whatsapp_web_inbox" 1
+require_marker_count app/javascript/dashboard/components-next/message/MessageError.vue "WIJAYA_CUSTOM_START whatsapp_web_inbox" 2
+require_marker_count app/javascript/dashboard/components-next/message/MessageError.vue "WIJAYA_CUSTOM_END whatsapp_web_inbox" 2
 # Marker-wrapped migration (1 block) + the five minimal native frontend seams, each
 # validated at its EXACT expected block count (not mere presence): a START and an END
 # per block. Counts must match the applicator's blocks.json and apply_patches.py.
