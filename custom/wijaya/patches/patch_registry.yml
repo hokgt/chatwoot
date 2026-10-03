@@ -126,6 +126,56 @@ patches:
       - spec/enterprise/policies/conversation_policy_spec.rb
       - spec/enterprise/services/enterprise/conversations/permission_filter_service_spec.rb
       - spec/finders/conversation_finder_spec.rb
+
+  - id: trusted_internal_webhook
+    name: Trusted Internal API-Inbox Webhook Delivery
+    battery: custom/wijaya/batteries/trusted_internal_webhook
+    description: >
+      Lets the API-inbox webhook delivery path reach an EXPLICITLY trusted internal host
+      (the WhatsApp Web connector's Docker service name, e.g.
+      http://whatsapp-web-connector:3000/webhooks/chatwoot/<id>) that upstream's
+      Webhooks::Trigger -> SafeFetch/SsrfFilter now rejects with
+      "Hostname '<host>' has no public ip addresses". The battery is a default-deny,
+      configuration-driven allowlist that narrowly scopes this to ONLY api_inbox_webhook
+      deliveries whose destination host is trusted; everything else (account webhooks,
+      agent-bot webhooks, unlisted private hosts, all public URLs, every other SafeFetch
+      caller — uploads, avatars, website fetches) keeps the exact upstream SSRF-guarded
+      path. The trusted set is the union of (a) the configured connector host parsed from
+      WHATSAPP_WEB_CONNECTOR_URL via the already-validated WhatsappWebInbox::Config —
+      the exact host Provisioner#set_webhook_url builds the callback from — and
+      (b) WIJAYA_TRUSTED_INTERNAL_WEBHOOK_HOSTS (comma-separated, optional). Both default
+      empty, so with no WhatsApp Web connector configured NOTHING is trusted.
+      Policy matches the parsed URI host exactly and case-insensitively, rejects any URL
+      carrying userinfo, and never suffix-matches, so user@host / host@evil / case /
+      suffix tricks cannot widen access and it can never become arbitrary RFC1918 access.
+      Delivery performs EXACTLY ONE POST and follows NO redirects (a 3xx is surfaced as an
+      error, never followed to another host), preserving the signed HMAC headers, JSON
+      body, and open/read timeouts, and re-raises SafeFetch::HttpError / FetchError so the
+      native trigger's message-failure/logging behavior is identical to the public path.
+      The seam is a tiny marker-wrapped require + guarded call in lib/webhooks/trigger.rb:
+      the trust DECISION fails OPEN (any error -> native SafeFetch path) while the DELIVERY
+      fails CLOSED (a real transport/HTTP error propagates so the message is marked failed),
+      which is why it calls the battery directly rather than through the fail-open
+      Core::Hooks dispatcher (the dispatcher would swallow a genuine delivery error and
+      silently fall back to a doomed public request against the internal host).
+    custom_files:
+      - custom/wijaya/batteries/trusted_internal_webhook/policy.rb
+      - custom/wijaya/batteries/trusted_internal_webhook/delivery.rb
+      - custom/wijaya/batteries/trusted_internal_webhook/hooks.rb
+    core_hook_touchpoints:
+      # Marker-wrapped require (file top) + guarded deliver() call in #perform_request.
+      - lib/webhooks/trigger.rb
+      # Deployment note (NOT committed; docker-compose.deploy.yaml is host-local/gitignored
+      # like .env): WIJAYA_TRUSTED_INTERNAL_WEBHOOK_HOSTS=whatsapp-web-connector is set on
+      # the rails + sidekiq services as an explicit, auditable allowlist. This is OPTIONAL —
+      # the battery already derives the same host from WHATSAPP_WEB_CONNECTOR_URL — so no
+      # deployment config change is strictly required for the fix.
+    tests:
+      - spec/custom/wijaya/batteries/trusted_internal_webhook/policy_spec.rb
+      - spec/custom/wijaya/batteries/trusted_internal_webhook/delivery_spec.rb
+      - spec/custom/wijaya/batteries/trusted_internal_webhook/hooks_spec.rb
+      - spec/custom/wijaya/batteries/trusted_internal_webhook/trigger_integration_spec.rb
+
   - id: enterprise_extension_compat
     name: Enterprise Extension Custom Namespace Compat
     battery: custom/wijaya/batteries/enterprise_extension_compat

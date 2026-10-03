@@ -170,6 +170,10 @@ Style/ClassAndModuleChildren:
     - 'custom/wijaya/batteries/core/loader.rb'
     - 'custom/wijaya/batteries/core/hooks.rb'
     - 'custom/wijaya/batteries/core/routes.rb'
+    # WIJAYA: trusted_internal_webhook battery — required directly from lib/webhooks/trigger.rb.
+    - 'custom/wijaya/batteries/trusted_internal_webhook/policy.rb'
+    - 'custom/wijaya/batteries/trusted_internal_webhook/delivery.rb'
+    - 'custom/wijaya/batteries/trusted_internal_webhook/hooks.rb'
     - 'custom/wijaya/batteries/marine_ai/loader.rb'
     - 'custom/wijaya/batteries/meta_ads_team_routing/loader.rb'
     - 'custom/wijaya/batteries/meta_ads_team_routing/hooks.rb'

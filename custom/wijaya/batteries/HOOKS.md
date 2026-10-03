@@ -182,6 +182,41 @@ zero business logic — all logic lives under `custom/wijaya/batteries/<feature>
 - **Necessity** — required: these are the only creation-completion, availability-transition,
   presence-transition, and inbox/team membership seams; none carries feature logic.
 
+### 5b. `trusted_internal_webhook` → `deliver` (direct require, not the dispatcher)
+
+- **Call site** — `lib/webhooks/trigger.rb` (`#perform_request`), plus a marker-wrapped
+  top-of-file `require` of the battery hooks.
+- **Purpose** — allow the API-inbox webhook delivery path to reach an explicitly trusted
+  internal host (the WhatsApp Web connector Docker service, e.g.
+  `http://whatsapp-web-connector:3000/webhooks/chatwoot/<id>`) that upstream's
+  `SafeFetch`/`SsrfFilter` now rejects (`Hostname '…' has no public ip addresses`), without
+  weakening SSRF protection for any other webhook or SafeFetch caller.
+- **Flow** — `return if defined?(Wijaya::Batteries::TrustedInternalWebhook::Hooks) &&
+  Wijaya::Batteries::TrustedInternalWebhook::Hooks.deliver(url:, webhook_type:, body:,
+  headers:, timeout:)`. `deliver` returns `false` (native `SafeFetch.fetch` runs unchanged)
+  unless the webhook is `:api_inbox_webhook` AND its host is on the default-deny allowlist
+  (the `WHATSAPP_WEB_CONNECTOR_URL` host and/or `WIJAYA_TRUSTED_INTERNAL_WEBHOOK_HOSTS`);
+  for that one case it performs a single no-redirect POST (preserving the signed HMAC
+  headers/body/timeouts) and returns `true`.
+- **Native default** — `false` → the exact upstream `SafeFetch.fetch(...)` call runs. If the
+  battery require was dropped by an upstream merge, the `defined?` guard keeps the native
+  path.
+- **Fail mode** — **split**. The trust DECISION fails **open** (any error → `false` → native
+  SafeFetch). The DELIVERY fails **closed**: once a host is trusted, a transport/HTTP failure
+  is raised as a `SafeFetch::FetchError`/`HttpError` so `Webhooks::Trigger` marks the message
+  failed exactly as on the public path. This split is why the seam calls the battery
+  **directly** instead of through the fail-open `Core::Hooks` dispatcher — the dispatcher
+  would swallow a real delivery error and silently fall back to a doomed public request
+  against the internal host.
+- **Risk** — low/medium (touches the shared webhook delivery seam). Covered by the battery's
+  `policy_spec` (default-deny, webhook-type gating, canonicalization/userinfo/suffix/case
+  bypass), `delivery_spec` (single request, header/body preservation, no-redirect, error
+  mapping), `hooks_spec` (fail-open decision / fail-closed delivery), and
+  `trigger_integration_spec` (end-to-end: trusted reaches the stubbed private endpoint with
+  HMAC intact; account/unlisted/public all keep the native SafeFetch path).
+- **Necessity** — required: `perform_request` is the only point that chooses the delivery
+  transport, and the webhook type is known only here (not inside SafeFetch).
+
 ---
 
 ## Frontend hooks

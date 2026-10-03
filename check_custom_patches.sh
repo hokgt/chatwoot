@@ -138,6 +138,21 @@ for file in   app/builders/agent_builder.rb   app/controllers/api/v1/accounts/ag
   require_marker "$file" "WIJAYA_CUSTOM_END custom_roles_rbac"
 done
 
+# trusted_internal_webhook
+# Default-deny, config-driven allowlist that lets ONLY api_inbox webhooks reach an
+# explicitly trusted internal host (the WhatsApp Web connector). Two marker blocks in
+# lib/webhooks/trigger.rb: a top-of-file require and the guarded deliver() call in
+# #perform_request (asserted at exactly 2 START/END each so neither can be dropped).
+require_file custom/wijaya/batteries/trusted_internal_webhook/policy.rb
+require_file custom/wijaya/batteries/trusted_internal_webhook/delivery.rb
+require_file custom/wijaya/batteries/trusted_internal_webhook/hooks.rb
+require_marker_count lib/webhooks/trigger.rb "WIJAYA_CUSTOM_START trusted_internal_webhook" 2
+require_marker_count lib/webhooks/trigger.rb "WIJAYA_CUSTOM_END trusted_internal_webhook" 2
+require_file spec/custom/wijaya/batteries/trusted_internal_webhook/policy_spec.rb
+require_file spec/custom/wijaya/batteries/trusted_internal_webhook/delivery_spec.rb
+require_file spec/custom/wijaya/batteries/trusted_internal_webhook/hooks_spec.rb
+require_file spec/custom/wijaya/batteries/trusted_internal_webhook/trigger_integration_spec.rb
+
 # meta_ads_team_routing
 require_file custom/wijaya/batteries/meta_ads_team_routing/routing_rule.rb
 require_file custom/wijaya/batteries/meta_ads_team_routing/routing_service.rb
