@@ -1,0 +1,296 @@
+# frozen_string_literal: true
+
+require 'rails_helper'
+
+# Fase 3A-1 (isolated / mock-only) — marine_evidence_v1 PRODUCT Evidence Packet builder. A CLOSED,
+# FAIL-CLOSED validator: closed keys/enums, hard bounds, deep-frozen, product-only (no ERP
+# customer/payment blocks), no null facts. A malformed programmer-supplied evidence input raises
+# InvalidEvidenceInputError and never yields a partial packet. Clock injected. Nothing touches a
+# provider, DB, or state.
+RSpec.describe Marine::Backend::EvidencePacketBuilder do
+  subject(:builder) { described_class.new(clock: clock) }
+
+  let(:clock) { -> { Time.utc(2026, 9, 30, 12, 0, 0) } }
+  let(:invalid_error) { described_class::InvalidEvidenceInputError }
+  let(:price_fact) do
+    {
+      canonical: { variant_code: 'BD-4', currency: 'IDR', price_list_rate: '12500', uom: 'Yard' },
+      display: { product: 'BD-4', currency: 'Rp', amount: '12.500', uom: 'yard' },
+      policy_version: 'price-display-v1', source: 'catalog_price_repository', checked_at: '2026-09-30T12:00:00Z'
+    }
+  end
+  let(:stock_fact) { { status: 'available', source: 'stock_repository', checked_at: '2026-09-30T12:00:00Z' } }
+
+  let(:variant_slot) { { code: 'BD-4', display_name: nil, attributes: { 'Colour' => '4' }, resolution_status: 'resolved', source: 'marine_catalog' } }
+
+  def evidence_input(overrides = {})
+    {
+      scenario: { key: 'scenario_8', capabilities: %w[price stock catalog product_overview parent_info] },
+      intents: %w[price stock],
+      customer_language: 'id',
+      response_goals: %w[answer_price answer_stock],
+      validated_slots: {
+        product: { code: 'BD', name: 'Santorini', source: 'marine_catalog' },
+        variant: variant_slot
+      },
+      facts: { price: price_fact, stock: stock_fact },
+      missing_slots: [],
+      variant_candidates: []
+    }.merge(overrides)
+  end
+
+  # A price-only valid input (single resolved variant slot) for fact-shape mutation tests.
+  def price_input(overrides = {})
+    {
+      scenario: { key: 'scenario_5', capabilities: %w[price catalog] },
+      intents: %w[price], customer_language: 'id', response_goals: %w[answer_price],
+      validated_slots: { variant: variant_slot }, facts: { price: price_fact },
+      missing_slots: [], variant_candidates: []
+    }.merge(overrides)
+  end
+
+  describe 'a resolved combined price+stock packet' do
+    subject(:packet) { builder.build(evidence_input: evidence_input) }
+
+    it 'carries the frozen version, injected generated_at, scenario, both facts, and constraints' do
+      expect(packet[:evidence_version]).to eq('marine_evidence_v1')
+      expect(packet[:generated_at]).to eq('2026-09-30T12:00:00Z')
+      expect(packet[:scenario]).to eq(key: 'scenario_8', intents: %w[price stock], capabilities: %w[price stock catalog product_overview parent_info])
+      expect(packet[:facts][:price][:display][:amount]).to eq('12.500')
+      expect(packet[:facts][:stock][:status]).to eq('available')
+      expect(packet[:response_constraints]).to eq(max_paragraphs: 2, role: 'marine_sales_assistant', handoff_self_reference: true)
+      expect(packet[:customer_language]).to eq('id')
+    end
+
+    it 'uses only closed keys and NEVER emits ERP customer/payment blocks' do
+      expect(packet.keys).to match_array(%i[
+                                           evidence_version generated_at response_goals scenario validated_slots
+                                           facts missing_slots variant_candidates prohibited_claims response_constraints customer_language
+                                         ])
+      expect(packet).not_to have_key(:customer_resolution)
+      expect(packet).not_to have_key(:payment_policy)
+    end
+
+    it 'omits price+stock from prohibited_claims when both facts are present' do
+      expect(packet[:prohibited_claims]).to contain_exactly('exact_stock_quantity', 'warehouse_location', 'delivery_date', 'unverified_discount')
+    end
+
+    it 'is deeply frozen and within the 16 KiB serialized ceiling' do
+      expect(packet).to be_frozen
+      expect(packet[:facts][:price][:canonical]).to be_frozen
+      expect(JSON.generate(packet).bytesize).to be <= described_class::MAX_PACKET_BYTES
+    end
+  end
+
+  describe 'omission rules (unresolved slot -> no guessed/null facts)' do
+    subject(:packet) do
+      builder.build(evidence_input: evidence_input(
+        response_goals: %w[clarify_product], validated_slots: {}, facts: {}, missing_slots: %w[product]
+      ))
+    end
+
+    it 'omits the facts entirely and forbids price+stock claims' do
+      expect(packet[:facts]).to eq({})
+      expect(packet[:validated_slots]).to eq({})
+      expect(packet[:prohibited_claims]).to include('price', 'stock')
+      expect(packet[:missing_slots]).to eq(%w[product])
+    end
+  end
+
+  describe 'bounds' do
+    it 'caps attributes at 16 and each key/value at 80 bytes' do
+      big_attrs = (1..20).each_with_object({}) { |i, acc| acc["k#{i}"] = 'v' }
+      big_attrs['long'] = 'x' * 200
+      packet = builder.build(evidence_input: price_input(
+        validated_slots: { variant: { code: 'BD-4', attributes: big_attrs, resolution_status: 'resolved', source: 'marine_catalog' } }
+      ))
+      attrs = packet[:validated_slots][:variant][:attributes]
+      expect(attrs.size).to be <= 16
+      expect(attrs.values.map(&:bytesize).max).to be <= 80
+    end
+  end
+
+  describe 'fail-closed structural rejections' do
+    it 'rejects an unknown top-level input key' do
+      expect { builder.build(evidence_input: evidence_input(surprise: 1)) }.to raise_error(invalid_error)
+    end
+
+    it 'rejects an unknown or overflowing response goal' do
+      expect { builder.build(evidence_input: evidence_input(response_goals: %w[answer_price not_a_goal])) }.to raise_error(invalid_error)
+      expect do
+        builder.build(evidence_input: evidence_input(
+          response_goals: %w[answer_price answer_stock answer_product_overview clarify_product clarify_variant]
+        ))
+      end.to raise_error(invalid_error)
+    end
+
+    it 'rejects an unknown intent or an intent outside the scenario capabilities' do
+      expect { builder.build(evidence_input: evidence_input(intents: %w[price not_an_intent])) }.to raise_error(invalid_error)
+      expect do
+        builder.build(evidence_input: evidence_input(
+          scenario: { key: 'scenario_5',
+                      capabilities: %w[price] }, intents: %w[price stock], response_goals: %w[answer_price], facts: { price: price_fact }
+        ))
+      end.to raise_error(invalid_error)
+    end
+
+    it 'rejects a malformed scenario key' do
+      expect do
+        builder.build(evidence_input: evidence_input(scenario: { key: 'Scenario-8!', capabilities: %w[price stock] }))
+      end.to raise_error(invalid_error)
+    end
+
+    it 'rejects an unknown fact key and an unknown nested slot key' do
+      expect { builder.build(evidence_input: price_input(facts: { price: price_fact, mystery: {} })) }.to raise_error(invalid_error)
+      expect do
+        builder.build(evidence_input: price_input(validated_slots: { variant: variant_slot.merge(surprise: 1) }))
+      end.to raise_error(invalid_error)
+    end
+
+    it 'rejects a wrong slot source' do
+      expect do
+        builder.build(evidence_input: price_input(validated_slots: { variant: variant_slot.merge(source: 'live_erp') }))
+      end.to raise_error(invalid_error)
+    end
+  end
+
+  describe 'fail-closed fact-shape rejections' do
+    it 'rejects a wrong price source / policy_version' do
+      expect { builder.build(evidence_input: price_input(facts: { price: price_fact.merge(source: 'somewhere') })) }.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: price_input(facts: { price: price_fact.merge(policy_version: 'v2') })) }.to raise_error(invalid_error)
+    end
+
+    it 'rejects a non-UTC / malformed checked_at' do
+      expect do
+        builder.build(evidence_input: price_input(facts: { price: price_fact.merge(checked_at: '2026-09-30 12:00:00') }))
+      end.to raise_error(invalid_error)
+      expect do
+        builder.build(evidence_input: price_input(facts: { price: price_fact.merge(checked_at: '2026-09-30T12:00:00+07:00') }))
+      end.to raise_error(invalid_error)
+    end
+
+    it 'rejects a canonical variant_code that does not match the resolved variant slot' do
+      drifted = price_fact.merge(canonical: price_fact[:canonical].merge(variant_code: 'BD-9'),
+                                 display: price_fact[:display].merge(product: 'BD-9'))
+      expect { builder.build(evidence_input: price_input(facts: { price: drifted })) }.to raise_error(invalid_error)
+    end
+
+    it 'rejects a display block inconsistent with the canonical (product / uom drift)' do
+      bad_product = price_fact.merge(display: price_fact[:display].merge(product: 'BD-4X'))
+      bad_uom = price_fact.merge(display: price_fact[:display].merge(uom: 'metre'))
+      expect { builder.build(evidence_input: price_input(facts: { price: bad_product })) }.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: price_input(facts: { price: bad_uom })) }.to raise_error(invalid_error)
+    end
+
+    it 'rejects a float / negative price rate but accepts an integer rate' do
+      float_rate = price_fact.merge(canonical: price_fact[:canonical].merge(price_list_rate: 12_500.0))
+      neg_rate = price_fact.merge(canonical: price_fact[:canonical].merge(price_list_rate: -5))
+      expect { builder.build(evidence_input: price_input(facts: { price: float_rate })) }.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: price_input(facts: { price: neg_rate })) }.to raise_error(invalid_error)
+      int_rate = price_fact.merge(canonical: price_fact[:canonical].merge(price_list_rate: 12_500))
+      expect(builder.build(evidence_input: price_input(facts: { price: int_rate }))[:facts][:price][:canonical][:price_list_rate]).to eq(12_500)
+    end
+
+    it 'rejects a price/stock fact with no resolved variant slot' do
+      expect { builder.build(evidence_input: price_input(validated_slots: {})) }.to raise_error(invalid_error)
+    end
+
+    it 'rejects a non-enum stock status (never emits unknown)' do
+      bad_stock = { status: 'unknown', source: 'stock_repository', checked_at: '2026-09-30T12:00:00Z' }
+      input = { scenario: { key: 'scenario_8', capabilities: %w[stock] }, intents: %w[stock], response_goals: %w[answer_stock],
+                validated_slots: { variant: variant_slot }, facts: { stock: bad_stock },
+                missing_slots: [], variant_candidates: [] }
+      expect { builder.build(evidence_input: input) }.to raise_error(invalid_error)
+    end
+  end
+
+  describe 'fail-closed fact/intent/goal coherence' do
+    it 'rejects a price fact without the answer_price goal' do
+      expect { builder.build(evidence_input: price_input(response_goals: %w[answer_product_overview])) }.to raise_error(invalid_error)
+    end
+
+    it 'rejects an answer_price goal without a price fact' do
+      input = { scenario: { key: 'scenario_5', capabilities: %w[price] }, intents: %w[price], response_goals: %w[answer_price],
+                validated_slots: {}, facts: {}, missing_slots: [], variant_candidates: [] }
+      expect { builder.build(evidence_input: input) }.to raise_error(invalid_error)
+    end
+
+    it 'rejects an overflowing variant_candidates list' do
+      expect { builder.build(evidence_input: price_input(variant_candidates: %w[a b c d e f g])) }.to raise_error(invalid_error)
+    end
+  end
+
+  it 'never emits a nil customer_language key' do
+    # A factless handoff packet (no price fact) may omit the language entirely.
+    input = { scenario: { key: 'scenario_8', capabilities: %w[price] }, intents: %w[price],
+              customer_language: nil, response_goals: %w[handoff],
+              validated_slots: {}, facts: {}, missing_slots: [], variant_candidates: [] }
+    packet = builder.build(evidence_input: input)
+    expect(packet).not_to have_key(:customer_language)
+  end
+
+  describe 'price display authority (formatter-reconstructed, immutable)' do
+    let(:formatter) { Marine::Catalog::PriceDisplayFormatter.new }
+
+    def display_for(canonical, locale)
+      formatter.format(
+        descriptor: { kind: :price_available, variant_code: canonical[:variant_code], price_list_rate: canonical[:price_list_rate],
+                      currency: canonical[:currency], uom: canonical[:uom] },
+        locale: locale
+      ).envelope[:display]
+    end
+
+    it 'reconstructs the id display envelope from the canonical facts' do
+      packet = builder.build(evidence_input: price_input)
+      expect(packet[:facts][:price][:display]).to eq(product: 'BD-4', currency: 'Rp', amount: '12.500', uom: 'yard')
+    end
+
+    it 'reconstructs the en display envelope from the canonical facts' do
+      canonical = { variant_code: 'BD-4', currency: 'IDR', price_list_rate: '12500', uom: 'Yard' }
+      fact = price_fact.merge(canonical: canonical, display: display_for(canonical, 'en'))
+      packet = builder.build(evidence_input: price_input(customer_language: 'en', facts: { price: fact }))
+      expect(packet[:customer_language]).to eq('en')
+      expect(packet[:facts][:price][:display]).to eq(product: 'BD-4', currency: 'IDR', amount: '12,500', uom: 'yard')
+    end
+
+    it 'rejects a forged display amount while the canonical rate is unchanged' do
+      forged = price_fact.merge(display: price_fact[:display].merge(amount: '99.999'))
+      expect { builder.build(evidence_input: price_input(facts: { price: forged })) }.to raise_error(invalid_error)
+    end
+
+    it 'rejects a forged display currency while the canonical currency is unchanged' do
+      forged = price_fact.merge(display: price_fact[:display].merge(currency: 'USD'))
+      expect { builder.build(evidence_input: price_input(facts: { price: forged })) }.to raise_error(invalid_error)
+    end
+
+    it 'requires a supported formatter locale for a price fact (unsupported / missing fails closed)' do
+      expect { builder.build(evidence_input: price_input(customer_language: 'fr')) }.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: price_input(customer_language: nil)) }.to raise_error(invalid_error)
+    end
+
+    it 'accepts integer, BigDecimal, and string canonical rates with a formatter-consistent display' do
+      [12_500, BigDecimal(12_500), '12500'].each do |rate|
+        canonical = { variant_code: 'BD-4', currency: 'IDR', price_list_rate: rate, uom: 'Yard' }
+        fact = price_fact.merge(canonical: canonical, display: display_for(canonical, 'id'))
+        packet = builder.build(evidence_input: price_input(facts: { price: fact }))
+        expect(packet[:facts][:price][:canonical][:price_list_rate]).to eq(rate)
+      end
+    end
+  end
+
+  describe 'overview / capability coherence' do
+    it 'rejects answer_product_overview with no validated product slot' do
+      input = { scenario: { key: 'scenario_8', capabilities: %w[product_overview] }, intents: %w[product_overview],
+                customer_language: 'id', response_goals: %w[answer_product_overview],
+                validated_slots: {}, facts: {}, missing_slots: [], variant_candidates: [] }
+      expect { builder.build(evidence_input: input) }.to raise_error(invalid_error)
+    end
+
+    it 'rejects an empty scenario capabilities list (A3-04 capability kosong)' do
+      input = { scenario: { key: 'scenario_8', capabilities: [] }, intents: [],
+                customer_language: 'id', response_goals: %w[handoff],
+                validated_slots: {}, facts: {}, missing_slots: [], variant_candidates: [] }
+      expect { builder.build(evidence_input: input) }.to raise_error(invalid_error)
+    end
+  end
+end

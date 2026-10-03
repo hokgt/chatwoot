@@ -2,11 +2,20 @@
 // WIJAYA_CUSTOM_START erp_lead_sidebar
 // Manual Lead Activity form, hosted inside the ERP Lead modal's "Lead Activity"
 // tab. It is fully isolated from the Lead Details create/update/refresh/sync
-// flow: it fetches its own runtime option list, builds its own submission, and
-// only ever inserts a Lead Activity child row on an explicit agent click.
-import { computed, onMounted, reactive, ref } from 'vue';
+// flow: it fetches its own runtime option lists and only ever inserts a Lead
+// Activity child row on an explicit agent click.
+//
+// Latency shape: nothing ERP is fetched on mount. A lightweight metadata request
+// (default date, no ERP round-trip) runs on mount; the Activity Master and the
+// Person In Charge directory are each fetched lazily and independently, only when
+// their dropdown is first opened. Activity Type and Follow Up Activity share one
+// Activity Master resource; Person In Charge owns its own. Each dependency models
+// idle/loading/loaded/error explicitly with independent Retry/Refresh.
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import ErpLeadActivitiesAPI from '@wijaya/erp_lead_sidebar/frontend/api/wijayaErpLeadActivities';
 import NextButton from 'dashboard/components-next/button/Button.vue';
+import ComboBox from 'dashboard/components-next/combobox/ComboBox.vue';
+import { useLazyErpResource } from './useLazyErpResource';
 import { isRealISODate } from './dateValidation';
 
 const props = defineProps({
@@ -39,15 +48,45 @@ const form = reactive({
   remark: '',
 });
 
-const activityOptions = ref([]);
-// Selectable ERP Users [{ value, label }] for the manual Person In Charge
-// picker, plus whether the directory was reachable. When unavailable the picker
-// is disabled but a blank Person In Charge may still be submitted.
-const personInChargeOptions = ref([]);
-const personInChargeAvailable = ref(true);
+// Independent lazy ERP dependencies. Activity Type + Follow Up Activity share the
+// single Activity Master resource (one fetch, one cache, one in-flight request);
+// Person In Charge owns its own.
+const activityResource = useLazyErpResource(() =>
+  ErpLeadActivitiesAPI.fetchActivityOptions(props.conversationId).then(
+    r => r.data.options
+  )
+);
+const picResource = useLazyErpResource(() =>
+  ErpLeadActivitiesAPI.fetchPersonInChargeOptions(props.conversationId).then(
+    r => r.data.options
+  )
+);
+
+// Activity Master names (strings) and their ComboBox {value,label} projection.
+const activityNames = computed(() => activityResource.data.value);
+const activityComboOptions = computed(() =>
+  activityNames.value.map(name => ({ value: name, label: name }))
+);
+// Person In Charge options are already sanitized {value,label} objects server-side.
+const picComboOptions = computed(() => picResource.data.value);
+
+// A nonblank Person In Charge is only trustworthy while the directory is loaded and
+// still contains it. Blank is always valid (the picker is optional). After a Refresh
+// that dropped the value, or a directory failure, a nonblank selection can no longer
+// be verified and must block submission until it is cleared or re-verified.
+const picVerifiable = computed(() => {
+  if (!form.person_in_charge) return true;
+  return (
+    picResource.isLoaded.value &&
+    picComboOptions.value.some(o => o.value === form.person_in_charge)
+  );
+});
+
+const clearPic = () => {
+  form.person_in_charge = '';
+};
+
 const submissionId = ref(newSubmissionId());
-const loadingOptions = ref(false);
-const optionsError = ref('');
 // state: 'idle' | 'submitting' | 'success' | 'failure' | 'unknown'
 const state = ref('idle');
 const message = ref('');
@@ -65,28 +104,49 @@ const resetActivityFields = () => {
   form.person_in_charge = '';
 };
 
-const loadOptions = async () => {
+// Default date only — issues NO ERP request, so opening the Activity tab performs
+// zero ERP lookups. The date field stays editable.
+//
+// Monotonic token: a metadata response is only committed by the newest loadMeta
+// call. If the conversation / link / config changed while a request was in flight
+// (each triggers a fresh loadMeta), the older response is dropped so it can never
+// populate the current form with another conversation's default date.
+let metaSeq = 0;
+const loadMeta = async () => {
   if (!props.configured || !linked.value) return;
-  loadingOptions.value = true;
-  optionsError.value = '';
+  metaSeq += 1;
+  const seq = metaSeq;
+  const forConversation = props.conversationId;
   try {
-    const { data } = await ErpLeadActivitiesAPI.fetchOptions(
-      props.conversationId
-    );
-    activityOptions.value = Array.isArray(data.options) ? data.options : [];
-    personInChargeOptions.value = Array.isArray(data.person_in_charge_options)
-      ? data.person_in_charge_options
-      : [];
-    personInChargeAvailable.value = data.person_in_charge_available !== false;
+    const { data } = await ErpLeadActivitiesAPI.fetchMeta(props.conversationId);
+    if (
+      seq !== metaSeq ||
+      props.conversationId !== forConversation ||
+      !props.configured ||
+      !linked.value
+    )
+      return; // superseded / stale — ignore this late response
     defaultDate.value = data.default_date || '';
     if (!form.date) form.date = defaultDate.value;
-  } catch (e) {
-    optionsError.value =
-      e?.response?.data?.error ||
-      'Lead Activity options are currently unavailable.';
-  } finally {
-    loadingOptions.value = false;
+  } catch {
+    // The default date is a convenience; leave the field for manual entry.
   }
+};
+
+// Dropdown-level lazy triggers (ComboBox @open). Opening either activity dropdown
+// loads the shared Activity Master once; opening the PIC dropdown loads the PIC
+// directory once. A reopen after a successful load reuses the cache.
+const onActivityOpen = () => activityResource.load();
+const onPicOpen = () => picResource.load();
+
+const onActivitySelect = value => {
+  form.lead_activity = value || '';
+};
+const onFollowUpActivitySelect = value => {
+  form.follow_up_activity = value || '';
+};
+const onPicSelect = value => {
+  form.person_in_charge = value || '';
 };
 
 // follow_up "No" clears + disables the follow-up fields (mirrors the backend).
@@ -103,7 +163,7 @@ const validationErrors = computed(() => {
   else if (!isRealISODate(form.date))
     problems.push('Date must be a valid calendar date (YYYY-MM-DD).');
   if (!form.lead_activity) problems.push('Lead Activity is required.');
-  else if (!activityOptions.value.includes(form.lead_activity))
+  else if (!activityNames.value.includes(form.lead_activity))
     problems.push('Lead Activity must be a known option.');
   if (!FOLLOW_UP_VALUES.includes(form.follow_up))
     problems.push('Follow Up must be No or Yes.');
@@ -114,7 +174,7 @@ const validationErrors = computed(() => {
       );
     if (
       form.follow_up_activity &&
-      !activityOptions.value.includes(form.follow_up_activity)
+      !activityNames.value.includes(form.follow_up_activity)
     )
       problems.push('Follow Up Activity must be a known option.');
   }
@@ -126,6 +186,9 @@ const canSubmit = computed(
     props.configured &&
     linked.value &&
     validationErrors.value.length === 0 &&
+    // A nonblank Person In Charge that cannot currently be verified against a
+    // loaded directory blocks submission (blank stays submittable).
+    picVerifiable.value &&
     state.value !== 'submitting' &&
     // After an outcome_unknown the same submission id is retained but ERP may
     // already hold it: block further clicks so we never re-hit the API with the
@@ -187,13 +250,10 @@ const FEEDBACK_TONES = {
   danger: 'bg-n-ruby-3 text-n-ruby-11',
 };
 
-// One contextual feedback line consolidating the loading/options-error and the
-// success/unknown/failure outcomes. Messages are surfaced exactly as produced by
-// the existing state; this only chooses which single line to render.
+// One contextual feedback line for the submission outcome only. Per-dependency
+// loading/error is surfaced inline at each dropdown, so it is intentionally not
+// duplicated here.
 const feedback = computed(() => {
-  if (loadingOptions.value)
-    return { tone: 'info', text: 'Loading Lead Activity options…' };
-  if (optionsError.value) return { tone: 'danger', text: optionsError.value };
   if (state.value === 'success')
     return { tone: 'success', text: message.value };
   if (state.value === 'unknown')
@@ -212,9 +272,36 @@ const dateError = computed(() => {
 });
 const activityError = computed(() => {
   if (!form.lead_activity) return 'Lead Activity is required.';
-  if (!activityOptions.value.includes(form.lead_activity))
+  if (!activityNames.value.includes(form.lead_activity))
     return 'Lead Activity must be a known option.';
   return '';
+});
+
+// Inline empty-state copy for each ComboBox dropdown. Never a selectable option —
+// ComboBox renders this as non-interactive empty text.
+const activityEmptyState = computed(() => {
+  if (activityResource.isLoading.value) return 'Loading Lead Activity options…';
+  if (activityResource.isError.value)
+    return activityResource.error.value || 'Options are unavailable.';
+  return 'No Lead Activity options available.';
+});
+const picEmptyState = computed(() => {
+  if (picResource.isLoading.value) return 'Loading users…';
+  if (picResource.isError.value)
+    return picResource.error.value || 'The user list is unavailable.';
+  return 'No ERP users available.';
+});
+
+// Truthful guidance for a nonblank Person In Charge that cannot be verified: the
+// directory failed to refresh, or a refresh no longer lists the selected user. In
+// both cases the agent can clear it (blank submits) or retry/refresh to re-verify.
+const picWarning = computed(() => {
+  if (picVerifiable.value) return '';
+  if (picResource.isError.value)
+    return 'The ERP user list is unavailable, so the selected Person In Charge can’t be verified. Retry, or clear it to submit without one.';
+  if (picResource.isLoaded.value)
+    return 'The selected Person In Charge is no longer in the ERP user list. Pick another, clear it, or Refresh.';
+  return 'Open the user list to verify the selected Person In Charge, or clear it.';
 });
 
 const submitLabel = computed(() =>
@@ -228,14 +315,63 @@ const disabledReason = computed(() => {
   if (!linked.value) return '';
   if (validationErrors.value.length)
     return 'Complete the required fields marked * before adding the activity.';
+  if (!picVerifiable.value)
+    return 'Verify the selected Person In Charge, clear it, or retry the user list before adding the activity.';
   return '';
 });
 
 onMounted(() => {
   form.date = '';
   form.person_in_charge = '';
-  loadOptions();
+  loadMeta();
 });
+
+// A conversation change resets every dependency's cache/state (so a stale
+// response can never win) and clears the form, then reloads the ERP-free
+// metadata. The parent also remounts the form on a conversation switch; this
+// keeps the form correct even if it is kept mounted.
+watch(
+  () => props.conversationId,
+  () => {
+    activityResource.reset();
+    picResource.reset();
+    submissionId.value = newSubmissionId();
+    state.value = 'idle';
+    message.value = '';
+    warning.value = '';
+    defaultDate.value = '';
+    form.date = '';
+    resetActivityFields();
+    loadMeta();
+  }
+);
+
+// A draft can become linked/configured WITHOUT a conversation change while this
+// form stays mounted (the parent keeps it mounted across tab switches). If it was
+// mounted while unlinked or unconfigured, loadMeta returned early on mount, so the
+// default date is still blank; fetch it once the draft is both linked and
+// configured. loadMeta only fills a blank date, so this never erases entered values
+// — unrelated prop churn leaves the form intact.
+watch(
+  () => [props.configured, linked.value],
+  ([configuredNow, linkedNow], [configuredWas, linkedWas]) => {
+    if (configuredNow && linkedNow && !(configuredWas && linkedWas)) loadMeta();
+  }
+);
+
+// If the linked ERP Lead identity itself changes to a different Lead (a relink
+// within the same conversation), the loaded option caches may no longer apply:
+// invalidate them so the next dropdown open refetches. Only a nonblank -> different
+// nonblank change qualifies; entered form values are left untouched.
+watch(
+  () => props.erpLeadId,
+  (next, prev) => {
+    if (next && prev && next !== prev) {
+      activityResource.reset();
+      picResource.reset();
+    }
+  }
+);
 // WIJAYA_CUSTOM_END erp_lead_sidebar
 </script>
 
@@ -250,7 +386,7 @@ onMounted(() => {
     </div>
 
     <template v-else>
-      <!-- One contextual feedback line for options/success/unknown/failure. -->
+      <!-- One contextual feedback line for the submission outcome. -->
       <div
         v-if="feedback.text"
         class="mx-6 mt-3 shrink-0 rounded-md p-2 text-xs"
@@ -293,27 +429,46 @@ onMounted(() => {
             </span>
           </label>
 
-          <label class="flex flex-col gap-1" for="erp-activity-type">
+          <label class="flex flex-col gap-1">
             <span>Lead Activity <span class="text-n-ruby-10">*</span></span>
-            <select
-              id="erp-activity-type"
-              v-model="form.lead_activity"
-              class="input"
-              aria-required="true"
-              :aria-invalid="activityError ? 'true' : undefined"
-              :aria-describedby="
-                activityError ? 'erp-activity-type-help' : undefined
-              "
-            >
-              <option value="">— Select —</option>
-              <option
-                v-for="option in activityOptions"
-                :key="option"
-                :value="option"
+            <ComboBox
+              class="erp-activity-type"
+              :model-value="form.lead_activity"
+              :options="activityComboOptions"
+              :display-label="form.lead_activity"
+              :empty-state="activityEmptyState"
+              :has-error="Boolean(activityError)"
+              placeholder="— Select —"
+              @open="onActivityOpen"
+              @update:model-value="onActivitySelect"
+            />
+            <!-- Independent Activity Master status + Retry/Refresh, shared by both
+                 activity dropdowns. Retry only appears after an error; Refresh only
+                 after a successful load. Neither clears the selected value. -->
+            <div class="flex items-center gap-2 text-xs">
+              <button
+                v-if="activityResource.isError.value"
+                type="button"
+                class="font-medium text-n-brand hover:underline"
+                @click="activityResource.load()"
               >
-                {{ option }}
-              </option>
-            </select>
+                Retry
+              </button>
+              <button
+                v-if="activityResource.isLoaded.value"
+                type="button"
+                class="font-medium text-n-slate-11 hover:underline"
+                @click="activityResource.refresh()"
+              >
+                Refresh
+              </button>
+              <span
+                v-if="activityResource.isError.value"
+                class="text-n-ruby-10"
+              >
+                {{ activityResource.error.value }}
+              </span>
+            </div>
             <span
               v-if="activityError"
               id="erp-activity-type-help"
@@ -352,52 +507,78 @@ onMounted(() => {
             />
           </label>
 
-          <label class="flex flex-col gap-1" for="erp-activity-followup-type">
+          <label class="flex flex-col gap-1">
             <span>Follow Up Activity</span>
-            <select
-              id="erp-activity-followup-type"
-              v-model="form.follow_up_activity"
-              class="input"
+            <ComboBox
+              class="erp-activity-followup-type"
+              :model-value="form.follow_up_activity"
+              :options="activityComboOptions"
+              :display-label="form.follow_up_activity"
+              :empty-state="activityEmptyState"
               :disabled="form.follow_up !== 'Yes'"
-            >
-              <option value="">— Select —</option>
-              <option
-                v-for="option in activityOptions"
-                :key="option"
-                :value="option"
-              >
-                {{ option }}
-              </option>
-            </select>
+              placeholder="— Select —"
+              @open="onActivityOpen"
+              @update:model-value="onFollowUpActivitySelect"
+            />
           </label>
 
-          <label class="flex flex-col gap-1" for="erp-activity-pic">
+          <label class="flex flex-col gap-1">
             <span>Person In Charge</span>
-            <select
-              id="erp-activity-pic"
-              v-model="form.person_in_charge"
-              class="input"
-              :disabled="!personInChargeAvailable"
-              :aria-describedby="
-                !personInChargeAvailable ? 'erp-activity-pic-help' : undefined
-              "
-            >
-              <option value="">— None —</option>
-              <option
-                v-for="option in personInChargeOptions"
-                :key="option.value"
-                :value="option.value"
+            <ComboBox
+              class="erp-activity-pic"
+              :model-value="form.person_in_charge"
+              :options="picComboOptions"
+              :display-label="form.person_in_charge"
+              :empty-state="picEmptyState"
+              placeholder="— None —"
+              @open="onPicOpen"
+              @update:model-value="onPicSelect"
+            />
+            <!-- Independent Person In Charge status + Retry/Refresh/Clear. A blank
+                 Person In Charge is always valid, so a directory outage never blocks
+                 submission; but a nonblank selection that cannot be verified (failed
+                 refresh, or dropped from a refreshed list) does, until it is cleared
+                 or re-verified. -->
+            <div class="flex items-center gap-2 text-xs">
+              <button
+                v-if="picResource.isError.value"
+                type="button"
+                class="font-medium text-n-brand hover:underline"
+                @click="picResource.load()"
               >
-                {{ option.label }}
-              </option>
-            </select>
+                Retry
+              </button>
+              <button
+                v-if="picResource.isLoaded.value"
+                type="button"
+                class="font-medium text-n-slate-11 hover:underline"
+                @click="picResource.refresh()"
+              >
+                Refresh
+              </button>
+              <button
+                v-if="form.person_in_charge && !picVerifiable"
+                type="button"
+                class="font-medium text-n-brand hover:underline"
+                @click="clearPic"
+              >
+                Clear selection
+              </button>
+            </div>
             <span
-              v-if="!personInChargeAvailable"
+              v-if="picWarning"
               id="erp-activity-pic-help"
+              class="text-xs text-n-amber-11"
+              role="alert"
+            >
+              {{ picWarning }}
+            </span>
+            <span
+              v-else-if="picResource.isError.value"
               class="text-xs text-n-amber-11"
             >
               The ERP user list is unavailable right now; you can still submit
-              without a Person In Charge.
+              without a Person In Charge, or Retry.
             </span>
           </label>
 

@@ -858,5 +858,76 @@ RSpec.describe Marine::Charge::ResponseGenerator do
       expect(payload['response']).to eq('Office: Jl. Real Address 1, Bandung.')
       expect(payload['source_type']).to eq('document')
     end
+
+    # Phase 2 — approved UI-created exact FAQs (source_type=user) are eligible for the SAME
+    # contextual wording path as legacy manual FAQs, while provenance stays 'user' and the
+    # stored approved answer remains the sole factual authority.
+    it 'invokes the composer with the stored approved answer for an exact user-created FAQ and keeps source_type user' do
+      stub_no_translation
+      response = Marine::AssistantResponse.new(id: 11, question: 'Hi', answer: 'Hello!', documentable_type: 'User')
+      result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 1.0)
+      allow(knowledge_base).to receive(:retrieve).and_return(result)
+
+      wording = instance_double(Marine::Charge::GroundedWordingService)
+      captured = {}
+      allow(wording).to receive(:call) do |args|
+        captured.merge!(args)
+        'Hi there — Hello!'
+      end
+      allow(Marine::Charge::GroundedWordingService).to receive(:new).and_return(wording)
+
+      history = [{ role: 'user', content: 'Hi' }]
+      payload = generator.generate(additional_message: 'Hi', message_history: history, opening: true)
+
+      expect(captured[:approved_answer]).to eq('Hello!')
+      expect(captured[:customer_request]).to eq('Hi')
+      expect(captured[:message_history]).to eq(history)
+      expect(captured[:opening]).to be(true)
+      expect(payload['response']).to eq('Hi there — Hello!')
+      expect(payload).to include(
+        'source_type' => 'user',
+        'marine_cell_response_id' => 11,
+        'response_ids' => [11],
+        'document_ids' => [],
+        'confidence' => 1.0,
+        'fallback_reason' => nil
+      )
+      expect(payload['citations']).to eq(result.citations)
+      # Provenance derives naturally from the CitationBuilder mapping (documentable_type=User),
+      # so the citation carries source_type 'user' — not a relabeled 'manual'.
+      expect(payload['citations']).to all(include(source_type: 'user'))
+    end
+
+    it 'returns the approved answer and replies (no handoff) for an exact user FAQ when the composer declines' do
+      stub_no_translation
+      response = Marine::AssistantResponse.new(id: 11, question: 'Hi', answer: 'Hello!', documentable_type: 'User')
+      result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 1.0)
+      allow(knowledge_base).to receive(:retrieve).and_return(result)
+      stub_wording(nil)
+
+      payload = generator.generate(additional_message: 'Hi')
+
+      expect(payload).to include(
+        'response' => 'Hello!',
+        'action' => 'reply',
+        'source_type' => 'user',
+        'fallback_reason' => nil
+      )
+    end
+
+    it 'does not invoke the composer on a non-exact user-created FAQ match' do
+      stub_no_translation
+      stub_llm_unconfigured
+      allow(Marine::Charge::GroundedWordingService).to receive(:new)
+      response = Marine::AssistantResponse.new(id: 12, question: 'Apa itu MOQ?',
+                                               answer: 'MOQ is the minimum order quantity.', documentable_type: 'User')
+      result = Marine::Cell::RetrievalResult.new(responses: [response], confidence: 0.5)
+      allow(knowledge_base).to receive(:retrieve).and_return(result)
+
+      payload = generator.generate(additional_message: 'Apa itu Textilindo?')
+
+      expect(Marine::Charge::GroundedWordingService).not_to have_received(:new)
+      expect(payload['response']).to eq('MOQ is the minimum order quantity.')
+    end
   end
 end

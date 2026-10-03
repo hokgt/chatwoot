@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_09_05_000000) do
+ActiveRecord::Schema[7.1].define(version: 2026_10_02_000000) do
   # These extensions should be enabled to support this database
   enable_extension "pg_stat_statements"
   enable_extension "pg_trgm"
@@ -1454,15 +1454,60 @@ ActiveRecord::Schema[7.1].define(version: 2026_09_05_000000) do
     t.index ["account_id", "url"], name: "index_webhooks_on_account_id_and_url", unique: true
   end
 
+  create_table "wijaya_deferred_assignment_provenance", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.bigint "conversation_id", null: false
+    t.bigint "inbox_id", null: false
+    t.bigint "prior_assignee_id", null: false
+    t.string "event", default: "agent_deletion", null: false
+    t.datetime "event_at", null: false
+    t.datetime "reconciled_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.string "deletion_key", null: false
+    t.datetime "superseded_at"
+    t.index ["account_id"], name: "idx_wijaya_deferred_prov_on_account"
+    t.index ["conversation_id", "prior_assignee_id", "event", "deletion_key"], name: "idx_wijaya_deferred_prov_unique_occurrence", unique: true
+    t.index ["conversation_id"], name: "idx_wijaya_deferred_prov_on_conversation"
+    t.index ["inbox_id"], name: "idx_wijaya_deferred_prov_on_inbox"
+    t.index ["prior_assignee_id"], name: "idx_wijaya_deferred_prov_on_prior_assignee"
+    t.index ["reconciled_at"], name: "idx_wijaya_deferred_prov_on_reconciled_at"
+    t.index ["superseded_at"], name: "idx_wijaya_deferred_prov_on_superseded_at"
+  end
+
   create_table "wijaya_deferred_assignments", force: :cascade do |t|
     t.bigint "account_id", null: false
     t.bigint "inbox_id", null: false
     t.bigint "conversation_id", null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "reconciliation_generation"
+    t.string "reconciliation_outcome"
     t.index ["account_id"], name: "index_wijaya_deferred_assignments_on_account_id"
     t.index ["conversation_id"], name: "index_wijaya_deferred_assignments_on_conversation_id", unique: true
     t.index ["inbox_id"], name: "index_wijaya_deferred_assignments_on_inbox_id"
+    t.index ["reconciliation_generation"], name: "idx_wijaya_deferred_asg_on_recon_generation"
+  end
+
+  create_table "wijaya_deferred_reconciliation_runs", force: :cascade do |t|
+    t.string "generation", null: false
+    t.datetime "cutoff_at"
+    t.string "status", default: "running", null: false
+    t.integer "scanned", default: 0, null: false
+    t.integer "registered", default: 0, null: false
+    t.integer "skipped", default: 0, null: false
+    t.integer "ambiguous", default: 0, null: false
+    t.datetime "started_at"
+    t.datetime "finished_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.integer "identified", default: 0, null: false
+    t.integer "assigned", default: 0, null: false
+    t.integer "no_eligible_agent", default: 0, null: false
+    t.integer "dropped", default: 0, null: false
+    t.integer "failed", default: 0, null: false
+    t.integer "retries", default: 0, null: false
+    t.index ["generation"], name: "idx_wijaya_deferred_recon_runs_on_generation", unique: true
   end
 
   create_table "wijaya_erp_lead_drafts", force: :cascade do |t|
@@ -1503,6 +1548,22 @@ ActiveRecord::Schema[7.1].define(version: 2026_09_05_000000) do
     t.index ["team_id"], name: "index_wijaya_meta_ads_team_routing_rules_on_team_id"
   end
 
+  create_table "wijaya_whatsapp_web_inboxes", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.bigint "inbox_id", null: false
+    t.string "connector_session_id"
+    t.string "request_token", null: false
+    t.string "provisioning_state", default: "pending", null: false
+    t.string "status", default: "unconfigured", null: false
+    t.string "last_error_code"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id", "request_token"], name: "idx_wijaya_wa_web_inboxes_account_request_token", unique: true
+    t.index ["account_id"], name: "index_wijaya_whatsapp_web_inboxes_on_account_id"
+    t.index ["connector_session_id"], name: "index_wijaya_whatsapp_web_inboxes_on_connector_session_id", unique: true, where: "(connector_session_id IS NOT NULL)"
+    t.index ["inbox_id"], name: "index_wijaya_whatsapp_web_inboxes_on_inbox_id", unique: true
+  end
+
   create_table "working_hours", force: :cascade do |t|
     t.bigint "inbox_id"
     t.bigint "account_id"
@@ -1538,6 +1599,9 @@ ActiveRecord::Schema[7.1].define(version: 2026_09_05_000000) do
   add_foreign_key "marine_scenarios", "accounts", name: "fk_marine_scenarios_account_id"
   add_foreign_key "marine_scenarios", "marine_assistants", column: "assistant_id", name: "fk_marine_scenarios_assistant_id"
   add_foreign_key "user_sessions", "users"
+  add_foreign_key "wijaya_deferred_assignment_provenance", "accounts", on_delete: :cascade
+  add_foreign_key "wijaya_deferred_assignment_provenance", "conversations", on_delete: :cascade
+  add_foreign_key "wijaya_deferred_assignment_provenance", "inboxes", on_delete: :cascade
   add_foreign_key "wijaya_deferred_assignments", "accounts", on_delete: :cascade
   add_foreign_key "wijaya_deferred_assignments", "conversations", on_delete: :cascade
   add_foreign_key "wijaya_deferred_assignments", "inboxes", on_delete: :cascade
@@ -1546,6 +1610,8 @@ ActiveRecord::Schema[7.1].define(version: 2026_09_05_000000) do
   add_foreign_key "wijaya_erp_settings", "accounts"
   add_foreign_key "wijaya_meta_ads_team_routing_rules", "accounts"
   add_foreign_key "wijaya_meta_ads_team_routing_rules", "teams"
+  add_foreign_key "wijaya_whatsapp_web_inboxes", "accounts", on_delete: :cascade
+  add_foreign_key "wijaya_whatsapp_web_inboxes", "inboxes", on_delete: :cascade
   create_trigger("accounts_after_insert_row_tr", :generated => true, :compatibility => 1).
       on("accounts").
       after(:insert).
@@ -1573,6 +1639,32 @@ ActiveRecord::Schema[7.1].define(version: 2026_09_05_000000) do
       before(:insert).
       for_each(:row) do
     "NEW.display_id := nextval('camp_dpid_seq_' || NEW.account_id);"
+  end
+
+  create_trigger("wijaya_deferred_marker_drop_trg", :generated => true, :compatibility => 1).
+      on("wijaya_deferred_assignments").
+      before(:delete).
+      for_each(:row) do
+    <<-SQL_ACTIONS
+IF OLD.reconciliation_generation IS NULL OR OLD.reconciliation_generation = '' THEN
+  RETURN OLD;
+END IF;
+IF current_setting('wijaya.deferred_skip_marker_drop', true) = 'on' THEN
+  RETURN OLD;
+END IF;
+IF OLD.reconciliation_outcome = 'dropped' THEN
+  RETURN OLD;
+END IF;
+UPDATE wijaya_deferred_reconciliation_runs
+   SET dropped = dropped + 1,
+       no_eligible_agent = CASE WHEN OLD.reconciliation_outcome = 'no_eligible_agent'
+         THEN GREATEST(no_eligible_agent - 1, 0) ELSE no_eligible_agent END,
+       assigned = CASE WHEN OLD.reconciliation_outcome = 'assigned'
+         THEN GREATEST(assigned - 1, 0) ELSE assigned END,
+       updated_at = NOW()
+ WHERE generation = OLD.reconciliation_generation;
+RETURN OLD;
+    SQL_ACTIONS
   end
 
 end

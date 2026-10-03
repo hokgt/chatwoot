@@ -7,6 +7,9 @@ import { useMapGetter } from 'dashboard/composables/store';
 import { useAccount } from 'dashboard/composables/useAccount';
 
 import ChannelItem from 'dashboard/components/widgets/ChannelItem.vue';
+// WIJAYA_CUSTOM_START whatsapp_web_inbox
+import { buildWhatsappWebChannelCard } from '@wijaya/whatsapp_web_inbox/frontend/channel/whatsappWebChannel';
+// WIJAYA_CUSTOM_END whatsapp_web_inbox
 
 const { t } = useI18n();
 const router = useRouter();
@@ -101,6 +104,10 @@ const channelList = computed(() => {
     description: t('INBOX_MGMT.ADD.AUTH.CHANNEL.WHATSAPP_CALL.DESCRIPTION'),
     icon: 'i-woot-whatsapp',
   });
+
+  // WIJAYA_CUSTOM_START whatsapp_web_inbox
+  channels.push(buildWhatsappWebChannelCard({ t }));
+  // WIJAYA_CUSTOM_END whatsapp_web_inbox
 
   return channels;
 });

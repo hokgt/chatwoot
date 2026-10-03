@@ -42,9 +42,16 @@ import SelectInput from 'dashboard/components-next/select/Select.vue';
 import Widget from 'dashboard/modules/widget-preview/components/Widget.vue';
 import AccessToken from 'dashboard/routes/dashboard/settings/profile/AccessToken.vue';
 import { copyTextToClipboard } from 'shared/helpers/clipboard';
+// WIJAYA_CUSTOM_START whatsapp_web_inbox
+import WhatsappWebConnectionPanel from '@wijaya/whatsapp_web_inbox/frontend/WhatsappWebConnectionPanel.vue';
+import { isWhatsappWebInbox as isWhatsappWebInboxFn } from '@wijaya/whatsapp_web_inbox/frontend/helpers/whatsappWebInbox';
+// WIJAYA_CUSTOM_END whatsapp_web_inbox
 
 export default {
   components: {
+    // WIJAYA_CUSTOM_START whatsapp_web_inbox
+    WhatsappWebConnectionPanel,
+    // WIJAYA_CUSTOM_END whatsapp_web_inbox
     BotConfiguration,
     CollaboratorsPage,
     ConfigurationPage,
@@ -267,8 +274,25 @@ export default {
         ];
       }
 
+      // WIJAYA_CUSTOM_START whatsapp_web_inbox
+      if (this.isWhatsappWebInbox) {
+        visibleToAllChannelTabs = [
+          ...visibleToAllChannelTabs,
+          {
+            key: 'whatsapp-web',
+            name: this.$t('WHATSAPP_WEB_INBOX.PANEL.TITLE'),
+          },
+        ];
+      }
+      // WIJAYA_CUSTOM_END whatsapp_web_inbox
+
       return visibleToAllChannelTabs;
     },
+    // WIJAYA_CUSTOM_START whatsapp_web_inbox
+    isWhatsappWebInbox() {
+      return isWhatsappWebInboxFn(this.inbox);
+    },
+    // WIJAYA_CUSTOM_END whatsapp_web_inbox
     currentInboxId() {
       return this.$route.params.inboxId;
     },
@@ -1274,6 +1298,14 @@ export default {
         >
           <ConfigurationPage :inbox="inbox" />
         </div>
+        <!-- WIJAYA_CUSTOM_START whatsapp_web_inbox -->
+        <div
+          v-if="selectedTabKey === 'whatsapp-web' && isWhatsappWebInbox"
+          class="mx-6 max-w-4xl"
+        >
+          <WhatsappWebConnectionPanel :inbox="inbox" />
+        </div>
+        <!-- WIJAYA_CUSTOM_END whatsapp_web_inbox -->
         <div
           v-if="selectedTabKey === 'voice-configuration'"
           class="mx-6 max-w-4xl"

@@ -62,4 +62,33 @@ the logs.
 The password is read on demand from `MARINE_CATALOG_PG_PASSWORD_FILE` (a read-only secret
 file) for the in-memory `PG.connect` call only. It is never persisted, logged, echoed, or
 returned through the API. Deliver it the same way as the provisioning secret — a read-only
-file mounted into the Rails container — and keep the file out of version control.
+file mounted into the containers — and keep the file out of version control.
+
+## Deployment (MANDATORY when Marine is enabled)
+
+The catalog secret is required by **both** the `rails` and `sidekiq` services: rails and
+the normal sidekiq worker run catalog lookups, and the domain/security classifier appends
+a catalog reference block (`Marine::Circuit::CatalogDomainReference`). If the mount is
+absent the catalog fails closed (`CatalogUnavailableError`) and **every** non-product /
+non-exact-FAQ turn — greetings included — is denied via `domain_boundary` with
+`domain_boundary_category=error`.
+
+Because a bare `docker compose up` with only the ignored local `docker-compose.deploy.yaml`
+omits this mount, recreation/deployment of these services must go through the **canonical
+entrypoint**, which always layers the mandatory catalog overlay and refuses to proceed
+unless the resolved rails+sidekiq models actually carry the read-only mount:
+
+```bash
+# preflight only (no changes)
+custom/wijaya/deploy/deploy.sh --check
+
+# recreate rails+sidekiq (base + mandatory catalog overlay, no build, no migrations)
+custom/wijaya/deploy/deploy.sh --deploy
+```
+
+The catalog overlay lives at
+`custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml` and is
+**mandatory** whenever Marine is enabled. The dedicated SOP worker is a **separate,
+optional** overlay (`docker-compose.marine-sop-worker.yml`) that carries no catalog mount;
+enable it with `--with-sop-worker` (or `MARINE_SOP_WORKER=1`). Do **not** recreate these
+services with a manual `docker compose up`.

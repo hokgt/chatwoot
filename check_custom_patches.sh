@@ -18,6 +18,37 @@ require_marker() {
     missing=1
   fi
 }
+# Exact-count assertion: a marker must appear EXACTLY `want` times (not merely present),
+# so a dropped-but-not-all block or an accidental duplicate is caught.
+require_marker_count() {
+  local file="$1" marker="$2" want="$3" got
+  if [[ ! -f "$file" ]]; then
+    echo "MISSING file: $file" >&2
+    missing=1
+    return
+  fi
+  got=$(grep -c -- "$marker" "$file" 2>/dev/null || true)
+  got=${got:-0}
+  if [[ "$got" != "$want" ]]; then
+    echo "MARKER COUNT mismatch in $file: '$marker' expected $want, found $got" >&2
+    missing=1
+  fi
+}
+# Every line mentioning a custom-owned local must sit INSIDE a feature marker block, so
+# re-applying only the marker regions can never leave a dangling reference (NameError).
+# Structural check — does not match the full file.
+require_local_only_in_markers() {
+  local file="$1" feature="$2" local_name="$3"
+  [[ -f "$file" ]] || return 0
+  awk -v feat="$feature" -v name="$local_name" -v file="$file" '
+    $0 ~ ("WIJAYA_CUSTOM_START " feat "$") { inblock=1; next }
+    $0 ~ ("WIJAYA_CUSTOM_END " feat "$") { inblock=0; next }
+    index($0, name) && !inblock {
+      print "LEAKED custom local " name " outside " feat " marker in " file ": " $0 > "/dev/stderr"; rc=1
+    }
+    END { exit (rc ? 1 : 0) }
+  ' "$file" || missing=1
+}
 
 require_file custom/wijaya/patches/patch_registry.yml
 
@@ -107,6 +138,21 @@ for file in   app/builders/agent_builder.rb   app/controllers/api/v1/accounts/ag
   require_marker "$file" "WIJAYA_CUSTOM_END custom_roles_rbac"
 done
 
+# trusted_internal_webhook
+# Default-deny, config-driven allowlist that lets ONLY api_inbox webhooks reach an
+# explicitly trusted internal host (the WhatsApp Web connector). Two marker blocks in
+# lib/webhooks/trigger.rb: a top-of-file require and the guarded deliver() call in
+# #perform_request (asserted at exactly 2 START/END each so neither can be dropped).
+require_file custom/wijaya/batteries/trusted_internal_webhook/policy.rb
+require_file custom/wijaya/batteries/trusted_internal_webhook/delivery.rb
+require_file custom/wijaya/batteries/trusted_internal_webhook/hooks.rb
+require_marker_count lib/webhooks/trigger.rb "WIJAYA_CUSTOM_START trusted_internal_webhook" 2
+require_marker_count lib/webhooks/trigger.rb "WIJAYA_CUSTOM_END trusted_internal_webhook" 2
+require_file spec/custom/wijaya/batteries/trusted_internal_webhook/policy_spec.rb
+require_file spec/custom/wijaya/batteries/trusted_internal_webhook/delivery_spec.rb
+require_file spec/custom/wijaya/batteries/trusted_internal_webhook/hooks_spec.rb
+require_file spec/custom/wijaya/batteries/trusted_internal_webhook/trigger_integration_spec.rb
+
 # meta_ads_team_routing
 require_file custom/wijaya/batteries/meta_ads_team_routing/routing_rule.rb
 require_file custom/wijaya/batteries/meta_ads_team_routing/routing_service.rb
@@ -156,31 +202,68 @@ done
 require_file custom/wijaya/batteries/deferred_auto_assignment/loader.rb
 require_file custom/wijaya/batteries/deferred_auto_assignment/conversation_extensions.rb
 require_file custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/marker.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/deletion_provenance.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/reconciliation_run.rb
 require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/hooks.rb
 require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/eligibility.rb
 require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/registrar.rb
 require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/trigger_service.rb
 require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/inbox_processor.rb
 require_file custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/process_inbox_job.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/agent_deletion_unassignment.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/orphaned_user_finalizer.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/provenance_recorder.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/reconciler.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/marker_drop_trigger.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/reconciliation_job.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/recovery_drainer_job.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_discovery.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_backfill.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/backfill_job.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/backfill_operator.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/bin/historical_backfill.rb
 require_file db/migrate/20260905000000_create_wijaya_deferred_assignments.rb
+require_file db/migrate/20260912000000_create_wijaya_deferred_assignment_provenance.rb
+require_file db/migrate/20260912000001_enqueue_deferred_assignment_reconciliation.rb
+require_file db/migrate/20260912000002_add_deferred_reconciliation_correlation.rb
+require_file db/migrate/20260912000003_enqueue_deferred_assignment_reconciliation_after_schema.rb
+require_file db/migrate/20260912000004_add_deferred_provenance_deletion_key.rb
+require_file db/migrate/20260912000005_repair_wijaya_deferred_assignment_marker_fks.rb
+require_file db/migrate/20260912000006_add_deferred_provenance_superseded_at.rb
+require_file db/migrate/20260912000007_ensure_deferred_reconciliation_initial_run_intent.rb
+require_file db/migrate/20260912000008_install_deferred_marker_drop_trigger.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/provenance_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/reconciliation_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/registration_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/processing_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/lifecycle_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/triggers_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/presence_channel_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/remediation_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/agent_deletion_bridge_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/agent_deletion_user_removal_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/historical_backfill_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/recovery_drainer_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/provenance_deletion_key_migration_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/run_intent_repair_migration_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/marker_cascade_counters_spec.rb
 # Battery Hooks module is resolved by name from the core dispatcher map.
 require_marker custom/wijaya/batteries/core/hooks.rb "deferred_auto_assignment:"
 
 for file in \
+  app/controllers/api/v1/accounts/agents_controller.rb \
   app/models/conversation.rb \
   app/models/account_user.rb \
   app/channels/room_channel.rb \
   app/models/inbox_member.rb \
-  app/models/team_member.rb; do
+  app/models/team_member.rb \
+  app/jobs/agents/destroy_job.rb \
+  config/schedule.yml; do
   require_marker "$file" "WIJAYA_CUSTOM_START deferred_auto_assignment"
   require_marker "$file" "WIJAYA_CUSTOM_END deferred_auto_assignment"
 done
+# The agent-deletion bridge's captured-ids local must never leak outside its marker blocks.
+require_local_only_in_markers app/jobs/agents/destroy_job.rb deferred_auto_assignment wijaya_unassigned_conversation_ids
 
 # erp_lead_sidebar
 require_file custom/wijaya/batteries/erp_lead_sidebar/config.rb
@@ -190,6 +273,14 @@ require_file custom/wijaya/batteries/erp_lead_sidebar/sync_service.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/safe_http.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/refresh_service.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/options_service.rb
+# Product Requirements: dedicated bounded/searchable service + account-scoped
+# controller + searchable dropdown/create-dialog component (value=ERP name,
+# label=product_name; raw numeric price; server-side normalized duplicate lookup).
+require_file custom/wijaya/batteries/erp_lead_sidebar/product_requirements_service.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/app/controllers/api/v1/accounts/wijaya/product_requirements_controller.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/ProductRequirementSelect.vue
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/priceFormat.js
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/api/wijayaErpProductRequirements.js
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/ErpLeadPanel.vue
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/fieldConfig.js
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/mappings.js
@@ -215,8 +306,6 @@ require_file db/migrate/20260712000000_create_wijaya_erp_settings.rb
 require_file db/schema.rb
 # Manual Lead Activity form (isolated tab): own runtime options source, strict
 # server-side validation/normalization, and an idempotent guarded insert.
-# Shared agent -> ERP User mapping source read by BOTH backend + frontend.
-require_file custom/wijaya/batteries/erp_lead_sidebar/agent_erp_user_map.json
 require_file custom/wijaya/batteries/erp_lead_sidebar/lead_activity_person_directory.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/lead_activity_options_service.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/lead_activity_payload_builder.rb
@@ -224,6 +313,8 @@ require_file custom/wijaya/batteries/erp_lead_sidebar/lead_activity_service.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/app/controllers/api/v1/accounts/wijaya/lead_activities_controller.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/api/wijayaErpLeadActivities.js
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/LeadActivityForm.vue
+# Dropdown-level lazy loader shared by the Activity Master + Person In Charge pickers.
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/useLazyErpResource.js
 # Real-calendar date validation shared by the form + its direct unit spec.
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/dateValidation.js
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/dateValidation.spec.js
@@ -239,6 +330,11 @@ require_file spec/custom/wijaya/erp_lead_sidebar/lead_activity_options_service_s
 require_file spec/custom/wijaya/erp_lead_sidebar/lead_activity_service_spec.rb
 require_file spec/custom/wijaya/erp_lead_sidebar/lead_activities_controller_spec.rb
 require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/LeadActivityForm.spec.js
+# Product Requirements specs (backend service + controller; frontend component + price formatter).
+require_file spec/custom/wijaya/erp_lead_sidebar/product_requirements_service_spec.rb
+require_file spec/custom/wijaya/erp_lead_sidebar/product_requirements_controller_spec.rb
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/ProductRequirementSelect.spec.js
+require_file custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/priceFormat.spec.js
 
 for file in \
   app/javascript/dashboard/routes/dashboard/conversation/ContactPanel.vue \
@@ -248,6 +344,18 @@ for file in \
   require_marker "$file" "WIJAYA_CUSTOM_START erp_lead_sidebar"
   require_marker "$file" "WIJAYA_CUSTOM_END erp_lead_sidebar"
 done
+
+# erp_lead_owner_sync: no core markers — the post-commit assignee-change seam is attached
+# entirely via the battery ConversationExtensions concern (loader to_prepare), so
+# app/models/conversation.rb carries nothing. Verify the battery files + specs only.
+require_file custom/wijaya/batteries/erp_lead_owner_sync/loader.rb
+require_file custom/wijaya/batteries/erp_lead_owner_sync/conversation_extensions.rb
+require_file custom/wijaya/batteries/erp_lead_owner_sync/lead_draft_extensions.rb
+require_file custom/wijaya/batteries/erp_lead_owner_sync/app/services/wijaya/batteries/erp_lead_owner_sync/owner_sync_service.rb
+require_file custom/wijaya/batteries/erp_lead_owner_sync/app/jobs/wijaya/batteries/erp_lead_owner_sync/owner_sync_job.rb
+require_file spec/custom/wijaya/erp_lead_owner_sync/owner_sync_spec.rb
+require_file spec/custom/wijaya/erp_lead_owner_sync/assignment_integration_spec.rb
+require_file spec/custom/wijaya/erp_lead_owner_sync/lead_link_reconcile_spec.rb
 
 # enterprise_extension_compat
 require_marker "config/initializers/01_inject_enterprise_edition_module.rb" "WIJAYA_CUSTOM_START enterprise_extension_compat"
@@ -281,6 +389,90 @@ for file in \
   require_marker "$file" "WIJAYA_CUSTOM_START persistent_agent_presence"
   require_marker "$file" "WIJAYA_CUSTOM_END persistent_agent_presence"
 done
+
+# whatsapp_web_inbox
+# Unofficial WhatsApp Web (Baileys) inbox on top of a Channel::Api. All logic lives in
+# the battery; the browser reaches only Rails, which alone signs/calls the connector.
+# The Inbox has_one mapping + dependent: :destroy is attached via the battery
+# InboxExtensions concern (loader to_prepare), so app/models/inbox.rb carries no markers.
+require_file custom/wijaya/batteries/whatsapp_web_inbox/loader.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/routes.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/inbox_extensions.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/models/wijaya/batteries/whatsapp_web_inbox/record.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/config.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/request_signer.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/connector_client.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/provisioner.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/safe_dto.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/provision_job.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/cleanup_job.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/controllers/api/v1/accounts/wijaya/whatsapp_web/inboxes_controller.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/hooks.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/public_routes.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/app/controllers/public/api/v1/wijaya/whatsapp_web/provider_events_controller.rb
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/channel/whatsappWebChannel.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/whatsappWebInbox.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/connectionStatus.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/api/whatsappWeb.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/composables/useConnectorPolling.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/i18n/whatsappWebInbox.json
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/CreateWhatsappWebInbox.vue
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/WhatsappWebConnectionPanel.vue
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/whatsappWebChannel.spec.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/channelFactory.spec.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/isWhatsappWebInbox.spec.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/useConnectorPolling.spec.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/CreateWhatsappWebInbox.spec.js
+require_file custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/WhatsappWebConnectionPanel.spec.js
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/request_signer_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/config_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/connector_client_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/provisioner_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/cleanup_job_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/record_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/safe_dto_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/inboxes_controller_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/hooks_spec.rb
+require_file spec/custom/wijaya/batteries/whatsapp_web_inbox/provider_events_controller_spec.rb
+# Idempotent core-hook applicator (reattaches the marker blocks after an upstream pull),
+# its block spec, and its tests.
+require_file custom/wijaya/batteries/whatsapp_web_inbox/patch/apply_patches.py
+require_file custom/wijaya/batteries/whatsapp_web_inbox/patch/blocks.json
+require_file custom/wijaya/batteries/whatsapp_web_inbox/patch/test_apply_patches.py
+# Generic battery route-module registration.
+require_marker custom/wijaya/batteries/core/routes.rb "whatsapp_web_inbox:"
+# Transport-parity backend hooks: the Feature A public-message attribute hook is
+# registered in the core Hooks dispatcher; the Feature C public status callback is
+# mounted by a battery-owned marker in the public routes namespace.
+require_marker custom/wijaya/batteries/core/hooks.rb "whatsapp_web_inbox:"
+require_marker_count app/controllers/public/api/v1/inboxes/messages_controller.rb "WIJAYA_CUSTOM_START whatsapp_web_inbox" 1
+require_marker_count app/controllers/public/api/v1/inboxes/messages_controller.rb "WIJAYA_CUSTOM_END whatsapp_web_inbox" 1
+require_marker_count config/routes.rb "WIJAYA_CUSTOM_START whatsapp_web_inbox" 1
+require_marker_count config/routes.rb "WIJAYA_CUSTOM_END whatsapp_web_inbox" 1
+# Marker-wrapped migration (1 block) + the five minimal native frontend seams, each
+# validated at its EXACT expected block count (not mere presence): a START and an END
+# per block. Counts must match the applicator's blocks.json and apply_patches.py.
+require_marker_count db/migrate/20261002000000_create_wijaya_whatsapp_web_inboxes.rb "WIJAYA_CUSTOM_START whatsapp_web_inbox" 1
+require_marker_count db/migrate/20261002000000_create_wijaya_whatsapp_web_inboxes.rb "WIJAYA_CUSTOM_END whatsapp_web_inbox" 1
+# file:block_count — ChannelItem 2, ChannelFactory 2, ChannelList 2, en/index.js 2, Settings 5.
+while read -r wa_file wa_count; do
+  require_marker_count "$wa_file" "WIJAYA_CUSTOM_START whatsapp_web_inbox" "$wa_count"
+  require_marker_count "$wa_file" "WIJAYA_CUSTOM_END whatsapp_web_inbox" "$wa_count"
+done <<'WA_BLOCKS'
+app/javascript/dashboard/components/widgets/ChannelItem.vue 2
+app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue 2
+app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue 2
+app/javascript/dashboard/i18n/locale/en/index.js 2
+app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue 5
+WA_BLOCKS
+# Validate the applicator itself: in --check mode it must see every hook block exactly at
+# its anchor. Skipped only when python3 is unavailable (the counts above still assert).
+if command -v python3 >/dev/null 2>&1; then
+  if ! python3 custom/wijaya/batteries/whatsapp_web_inbox/patch/apply_patches.py --check >/dev/null; then
+    echo "whatsapp_web_inbox patch applicator --check FAILED" >&2
+    missing=1
+  fi
+fi
 
 # test_database_safety
 require_file custom/wijaya/batteries/test_database_safety/guard.rb
@@ -342,6 +534,8 @@ require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/embedding
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/config.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/provider_config.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/connection_test_service.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/openrouter_decisions_client.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/settings_store.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/base_service.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/prompt_renderer.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/llm/json_response_parser.rb
@@ -374,6 +568,75 @@ require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/error
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/config.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/connection.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_family_repository.rb
+# Phase 2 / Stage 1 — Decision Maker Candidate Plan contract (structure & normalization only).
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/errors.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/schema.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/normalizer.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/candidate_plan.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/candidate_plan_spec.rb
+# Phase 2 / Stage 2 — Decision Maker transport clients (production-capable, UNWIRED).
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/transport_result.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/client.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/chat_completions_client.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/openrouter_decisions_client.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/transport_result_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/client_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/chat_completions_client_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/openrouter_decisions_client_spec.rb
+# Phase 2 / Stage 3 — Decision Runner + request/response mapping (ISOLATED, UNWIRED).
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/input_contract.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/request_builder.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/chat_response_parser.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/decisions_response_mapper.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/runner.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/input_contract_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/request_builder_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/chat_response_parser_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/decisions_response_mapper_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/runner_spec.rb
+# Phase 2 / Stage 4 — DEFAULT-OFF, asynchronous, shadow-only Decision Runner integration
+# (read-only config seam, scenario adapter, shadow execution/job, fail-safe enqueuer) fired
+# from the existing Wijaya::Marine::Hooks touchpoint (already required above at line ~409).
+# Phase 2 / Stage 5 — PRIVACY-SAFE aggregate metrics + ADVISORY acceptance (observation-only,
+# never authority): assistant allowlist + enabled_for? opt-in gating, ShadowObservation,
+# ShadowMetricsStore (UTC daily counters, no scan), ShadowAcceptance (advisory-only status).
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_config.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/scenario_adapter.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_execution.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_enqueuer.rb
+require_file custom/wijaya/batteries/marine_ai/app/jobs/marine/decision/shadow_job.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_observation.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_metrics_store.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_acceptance.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_config_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/scenario_adapter_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_execution_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_job_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_enqueuer_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_observation_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_metrics_store_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/shadow_acceptance_spec.rb
+# Phase 2 / Stage 6 — CONTROLLED Decision Maker cutover for scenario selection (backend authority +
+# immediate rollback). CutoverConfig is a strict fail-closed config seam (MARINE_DECISION_CUTOVER_
+# ENABLED/ASSISTANT_IDS/ROLLBACK; rollback highest precedence; enabled_for? also requires the existing
+# ShadowConfig.enabled_for?). CutoverGate opens ONLY on the exact eligible/thresholds_met advisory
+# ShadowAcceptance report over a 14-day ShadowMetricsStore snapshot; config closed => no metrics read
+# => immediate rollback. ScenarioResolver re-queries assistant.scenarios.enabled by the stable
+# scenario_<id> key (backend-authoritative). CutoverScenarioSelector wraps the legacy ScenarioSelector:
+# closed/blank => legacy directly; open => ScenarioAdapter seam + Decision Runner (once) accepted ONLY
+# on a canonical normalized medium/high plan whose candidate key re-resolves; else legacy. Decision-side
+# failures never escape (they fall back to legacy), while a legacy selector error propagates to
+# Agent::Runner#run and preserves its historical safe-handoff fail-safe. The internal
+# Agent::Runner#select_scenario touchpoint (custom/.../agent/runner.rb, already required above) now
+# routes through it. Scenario-only authority; never reply/routing/product/handoff/state.
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/cutover_config.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/cutover_gate.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/scenario_resolver.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/cutover_scenario_selector.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/cutover_config_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/cutover_gate_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/scenario_resolver_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/decision/cutover_scenario_selector_spec.rb
 require_file custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/active_storage_analysis_guard.rb
 require_file custom/wijaya/batteries/marine_ai/docs/product_catalog_db.md
 # Commit 1C — SOP extraction + OCR foundation
@@ -386,14 +649,36 @@ require_file custom/wijaya/batteries/marine_ai/app/services/marine/documents/sop
 require_file custom/wijaya/batteries/marine_ai/app/jobs/marine/documents/process_job.rb
 require_file custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing
 require_file custom/wijaya/batteries/marine_ai/deploy/install_sop_processing_dependencies.sh
-# Dedicated, resource-capped SOP worker + optional catalog secret live in a Battery
-# overlay so the base production compose boots core Rails/Sidekiq with no Marine var.
-require_file custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop.yml
-require_marker custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop.yml "marine_sop_worker"
+# The MANDATORY catalog secret mount (rails+sidekiq) and the OPTIONAL dedicated SOP
+# worker live in SEPARATE Battery overlays so the base compose boots core Rails/Sidekiq
+# with no Marine var. Recreation goes through the canonical entrypoint (deploy.sh).
+require_file custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml
+require_marker custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml "MARINE_CATALOG_PG_PASSWORD_FILE"
+require_file custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml
+require_marker custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml "marine_sop_worker"
+# The optional SOP worker overlay must NOT carry the rails/sidekiq catalog secret.
+if grep -q "MARINE_CATALOG_PG_PASSWORD_FILE" custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml 2>/dev/null; then
+  echo "FORBIDDEN: SOP worker overlay must not carry the catalog secret (it lives in docker-compose.marine-catalog.yml)" >&2
+  missing=1
+fi
 # The base compose must NOT carry the mandatory Marine catalog secret mount anymore.
 if grep -q "MARINE_CATALOG_PG_PASSWORD_FILE" docker-compose.production.yaml 2>/dev/null; then
   echo "FORBIDDEN: base docker-compose.production.yaml still references MARINE_CATALOG_PG_PASSWORD_FILE (must live in the Battery overlay)" >&2
   missing=1
+fi
+# Canonical Development deployment contract: tracked entrypoint + static checker +
+# secret-safe dependency monitor + regression suite. The static checker enforces the
+# base+catalog overlay usage, the retired-filename ban, and the no-competing-entrypoint
+# invariant; run it here so the contract is verified alongside the battery surface.
+require_file custom/wijaya/deploy/deploy.sh
+require_file custom/wijaya/scripts/check_deploy_contract.sh
+require_file custom/wijaya/scripts/marine_domain_boundary_monitor.sh
+require_file custom/wijaya/deploy/tests/run_tests.sh
+if [[ -f custom/wijaya/scripts/check_deploy_contract.sh ]]; then
+  if ! bash custom/wijaya/scripts/check_deploy_contract.sh >/dev/null; then
+    echo "FORBIDDEN: deployment contract check failed (see check_deploy_contract.sh)" >&2
+    missing=1
+  fi
 fi
 # Commit 1C — registered specs
 require_file spec/custom/wijaya/batteries/marine_ai/documents/command_runner_spec.rb
@@ -510,6 +795,33 @@ for file in \
   require_marker "$file" "WIJAYA_CUSTOM_END marine_ai"
 done
 
+# marine_ai price-display-v1 — deterministic, locale-safe dynamic price replies. A pure
+# DISPLAY formatter turns eligibility-checked catalog facts into display values; the shared
+# PriceReplyComposer generates wording from role-labelled placeholders (restored byte-exact
+# through the FactPlaceholderMask boundary) so no raw price/currency/code is ever model-authored.
+# Both locales carry the deterministic price_available fallback.
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_display_formatter.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_reply_composer.rb
+require_file custom/wijaya/batteries/marine_ai/config/locales/id.yml
+require_file spec/custom/wijaya/batteries/marine_ai/catalog/price_display_formatter_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/catalog/price_reply_composer_spec.rb
+# Policy version is defined in the formatter and reused by the composer.
+require_marker custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_display_formatter.rb "price-display-v1"
+require_marker custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_reply_composer.rb "price-display-v1"
+# Placeholder/composer boundary: the composer restores role-labelled placeholders through the
+# FactPlaceholderMask, so raw facts are never invented in generated wording.
+require_marker custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_reply_composer.rb "FactPlaceholderMask"
+# The deterministic price_available fallback key must exist in BOTH en and id locales.
+require_marker custom/wijaya/batteries/marine_ai/config/locales/en.yml "price_available"
+require_marker custom/wijaya/batteries/marine_ai/config/locales/id.yml "price_available"
+# A STANDALONE price_available reply must NEVER be presented as a hardcoded English price sentence:
+# ReplyPresenter fails closed on it (PriceReplyNotPresentable) so a future caller cannot leak English
+# — a pure price reply is resolved only through the shared PriceReplyComposer. This asserts the guard
+# is present; a forbid-text check on the price sentence itself is intentionally NOT used because the
+# composite price+stock reply legitimately still renders that clause via the same internal builder.
+require_marker custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_presenter.rb "price-standalone-fail-closed-v1"
+require_marker custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_presenter.rb "PriceReplyNotPresentable"
+
 # marine_ai_provisioning
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/errors.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/provisioning/config.rb
@@ -581,8 +893,12 @@ while IFS= read -r f; do
   case "$f" in
     custom/wijaya/batteries/*) continue ;;
     custom/wijaya/patches/*) continue ;;
+    # Canonical Development deployment contract lives outside the batteries: the tracked
+    # entrypoint (deploy/) and its static checker/monitor/tests (scripts/, deploy/tests/).
+    custom/wijaya/deploy/*) continue ;;
+    custom/wijaya/scripts/*) continue ;;
   esac
-  echo "FORBIDDEN: custom/wijaya path outside canonical batteries/ (patches/ excepted): $f" >&2
+  echo "FORBIDDEN: custom/wijaya path outside canonical batteries/ (patches/, deploy/, scripts/ excepted): $f" >&2
   missing=1
 done < <( { git ls-files -- 'custom/wijaya'; git ls-files --others --exclude-standard -- 'custom/wijaya'; } | sort -u )
 

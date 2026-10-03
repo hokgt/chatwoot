@@ -114,10 +114,49 @@ module Wijaya::Marine::Hooks
   # the trigger-bound product/RAG flow with per-message idempotency.
   def schedule_marine_response(conversation, message)
     job_args = [conversation, conversation.inbox.marine_assistant, message.id]
-    if message.attachments.blank?
-      ::Marine::Conversation::ResponseBuilderJob.perform_later(*job_args)
-    else
-      ::Marine::Conversation::ResponseBuilderJob.set(wait: 2.seconds).perform_later(*job_args)
+    scheduled =
+      if message.attachments.blank?
+        ::Marine::Conversation::ResponseBuilderJob.perform_later(*job_args)
+      else
+        ::Marine::Conversation::ResponseBuilderJob.set(wait: 2.seconds).perform_later(*job_args)
+      end
+
+    # Phase 2 / Stage 4 — DEFAULT-OFF, asynchronous, fire-and-forget shadow of the isolated
+    # Marine Decision Runner. Fired ONLY when the primary enqueue above genuinely succeeded
+    # (see primary_enqueue_succeeded?), and enqueues nothing (no Redis, no job) unless
+    # MARINE_DECISION_SHADOW_ENABLED is exactly on. The enqueuer swallows every config/Redis/job
+    # error and returns a boolean we discard, so the shadow never influences this method's return
+    # value (`scheduled`) or the caller's rescue/error behavior.
+    if primary_enqueue_succeeded?(scheduled)
+      ::Marine::Decision::ShadowEnqueuer.enqueue(conversation: conversation, message: message)
+      # Fase 3A-2 — DEFAULT-OFF, asynchronous, fire-and-forget PRODUCT-authority shadow. Independent
+      # of the scenario-level decision shadow above (separate flag/allowlist/Redis namespace/job).
+      # Enqueues nothing unless MARINE_PRODUCT_AUTHORITY_SHADOW_ENABLED is exactly on for THIS
+      # assistant; it re-runs the legacy IntentExtractor vs the Fase 3A-1 adapter outcome in a job
+      # and records only aggregate metrics. The enqueuer swallows every config/Redis/job error and
+      # returns a boolean we discard, so it never influences `scheduled` or the caller's behavior.
+      # The ONLY provider/legacy-extractor work (no NEW provider call is added here) happens later
+      # inside Marine::ProductAuthority::ShadowJob, AFTER a fresh allowlist/rollback re-check on the
+      # loaded assistant id, where every timeout/error is swallowed and no metric is fabricated — so
+      # it can never add latency to, or alter the result of, the primary reply path.
+      ::Marine::ProductAuthority::ShadowEnqueuer.enqueue(conversation: conversation, message: message)
     end
+    scheduled
+  end
+
+  # True only when the primary ResponseBuilderJob enqueue proved successful, so the shadow is
+  # never fired for a response that did not actually enqueue. ActiveJob's perform_later returns
+  # false when a before_enqueue callback halts the chain, and returns the job (responding to
+  # #successfully_enqueued? / carrying #enqueue_error) otherwise. A legacy/test truthy object
+  # exposing neither API counts as success for backward compatibility. Any error while checking
+  # fails closed to no shadow and never replaces or alters the primary return object.
+  def primary_enqueue_succeeded?(scheduled)
+    return false unless scheduled
+    return scheduled.successfully_enqueued? if scheduled.respond_to?(:successfully_enqueued?)
+    return false if scheduled.respond_to?(:enqueue_error) && !scheduled.enqueue_error.nil?
+
+    true
+  rescue StandardError
+    false
   end
 end

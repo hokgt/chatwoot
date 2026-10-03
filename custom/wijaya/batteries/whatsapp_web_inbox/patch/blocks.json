@@ -1,0 +1,107 @@
+{
+  "feature": "whatsapp_web_inbox",
+  "files": [
+    {
+      "path": "app/javascript/dashboard/components/widgets/ChannelItem.vue",
+      "expected_blocks": 2,
+      "blocks": [
+        {
+          "anchor": "import ChannelSelector from '../ChannelSelector.vue';\n",
+          "block": "// WIJAYA_CUSTOM_START whatsapp_web_inbox\nimport { isWhatsappWebChannelKey } from '@wijaya/whatsapp_web_inbox/frontend/channel/whatsappWebChannel';\n// WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        },
+        {
+          "anchor": "    return false;\n  }\n",
+          "block": "  // WIJAYA_CUSTOM_START whatsapp_web_inbox\n  if (isWhatsappWebChannelKey(key)) {\n    return true;\n  }\n  // WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/i18n/locale/en/index.js",
+      "expected_blocks": 2,
+      "blocks": [
+        {
+          "anchor": "// WIJAYA_CUSTOM_END erp_lead_sidebar\n",
+          "block": "// WIJAYA_CUSTOM_START whatsapp_web_inbox\nimport whatsappWebInbox from '@wijaya/whatsapp_web_inbox/frontend/i18n/whatsappWebInbox.json';\n// WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        },
+        {
+          "anchor": "  // WIJAYA_CUSTOM_END erp_lead_sidebar\n",
+          "block": "  // WIJAYA_CUSTOM_START whatsapp_web_inbox\n  ...whatsappWebInbox,\n  // WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue",
+      "expected_blocks": 2,
+      "blocks": [
+        {
+          "anchor": "import Voice from './channels/Voice.vue';\n",
+          "block": "// WIJAYA_CUSTOM_START whatsapp_web_inbox\nimport WhatsappWebUnofficial from '@wijaya/whatsapp_web_inbox/frontend/CreateWhatsappWebInbox.vue';\nimport { WHATSAPP_WEB_CHANNEL_KEY } from '@wijaya/whatsapp_web_inbox/frontend/channel/whatsappWebChannel';\n// WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        },
+        {
+          "anchor": "  voice: Voice,\n",
+          "block": "  // WIJAYA_CUSTOM_START whatsapp_web_inbox\n  [WHATSAPP_WEB_CHANNEL_KEY]: WhatsappWebUnofficial,\n  // WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue",
+      "expected_blocks": 2,
+      "blocks": [
+        {
+          "anchor": "import ChannelItem from 'dashboard/components/widgets/ChannelItem.vue';\n",
+          "block": "// WIJAYA_CUSTOM_START whatsapp_web_inbox\nimport { buildWhatsappWebChannelCard } from '@wijaya/whatsapp_web_inbox/frontend/channel/whatsappWebChannel';\n// WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        },
+        {
+          "anchor": "    icon: 'i-woot-whatsapp',\n  });\n\n",
+          "block": "  // WIJAYA_CUSTOM_START whatsapp_web_inbox\n  channels.push(buildWhatsappWebChannelCard({ t }));\n  // WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue",
+      "expected_blocks": 5,
+      "blocks": [
+        {
+          "anchor": "import { copyTextToClipboard } from 'shared/helpers/clipboard';\n",
+          "block": "// WIJAYA_CUSTOM_START whatsapp_web_inbox\nimport WhatsappWebConnectionPanel from '@wijaya/whatsapp_web_inbox/frontend/WhatsappWebConnectionPanel.vue';\nimport { isWhatsappWebInbox as isWhatsappWebInboxFn } from '@wijaya/whatsapp_web_inbox/frontend/helpers/whatsappWebInbox';\n// WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        },
+        {
+          "anchor": "  components: {\n",
+          "block": "    // WIJAYA_CUSTOM_START whatsapp_web_inbox\n    WhatsappWebConnectionPanel,\n    // WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        },
+        {
+          "anchor": "            name: this.$t('INBOX_MGMT.TABS.CALLS'),\n          },\n        ];\n      }\n\n",
+          "block": "      // WIJAYA_CUSTOM_START whatsapp_web_inbox\n      if (this.isWhatsappWebInbox) {\n        visibleToAllChannelTabs = [\n          ...visibleToAllChannelTabs,\n          {\n            key: 'whatsapp-web',\n            name: this.$t('WHATSAPP_WEB_INBOX.PANEL.TITLE'),\n          },\n        ];\n      }\n      // WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        },
+        {
+          "anchor": "      return visibleToAllChannelTabs;\n    },\n",
+          "block": "    // WIJAYA_CUSTOM_START whatsapp_web_inbox\n    isWhatsappWebInbox() {\n      return isWhatsappWebInboxFn(this.inbox);\n    },\n    // WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        },
+        {
+          "anchor": "          <ConfigurationPage :inbox=\"inbox\" />\n        </div>\n",
+          "block": "        <!-- WIJAYA_CUSTOM_START whatsapp_web_inbox -->\n        <div\n          v-if=\"selectedTabKey === 'whatsapp-web' && isWhatsappWebInbox\"\n          class=\"mx-6 max-w-4xl\"\n        >\n          <WhatsappWebConnectionPanel :inbox=\"inbox\" />\n        </div>\n        <!-- WIJAYA_CUSTOM_END whatsapp_web_inbox -->\n"
+        }
+      ]
+    },
+    {
+      "path": "app/controllers/public/api/v1/inboxes/messages_controller.rb",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "    build_attachment\n",
+          "block": "    # WIJAYA_CUSTOM_START whatsapp_web_inbox\n    if defined?(Wijaya::Batteries::Core::Hooks)\n      Wijaya::Batteries::Core::Hooks.dispatch(\n        :whatsapp_web_inbox, :apply_public_inbound_message_attributes,\n        default: nil, message: @message, channel: @inbox_channel, params: params\n      )\n    end\n    # WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        }
+      ]
+    },
+    {
+      "path": "config/routes.rb",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "        resources :csat_survey, only: [:show, :update]\n",
+          "block": "        # WIJAYA_CUSTOM_START whatsapp_web_inbox\n        begin\n          require Rails.root.join('custom/wijaya/batteries/whatsapp_web_inbox/public_routes').to_s\n          Wijaya::Batteries::WhatsappWebInbox::PublicRoutes.draw(self)\n        rescue StandardError, ScriptError => e\n          Rails.logger.error(\"[Wijaya] whatsapp_web public routes failed: #{e.class}\")\n        end\n        # WIJAYA_CUSTOM_END whatsapp_web_inbox\n"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+# MANDATORY Marine catalog secret overlay (rails + sidekiq).
+#
+# Whenever the Marine AI battery is enabled this overlay MUST be layered on top of the
+# base compose. It provides the read-only product-catalog PG password file that both
+# request-serving services need: rails and the normal sidekiq worker query the catalog
+# (Marine::Catalog::Config reads MARINE_CATALOG_PG_PASSWORD_FILE) and the domain/security
+# classifier appends a catalog reference block (Marine::Circuit::CatalogDomainReference).
+#
+# If this overlay is omitted, the mount is missing, the file is unreadable, or the app
+# reads a different container path than the one mounted, the catalog fails closed
+# (Marine::Catalog::Errors::CatalogUnavailableError) and EVERY non-product / non-exact-FAQ
+# turn — greetings included — is denied via domain_boundary with
+# domain_boundary_category=error. This overlay exists to make that omission impossible.
+#
+# DO NOT deploy or recreate rails/sidekiq with a plain `docker compose ... up`. The ONLY
+# approved entrypoint that guarantees this overlay is present is:
+#
+#   custom/wijaya/deploy/deploy.sh --deploy
+#
+# Contract (env vars; all have parse-safe defaults so `docker compose config` succeeds):
+#   MARINE_CATALOG_PG_PASSWORD_FILE      - container path the app reads (ENV of the same
+#                                          name). The bind mount TARGET is pinned to this
+#                                          exact value so the mounted file is always the
+#                                          file the app opens.
+#   MARINE_CATALOG_PG_PASSWORD_FILE_HOST - host path of the read-only catalog PG password
+#                                          (the bind mount SOURCE). Keep out of version
+#                                          control.
+#
+# The mount is read-only (:ro) and lands ONLY in rails + sidekiq — never the SOP worker,
+# which does OCR/extraction and needs shared storage only, never the catalog secret.
+
+services:
+  rails:
+    environment:
+      - MARINE_CATALOG_PG_PASSWORD_FILE=${MARINE_CATALOG_PG_PASSWORD_FILE:-/run/secrets/marine_catalog_pg_password}
+    volumes:
+      - ${MARINE_CATALOG_PG_PASSWORD_FILE_HOST:-./secrets/marine_catalog_pg_password}:${MARINE_CATALOG_PG_PASSWORD_FILE:-/run/secrets/marine_catalog_pg_password}:ro
+
+  sidekiq:
+    environment:
+      - MARINE_CATALOG_PG_PASSWORD_FILE=${MARINE_CATALOG_PG_PASSWORD_FILE:-/run/secrets/marine_catalog_pg_password}
+    volumes:
+      - ${MARINE_CATALOG_PG_PASSWORD_FILE_HOST:-./secrets/marine_catalog_pg_password}:${MARINE_CATALOG_PG_PASSWORD_FILE:-/run/secrets/marine_catalog_pg_password}:ro

@@ -1,3 +1,7 @@
+# WIJAYA_CUSTOM_START trusted_internal_webhook
+require Rails.root.join('custom/wijaya/batteries/trusted_internal_webhook/hooks').to_s
+# WIJAYA_CUSTOM_END trusted_internal_webhook
+
 class Webhooks::Trigger
   SUPPORTED_ERROR_HANDLE_EVENTS = %w[message_created message_updated].freeze
   RETRYABLE_AGENT_BOT_STATUSES = [429, 500].freeze
@@ -40,6 +44,16 @@ class Webhooks::Trigger
 
   def perform_request
     body = @payload.to_json
+    # WIJAYA_CUSTOM_START trusted_internal_webhook
+    if defined?(Wijaya::Batteries::TrustedInternalWebhook::Hooks) &&
+       Wijaya::Batteries::TrustedInternalWebhook::Hooks.deliver(
+         url: @url, webhook_type: @webhook_type, body: body,
+         headers: request_headers(body), timeout: webhook_timeout
+       )
+      return
+    end
+
+    # WIJAYA_CUSTOM_END trusted_internal_webhook
     SafeFetch.fetch(
       @url,
       method: :post,
