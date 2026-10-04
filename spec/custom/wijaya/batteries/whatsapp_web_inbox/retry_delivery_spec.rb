@@ -12,6 +12,11 @@ RSpec.describe Wijaya::Batteries::WhatsappWebInbox::RetryDelivery do
   let(:wa_inbox) { account.inboxes.create!(name: 'WA', channel: wa_channel) }
   let(:plain_channel) { account.api_channels.create!(webhook_url: 'https://example.com/hook') }
   let(:plain_inbox) { account.inboxes.create!(name: 'API', channel: plain_channel) }
+  let(:connectorless_channel) do
+    account.api_channels.create!(webhook_url: nil,
+                                 additional_attributes: { 'wijaya_provider' => 'whatsapp_web' })
+  end
+  let(:connectorless_inbox) { account.inboxes.create!(name: 'WA (no connector)', channel: connectorless_channel) }
 
   def outgoing_message(inbox, status: 'failed', external_error: '503 Service Unavailable', source_id: nil)
     contact = create(:contact, account: account)
@@ -36,6 +41,33 @@ RSpec.describe Wijaya::Batteries::WhatsappWebInbox::RetryDelivery do
       message.update!(message_type: :incoming)
       expect(described_class.perform(message: message)).to be(false)
       expect(Webhooks::Trigger).not_to have_received(:execute)
+    end
+
+    it 'treats a non-failed (sent) whatsapp_web outgoing message with a blank source_id as a handled no-op' do
+      message = outgoing_message(wa_inbox, status: 'sent', external_error: nil, source_id: nil)
+
+      expect(described_class.perform(message: message)).to be(true)
+      expect(Webhooks::Trigger).not_to have_received(:execute)
+      expect(message.reload.status).to eq('sent')
+    end
+
+    it 'treats an already delivered whatsapp_web outgoing message as a handled no-op' do
+      message = outgoing_message(wa_inbox, status: 'delivered', external_error: nil, source_id: 'wamid.DLV1')
+
+      expect(described_class.perform(message: message)).to be(true)
+      expect(Webhooks::Trigger).not_to have_received(:execute)
+      expect(message.reload.status).to eq('delivered')
+    end
+  end
+
+  describe 'fail closed when the inbox has no connector endpoint' do
+    it 'leaves the message failed with an understandable error and never marks it sent' do
+      message = outgoing_message(connectorless_inbox)
+
+      expect(described_class.perform(message: message)).to be(true)
+      expect(Webhooks::Trigger).not_to have_received(:execute)
+      expect(message.reload.status).to eq('failed')
+      expect(message.external_error).to eq(described_class::NO_CONNECTOR_ERROR)
     end
   end
 

@@ -20,6 +20,10 @@ module Wijaya::Batteries::WhatsappWebInbox
     # short window so a double click (or a re-enqueued job) can never produce two
     # provider sends. Comfortably longer than the synchronous webhook timeout.
     LOCK_TTL = 15
+    # Shown when a resend is impossible because the inbox has no connector endpoint
+    # configured. Replaces the opaque stored error so the agent sees an understandable
+    # reason instead of a message that falsely claims it was sent.
+    NO_CONNECTOR_ERROR = 'WhatsApp Web is not connected for this inbox. Reconnect it and try again.'
 
     def self.perform(message:)
       new(message).perform
@@ -34,6 +38,14 @@ module Wijaya::Batteries::WhatsappWebInbox
     # non-outgoing message).
     def perform
       return false unless whatsapp_web_outgoing?
+
+      # Strict failed-status gate: only a genuinely FAILED send is ever re-delivered. A
+      # repeated/direct retry POST on a message that is already sent/delivered/read must
+      # never re-emit message.created — doing so would deliver a second copy to the
+      # recipient (and with a blank source_id, bypass the provider-id guard below). Treat
+      # it as handled (native retry stays skipped for this inbox) but do nothing.
+      return true unless @message.failed?
+
       return true unless claim_retry_slot?
 
       # Idempotency / no duplicate send: a message that already carries a provider
@@ -41,6 +53,10 @@ module Wijaya::Batteries::WhatsappWebInbox
       # would deliver it to the recipient twice. Leave it exactly as it is — never
       # fake `sent` on top of a real provider outcome.
       return true if @message.source_id.present?
+
+      # Fail closed: validate the one delivery prerequisite BEFORE touching the status, so
+      # a misconfigured inbox is never optimistically flipped to `sent` with nothing sent.
+      return true unless connector_endpoint_present?
 
       reset_to_retry_state
       redeliver_as_created
@@ -51,6 +67,16 @@ module Wijaya::Batteries::WhatsappWebInbox
 
     def whatsapp_web_outgoing?
       @message.outgoing? && Hooks.whatsapp_web_channel?(@message.inbox&.channel)
+    end
+
+    # A resend can only reach the recipient if the inbox carries a connector webhook URL.
+    # When it is missing, leave the message FAILED (never mark it sent) and replace the
+    # opaque error with an understandable reason instead of a misleading sent state.
+    def connector_endpoint_present?
+      return true if @message.inbox.channel.webhook_url.present?
+
+      Messages::StatusUpdateService.new(@message, 'failed', NO_CONNECTOR_ERROR).perform
+      false
     end
 
     # SET NX EX — the first caller in the window wins; later duplicates fall through as an
@@ -76,8 +102,6 @@ module Wijaya::Batteries::WhatsappWebInbox
     # it `failed` with the error, so a connector failure is never shown as sent.
     def redeliver_as_created
       channel = @message.inbox.channel
-      return if channel.webhook_url.blank?
-
       payload = @message.webhook_data.merge(event: 'message_created')
       Webhooks::Trigger.execute(channel.webhook_url, payload, :api_inbox_webhook,
                                 secret: channel.secret, delivery_id: SecureRandom.uuid)
