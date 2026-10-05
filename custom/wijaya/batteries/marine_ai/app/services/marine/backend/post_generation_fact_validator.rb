@@ -112,6 +112,7 @@ class Marine::Backend::PostGenerationFactValidator
   # exists) the immutable display amount / currency / UOM. Blank/absent values are skipped.
   def required_values(packet)
     values = []
+    values << dig(packet, :validated_slots, :product, :code)
     values << dig(packet, :validated_slots, :variant, :code)
     price = dig(packet, :facts, :price)
     if price.is_a?(Hash)

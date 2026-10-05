@@ -46,6 +46,17 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
     let(:conversation) { create(:conversation) }
     let(:assistant) { create(:marine_assistant, account: conversation.account) }
     let(:incoming) { create(:message, conversation: conversation, message_type: :incoming, content: 'price for impeller 3 inch') }
+    let(:exact_price_attempt) { instance_double(Marine::Backend::ExactPriceCustomerExecution) }
+    let(:target_fallback) do
+      Marine::Backend::ExactPriceCustomerExecution::Result.new(
+        status: :fallback, reason: :authority_rejected, text: nil
+      ).freeze
+    end
+
+    before do
+      allow(Marine::Backend::ExactPriceCustomerExecution).to receive(:new).and_return(exact_price_attempt)
+      allow(exact_price_attempt).to receive(:call).and_return(target_fallback)
+    end
 
     def stub_reasoning(payload)
       chat = instance_double(Marine::Llm::AssistantChatService, generate_response: payload)
@@ -70,6 +81,49 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
 
     def product_state
       Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload).current
+    end
+
+    it 'delivers one fact-guarded exact-price target reply without calling the legacy service' do
+      target = Marine::Backend::ExactPriceCustomerExecution::Result.new(
+        status: :deliverable, reason: :accepted, text: 'IMP IMP-3 Rp 150.000 per pcs.'
+      ).freeze
+      allow(exact_price_attempt).to receive(:call).and_return(target)
+      expect(Marine::Llm::AssistantChatService).not_to receive(:new)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq(target.text)
+      expect(reply.additional_attributes).to include(
+        'source_type' => 'marine_exact_price_evidence_v2',
+        'orchestration_path' => 'exact_price_target'
+      )
+      expect(conversation.messages.outgoing.count).to eq(1)
+      expect(usage_count).to eq(1)
+      expect(claim_status).to eq('completed')
+      expect(exact_price_attempt).to have_received(:call).once
+    end
+
+    it 'runs the unchanged legacy path when the exact-price target declines the turn' do
+      stub_reasoning('response' => 'legacy fallback', 'action' => 'reply')
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      expect(conversation.messages.outgoing.last.content).to eq('legacy fallback')
+      expect(exact_price_attempt).to have_received(:call).once
+      expect(Marine::Llm::AssistantChatService).to have_received(:new).with(
+        assistant: assistant, conversation: conversation, source: incoming
+      ).once
+    end
+
+    it 'runs the unchanged legacy path when target construction or execution raises' do
+      allow(exact_price_attempt).to receive(:call).and_raise('synthetic target failure')
+      stub_reasoning('response' => 'legacy after target failure', 'action' => 'reply')
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      expect(conversation.messages.outgoing.last.content).to eq('legacy after target failure')
+      expect(claim_status).to eq('completed')
     end
 
     # price_available now routes through the shared Marine::Catalog::PriceReplyComposer (see

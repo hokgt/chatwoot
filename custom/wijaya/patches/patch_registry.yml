@@ -1053,6 +1053,9 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/account_extensions.rb
       - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/inbox_extensions.rb
       - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/user_extensions.rb
+      # Phase 2 exact-price activation: after claim ownership/eligibility, attempt the single
+      # ExactPriceCustomerExecution seam; only an accepted guarded reply bypasses the unchanged
+      # legacy AssistantChatService fallback. Existing final lock/transaction remains delivery owner.
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/conversation/response_builder_job.rb
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/documents/response_builder_job.rb
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/llm/update_embedding_job.rb
@@ -1297,6 +1300,10 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/model2_shadow_execution.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/model2_shadow_observation.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/model2_shadow_metrics_store.rb
+      # Phase 2 exact-price activation checkpoint A — side-effect-free synchronous attempt. Reuses
+      # one policy-injected CandidatePlan, Backend Authority, marine_evidence_v2, and the existing
+      # presenter/fact guards; it returns validated text or a closed fallback and never delivers.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/exact_price_customer_execution.rb
       # Fase 3A-2 — Product Shadow Authority. DEFAULT-OFF, fail-closed observation-only layer that
       # compares the LEGACY Marine::Catalog::IntentExtractor product outcome against the Fase 3A-1
       # CandidatePlanToProductIntentAdapter outcome, aggregates privacy-safe metrics, and stages a
@@ -1874,6 +1881,7 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/backend/evidence_reply_generator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/evidence_fact_verifier_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/model2_shadow_execution_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/exact_price_customer_execution_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/resolve_any_spec.rb
       # Fase 3A-2 — Product Shadow Authority specs. ProductOutcome projection/compare; ShadowConfig
       # default-off + exact-true + fail-closed allowlist (max 50) + candidate-mode + rollback

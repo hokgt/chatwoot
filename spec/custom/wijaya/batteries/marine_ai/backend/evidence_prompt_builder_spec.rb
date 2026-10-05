@@ -42,9 +42,10 @@ RSpec.describe Marine::Backend::EvidencePromptBuilder do
     expect(prompt[:system]).not_to include('SAME language')
   end
 
-  it 'requires the validated variant code to appear in a variant-supported reply' do
+  it 'requires validated product and variant codes in supported replies' do
     instruction = described_class::SYSTEM_INSTRUCTION
-    expect(instruction).to match(/MUST state that variant's code/)
+    expect(instruction).to match(/MUST state that product's code/)
+    expect(instruction).to match(/MUST also state that variant's code/)
     expect(instruction).to match(/exactly as the packet gives it/)
     expect(prompt[:system]).to include(instruction)
   end

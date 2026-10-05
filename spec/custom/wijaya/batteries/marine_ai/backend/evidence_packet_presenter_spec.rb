@@ -118,7 +118,7 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
       {
         price_packet => 'Untuk BD-4, harganya Rp 12.500 per yard.',
         stock_packet => 'BD-4 saat ini tersedia.',
-        overview_packet => 'Kami menyediakan berbagai kain berkualitas untuk kebutuhan Anda.'
+        overview_packet => 'BD mencakup berbagai kain berkualitas untuk kebutuhan Anda.'
       }.each do |packet, text|
         result = presenter.call(packet: packet, generator: generator(text), customer_request: 'x')
         expect(result).to have_attributes(ok: false, reason: :fact_unverified, fallback: :deterministic)

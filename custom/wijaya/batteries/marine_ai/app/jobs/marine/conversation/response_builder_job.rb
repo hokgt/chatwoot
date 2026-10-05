@@ -111,12 +111,11 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     return complete_no_output unless eligible? # takeover/resolved/snoozed BEFORE reasoning
 
     Current.executed_by = @assistant
-    # No message_history is passed: the trigger-bound Agent::Runner derives the canonical
-    # prior history and separately bounded current trigger from the Conversation + this exact
-    # incoming Message (source:), so product-intent and RAG ground on the same context and the
-    # trigger is supplied exactly once.
-    @response = Marine::Llm::AssistantChatService.new(assistant: @assistant, conversation: @conversation,
-                                                      source: message).generate_response
+    # Phase 2 exact-price activation attempts the target architecture first. It returns a
+    # delivery-compatible response only for a policy-authorized, repository-backed exact price
+    # whose Evidence v2 wording passed every fact guard. Every other outcome runs this job's
+    # unchanged trigger-bound legacy service locally; no global cutover gate is opened.
+    @response = exact_price_response(message) || generate_trigger_bound_legacy_response(message)
     # Phase 6 — precompute the deterministic localized fallback and (only if it survives BOTH
     # the deterministic protected-fact checker and the semantic validator) a natural-wording
     # candidate for eligible product replies, OUTSIDE the finalize row lock. Finalize still
@@ -132,6 +131,31 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     ChatwootExceptionTracker.new(e, account: @conversation.account).capture_exception
   ensure
     Current.executed_by = nil
+  end
+
+  # Target execution is side-effect-free: this job remains the only delivery/claim owner. Rescue
+  # construction as well as execution so any target defect still reaches the required legacy path.
+  def exact_price_response(message)
+    result = Marine::Backend::ExactPriceCustomerExecution.new(
+      account: @conversation.account, assistant: @assistant, conversation: @conversation, message: message
+    ).call
+    return nil unless result.deliverable?
+
+    {
+      'response' => result.text,
+      'source_type' => 'marine_exact_price_evidence_v2',
+      'orchestration_path' => 'exact_price_target'
+    }
+  rescue StandardError
+    nil
+  end
+
+  # No message_history is passed: the legacy trigger-bound Agent::Runner derives canonical prior
+  # history and the separately bounded trigger from this exact source message.
+  def generate_trigger_bound_legacy_response(message)
+    Marine::Llm::AssistantChatService.new(
+      assistant: @assistant, conversation: @conversation, source: message
+    ).generate_response
   end
 
   # Final gate under the freshest DB view, inside the Conversation row lock and its

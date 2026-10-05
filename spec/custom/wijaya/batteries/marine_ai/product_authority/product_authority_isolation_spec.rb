@@ -2,19 +2,16 @@
 
 require 'rails_helper'
 
-# Fase 3A-2 — proves the PRODUCT-authority path is ISOLATED and advisory: the LIVE product pipeline has
-# ZERO references to Marine::Backend; the ONLY runtime consumers of Marine::Backend under the battery
-# are the product-authority ShadowExecution and Evaluator (plus the Marine::Backend services
-# themselves); the shadow enqueuer/job/execution perform no persistence; the ShadowExecution is
-# adapter-only; and the CandidateGate is phase-locked closed. This is a static, deterministic source
-# assertion plus one runtime lock check.
+# Fase 3A-2 isolation plus Phase 2 exact-price activation. Product-authority shadow remains advisory
+# and phase-locked; the customer path reaches Marine::Backend only through the one approved
+# ExactPriceCustomerExecution composition seam. Agent/product orchestration still cannot reach
+# Backend directly. Static assertions keep every other Backend consumer allowlisted.
 RSpec.describe 'Marine::ProductAuthority Fase 3A-2 isolation' do
   root = Rails.root.join('custom/wijaya/batteries/marine_ai')
 
-  describe 'the live product path has ZERO references to Marine::Backend' do
+  describe 'the live path has only the approved exact-price Backend composition seam' do
     {
       'Agent::Runner' => root.join('app/services/marine/agent/runner.rb'),
-      'Conversation::ResponseBuilderJob' => root.join('app/jobs/marine/conversation/response_builder_job.rb'),
       'Catalog::ProductQueryOrchestrator' => root.join('app/services/marine/catalog/product_query_orchestrator.rb')
     }.each do |label, path|
       it "#{label} does not reference Marine::Backend" do
@@ -22,6 +19,13 @@ RSpec.describe 'Marine::ProductAuthority Fase 3A-2 isolation' do
 
         expect(File.read(path)).not_to include('Marine::Backend')
       end
+    end
+
+    it 'lets Conversation::ResponseBuilderJob reference only ExactPriceCustomerExecution' do
+      path = root.join('app/jobs/marine/conversation/response_builder_job.rb')
+      references = File.read(path).scan(/Marine::Backend::[A-Za-z:]+/).uniq
+
+      expect(references).to eq(%w[Marine::Backend::ExactPriceCustomerExecution])
     end
   end
 
@@ -39,10 +43,12 @@ RSpec.describe 'Marine::ProductAuthority Fase 3A-2 isolation' do
         app/services/marine/product_authority/acceptance_case_result.rb
       ]
 
-      # Phase 2A — the DEFAULT-OFF, read-only Decision shadow job is the single runtime consumer that
-      # bridges the reused JEV CandidatePlan into Marine::Backend::AuthorityShadowExecution (no live
-      # product path; inside the existing shadow gate).
-      allowed_decision_bridge = %w[app/jobs/marine/decision/shadow_job.rb]
+      # Runtime bridges are explicit and narrow: the default-OFF Decision shadow job and the
+      # customer-facing ResponseBuilderJob composition seam for exact-price only.
+      allowed_decision_bridge = %w[
+        app/jobs/marine/decision/shadow_job.rb
+        app/jobs/marine/conversation/response_builder_job.rb
+      ]
 
       referencing.each do |relative|
         permitted = relative.start_with?('app/services/marine/backend/') ||

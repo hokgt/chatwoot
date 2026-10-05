@@ -115,16 +115,20 @@ RSpec.describe 'Marine::Backend isolation' do
     end
   end
 
-  describe 'non-regression: live path has ZERO references to Marine::Backend' do
-    {
-      'Agent::Runner' => root.join('app/services/marine/agent/runner.rb'),
-      'Conversation::ResponseBuilderJob' => root.join('app/jobs/marine/conversation/response_builder_job.rb')
-    }.each do |label, path|
-      it "#{label} does not reference Marine::Backend" do
-        skip "missing #{path}" unless File.exist?(path)
+  describe 'non-regression: live path reaches Backend only through the exact-price seam' do
+    it 'keeps Agent::Runner isolated from Marine::Backend' do
+      path = root.join('app/services/marine/agent/runner.rb')
+      skip "missing #{path}" unless File.exist?(path)
 
-        expect(File.read(path)).not_to include('Marine::Backend')
-      end
+      expect(File.read(path)).not_to include('Marine::Backend')
+    end
+
+    it 'lets ResponseBuilderJob reference only ExactPriceCustomerExecution' do
+      path = root.join('app/jobs/marine/conversation/response_builder_job.rb')
+      skip "missing #{path}" unless File.exist?(path)
+
+      references = File.read(path).scan(/Marine::Backend::[A-Za-z:]+/).uniq
+      expect(references).to eq(%w[Marine::Backend::ExactPriceCustomerExecution])
     end
   end
 end
