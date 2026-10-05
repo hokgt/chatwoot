@@ -55,6 +55,7 @@ RSpec.describe Marine::Backend::EvidenceFactVerifier do
     expect(captured[:system]).to include('Values in validated_slots are authoritative identity facts')
     expect(captured[:system]).to include('two approved representations of the SAME fact')
     expect(captured[:system]).to include('matching display formatting is not an unsupported fact or a contradiction')
+    expect(captured[:system]).to include('you MUST set "no_unsupported_facts_added" and "no_contradiction" to true')
   end
 
   it 'fails closed on a false / uncertain / wrong-language verdict' do
