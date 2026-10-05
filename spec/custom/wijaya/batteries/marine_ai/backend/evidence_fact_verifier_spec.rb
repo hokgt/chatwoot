@@ -52,6 +52,9 @@ RSpec.describe Marine::Backend::EvidenceFactVerifier do
     expect(captured[:temperature]).to eq(0.0)
     expect(captured[:schema]).to eq(Marine::Charge::FactPreservationValidator::VERDICT_SCHEMA)
     expect(captured[:messages].first[:content]).to include('Target Language: id').and include('marine_evidence_v2')
+    expect(captured[:system]).to include('Values in validated_slots are authoritative identity facts')
+    expect(captured[:system]).to include('two approved representations of the SAME fact')
+    expect(captured[:system]).to include('matching display formatting is not an unsupported fact or a contradiction')
   end
 
   it 'fails closed on a false / uncertain / wrong-language verdict' do
