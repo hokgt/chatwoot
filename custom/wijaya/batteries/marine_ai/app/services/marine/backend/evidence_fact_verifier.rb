@@ -6,7 +6,7 @@ require 'json'
 # call over the EXISTING Response Generator configuration (Marine::Llm::BaseService + the default
 # MARINE_OPEN_AI_* config) — no new provider/model/endpoint, no hardcoded credentials.
 #
-# The frozen marine_evidence_v1 Evidence Packet is the ONLY factual source. The verifier asks the
+# The frozen marine_evidence_v2 Evidence Packet is the ONLY factual source. The verifier asks the
 # provider to enforce the SAME strict verdict envelope the FAQ validator uses
 # (Marine::Charge::FactPreservationValidator::VERDICT_SCHEMA — a bare { "verdict": "<json>" } object
 # whose string value carries the inner verdict so RubyLLM's eager parse cannot deduplicate its keys),
@@ -54,7 +54,7 @@ class Marine::Backend::EvidenceFactVerifier
     @account = account
   end
 
-  # packet:    a frozen marine_evidence_v1 Evidence Packet (the only factual source; carries the
+  # packet:    a frozen marine_evidence_v2 Evidence Packet (the only factual source; carries the
   #            authoritative customer_language).
   # candidate: the untrusted generated reply text.
   # Returns true ONLY for a complete, all-true six-field verdict; false on every failure/uncertainty.

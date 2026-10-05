@@ -48,11 +48,19 @@ RSpec.describe Marine::ProductAuthority::Corpus do
   it 'covers every required category' do
     required_categories = %w[
       price stock price_stock overview catalog ambiguous_variant variant_correction
-      stock_vs_order_status malformed unsupported_mixed capability_mismatch scenario_mismatch stock_failclosed
+      stock_vs_order_status malformed unsupported_mixed phase_not_executable scenario_mismatch stock_failclosed
       exact_quantity parity
     ]
     present = cases.map { |kase| kase[:category] }.uniq
     required_categories.each { |category| expect(present).to include(category) }
+  end
+
+  it 'carries NO per-scenario capability map (Phase 1: authorization is backend-policy-owned)' do
+    expect(cases).to all(satisfy { |kase| !kase.key?(:capabilities) })
+    # Every non-price product-intent case asserts the adapter's policy block reason.
+    policy_blocked = cases.select { |kase| kase[:label][:block_reason] == 'phase_not_executable' }
+    expect(policy_blocked).not_to be_empty
+    expect(policy_blocked.map { |kase| kase[:plan]['intents'] }).to all(satisfy { |intents| intents != ['price'] })
   end
 
   it 'contains exactly one surface-aware parity case flagged for the dual-surface harness' do

@@ -38,6 +38,7 @@ class Marine::ProductAuthority::Evaluator
   Outcome = Marine::ProductAuthority::ProductOutcome
   Planner = Marine::Backend::ProductExecutionPlanner
   EvidenceBuilder = Marine::Backend::EvidencePacketBuilder
+  CLASSIFICATION_INTENTS = Marine::Backend::ExecutionPolicy::CLASSIFICATION_INTENTS
   Acceptance = Marine::ProductAuthority::ShadowAcceptance
   # The canonical per-case acceptance executor + its closed-schema artifact. The Evaluator folds each
   # valid corpus case through this SAME coordinator (with the case's injected read-only fixtures) ONCE
@@ -56,7 +57,7 @@ class Marine::ProductAuthority::Evaluator
   # The exact REQUIRED key set every corpus case must carry, the explicitly-optional case keys, and
   # the exact required + optional label key sets. A case/label carrying any key outside these sets
   # fails the schema closed.
-  CASE_KEYS = %i[id category critical surface scenario_key capabilities plan repositories label].freeze
+  CASE_KEYS = %i[id category critical surface scenario_key plan repositories label].freeze
   OPTIONAL_CASE_KEYS = %i[safety parity].freeze
   LABEL_KEYS = %i[status intents slot_ops response_goals].freeze
   OPTIONAL_LABEL_KEYS = %i[block_reason].freeze
@@ -68,8 +69,8 @@ class Marine::ProductAuthority::Evaluator
   # Closed block-reason vocabulary: the adapter's allowlisted fail-closed reasons plus the
   # evaluator-owned exact-quantity safety reason.
   EXACT_QUANTITY_REASON = 'exact_quantity_request'.freeze
-  ADAPTER_BLOCK_REASONS = %w[unsupported_schema unresolved_scenario scenario_mismatch capability_unconfigured
-                             capability_malformed capability_mismatch unsupported_intent].freeze
+  ADAPTER_BLOCK_REASONS = %w[unsupported_schema unresolved_scenario scenario_mismatch unsupported_intent
+                             phase_not_executable].freeze
   BLOCK_REASONS = (ADAPTER_BLOCK_REASONS + [EXACT_QUANTITY_REASON]).freeze
 
   # Tiny, explicit legacy-compatibility map from a corpus label's bounded block_reason to the
@@ -154,8 +155,7 @@ class Marine::ProductAuthority::Evaluator
   end
 
   def valid_case_structure?(kase)
-    valid_capabilities?(kase[:capabilities]) &&
-      kase[:plan].is_a?(Hash) && valid_repositories?(kase[:repositories]) &&
+    kase[:plan].is_a?(Hash) && valid_repositories?(kase[:repositories]) &&
       valid_optional_metadata?(kase) && valid_label?(kase[:label])
   end
 
@@ -163,16 +163,6 @@ class Marine::ProductAuthority::Evaluator
   def closed_keys?(hash, required, optional)
     keys = hash.keys
     (required - keys).empty? && (keys - required - optional).empty?
-  end
-
-  def valid_capabilities?(capabilities)
-    capabilities.is_a?(Hash) && capabilities.size <= MAX_COLLECTION &&
-      capabilities.all? { |key, intents| valid_capability_entry?(key, intents) }
-  end
-
-  def valid_capability_entry?(key, intents)
-    bounded_string?(key) && intents.is_a?(Array) && intents.length <= MAX_COLLECTION &&
-      intents.all? { |intent| bounded_string?(intent) }
   end
 
   # A repositories fixture must be a Hash whose keys are a subset of the closed repository set and whose
@@ -271,7 +261,10 @@ class Marine::ProductAuthority::Evaluator
   # report still exposes exactly ONE canonical result (see #canonical_parity_result).
   def score_parity(kase, surfaces, probe)
     turn = canonical_input(kase)
-    surface_results = surfaces.map { |surface| run_coordinator(kase, surface.adapt(turn), quantity_inquiry: false, probe: probe) }
+    surface_results = surfaces.map do |surface|
+      input = surface.adapt(turn, classification_intents: CLASSIFICATION_INTENTS)
+      run_coordinator(kase, input, quantity_inquiry: false, probe: probe)
+    end
     canonical = canonical_parity_result(kase, surface_results, probe)
     parity_ok = parity_agrees?(surface_results)
     passed = parity_ok && surface_results.any? && surface_results.all? { |result| derive_passed(kase, result) }
@@ -297,10 +290,10 @@ class Marine::ProductAuthority::Evaluator
     surface_results.map { |result| [result.actual_outcome, result.reason] }.uniq.length == 1
   end
 
-  # The canonical backend input for a case: the raw plan, selected scenario, and capability map. It is
+  # The canonical backend input for a case: the raw plan and selected scenario. It is
   # both the non-parity coordinator input and the `turn` each surface adapter projects + normalizes.
   def canonical_input(kase)
-    { plan: kase[:plan], scenario_key: kase[:scenario_key], capabilities: kase[:capabilities] }
+    { plan: kase[:plan], scenario_key: kase[:scenario_key] }
   end
 
   # Fold ONE bounded backend input through the canonical AcceptancePipelineCoordinator — the real Fase
@@ -323,7 +316,6 @@ class Marine::ProductAuthority::Evaluator
     ).run(
       candidate_plan: input[:plan],
       scenario_key: input[:scenario_key],
-      scenario_capabilities: input[:capabilities],
       quantity_inquiry: quantity_inquiry,
       case_id: kase[:id],
       surface: ACCEPTANCE_SURFACE,
@@ -683,35 +675,26 @@ class Marine::ProductAuthority::Evaluator
   # genuinely distinct envelope shapes and normalization code, so requiring their folded fingerprints
   # to match proves surface-invariance rather than tautologically re-tagging identical data.
   SurfaceContext = Struct.new(:name, :project, :normalize, keyword_init: true) do
-    def adapt(turn)
-      normalize.call(project.call(turn))
+    def adapt(turn, classification_intents:)
+      normalize.call(project.call(turn), classification_intents)
     end
   end
 
-  # Conversation surface: the turn arrives as an inbound message envelope whose decision plan lives
-  # under a :message key and whose capabilities are a list of {key, intents} rows.
+  # Conversation surface: the turn arrives as an inbound message envelope.
   CONVERSATION_SURFACE = SurfaceContext.new(
     name: 'conversation',
-    project: lambda do |turn|
-      { message: { decision_plan: turn[:plan], selected_scenario: turn[:scenario_key] },
-        capability_rows: turn[:capabilities].map { |key, intents| { 'key' => key, 'intents' => intents } } }
-    end,
-    normalize: lambda do |env|
-      { plan: env[:message][:decision_plan],
-        scenario_key: env[:message][:selected_scenario],
-        capabilities: env[:capability_rows].each_with_object({}) { |row, map| map[row['key']] = row['intents'] } }
+    project: ->(turn) { { message: { decision_plan: turn[:plan], selected_scenario: turn[:scenario_key] } } },
+    normalize: lambda do |env, _classification_intents|
+      { plan: env[:message][:decision_plan], scenario_key: env[:message][:selected_scenario] }
     end
   ).freeze
 
-  # Playground surface: the same turn arrives as a flat preview request with a pre-shaped capability
-  # map — a genuinely different envelope shape and normalization path.
+  # Playground surface: the same turn arrives as a flat preview request.
   PLAYGROUND_SURFACE = SurfaceContext.new(
     name: 'playground',
-    project: lambda do |turn|
-      { preview_request: { plan: turn[:plan] }, scenario_key: turn[:scenario_key], capability_map: turn[:capabilities] }
-    end,
-    normalize: lambda do |req|
-      { plan: req[:preview_request][:plan], scenario_key: req[:scenario_key], capabilities: req[:capability_map] }
+    project: ->(turn) { { preview_request: { plan: turn[:plan] }, scenario_key: turn[:scenario_key] } },
+    normalize: lambda do |req, _classification_intents|
+      { plan: req[:preview_request][:plan], scenario_key: req[:scenario_key] }
     end
   ).freeze
 

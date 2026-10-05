@@ -9,8 +9,12 @@ require 'rails_helper'
 # returns a small deep-frozen { legacy_scenario_key, candidate_plan }; and — by source scan —
 # it performs NO write/reply/routing/state mutation. All strings are SYNTHETIC.
 RSpec.describe Marine::Decision::ShadowExecution do
-  subject(:execution) { described_class.new(account: account, assistant: assistant, conversation: conversation, message: message) }
+  subject(:execution) do
+    described_class.new(account: account, assistant: assistant, conversation: conversation, message: message,
+                        classification_intents: classification)
+  end
 
+  let(:classification) { %w[price unsupported] }
   let(:account) { double('account', id: 1) }
   let(:assistant) { double('assistant', id: 3, account_id: 1) }
   let(:inbox) { double('inbox', marine_assistant: assistant) }
@@ -42,7 +46,7 @@ RSpec.describe Marine::Decision::ShadowExecution do
       expect(selector).to receive(:select).with('Do you have the vase in stock?').and_return(double('scenario', id: 42))
 
       runner = instance_double(Marine::Decision::Runner)
-      allow(Marine::Decision::Runner).to receive(:new).and_return(runner)
+      expect(Marine::Decision::Runner).to receive(:new).with(classification_intents: %w[price unsupported]).and_return(runner)
       expect(runner).to receive(:call)
         .with(message: 'Do you have the vase in stock?', scenarios: [], context: []).and_return(plan)
 
@@ -94,6 +98,17 @@ RSpec.describe Marine::Decision::ShadowExecution do
       allow(message).to receive(:incoming?).and_return(false)
       expect(Marine::Decision::Runner).not_to receive(:new)
       execution.call
+    end
+  end
+
+  describe 'injected classification vocabulary (fail closed to nil)' do
+    it 'returns nil and NEVER runs the Decision Runner for a nil / empty / non-Array / non-String vocabulary' do
+      expect(Marine::Decision::Runner).not_to receive(:new)
+      [nil, [], 'price', [1]].each do |bad|
+        exec = described_class.new(account: account, assistant: assistant, conversation: conversation,
+                                   message: message, classification_intents: bad)
+        expect(exec.call).to be_nil
+      end
     end
   end
 

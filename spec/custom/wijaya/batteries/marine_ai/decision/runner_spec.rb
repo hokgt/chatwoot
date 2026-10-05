@@ -3,21 +3,25 @@
 require 'rails_helper'
 
 # Phase 2 / Stage 3 — the ISOLATED, UNWIRED Decision Runner. These examples drive both
-# protocols end-to-end with an INJECTED settings object and client double (no real
-# network — WebMock blocks it suite-wide), and pin: canonical deep-frozen CandidatePlan
-# output; capability intersection; the always-empty Decisions slot rule; the allowlisted
-# unknown-reason folding for every failure; that the runner never raises; that it reads
-# only the decision-maker settings; and — by source scan — that it references no
-# Agent::Runner / ScenarioSelector / DB / reply / state-mutation collaborator. All
+# protocols end-to-end with an INJECTED settings object, client double, and INJECTED
+# classification vocabulary (no real network — WebMock blocks it suite-wide), and pin:
+# canonical deep-frozen CandidatePlan output; restriction of proposed intents to the injected
+# classification vocabulary; the always-empty Decisions slot rule; the allowlisted unknown-reason
+# folding for every failure (incl. an invalid/missing injected vocabulary); that the runner never
+# raises; that it reads only the decision-maker settings; and — by source scan — that it references
+# no Agent::Runner / ScenarioSelector / DB / reply / state-mutation collaborator. All
 # product/scenario strings are SYNTHETIC.
 RSpec.describe Marine::Decision::Runner do
-  subject(:runner) { described_class.new(client: client, settings: settings) }
+  subject(:runner) { described_class.new(client: client, settings: settings, classification_intents: classification) }
 
   let(:settings) { instance_double(Marine::Llm::SettingsStore, api_mode: 'chat_completions') }
   let(:client) { instance_double(Marine::Decision::Client) }
+  # A multi-intent test vocabulary (the Runner is generic: it restricts to WHATEVER the composition
+  # root injects; Phase 1 production injects ExecutionPolicy::CLASSIFICATION_INTENTS == price/unsupported).
+  let(:classification) { %w[price stock catalog unsupported] }
 
-  def scenarios(caps = %w[stock price catalog])
-    [{ 'key' => 'stock_check', 'description' => 'availability', 'instruction' => 'check', 'capabilities' => caps }]
+  def scenarios
+    [{ 'key' => 'stock_check', 'description' => 'availability', 'instruction' => 'check' }]
   end
 
   def run(overrides = {})
@@ -53,15 +57,16 @@ RSpec.describe Marine::Decision::Runner do
       expect(result[:scenario_candidate]).to be_frozen
     end
 
-    it 'intersects proposed intents with the declared capability union' do
+    it 'restricts proposed intents to the injected classification vocabulary (drops the rest)' do
       allow(client).to receive(:call).and_return(chat_ok(chat_plan('intents' => %w[stock order_status])))
-      # order_status is not a declared capability -> dropped; stock survives.
-      expect(run(scenarios: scenarios(%w[stock]))[:intents]).to eq(%w[stock])
+      # order_status is not in the injected vocabulary -> dropped; stock survives.
+      expect(run[:intents]).to eq(%w[stock])
     end
 
-    it 'returns empty intents but preserves the candidate scenario when no capability survives' do
+    it 'drops a stock intent entirely under a narrow price-only injected vocabulary' do
+      price_only = described_class.new(client: client, settings: settings, classification_intents: %w[price unsupported])
       allow(client).to receive(:call).and_return(chat_ok(chat_plan('intents' => %w[stock])))
-      result = run(scenarios: scenarios([]))
+      result = price_only.call(message: 'Do you have the vase in stock?', scenarios: scenarios)
       expect(result[:intents]).to eq([])
       expect(result[:scenario_candidate][:key]).to eq('stock_check')
     end
@@ -86,7 +91,7 @@ RSpec.describe Marine::Decision::Runner do
     let(:settings) { instance_double(Marine::Llm::SettingsStore, api_mode: 'openrouter_decisions') }
 
     # A COMPLETE answer envelope: the scenario choice plus a NOUL answer for EVERY asked
-    # intent (allowed_intents = price/stock/catalog/unsupported for these scenarios). Only
+    # intent (allowed_intents = the INJECTED price/stock/catalog/unsupported vocabulary). Only
     # stock clears the threshold.
     let(:answers) do
       {
@@ -124,11 +129,12 @@ RSpec.describe Marine::Decision::Runner do
     it 'folds an in-contract but aggregate-oversized decisions request to malformed_response' do
       real_client = Marine::Decision::OpenrouterDecisionsClient.new(model: 'm', endpoint: 'https://example.test', api_key: 'k')
       decisions_settings = instance_double(Marine::Llm::SettingsStore, api_mode: 'openrouter_decisions')
-      big_runner = described_class.new(client: real_client, settings: decisions_settings)
+      big_runner = described_class.new(client: real_client, settings: decisions_settings,
+                                       classification_intents: %w[price stock catalog unsupported])
 
       big_summary = 'd' * 500
       big_scenarios = Array.new(20) do |i|
-        { 'key' => "scenario_#{i}", 'description' => big_summary, 'instruction' => big_summary, 'capabilities' => %w[stock price catalog] }
+        { 'key' => "scenario_#{i}", 'description' => big_summary, 'instruction' => big_summary }
       end
       result = nil
       expect { result = big_runner.call(message: 'x' * 2000, scenarios: big_scenarios) }.not_to raise_error
@@ -166,11 +172,19 @@ RSpec.describe Marine::Decision::Runner do
     end
   end
 
-  describe 'input, mode, and collaborator failures never raise' do
+  describe 'input, mode, vocabulary, and collaborator failures never raise' do
     it 'folds invalid input to malformed_response without calling the transport' do
       expect(client).not_to receive(:call)
       expect(run(message: '   ')[:reason]).to eq('malformed_response')
       expect(run(scenarios: [])[:reason]).to eq('malformed_response')
+    end
+
+    it 'folds a missing / invalid injected classification vocabulary to a safe unknown plan without dispatching' do
+      expect(client).not_to receive(:call)
+      nil_vocab = described_class.new(client: client, settings: settings, classification_intents: nil)
+      bad_vocab = described_class.new(client: client, settings: settings, classification_intents: %w[not_an_intent])
+      expect(nil_vocab.call(message: 'hi', scenarios: scenarios)[:reason]).to eq('malformed_response')
+      expect(bad_vocab.call(message: 'hi', scenarios: scenarios)[:reason]).to eq('malformed_response')
     end
 
     it 'folds an unrecognized api_mode to unconfigured without dispatching' do
@@ -195,7 +209,9 @@ RSpec.describe Marine::Decision::Runner do
       expect(Marine::Decision::Client).to receive(:new).with(settings: settings).and_return(client)
       allow(client).to receive(:call).and_return(chat_ok(chat_plan))
 
-      expect(described_class.new.call(message: 'Do you have stock?', scenarios: scenarios)[:reason]).to eq('normalized')
+      result = described_class.new(classification_intents: %w[price stock catalog unsupported])
+                              .call(message: 'Do you have stock?', scenarios: scenarios)
+      expect(result[:reason]).to eq('normalized')
     end
   end
 

@@ -11,13 +11,14 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
   subject(:presenter) { described_class.new }
 
   let(:builder) { Marine::Backend::EvidencePacketBuilder.new(clock: -> { Time.utc(2026, 9, 30, 12, 0, 0) }) }
+  let(:handoff_packet) { builder.build(evidence_input: handoff_input) }
   let(:verifier_ok) { ->(**) { true } }
 
   let(:variant_slot) { { code: 'BD-4', resolution_status: 'resolved', source: 'marine_catalog', attributes: {} } }
 
   let(:price_input) do
     {
-      scenario: { key: 'scenario_5', capabilities: %w[price catalog] },
+      scenario: { key: 'scenario_5' },
       intents: %w[price], customer_language: 'id', response_goals: %w[answer_price],
       validated_slots: { variant: variant_slot },
       facts: {
@@ -31,28 +32,9 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
     }
   end
 
-  let(:stock_input) do
-    {
-      scenario: { key: 'scenario_8', capabilities: %w[stock] },
-      intents: %w[stock], customer_language: 'id', response_goals: %w[answer_stock],
-      validated_slots: { variant: variant_slot },
-      facts: { stock: { status: 'available', source: 'stock_repository', checked_at: '2026-09-30T12:00:00Z' } },
-      missing_slots: [], variant_candidates: []
-    }
-  end
-
-  let(:overview_input) do
-    {
-      scenario: { key: 'scenario_8', capabilities: %w[product_overview] },
-      intents: %w[product_overview], customer_language: 'id', response_goals: %w[answer_product_overview],
-      validated_slots: { product: { code: 'BD', name: 'Santorini', source: 'marine_catalog' } },
-      facts: {}, missing_slots: [], variant_candidates: []
-    }
-  end
-
   let(:clarify_input) do
     {
-      scenario: { key: 'scenario_8', capabilities: %w[price] },
+      scenario: { key: 'scenario_8' },
       intents: %w[price], customer_language: 'id', response_goals: %w[clarify_product],
       validated_slots: {}, facts: {}, missing_slots: %w[product], variant_candidates: []
     }
@@ -60,17 +42,50 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
 
   let(:handoff_input) do
     {
-      scenario: { key: 'scenario_8', capabilities: %w[price] },
+      scenario: { key: 'scenario_8' },
       intents: %w[price], customer_language: 'id', response_goals: %w[handoff],
       validated_slots: {}, facts: {}, missing_slots: [], variant_candidates: []
     }
   end
 
   let(:price_packet) { builder.build(evidence_input: price_input) }
-  let(:stock_packet) { builder.build(evidence_input: stock_input) }
-  let(:overview_packet) { builder.build(evidence_input: overview_input) }
   let(:clarify_packet) { builder.build(evidence_input: clarify_input) }
-  let(:handoff_packet) { builder.build(evidence_input: handoff_input) }
+
+  # Phase 1 (Opsi B): the EvidencePacketBuilder is price-only, so stock / product_overview packets
+  # are no longer builder-producible. The presenter still handles those answer goals as defense in
+  # depth, so they are hand-built as deeply-frozen v2 packets (scenario carries provenance only).
+  let(:stock_packet) do
+    deep_freeze(
+      evidence_version: 'marine_evidence_v2', generated_at: '2026-09-30T12:00:00Z',
+      response_goals: %w[answer_stock], scenario: { key: 'scenario_8', intents: %w[stock] },
+      validated_slots: { variant: variant_slot },
+      facts: { stock: { status: 'available', source: 'stock_repository', checked_at: '2026-09-30T12:00:00Z' } },
+      missing_slots: [], variant_candidates: [],
+      prohibited_claims: %w[exact_stock_quantity warehouse_location delivery_date unverified_discount price],
+      response_constraints: { max_paragraphs: 2, role: 'marine_sales_assistant', handoff_self_reference: true },
+      customer_language: 'id'
+    )
+  end
+
+  let(:overview_packet) do
+    deep_freeze(
+      evidence_version: 'marine_evidence_v2', generated_at: '2026-09-30T12:00:00Z',
+      response_goals: %w[answer_product_overview], scenario: { key: 'scenario_8', intents: %w[product_overview] },
+      validated_slots: { product: { code: 'BD', name: 'Santorini', source: 'marine_catalog' } },
+      facts: {}, missing_slots: [], variant_candidates: [],
+      prohibited_claims: %w[exact_stock_quantity warehouse_location delivery_date unverified_discount price stock],
+      response_constraints: { max_paragraphs: 2, role: 'marine_sales_assistant', handoff_self_reference: true },
+      customer_language: 'id'
+    )
+  end
+
+  def deep_freeze(value)
+    case value
+    when Hash then value.each_value { |child| deep_freeze(child) }
+    when Array then value.each { |child| deep_freeze(child) }
+    end
+    value.freeze
+  end
 
   # A generator that returns a fixed text regardless of the (packet-only) prompt it is handed.
   def generator(text)
@@ -92,7 +107,7 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
         'Untuk BD-4, harganya Rp 12.500 per yard.'
       end
       presenter.call(packet: price_packet, generator: gen, customer_request: 'Berapa harga BD-4?', fact_verifier: verifier_ok)
-      expect(captured[:system]).to include('marine_evidence_v1')
+      expect(captured[:system]).to include('marine_evidence_v2')
       expect(captured[:system]).not_to include('raw_candidate')
       expect(captured[:system]).not_to include('slot_operations')
     end

@@ -4,31 +4,35 @@ require 'rails_helper'
 
 # Step 2 — proof that Model 1 (the ISOLATED, UNWIRED Marine::Decision::Runner) can emit a
 # STRUCTURED, product-related candidate plan via the generic chat_completions structured-output
-# path, that the plan survives Stage 1 normalization + capability intersection WITHOUT losing
-# intents / product+variant slots / language, that every slot value stays a RAW untrusted
-# candidate (never a validated fact), and that the resulting plan is structurally consumable by
-# Marine::Backend::CandidatePlanToProductIntentAdapter under an explicit, matching capability
-# configuration — all with NO backend/runtime wiring and NO gate/shadow/cutover activation.
+# path, that the plan survives Stage 1 normalization + the injected Phase-1 classification-vocabulary
+# restriction WITHOUT losing intents / product+variant slots / language, that every slot value stays
+# a RAW untrusted candidate (never a validated fact), and that the resulting plan is structurally
+# consumable by Marine::Backend::CandidatePlanToProductIntentAdapter under the backend ExecutionPolicy
+# (Phase 1: exactly ["price"]) — all with NO backend/runtime wiring and NO gate/shadow/cutover
+# activation.
 #
 # Discipline mirrors runner_spec: an INJECTED settings object + client double (WebMock blocks the
-# network suite-wide), and the real backend adapter (a PURE object). No DB record, no provider, no
-# repository. Every product/variant/scenario string is SYNTHETIC.
+# network suite-wide), the INJECTED Phase-1 classification vocabulary, and the real backend adapter (a
+# PURE object). No DB record, no provider, no repository. Every product/variant/scenario string is
+# SYNTHETIC.
 RSpec.describe 'Marine Model 1 structured product candidate (Step 2)' do
-  subject(:runner) { Marine::Decision::Runner.new(client: client, settings: settings) }
+  # Site D: the Runner is constructed with the policy-derived classification vocabulary so the proof
+  # runs over the Phase-1 vocabulary (["price","unsupported"]).
+  subject(:runner) do
+    Marine::Decision::Runner.new(client: client, settings: settings,
+                                 classification_intents: Marine::Backend::ExecutionPolicy::CLASSIFICATION_INTENTS)
+  end
 
   let(:settings) { instance_double(Marine::Llm::SettingsStore, api_mode: 'chat_completions') }
   let(:client) { instance_double(Marine::Decision::Client) }
   let(:adapter) { Marine::Backend::CandidatePlanToProductIntentAdapter.new }
-  # The explicit per-scenario capability MAP the backend adapter requires (mirrors the shape of
-  # MARINE_DECISION_SCENARIO_CAPABILITIES consumed by ShadowConfig/ScenarioAdapter).
-  let(:capabilities) { { 'scenario_4242' => %w[price stock catalog product_overview] } }
 
-  # The scenario seam the Runner receives: a single product scenario declaring the executable
-  # product capabilities. scenario_4242 is a SYNTHETIC `scenario_<id>` key (no deployed scenario
-  # ID is embedded) in the stable shape the ScenarioAdapter emits.
-  def scenarios(caps = %w[price stock catalog product_overview])
+  # The scenario seam the Runner receives: a single product scenario (identity/context only — NO
+  # capabilities). scenario_4242 is a SYNTHETIC `scenario_<id>` key (no deployed scenario ID is
+  # embedded) in the stable shape the ScenarioAdapter emits.
+  def scenarios
     [{ 'key' => 'scenario_4242', 'description' => 'product availability and pricing',
-       'instruction' => 'answer product questions', 'capabilities' => caps }]
+       'instruction' => 'answer product questions' }]
   end
 
   # A full structured product candidate: a nominated scenario, a product intent, a product
@@ -80,8 +84,8 @@ RSpec.describe 'Marine Model 1 structured product candidate (Step 2)' do
       expect(plan).to be_frozen
     end
 
-    it 'drops an undeclared intent via capability intersection while preserving the slots' do
-      # order_status is NOT a declared scenario capability -> dropped before normalization; the
+    it 'drops an intent outside the injected classification vocabulary while preserving the slots' do
+      # order_status is NOT in the injected Phase-1 vocabulary -> dropped before normalization; the
       # price intent and both product/variant slots survive untouched.
       returns(product_candidate('intents' => %w[price order_status]))
       plan = run
@@ -92,13 +96,13 @@ RSpec.describe 'Marine Model 1 structured product candidate (Step 2)' do
   end
 
   describe 'the plan is consumable by the backend adapter (proof #6)' do
-    it 'is accepted under a matching configured capability map, carrying only raw candidates' do
+    it 'is accepted under the ExecutionPolicy (exact price), carrying only raw candidates' do
       returns(product_candidate)
-      result = adapter.call(plan: run, scenario_key: 'scenario_4242', scenario_capabilities: capabilities)
+      result = adapter.call(plan: run, scenario_key: 'scenario_4242')
 
       expect(result.ok?).to be(true)
       expect(result.intents).to eq(%w[price])
-      expect(result.scenario).to eq(key: 'scenario_4242', capabilities: %w[price stock catalog product_overview])
+      expect(result.scenario).to eq(key: 'scenario_4242')
       # family_mention / explicit_child_code are the RAW candidates verbatim: no repository
       # resolved or validated them (a repository call would have replaced them with a resolved
       # code). clarification_reply stays nil — no Model 1 prose; reason is the extractor contract.
@@ -136,7 +140,7 @@ RSpec.describe 'Marine Model 1 structured product candidate (Step 2)' do
                     'value' => { 'raw_candidate' => 'SYN-LABEL', 'candidate_type' => 'display_label' } }
                 ]
               ))
-      result = adapter.call(plan: run, scenario_key: 'scenario_4242', scenario_capabilities: capabilities)
+      result = adapter.call(plan: run, scenario_key: 'scenario_4242')
 
       expect(result.ok?).to be(true)
       expect(result.product_intent[:explicit_child_code]).to be_nil
@@ -165,23 +169,18 @@ RSpec.describe 'Marine Model 1 structured product candidate (Step 2)' do
     end
   end
 
-  describe 'capability configuration is authoritative and fails closed (proof #5)' do
-    it 'rejects when the selected scenario has no configured capabilities' do
-      returns(product_candidate)
-      result = adapter.call(plan: run, scenario_key: 'scenario_4242', scenario_capabilities: {})
-      expect(result.reason).to eq('capability_unconfigured')
+  describe 'ExecutionPolicy is authoritative and fails closed (proof #5)' do
+    it 'rejects a forged non-price (stock) plan at the adapter with phase_not_executable' do
+      forged = Marine::Decision::CandidatePlan.normalize(product_candidate('intents' => %w[stock], 'slot_operations' => []))
+      result = adapter.call(plan: forged, scenario_key: 'scenario_4242')
+      expect(result.ok?).to be(false)
+      expect(result.reason).to eq('phase_not_executable')
     end
 
-    it 'rejects a malformed capability map (non-string / unknown capability value)' do
-      returns(product_candidate)
-      result = adapter.call(plan: run, scenario_key: 'scenario_4242', scenario_capabilities: { 'scenario_4242' => ['price', 123] })
-      expect(result.reason).to eq('capability_malformed')
-    end
-
-    it 'rejects a declared intent outside the scenario capability map' do
-      returns(product_candidate('intents' => %w[price]))
-      result = adapter.call(plan: run, scenario_key: 'scenario_4242', scenario_capabilities: { 'scenario_4242' => %w[stock] })
-      expect(result.reason).to eq('capability_mismatch')
+    it 'rejects a forged mixed price+stock plan at the adapter with phase_not_executable' do
+      forged = Marine::Decision::CandidatePlan.normalize(product_candidate('intents' => %w[price stock], 'slot_operations' => []))
+      result = adapter.call(plan: forged, scenario_key: 'scenario_4242')
+      expect(result.reason).to eq('phase_not_executable')
     end
   end
 

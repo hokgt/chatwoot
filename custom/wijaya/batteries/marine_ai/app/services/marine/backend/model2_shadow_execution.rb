@@ -10,8 +10,8 @@
 #     (same contract as AuthorityShadowExecution); a mismatch returns a bounded skipped Result with
 #     ZERO provider calls.
 #   * Accepts ONLY a genuine AuthorityCoordinator::Result whose outcome is an ACCEPTED exact-price
-#     evidence_packet (outcome_type :evidence_packet + reason :accepted + intents EXACTLY
-#     AuthorityCoordinator::PRICE_ONLY + a present, frozen, marine_evidence_v1 packet that is itself
+#     evidence_packet (outcome_type :evidence_packet + reason :accepted + intents ExecutionPolicy-
+#     authorized (exactly ["price"]) + a present, frozen, marine_evidence_v2 packet that is itself
 #     exactly price-only — response goals [answer_price] and a single :price fact). family_price_range
 #     / clarify / handoff / stop / legacy_preserved / non-price / multi-intent / stock-bearing /
 #     malformed results skip with ZERO provider calls.
@@ -25,7 +25,8 @@
 # cache/metric/log/publish/notify.
 class Marine::Backend::Model2ShadowExecution
   Coordinator = Marine::Backend::AuthorityCoordinator
-  EVIDENCE_VERSION = 'marine_evidence_v1'.freeze
+  ExecutionPolicy = Marine::Backend::ExecutionPolicy
+  EVIDENCE_VERSION = 'marine_evidence_v2'.freeze
   # The Step-3 price-only slice generates ONLY an exact price answer: the accepted packet's response
   # goals must be EXACTLY [answer_price] and its facts EXACTLY the single :price fact.
   PRICE_ONLY_GOALS = %w[answer_price].freeze
@@ -135,11 +136,11 @@ class Marine::Backend::Model2ShadowExecution
     result.is_a?(Coordinator::Result) &&
       result.outcome_type == Coordinator::OUTCOME_EVIDENCE_PACKET &&
       result.reason == Coordinator::REASON_ACCEPTED &&
-      result.intents == Coordinator::PRICE_ONLY &&
+      ExecutionPolicy.authorized?(result.intents) &&
       result.evidence_packet?
   end
 
-  # Defense in depth before the presenter: the packet must be a frozen marine_evidence_v1 Hash (the
+  # Defense in depth before the presenter: the packet must be a frozen marine_evidence_v2 Hash (the
   # coordinator's builder already deep-freezes it). A malformed/non-frozen/wrong-version packet skips
   # with zero providers.
   def valid_packet?(packet)

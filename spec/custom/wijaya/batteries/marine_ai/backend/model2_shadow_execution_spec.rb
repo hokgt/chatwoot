@@ -23,7 +23,7 @@ RSpec.describe Marine::Backend::Model2ShadowExecution do
   let(:packet) do
     Marine::Backend::EvidencePacketBuilder.new(clock: -> { Time.utc(2026, 9, 30, 12, 0, 0) }).build(
       evidence_input: {
-        scenario: { key: 'scenario_5', capabilities: %w[price catalog] },
+        scenario: { key: 'scenario_5' },
         intents: %w[price], customer_language: 'id', response_goals: %w[answer_price],
         validated_slots: { variant: { code: 'BD-4', resolution_status: 'resolved', source: 'marine_catalog', attributes: {} } },
         facts: {
@@ -38,26 +38,36 @@ RSpec.describe Marine::Backend::Model2ShadowExecution do
     )
   end
 
-  # A real, deep-frozen marine_evidence_v1 packet the Coordinator NEVER produces in the price-only
-  # slice: it carries an answer_stock goal and a :stock fact alongside price. Used to prove a forged
-  # stock-bearing packet is rejected BEFORE any provider call.
+  # A forged, deep-frozen marine_evidence_v2 packet the Coordinator NEVER produces in the price-only
+  # slice (the EvidencePacketBuilder's whole-set ExecutionPolicy gate rejects a price+stock intents
+  # set, so it is hand-built here): it carries an answer_stock goal and a :stock fact alongside price.
+  # Used to prove a forged stock-bearing packet is rejected BEFORE any provider call.
   let(:price_stock_packet) do
-    Marine::Backend::EvidencePacketBuilder.new(clock: -> { Time.utc(2026, 9, 30, 12, 0, 0) }).build(
-      evidence_input: {
-        scenario: { key: 'scenario_5', capabilities: %w[price stock catalog] },
-        intents: %w[price stock], customer_language: 'id', response_goals: %w[answer_price answer_stock],
-        validated_slots: { variant: { code: 'BD-4', resolution_status: 'resolved', source: 'marine_catalog', attributes: {} } },
-        facts: {
-          price: {
-            canonical: { variant_code: 'BD-4', currency: 'IDR', price_list_rate: '12500', uom: 'Yard' },
-            display: { product: 'BD-4', currency: 'Rp', amount: '12.500', uom: 'yard' },
-            policy_version: 'price-display-v1', source: 'catalog_price_repository', checked_at: '2026-09-30T12:00:00Z'
-          },
-          stock: { status: 'available', source: 'stock_repository', checked_at: '2026-09-30T12:00:00Z' }
+    deep_freeze(
+      evidence_version: 'marine_evidence_v2', generated_at: '2026-09-30T12:00:00Z',
+      response_goals: %w[answer_price answer_stock], scenario: { key: 'scenario_5', intents: %w[price stock] },
+      validated_slots: { variant: { code: 'BD-4', resolution_status: 'resolved', source: 'marine_catalog', attributes: {} } },
+      facts: {
+        price: {
+          canonical: { variant_code: 'BD-4', currency: 'IDR', price_list_rate: '12500', uom: 'Yard' },
+          display: { product: 'BD-4', currency: 'Rp', amount: '12.500', uom: 'yard' },
+          policy_version: 'price-display-v1', source: 'catalog_price_repository', checked_at: '2026-09-30T12:00:00Z'
         },
-        missing_slots: [], variant_candidates: []
-      }
+        stock: { status: 'available', source: 'stock_repository', checked_at: '2026-09-30T12:00:00Z' }
+      },
+      missing_slots: [], variant_candidates: [],
+      prohibited_claims: %w[exact_stock_quantity warehouse_location delivery_date unverified_discount],
+      response_constraints: { max_paragraphs: 2, role: 'marine_sales_assistant', handoff_self_reference: true },
+      customer_language: 'id'
     )
+  end
+
+  def deep_freeze(value)
+    case value
+    when Hash then value.each_value { |child| deep_freeze(child) }
+    when Array then value.each { |child| deep_freeze(child) }
+    end
+    value.freeze
   end
 
   def authority_result(outcome_type: :evidence_packet, reason: :accepted, evidence_packet: packet, intents: %w[price])
@@ -98,7 +108,7 @@ RSpec.describe Marine::Backend::Model2ShadowExecution do
       expect(result.to_h.values.map(&:to_s).join).not_to include(candidate)
     end
 
-    it 'sends ONLY the clean marine_evidence_v1 packet facts to the prompt — no Candidate Plan / raw row / Model 1 prose' do
+    it 'sends ONLY the clean marine_evidence_v2 packet facts to the prompt — no Candidate Plan / raw row / Model 1 prose' do
       captured = {}
       allow(generator).to receive(:call) do |system:, messages:|
         captured[:system] = system
@@ -108,7 +118,7 @@ RSpec.describe Marine::Backend::Model2ShadowExecution do
 
       execution(authority_result).call
 
-      expect(captured[:system]).to include('marine_evidence_v1').and include('BD-4').and include('12.500')
+      expect(captured[:system]).to include('marine_evidence_v2').and include('BD-4').and include('12.500')
       %w[raw_candidate candidate_type slot_operations schema_version marine_decision_v1 SELECT].each do |forbidden|
         expect(captured[:system]).not_to include(forbidden)
       end
@@ -198,10 +208,11 @@ RSpec.describe Marine::Backend::Model2ShadowExecution do
       expect_skipped_no_providers({ outcome_type: :evidence_packet }, described_class::REASON_NOT_EXACT_PRICE)
     end
 
-    it 'skips a non-frozen / wrong-version packet' do
-      expect_skipped_no_providers(authority_result(evidence_packet: { evidence_version: 'marine_evidence_v1' }),
+    it 'skips a non-frozen packet and a frozen wrong-version (v1 now rejected) packet' do
+      expect_skipped_no_providers(authority_result(evidence_packet: { evidence_version: 'marine_evidence_v2' }),
                                   described_class::REASON_INVALID_PACKET)
-      expect_skipped_no_providers(authority_result(evidence_packet: { evidence_version: 'other' }.freeze), described_class::REASON_INVALID_PACKET)
+      expect_skipped_no_providers(authority_result(evidence_packet: { evidence_version: 'marine_evidence_v1' }.freeze),
+                                  described_class::REASON_INVALID_PACKET)
     end
 
     it 'skips a private message with zero providers and never builds context' do

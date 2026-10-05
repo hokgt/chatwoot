@@ -9,7 +9,7 @@ require 'rails_helper'
 RSpec.describe Marine::Backend::EvidenceFactVerifier do
   subject(:verifier) { described_class.new }
 
-  let(:packet) { { evidence_version: 'marine_evidence_v1', customer_language: 'id', facts: {} }.freeze }
+  let(:packet) { { evidence_version: 'marine_evidence_v2', customer_language: 'id', facts: {} }.freeze }
   let(:candidate) { 'Halo! Harga BD-4 adalah Rp 12.500 per yard.' }
 
   def stub_llm(message:, success: true, configured: true)
@@ -51,7 +51,7 @@ RSpec.describe Marine::Backend::EvidenceFactVerifier do
 
     expect(captured[:temperature]).to eq(0.0)
     expect(captured[:schema]).to eq(Marine::Charge::FactPreservationValidator::VERDICT_SCHEMA)
-    expect(captured[:messages].first[:content]).to include('Target Language: id').and include('marine_evidence_v1')
+    expect(captured[:messages].first[:content]).to include('Target Language: id').and include('marine_evidence_v2')
   end
 
   it 'fails closed on a false / uncertain / wrong-language verdict' do

@@ -18,9 +18,12 @@
 #     (CatalogUnavailableError) -> NO stock fact + handoff; never a quantity, warehouse, or
 #     `unknown` status.
 #
-# Combined price+stock is produced when the compatible scenario carried both capabilities and
-# both facts verify: two independent fact blocks, each with its own checked_at.
+# Phase 1 (Opsi B): execution authorization is backend-policy-owned (Marine::Backend::ExecutionPolicy)
+# and the executable set is exactly ["price"]. Scenario carries provenance only ({ key: }); the planner
+# never reads a per-scenario capability list.
 class Marine::Backend::ProductExecutionPlanner
+  ExecutionPolicy = Marine::Backend::ExecutionPolicy
+
   # The frozen product goal each supported intent maps to, within the A8-01 closed enum. price
   # and stock get their own answer goals; the informational/identity intents share
   # answer_product_overview (the packet has no distinct catalog/parent/variant answer goal in 3A).
@@ -57,8 +60,8 @@ class Marine::Backend::ProductExecutionPlanner
   end
 
   # product_intent: the adapter's backend-owned product-intent input (IntentExtractor-shaped).
-  # intents:        the validated supported candidate intents (subset of scenario capabilities).
-  # scenario:       { key:, capabilities: } from the adapter.
+  # intents:        the validated executable candidate intents (ExecutionPolicy-authorized; Phase 1 price).
+  # scenario:       { key: } provenance from the adapter.
   def call(product_intent:, intents:, scenario:) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- a flat sequence of independent fail-closed guards
     # Defense in depth: a non-Hash product_intent (a direct programmer call) fails closed to a
     # factless handoff rather than raising an unbounded error dereferencing it.
@@ -66,8 +69,8 @@ class Marine::Backend::ProductExecutionPlanner
 
     context = Context.new(scenario, intents, product_intent[:customer_language])
     # Defense in depth: never trust that only the adapter reached here. An empty, unsupported, or
-    # out-of-capability intent set fails closed to a factless handoff rather than executing.
-    return handoff(context) unless executable?(intents, scenario)
+    # non-ExecutionPolicy-authorized intent set fails closed to a factless handoff rather than executing.
+    return handoff(context) unless executable?(intents)
 
     family = resolve_family(product_intent[:family_mention])
     return handoff(context) if family == :unavailable
@@ -86,15 +89,13 @@ class Marine::Backend::ProductExecutionPlanner
   # ride into every evidence input, so the helpers avoid long parameter lists.
   Context = Struct.new(:scenario, :intents, :language)
 
-  # A plan is executable only when the intents are a non-empty subset of BOTH the supported
-  # product intents and the selected scenario's declared capabilities. Anything else fails closed.
-  def executable?(intents, scenario)
+  # A plan is executable only when the intents are the exact ExecutionPolicy-authorized executable set
+  # (Phase 1: exactly ["price"]) AND a subset of the supported product intents. Anything else — empty,
+  # non-price, mixed, duplicated, or out-of-support — fails closed BEFORE any repository read.
+  def executable?(intents)
     return false unless intents.is_a?(Array) && !intents.empty?
 
-    capabilities = scenario.is_a?(Hash) ? scenario[:capabilities] : nil
-    return false unless capabilities.is_a?(Array) && !capabilities.empty?
-
-    (intents - SUPPORTED_INTENTS).empty? && (intents - capabilities).empty?
+    (intents - SUPPORTED_INTENTS).empty? && ExecutionPolicy.authorized?(intents)
   end
 
   attr_reader :family_repository, :variant_resolver, :price_repository, :stock_repository, :price_formatter

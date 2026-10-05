@@ -4,19 +4,28 @@
 # (SYN-*) and languages are format-only codes.
 #
 # Each case is one turn expressed as an UNTRUSTED raw marine_decision_v1 candidate plan plus the
-# backend inputs (selected scenario, per-scenario capability map, injected read-only repository
-# fixtures) and a BACKEND-OWNED label — the expected NORMALIZED product intent/slot outcome and the
-# expected planner response goals (the action outcome). Labels are the acceptance truth; they are NOT
-# derived from any legacy output. The Evaluator folds each plan through the real Fase 3A-1 adapter +
-# ProductExecutionPlanner (with the injected fixtures) and checks the outcome against the label.
+# backend inputs (the scenario provenance key, injected read-only repository fixtures) and a
+# BACKEND-OWNED label — the expected NORMALIZED product intent/slot outcome and the expected planner
+# response goals (the action outcome). Labels are the acceptance truth; they are NOT derived from any
+# legacy output. The Evaluator folds each plan through the real Fase 3A-1 adapter + ProductExecutionPlanner
+# (with the injected fixtures) and checks the outcome against the label.
+#
+# PHASE 1 (OPTION B) POLICY SEMANTICS: execution authorization is owned by
+# the backend execution policy (executable == exactly ["price"]). A case whose plan carries a
+# supported but non-executable product intent set (stock / price+stock / catalog / product_overview)
+# fails closed at the adapter with the closed reason `phase_not_executable` BEFORE the planner and
+# BEFORE any repository read — its label is the blocked outcome, and the populated repository fixtures
+# prove (via the Evaluator's mutation probe) that no repository was ever consulted. Scenarios carry
+# identity/provenance ONLY (scenario_<n> keys); there is NO per-scenario capability map.
 #
 # Coverage: price; stock; compatible price+stock; product overview; catalog; ambiguous/unresolved
 # variant; product replacement; variant correction; stock vs order_status; malformed/unknown plans;
-# unsupported mixed intent; stock repository outage fail-closed (no quantity ever emitted); scenario
-# mismatch; capability mismatch; exact-code-only variant authority (a display candidate never
-# resolves); a CRITICAL exact-stock-quantity safety case that must fail closed to blocked/handoff
-# BEFORE any adapter/planner/stock execution; and a surface-aware Conversation-vs-Playground parity
-# case (`parity: true`) the Evaluator runs through two distinct surface adapters.
+# unsupported mixed intent; stock repository outage fail-closed (policy-blocked before any read);
+# scenario mismatch; the phase-not-executable policy block; exact-code-only variant authority (a
+# display candidate never resolves); a CRITICAL exact-stock-quantity safety case that must fail
+# closed to blocked/handoff BEFORE any adapter/planner/stock execution; and a surface-aware
+# Conversation-vs-Playground parity case (`parity: true`) the Evaluator runs through two distinct
+# surface adapters.
 #
 # A case MAY additionally carry two explicitly-optional metadata keys the Evaluator honours: `safety`
 # (a bounded { exact_quantity_request: Boolean } evaluation-only safety signal) and `parity` (Boolean,
@@ -38,7 +47,7 @@ module Marine::ProductAuthority::Corpus
   CASES = [
     {
       id: 'price_resolved', category: 'price', critical: false, surface: 'both',
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_1', 'confidence' => 'high' },
@@ -61,8 +70,11 @@ module Marine::ProductAuthority::Corpus
       label: { status: 'product', intents: ['price'], slot_ops: %w[product variant_code], response_goals: ['answer_price'] }
     },
     {
+      # Phase 1: stock is a SUPPORTED product intent but NOT executable — the adapter fails the whole
+      # plan closed (`phase_not_executable`) before the planner and before any repository read, even
+      # though these fixtures would fully resolve.
       id: 'stock_available', category: 'stock', critical: false, surface: 'both',
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_1', 'confidence' => 'high' },
@@ -81,11 +93,13 @@ module Marine::ProductAuthority::Corpus
         variant: { 'SYN-VAR-ALPHA-01' => { status: :resolved, code: 'SYN-VAR-ALPHA-01' } },
         price: {}, stock: { 'SYN-VAR-ALPHA-01' => :available }
       },
-      label: { status: 'product', intents: ['stock'], slot_ops: %w[product variant_code], response_goals: ['answer_stock'] }
+      label: { status: 'blocked', intents: [], slot_ops: [], response_goals: nil, block_reason: 'phase_not_executable' }
     },
     {
+      # Phase 1: a compatible price+stock set is NOT the exact executable array ["price"], so the
+      # whole plan fails the policy gate (exact-array authorization, never a partial execution).
       id: 'price_stock_compatible', category: 'price_stock', critical: false, surface: 'both',
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_1', 'confidence' => 'high' },
@@ -104,11 +118,13 @@ module Marine::ProductAuthority::Corpus
         variant: { 'SYN-VAR-ALPHA-01' => { status: :resolved, code: 'SYN-VAR-ALPHA-01' } },
         price: { 'SYN-VAR-ALPHA-01' => PRICE_ALPHA }, stock: { 'SYN-VAR-ALPHA-01' => :available }
       },
-      label: { status: 'product', intents: %w[price stock], slot_ops: %w[product variant_code], response_goals: %w[answer_price answer_stock] }
+      label: { status: 'blocked', intents: [], slot_ops: [], response_goals: nil, block_reason: 'phase_not_executable' }
     },
     {
+      # Phase 1: product_overview is an informational product intent but not executable; the plan
+      # fails closed at the adapter's policy gate before the planner.
       id: 'product_overview', category: 'overview', critical: false, surface: 'both',
-      scenario_key: 'scenario_2', capabilities: { 'scenario_2' => %w[product_overview] },
+      scenario_key: 'scenario_2',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_2', 'confidence' => 'medium' },
@@ -122,11 +138,13 @@ module Marine::ProductAuthority::Corpus
         family: { 'SYN-FAM-BETA' => { code: 'SYN-FAM-BETA', name: 'Synthetic Beta' } },
         variant: {}, price: {}, stock: {}
       },
-      label: { status: 'overview', intents: ['product_overview'], slot_ops: %w[product], response_goals: ['answer_product_overview'] }
+      label: { status: 'blocked', intents: [], slot_ops: [], response_goals: nil, block_reason: 'phase_not_executable' }
     },
     {
+      # Phase 1: catalog is a supported product intent but not executable; the plan fails closed at
+      # the adapter's policy gate before the planner.
       id: 'catalog_document', category: 'catalog', critical: false, surface: 'both',
-      scenario_key: 'scenario_3', capabilities: { 'scenario_3' => %w[catalog] },
+      scenario_key: 'scenario_3',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_3', 'confidence' => 'high' },
@@ -140,11 +158,11 @@ module Marine::ProductAuthority::Corpus
         family: { 'SYN-FAM-ALPHA' => { code: 'SYN-FAM-ALPHA', name: 'Synthetic Alpha' } },
         variant: {}, price: {}, stock: {}
       },
-      label: { status: 'product', intents: ['catalog'], slot_ops: %w[product], response_goals: ['answer_product_overview'] }
+      label: { status: 'blocked', intents: [], slot_ops: [], response_goals: nil, block_reason: 'phase_not_executable' }
     },
     {
       id: 'clarify_family_missing', category: 'unresolved_family', critical: false, surface: 'both',
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_1', 'confidence' => 'low' },
@@ -159,7 +177,7 @@ module Marine::ProductAuthority::Corpus
     },
     {
       id: 'ambiguous_variant', category: 'ambiguous_variant', critical: true, surface: 'both',
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_1', 'confidence' => 'medium' },
@@ -179,7 +197,7 @@ module Marine::ProductAuthority::Corpus
     },
     {
       id: 'display_candidate_never_resolves', category: 'variant_correction', critical: true, surface: 'both',
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_1', 'confidence' => 'medium' },
@@ -198,7 +216,7 @@ module Marine::ProductAuthority::Corpus
     },
     {
       id: 'variant_correction_replace', category: 'variant_correction', critical: false, surface: 'both',
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_1', 'confidence' => 'high' },
@@ -220,8 +238,10 @@ module Marine::ProductAuthority::Corpus
       label: { status: 'product', intents: ['price'], slot_ops: %w[product variant_code], response_goals: ['answer_price'] }
     },
     {
+      # Phase 1: a stock turn with replace-style slot operations is still policy-blocked at the
+      # adapter before the planner; the resolving fixtures prove no repository is consulted.
       id: 'product_replacement', category: 'product_replacement', critical: false, surface: 'both',
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_1', 'confidence' => 'high' },
@@ -240,11 +260,14 @@ module Marine::ProductAuthority::Corpus
         variant: { 'SYN-VAR-GAMMA-01' => { status: :resolved, code: 'SYN-VAR-GAMMA-01' } },
         price: {}, stock: { 'SYN-VAR-GAMMA-01' => :empty }
       },
-      label: { status: 'product', intents: ['stock'], slot_ops: %w[product variant_code], response_goals: ['answer_stock'] }
+      label: { status: 'blocked', intents: [], slot_ops: [], response_goals: nil, block_reason: 'phase_not_executable' }
     },
     {
+      # CRITICAL Phase-1 fail-closed proof: a stock turn whose stock fixture is an OUTAGE still never
+      # reaches the stock repository — the adapter's policy gate blocks the whole plan BEFORE any
+      # repository read, so no quantity is ever emitted and no outage is ever consulted.
       id: 'stock_outage_failclosed', category: 'stock_failclosed', critical: true, surface: 'both',
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_1', 'confidence' => 'high' },
@@ -263,11 +286,11 @@ module Marine::ProductAuthority::Corpus
         variant: { 'SYN-VAR-ALPHA-01' => { status: :resolved, code: 'SYN-VAR-ALPHA-01' } },
         price: {}, stock: { 'SYN-VAR-ALPHA-01' => :unavailable }
       },
-      label: { status: 'product', intents: ['stock'], slot_ops: %w[product variant_code], response_goals: ['handoff'] }
+      label: { status: 'blocked', intents: [], slot_ops: [], response_goals: nil, block_reason: 'phase_not_executable' }
     },
     {
       id: 'stock_vs_order_status', category: 'stock_vs_order_status', critical: true, surface: 'both',
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_1', 'confidence' => 'high' },
@@ -282,7 +305,7 @@ module Marine::ProductAuthority::Corpus
     },
     {
       id: 'unsupported_mixed_intent', category: 'unsupported_mixed', critical: true, surface: 'both',
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_1', 'confidence' => 'high' },
@@ -294,21 +317,25 @@ module Marine::ProductAuthority::Corpus
       label: { status: 'blocked', intents: [], slot_ops: [], response_goals: nil, block_reason: 'unsupported_intent' }
     },
     {
-      id: 'capability_mismatch', category: 'capability_mismatch', critical: true, surface: 'both',
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[stock] },
+      # CRITICAL Phase-1 policy proof: a SUPPORTED but non-executable intent set (stock) fails the
+      # backend-owned execution policy — the adapter rejects the whole plan with the closed reason
+      # `phase_not_executable` before the planner and before any repository read. This is the policy
+      # successor of the former capability-mismatch case: authorization is no longer scenario-sourced.
+      id: 'phase_not_executable', category: 'phase_not_executable', critical: true, surface: 'both',
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_1', 'confidence' => 'high' },
-        'intents' => ['price'],
+        'intents' => ['stock'],
         'slot_operations' => [],
         'customer_language' => 'en', 'confidence' => 'high'
       },
       repositories: { family: {}, variant: {}, price: {}, stock: {} },
-      label: { status: 'blocked', intents: [], slot_ops: [], response_goals: nil, block_reason: 'capability_mismatch' }
+      label: { status: 'blocked', intents: [], slot_ops: [], response_goals: nil, block_reason: 'phase_not_executable' }
     },
     {
       id: 'scenario_mismatch', category: 'scenario_mismatch', critical: true, surface: 'both',
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_9', 'confidence' => 'high' },
@@ -321,7 +348,7 @@ module Marine::ProductAuthority::Corpus
     },
     {
       id: 'malformed_unknown_field', category: 'malformed', critical: true, surface: 'both',
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_1', 'confidence' => 'high' },
@@ -335,7 +362,7 @@ module Marine::ProductAuthority::Corpus
     },
     {
       id: 'malformed_bad_schema_version', category: 'malformed', critical: true, surface: 'both',
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: { 'schema_version' => 'not_a_real_schema', 'intents' => ['price'] },
       repositories: { family: {}, variant: {}, price: {}, stock: {} },
       label: { status: 'blocked', intents: [], slot_ops: [], response_goals: nil, block_reason: 'unsupported_schema' }
@@ -346,12 +373,12 @@ module Marine::ProductAuthority::Corpus
       # (the legacy IntentExtractor's quantity_inquiry). It is an evaluation-only safety harness input,
       # NOT a new Candidate Plan field and NOT runtime authority. The Evaluator enforces the existing
       # no-exact-quantity policy BEFORE any adapter/planner/stock execution: even though this plan and
-      # its repository fixtures WOULD otherwise resolve to a normal available-stock answer (stock is
-      # :available below), the exact-quantity guard short-circuits to a safe blocked/handoff outcome
-      # and the stock repository is never executed.
+      # its repository fixtures describe a resolvable available-stock turn, the exact-quantity guard
+      # short-circuits to a safe blocked/handoff outcome — strictly upstream of even the adapter's
+      # Phase-1 policy gate — and the stock repository is never executed.
       id: 'exact_quantity_failclosed', category: 'exact_quantity', critical: true, surface: 'both',
       safety: { exact_quantity_request: true },
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_1', 'confidence' => 'high' },
@@ -378,7 +405,7 @@ module Marine::ProductAuthority::Corpus
       # distinct surface-native envelopes back into the SAME canonical backend input, then requires the
       # adapter+planner fingerprints to be equal. `parity: true` selects the dual-surface harness.
       id: 'parity_price', category: 'parity', critical: false, surface: 'both', parity: true,
-      scenario_key: 'scenario_1', capabilities: { 'scenario_1' => %w[price stock] },
+      scenario_key: 'scenario_1',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_1', 'confidence' => 'high' },

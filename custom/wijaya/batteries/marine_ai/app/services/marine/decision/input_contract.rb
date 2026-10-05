@@ -6,8 +6,9 @@
 #
 # Trust boundary: everything here is UNTRUSTED caller input. Any violation of a present
 # value — a bad type, an unknown/mixed/duplicate key or role, an out-of-bounds length,
-# control-heavy text, an unknown capability/scenario-key form, a duplicate scenario key,
-# or an empty scenario list — fails the WHOLE build closed by raising Invalid. Nothing is
+# control-heavy text, an unknown scenario-key form, a duplicate scenario key, an invalid
+# injected classification vocabulary, or an empty scenario list — fails the WHOLE build
+# closed by raising Invalid. Nothing is
 # silently truncated. State is a candidate-only COARSE-HINT allowlist: it can never carry
 # a price, stock, quantity, validated fact, ID, DB row, or arbitrary metadata.
 #
@@ -31,7 +32,7 @@ class Marine::Decision::InputContract
   # fact/ID/row/metadata key exists here — the allowlist is the whole guarantee.
   STATE_KEYS = %w[current_scenario current_intent awaiting_slot current_product_candidate current_variant_candidate].freeze
   CONTEXT_ENTRY_KEYS = %w[role content].freeze
-  SCENARIO_ENTRY_KEYS = %w[key description instruction capabilities].freeze
+  SCENARIO_ENTRY_KEYS = %w[key description instruction].freeze
 
   # Conservative bounds. Text bounds stay within the Decisions transport's own per-string
   # ceiling (2000) so one contract serves both protocols.
@@ -44,20 +45,16 @@ class Marine::Decision::InputContract
   MAX_SCENARIOS = 20
   MAX_SUMMARY_CHARS = 500
   MAX_SUMMARY_BYTES = 2_000
-  MAX_CAPABILITIES = Schema::INTENTS.length
 
-  # 'unsupported' is ALWAYS a permitted candidate intent (item 7: intents are intersected
-  # with the union of declared capabilities PLUS unsupported), so a scenario set can never
-  # forbid the runner from surfacing "no supported capability".
-  ALWAYS_ALLOWED_INTENT = 'unsupported'.freeze
-
-  def self.build(message:, context:, state:, scenarios:)
-    new.build(message: message, context: context, state: state, scenarios: scenarios)
+  def self.build(message:, context:, state:, scenarios:, classification_intents:)
+    new.build(message: message, context: context, state: state, scenarios: scenarios,
+              classification_intents: classification_intents)
   end
 
   # Returns an owned, symbol-keyed contract Hash, or raises Invalid. The caller's input is
-  # never mutated or frozen.
-  def build(message:, context:, state:, scenarios:)
+  # never mutated or frozen. classification_intents is the INJECTED Phase-1 policy-derived
+  # classification vocabulary (an untrusted caller input, validated like everything else).
+  def build(message:, context:, state:, scenarios:, classification_intents:)
     scenario_list = scenarios(scenarios)
     {
       message: message(message),
@@ -65,7 +62,7 @@ class Marine::Decision::InputContract
       state: state(state),
       scenarios: scenario_list,
       scenario_keys: scenario_keys(scenario_list),
-      allowed_intents: allowed_intents(scenario_list)
+      allowed_intents: allowed_intents(classification_intents)
     }
   end
 
@@ -126,33 +123,30 @@ class Marine::Decision::InputContract
     {
       key: scenario_key!(attrs['key']),
       description: summary!(attrs['description']),
-      instruction: summary!(attrs['instruction']),
-      capabilities: capabilities(attrs['capabilities'])
+      instruction: summary!(attrs['instruction'])
     }
-  end
-
-  # Capabilities are candidate CONSTRAINTS, never inferred from title/token overlap: an
-  # explicit, deduped, canonically-ordered subset of Schema::INTENTS.
-  def capabilities(value)
-    return [] if value.nil?
-    raise Invalid unless value.is_a?(Array)
-    raise Invalid if value.length > MAX_CAPABILITIES
-
-    codes = value.map { |code| enum!(code, Schema::INTENTS) }
-    raise Invalid if codes.uniq.length != codes.length
-
-    Schema::INTENTS.select { |intent| codes.include?(intent) }
   end
 
   def scenario_keys(list)
     list.map { |scenario| scenario[:key].dup }
   end
 
-  # Candidate intents the runner may ever propose: the UNION of every scenario's declared
-  # capabilities plus 'unsupported', in canonical Schema order.
-  def allowed_intents(list)
-    union = list.flat_map { |scenario| scenario[:capabilities] } + [ALWAYS_ALLOWED_INTENT]
-    Schema::INTENTS.select { |intent| union.include?(intent) }
+  # The classification vocabulary the runner may ever propose: EXACTLY the injected Phase-1
+  # policy-derived list (the backend execution policy classification vocabulary, threaded in as a
+  # plain array by the composition root). It is validated like any untrusted input and REJECTS a
+  # missing / non-Array / non-String-member / unknown (not in Schema::INTENTS) / duplicate list — it
+  # is NEVER deduped or re-sorted; the injected canonical order is preserved as allowed_intents.
+  def allowed_intents(value)
+    raise Invalid unless valid_classification_intents?(value)
+
+    value.map(&:dup)
+  end
+
+  def valid_classification_intents?(value)
+    return false unless value.is_a?(Array) && value.length.between?(1, Schema::INTENTS.length)
+    return false unless value.all?(String) && value.all? { |intent| Schema::INTENTS.include?(intent) }
+
+    value.uniq.length == value.length
   end
 
   def scenario_key!(value)

@@ -102,14 +102,14 @@ class Marine::ProductAuthority::AcceptanceRunner
   private
 
   # The structural minimum a case needs to be folded through the coordinator at all. A non-Hash entry,
-  # a missing/invalid id, or a non-Hash plan/label/repositories/capabilities cannot be executed and is
+  # a missing/invalid id, or a non-Hash plan/label/repositories cannot be executed and is
   # counted as not_executed (bounded pre-run rejection). Deeper schema faults (a malformed plan, a
   # malformed expected outcome) are NOT rejected here — the coordinator folds them to a bounded
   # malformed/internal result, so they still produce exactly one CaseResult.
   def executable_case?(kase)
     kase.is_a?(Hash) && CaseResult.valid_case_id?(kase[:id]) &&
       kase[:plan].is_a?(Hash) && kase[:label].is_a?(Hash) &&
-      kase[:repositories].is_a?(Hash) && kase[:capabilities].is_a?(Hash) &&
+      kase[:repositories].is_a?(Hash) &&
       kase[:scenario_key].is_a?(String)
   end
 
@@ -167,7 +167,6 @@ class Marine::ProductAuthority::AcceptanceRunner
     ).run(
       candidate_plan: kase[:plan],
       scenario_key: kase[:scenario_key],
-      scenario_capabilities: kase[:capabilities],
       quantity_inquiry: quantity_inquiry,
       case_id: kase[:id],
       surface: ACCEPTANCE_SURFACE,

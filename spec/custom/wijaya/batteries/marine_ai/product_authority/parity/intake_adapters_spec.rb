@@ -3,8 +3,10 @@
 require 'rails_helper'
 
 # Fase 3A-2b — the two REAL-intake projection adapters. ConversationIntake validates a synthetic
-# envelope through the PUBLIC Marine::Decision::InputContract.build (fail-closed REJECT); PlaygroundIntake
-# bounds its query/history against the PUBLIC Marine::Catalog::PlaygroundPreview constants (TRUNCATE),
+# envelope through the PUBLIC Marine::Decision::InputContract.build (fail-closed REJECT) with the
+# INJECTED plain classification-intents array (threaded in by the allowlisted Evaluator — site E,
+# the sole acceptance InputContract.build surface; NO scenario capabilities); PlaygroundIntake bounds
+# its query/history against the PUBLIC Marine::Catalog::PlaygroundPreview constants (TRUNCATE),
 # and its bounded_history mirror is proven equivalent to the live private bounded_history.
 RSpec.describe 'Marine::ProductAuthority::Parity::IntakeAdapters' do
   # Touch the cohesive intake_adapters.rb (which also defines the sibling Runtime) before referencing
@@ -13,11 +15,13 @@ RSpec.describe 'Marine::ProductAuthority::Parity::IntakeAdapters' do
   conversation = adapters::ConversationIntake
   playground = adapters::PlaygroundIntake
 
+  # The plain policy-derived classification array injected into the sole acceptance contract build.
+  let(:classification_intents) { %w[price unsupported] }
+
   # A minimal, structurally-valid corpus-shaped case (string-keyed plan, symbol-keyed case).
   let(:kase) do
     {
       id: 'syn_case_1', scenario_key: 'scenario_1',
-      capabilities: { 'scenario_1' => %w[price stock] },
       plan: {
         'schema_version' => 'marine_decision_v1',
         'intents' => ['price'],
@@ -31,12 +35,12 @@ RSpec.describe 'Marine::ProductAuthority::Parity::IntakeAdapters' do
 
   describe conversation do
     it 'accepts a valid case, preserves the scenario key, and rides the plan payload UNCHANGED' do
-      result = conversation.adapt(kase)
+      result = conversation.adapt(kase, classification_intents: classification_intents)
 
       expect(result[:ok]).to be(true)
       expect(result[:surface]).to eq('conversation')
+      expect(result[:input].keys).to contain_exactly(:plan, :scenario_key)
       expect(result[:input][:scenario_key]).to eq('scenario_1')
-      expect(result[:input][:capabilities]).to equal(kase[:capabilities])
       expect(result[:input][:plan]).to equal(kase[:plan]) # same object — no conversion
     end
 
@@ -50,7 +54,7 @@ RSpec.describe 'Marine::ProductAuthority::Parity::IntakeAdapters' do
     it 'fails closed (bounded reason) when the REAL contract rejects an oversize message' do
       allow(conversation).to receive(:synthetic_message).and_return('x' * (Marine::Decision::InputContract::MAX_MESSAGE_CHARS + 1))
 
-      result = conversation.adapt(kase)
+      result = conversation.adapt(kase, classification_intents: classification_intents)
 
       expect(result).to eq(ok: false, surface: 'conversation', reason: 'intake_rejected')
     end
@@ -58,13 +62,13 @@ RSpec.describe 'Marine::ProductAuthority::Parity::IntakeAdapters' do
     it 'fails closed when the REAL contract rejects a control-heavy message' do
       allow(conversation).to receive(:synthetic_message).and_return("SYN-PARITY\x00bad")
 
-      expect(conversation.adapt(kase)[:ok]).to be(false)
+      expect(conversation.adapt(kase, classification_intents: classification_intents)[:ok]).to be(false)
     end
 
     it 'fails closed when the REAL contract rejects a bad state key' do
       allow(conversation).to receive(:state).and_return('not_a_state_key' => 'x')
 
-      result = conversation.adapt(kase)
+      result = conversation.adapt(kase, classification_intents: classification_intents)
 
       expect(result[:ok]).to be(false)
       expect(result[:reason]).to eq('intake_rejected')
@@ -73,25 +77,26 @@ RSpec.describe 'Marine::ProductAuthority::Parity::IntakeAdapters' do
     it 'fails closed when the REAL contract rejects an unknown context role' do
       allow(conversation).to receive(:context).and_return([{ 'role' => 'system', 'content' => 'hi' }])
 
-      expect(conversation.adapt(kase)[:ok]).to be(false)
+      expect(conversation.adapt(kase, classification_intents: classification_intents)[:ok]).to be(false)
     end
 
     it 'proves it drives the REAL InputContract (its Invalid is what fails the adapter closed)' do
       allow(Marine::Decision::InputContract).to receive(:build).and_raise(Marine::Decision::InputContract::Invalid)
 
-      expect(conversation.adapt(kase)).to eq(ok: false, surface: 'conversation', reason: 'intake_rejected')
+      expect(conversation.adapt(kase,
+                                classification_intents: classification_intents)).to eq(ok: false, surface: 'conversation', reason: 'intake_rejected')
     end
 
     it 'fails closed when the contract does not accept the case scenario key' do
       allow(Marine::Decision::InputContract).to receive(:build).and_return(scenario_keys: ['other_scenario'])
 
-      expect(conversation.adapt(kase)[:ok]).to be(false)
+      expect(conversation.adapt(kase, classification_intents: classification_intents)[:ok]).to be(false)
     end
   end
 
   describe playground do
     it 'accepts a valid case with the shared synthetic query and rides the plan UNCHANGED' do
-      result = playground.adapt(kase)
+      result = playground.adapt(kase, classification_intents: classification_intents)
 
       expect(result[:ok]).to be(true)
       expect(result[:surface]).to eq('playground')
@@ -101,13 +106,14 @@ RSpec.describe 'Marine::ProductAuthority::Parity::IntakeAdapters' do
     it 'fails closed (bounded reason) on a blank query' do
       allow(conversation).to receive(:synthetic_message).and_return('   ')
 
-      expect(playground.adapt(kase)).to eq(ok: false, surface: 'playground', reason: 'intake_rejected')
+      expect(playground.adapt(kase,
+                              classification_intents: classification_intents)).to eq(ok: false, surface: 'playground', reason: 'intake_rejected')
     end
 
     it 'fails closed on a non-String query' do
       allow(conversation).to receive(:synthetic_message).and_return(:not_a_string)
 
-      expect(playground.adapt(kase)[:ok]).to be(false)
+      expect(playground.adapt(kase, classification_intents: classification_intents)[:ok]).to be(false)
     end
 
     describe '.bounded_history' do

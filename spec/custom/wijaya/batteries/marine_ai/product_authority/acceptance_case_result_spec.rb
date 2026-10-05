@@ -132,9 +132,9 @@ RSpec.describe Marine::ProductAuthority::AcceptanceCaseResult, type: :model do
     expect(described_class::RESPONSE_GOALS).to eq(Marine::Backend::EvidencePacketBuilder::RESPONSE_GOALS)
     expect(described_class::MAX_RESPONSE_GOALS).to eq(Marine::Backend::EvidencePacketBuilder::MAX_RESPONSE_GOALS)
     expect(described_class::ADAPTER_BLOCK_REASONS).to contain_exactly(
-      adapter::REASON_UNSUPPORTED_SCHEMA, adapter::REASON_UNRESOLVED_SCENARIO, adapter::REASON_SCENARIO_MISMATCH,
-      adapter::REASON_CAPABILITY_UNCONFIGURED, adapter::REASON_CAPABILITY_MALFORMED,
-      adapter::REASON_CAPABILITY_MISMATCH, adapter::REASON_UNSUPPORTED_INTENT
+      adapter::REASON_UNSUPPORTED_SCHEMA, adapter::REASON_UNRESOLVED_SCENARIO,
+      adapter::REASON_SCENARIO_MISMATCH, adapter::REASON_UNSUPPORTED_INTENT,
+      adapter::REASON_PHASE_NOT_EXECUTABLE
     )
     expect(described_class::REASONS).to include(*described_class::ADAPTER_BLOCK_REASONS)
   end

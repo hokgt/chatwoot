@@ -580,6 +580,9 @@ require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/error
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/config.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/connection.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_family_repository.rb
+# Marine Option B Phase 1 — backend-owned execution/classification policy leaf.
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/backend/execution_policy.rb
+require_file spec/custom/wijaya/batteries/marine_ai/backend/execution_policy_spec.rb
 # Phase 2 / Stage 1 — Decision Maker Candidate Plan contract (structure & normalization only).
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/errors.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/decision/schema.rb

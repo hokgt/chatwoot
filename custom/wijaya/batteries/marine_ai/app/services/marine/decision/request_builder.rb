@@ -78,14 +78,14 @@ module Marine::Decision::RequestBuilder # rubocop:disable Metrics/ModuleLength -
     {
       messages: [{ role: 'user', content: JSON.generate(envelope(input)) }],
       system: SYSTEM_PROMPT,
-      schema: chat_schema(input[:scenario_keys]),
+      schema: chat_schema(input[:scenario_keys], input[:allowed_intents]),
       temperature: CHAT_TEMPERATURE
     }
   end
 
   # Closed JSON Schema over the EXACT Stage 1 provider-input keys. `reason` is intentionally
   # absent (normalizer-owned) and additionalProperties:false forbids anything else.
-  def chat_schema(scenario_keys)
+  def chat_schema(scenario_keys, allowed_intents)
     {
       'type' => 'object',
       'additionalProperties' => false,
@@ -93,7 +93,7 @@ module Marine::Decision::RequestBuilder # rubocop:disable Metrics/ModuleLength -
       'properties' => {
         'schema_version' => { 'type' => 'string', 'enum' => [Schema::SCHEMA_VERSION] },
         'scenario_candidate' => scenario_candidate_schema(scenario_keys),
-        'intents' => intents_schema,
+        'intents' => intents_schema(allowed_intents),
         'slot_operations' => slot_operations_schema,
         'customer_language' => { 'type' => %w[string null], 'pattern' => '^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$' },
         'confidence' => confidence_schema
@@ -114,9 +114,11 @@ module Marine::Decision::RequestBuilder # rubocop:disable Metrics/ModuleLength -
     }
   end
 
-  def intents_schema
+  # The candidate intents enum is EXACTLY the injected Phase-1 classification vocabulary
+  # (allowed_intents = ExecutionPolicy::CLASSIFICATION_INTENTS) — never the full Schema::INTENTS.
+  def intents_schema(allowed_intents)
     { 'type' => 'array', 'maxItems' => Schema::MAX_INTENTS, 'uniqueItems' => true,
-      'items' => { 'type' => 'string', 'enum' => Schema::INTENTS } }
+      'items' => { 'type' => 'string', 'enum' => allowed_intents } }
   end
 
   # Per-slot candidate-type rules expressed as far as JSON Schema allows: `clear` carries no
@@ -206,8 +208,7 @@ module Marine::Decision::RequestBuilder # rubocop:disable Metrics/ModuleLength -
     {
       'key' => scenario[:key],
       'description' => scenario[:description],
-      'instruction' => scenario[:instruction],
-      'capabilities' => scenario[:capabilities].dup
+      'instruction' => scenario[:instruction]
     }
   end
 end

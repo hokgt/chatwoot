@@ -16,8 +16,7 @@ RSpec.describe Marine::Decision::CutoverConfig do
       described_class::ROLLBACK_KEY => rollback,
       described_class::ASSISTANT_IDS_KEY => assistant_ids,
       Marine::Decision::ShadowConfig::ENABLED_KEY => shadow_enabled,
-      Marine::Decision::ShadowConfig::ASSISTANT_IDS_KEY => shadow_ids,
-      Marine::Decision::ShadowConfig::CAPABILITIES_KEY => ''
+      Marine::Decision::ShadowConfig::ASSISTANT_IDS_KEY => shadow_ids
     }.each do |key, value|
       allow(Marine::Llm::Config).to receive(:installation_value).with(key).and_return(value.to_s)
     end

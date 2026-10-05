@@ -6,7 +6,7 @@
 # It emits a bounded, immutable canonical internal result. The repository returns the exact-decimal
 # range tuple; this wrapper only stamps the non-LLM `source` and `checked_at` and maps the
 # fail-closed statuses. The range is an INTERNAL canonical structure in 2A — it is never added to
-# marine_evidence_v1 and never reaches a customer.
+# marine_evidence_v2 and never reaches a customer.
 class Marine::Backend::FamilyPriceRangeAuthority
   SOURCE = 'catalog_price_range_repository'.freeze
 

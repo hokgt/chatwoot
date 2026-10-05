@@ -5,23 +5,24 @@ require 'rails_helper'
 # Phase 2 / Stage 3 — the strict, bounded, fail-closed input contract for the Decision
 # Runner. These examples pin that only in-bounds, allowlisted, control-clean input is
 # accepted; that state is a candidate-only COARSE-HINT allowlist (never a fact/ID/row);
-# that scenarios are exact hashes with a stable key + bounded summaries + allowlisted
-# capabilities; and that every outbound value is contract-OWNED (the caller's input is
-# never mutated or frozen). All product/variant strings are SYNTHETIC candidates.
+# that scenarios are exact hashes with a stable key + bounded summaries (NO capabilities);
+# that the classification vocabulary is the INJECTED Phase-1 policy-derived list (validated,
+# order-preserved, never deduped); and that every outbound value is contract-OWNED (the
+# caller's input is never mutated or frozen). All product/variant strings are SYNTHETIC.
 RSpec.describe Marine::Decision::InputContract do
   let(:invalid) { described_class::Invalid }
 
   def scenarios
     [
-      { 'key' => 'stock_check', 'description' => 'Customer asks about availability', 'instruction' => 'Check stock',
-        'capabilities' => %w[stock price] },
-      { 'key' => 'catalog_browse', 'description' => 'Customer is browsing', 'instruction' => 'Show catalog', 'capabilities' => %w[catalog] }
+      { 'key' => 'stock_check', 'description' => 'Customer asks about availability', 'instruction' => 'Check stock' },
+      { 'key' => 'catalog_browse', 'description' => 'Customer is browsing', 'instruction' => 'Show catalog' }
     ]
   end
 
   def build(overrides = {})
     described_class.build(
-      message: 'Do you have the Santorini vase in stock?', context: [], state: {}, scenarios: scenarios, **overrides
+      message: 'Do you have the Santorini vase in stock?', context: [], state: {}, scenarios: scenarios,
+      classification_intents: %w[price unsupported], **overrides
     )
   end
 
@@ -88,42 +89,52 @@ RSpec.describe Marine::Decision::InputContract do
     end
   end
 
-  describe 'scenarios' do
+  describe 'scenarios (identity/context only — NO capabilities)' do
     it 'requires at least one scenario and rejects an empty/oversized/non-array list' do
       expect { build(scenarios: []) }.to raise_error(invalid)
       expect { build(scenarios: {}) }.to raise_error(invalid)
       expect do
         build(scenarios: Array.new(described_class::MAX_SCENARIOS + 1) do |i|
-          { 'key' => "s#{i}", 'description' => 'd', 'instruction' => 'i', 'capabilities' => [] }
+          { 'key' => "s#{i}", 'description' => 'd', 'instruction' => 'i' }
         end)
       end.to raise_error(invalid)
     end
 
-    it 'exposes canonical scenario keys and the capability union (incl. unsupported) in Schema order' do
-      input = build
-      expect(input[:scenario_keys]).to eq(%w[stock_check catalog_browse])
-      # union {stock, price, catalog} + unsupported, ordered by Schema::INTENTS.
-      expect(input[:allowed_intents]).to eq(%w[price stock catalog unsupported])
+    it 'exposes canonical scenario keys' do
+      expect(build[:scenario_keys]).to eq(%w[stock_check catalog_browse])
+    end
+
+    it 'rejects a scenario entry carrying a capabilities key (unknown key)' do
+      expect do
+        build(scenarios: [{ 'key' => 'k', 'description' => 'd', 'instruction' => 'i', 'capabilities' => %w[price] }])
+      end.to raise_error(invalid)
     end
 
     it 'rejects unknown/mixed keys, a non-canonical key, blank summaries, and duplicate scenario keys' do
       expect do
-        build(scenarios: [{ 'key' => 'k', 'description' => 'd', 'instruction' => 'i', 'capabilities' => [], 'x' => 1 }])
+        build(scenarios: [{ 'key' => 'k', 'description' => 'd', 'instruction' => 'i', 'x' => 1 }])
       end.to raise_error(invalid)
-      expect { build(scenarios: [{ 'key' => 'Bad Key', 'description' => 'd', 'instruction' => 'i', 'capabilities' => [] }]) }.to raise_error(invalid)
-      expect { build(scenarios: [{ 'key' => 'k', 'description' => '', 'instruction' => 'i', 'capabilities' => [] }]) }.to raise_error(invalid)
-      dupes = [{ 'key' => 'k', 'description' => 'd', 'instruction' => 'i', 'capabilities' => [] },
-               { 'key' => 'k', 'description' => 'd2', 'instruction' => 'i2', 'capabilities' => [] }]
+      expect { build(scenarios: [{ 'key' => 'Bad Key', 'description' => 'd', 'instruction' => 'i' }]) }.to raise_error(invalid)
+      expect { build(scenarios: [{ 'key' => 'k', 'description' => '', 'instruction' => 'i' }]) }.to raise_error(invalid)
+      dupes = [{ 'key' => 'k', 'description' => 'd', 'instruction' => 'i' },
+               { 'key' => 'k', 'description' => 'd2', 'instruction' => 'i2' }]
       expect { build(scenarios: dupes) }.to raise_error(invalid)
     end
+  end
 
-    it 'rejects capabilities that are not allowlisted Schema intents, are duplicated, or are inferred by overlap' do
-      expect do
-        build(scenarios: [{ 'key' => 'k', 'description' => 'd', 'instruction' => 'i', 'capabilities' => %w[not_an_intent] }])
-      end.to raise_error(invalid)
-      expect do
-        build(scenarios: [{ 'key' => 'k', 'description' => 'd', 'instruction' => 'i', 'capabilities' => %w[price price] }])
-      end.to raise_error(invalid)
+  describe 'allowed_intents (the injected Phase-1 classification vocabulary)' do
+    it 'exposes EXACTLY the injected policy-derived list, order preserved (never deduped/re-sorted)' do
+      expect(build(classification_intents: %w[price unsupported])[:allowed_intents]).to eq(%w[price unsupported])
+      expect(build(classification_intents: %w[unsupported price])[:allowed_intents]).to eq(%w[unsupported price])
+    end
+
+    it 'rejects a missing / non-array / empty / non-string-member / unknown / duplicate vocabulary' do
+      expect { build(classification_intents: nil) }.to raise_error(invalid)
+      expect { build(classification_intents: 'price') }.to raise_error(invalid)
+      expect { build(classification_intents: []) }.to raise_error(invalid)
+      expect { build(classification_intents: ['price', 1]) }.to raise_error(invalid)
+      expect { build(classification_intents: %w[price not_an_intent]) }.to raise_error(invalid)
+      expect { build(classification_intents: %w[price price]) }.to raise_error(invalid)
     end
   end
 
@@ -148,13 +159,15 @@ RSpec.describe Marine::Decision::InputContract do
       context = [{ 'role' => 'user', 'content' => +'hi' }]
       state = { 'current_intent' => 'stock' }
       scens = scenarios
-      described_class.build(message: message, context: context, state: state, scenarios: scens)
+      classification = %w[price unsupported]
+      described_class.build(message: message, context: context, state: state, scenarios: scens,
+                            classification_intents: classification)
 
       expect(message).not_to be_frozen
       expect(context.first).not_to be_frozen
       expect(state).not_to be_frozen
       expect(scens.first).not_to be_frozen
-      expect(scens.first['capabilities']).not_to be_frozen
+      expect(classification).not_to be_frozen
     end
   end
 end

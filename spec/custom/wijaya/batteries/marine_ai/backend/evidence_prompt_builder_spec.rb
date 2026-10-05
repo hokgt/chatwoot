@@ -11,7 +11,7 @@ RSpec.describe Marine::Backend::EvidencePromptBuilder do
 
   let(:evidence_input) do
     {
-      scenario: { key: 'scenario_5', capabilities: %w[price catalog] },
+      scenario: { key: 'scenario_5' },
       intents: %w[price],
       customer_language: 'id',
       response_goals: %w[answer_price],
@@ -32,7 +32,7 @@ RSpec.describe Marine::Backend::EvidencePromptBuilder do
   end
 
   it 'renders the packet as the only fact source' do
-    expect(prompt[:system]).to include('marine_evidence_v1')
+    expect(prompt[:system]).to include('marine_evidence_v2')
     expect(prompt[:system]).to include('BD-4')
     expect(prompt[:system]).to include('12.500')
   end

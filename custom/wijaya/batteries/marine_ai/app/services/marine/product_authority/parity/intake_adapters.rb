@@ -31,7 +31,7 @@
 module Marine::ProductAuthority::Parity
   # Acceptance-only REAL-intake envelope projection. Each adapter builds a DETERMINISTIC, fully
   # SYNTHETIC (SYN-*) intake envelope from a corpus case, drives it through the real surface intake
-  # code, and — on success — returns the case's plan/scenario/capabilities UNCHANGED for the
+  # code, and — on success — returns the case's plan/scenario UNCHANGED for the
   # coordinator fold (plan-layer envelope validation only; NO business conversion). On any intake
   # violation it fails closed to a bounded reason code, never leaking the offending value. Invoked
   # ONLY by specs or operator review; not wired into any live runtime.
@@ -47,16 +47,17 @@ module Marine::ProductAuthority::Parity
     # REAL Marine::Decision::InputContract.build (the same fail-closed contract the live conversation
     # decision intake uses). A contract violation — oversize/control-heavy message, bad state key,
     # unknown context role, malformed scenario — raises InputContract::Invalid and fails this surface
-    # closed. The plan/scenario/capabilities ride UNCHANGED to the coordinator.
+    # closed. The plan/scenario ride UNCHANGED to the coordinator.
     class ConversationIntake
       SURFACE = 'conversation'
 
-      def self.adapt(kase)
+      def self.adapt(kase, classification_intents:)
         contract = InputContract.build(
           message: synthetic_message(kase),
           context: context(kase),
           state: state(kase),
-          scenarios: scenarios(kase)
+          scenarios: scenarios(kase),
+          classification_intents: classification_intents
         )
         # Defensive: the real contract must have accepted the case's own scenario key.
         return failure unless Array(contract[:scenario_keys]).include?(kase[:scenario_key])
@@ -87,13 +88,12 @@ module Marine::ProductAuthority::Parity
         hints
       end
 
-      # A single synthetic scenario entry with the case's own capability list (exact contract keys).
+      # A single synthetic identity/context-only scenario entry (exact contract keys).
       def self.scenarios(kase)
         [{
           'key' => kase[:scenario_key],
           'description' => 'synthetic acceptance scenario',
-          'instruction' => 'synthetic acceptance instruction',
-          'capabilities' => Array(kase.dig(:capabilities, kase[:scenario_key]))
+          'instruction' => 'synthetic acceptance instruction'
         }]
       end
 
@@ -119,7 +119,7 @@ module Marine::ProductAuthority::Parity
     class PlaygroundIntake
       SURFACE = 'playground'
 
-      def self.adapt(kase)
+      def self.adapt(kase, classification_intents:) # rubocop:disable Lint/UnusedMethodArgument -- uniform intake seam
         query = ConversationIntake.synthetic_message(kase)
         return failure unless query.is_a?(String) && !query.strip.empty?
 
@@ -147,7 +147,7 @@ module Marine::ProductAuthority::Parity
 
     # The UNCHANGED coordinator input shared by both surfaces (plan-layer projection, no conversion).
     def self.case_input(kase)
-      { plan: kase[:plan], scenario_key: kase[:scenario_key], capabilities: kase[:capabilities] }
+      { plan: kase[:plan], scenario_key: kase[:scenario_key] }
     end
   end
 
@@ -232,12 +232,12 @@ module Marine::ProductAuthority::Parity
     private
 
     # The structural minimum a case needs to be folded at all — identical to the AcceptanceRunner's
-    # gate. A non-Hash entry or a missing/invalid id / non-Hash plan/label/repositories/capabilities /
+    # gate. A non-Hash entry or a missing/invalid id / non-Hash plan/label/repositories /
     # non-String scenario_key is skipped as not_executed WITHOUT a result.
     def executable_case?(kase)
       kase.is_a?(Hash) && CaseResult.valid_case_id?(kase[:id]) &&
         kase[:plan].is_a?(Hash) && kase[:label].is_a?(Hash) &&
-        kase[:repositories].is_a?(Hash) && kase[:capabilities].is_a?(Hash) &&
+        kase[:repositories].is_a?(Hash) &&
         kase[:scenario_key].is_a?(String)
     end
 
@@ -260,7 +260,7 @@ module Marine::ProductAuthority::Parity
     # coordinator. A fail-closed intake returns nil (no fold on that surface); the other surface is
     # still folded and recorded.
     def fold_surface(kase, adapter, surface, quantity_inquiry, probe)
-      adapted = adapter.adapt(kase)
+      adapted = adapter.adapt(kase, classification_intents: Fakes::CLASSIFICATION_INTENTS)
       return nil unless adapted.is_a?(Hash) && adapted[:ok]
 
       run_coordinator(kase, adapted[:input], surface, quantity_inquiry, probe)
@@ -303,7 +303,6 @@ module Marine::ProductAuthority::Parity
       ).run(
         candidate_plan: input[:plan],
         scenario_key: input[:scenario_key],
-        scenario_capabilities: input[:capabilities],
         quantity_inquiry: quantity_inquiry,
         case_id: kase[:id],
         surface: surface,

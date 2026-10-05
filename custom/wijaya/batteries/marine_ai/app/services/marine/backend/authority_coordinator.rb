@@ -5,9 +5,9 @@
 # a later phase would act on.
 #
 # Pipeline (all read-only; every step fails closed):
-#   1. CandidatePlanToProductIntentAdapter authorizes the plan's schema/scenario/intent/capability
-#      (its Result is NEVER mutated).
-#   2. The technical PRICE-ONLY allowlist is enforced: the authorized intent set must be EXACTLY
+#   1. CandidatePlanToProductIntentAdapter authorizes the plan's schema/scenario/intent via the
+#      backend ExecutionPolicy (its Result is NEVER mutated).
+#   2. The ExecutionPolicy whole-set gate is enforced: the authorized intent set must be EXACTLY
 #      ["price"]. Every other single intent and every multi-intent (incl. price+stock) returns
 #      legacy_preserved/phase_not_executable BEFORE any fact repository call — StockRepository is
 #      never reached.
@@ -27,10 +27,7 @@
 class Marine::Backend::AuthorityCoordinator
   Adapter = Marine::Backend::CandidatePlanToProductIntentAdapter
   Resolver = Marine::Backend::CatalogCandidateResolver
-
-  # The technical PRICE-ONLY execution allowlist (a gate, NOT a business mapping): the authorized
-  # intent set must equal this exactly before any fact repository is touched.
-  PRICE_ONLY = %w[price].freeze
+  ExecutionPolicy = Marine::Backend::ExecutionPolicy
 
   OUTCOME_EVIDENCE_PACKET = :evidence_packet
   OUTCOME_FAMILY_PRICE_RANGE = :family_price_range
@@ -42,8 +39,6 @@ class Marine::Backend::AuthorityCoordinator
   SOURCE_NONE = :none
 
   REASON_ACCEPTED = :accepted
-  REASON_CAPABILITY_UNCONFIGURED = :capability_unconfigured
-  REASON_CAPABILITY_MISMATCH = :capability_mismatch
   REASON_PHASE_NOT_EXECUTABLE = :phase_not_executable
   REASON_SCENARIO_MISMATCH = :scenario_mismatch
   REASON_UNSUPPORTED_PLAN = :unsupported_plan
@@ -57,17 +52,15 @@ class Marine::Backend::AuthorityCoordinator
   REASON_INTERNAL_ERROR = :internal_error
 
   # Adapter fail-closed reason → coordinator (outcome_type, reason). unresolved_scenario /
-  # scenario_mismatch / unsupported_schema are terminal stops; a capability anomaly or an
-  # out-of-price intent preserves legacy. A malformed capability map is treated like an
-  # unconfigured one (both fail closed to capability_unconfigured in §8).
+  # scenario_mismatch / unsupported_schema / unsupported_intent are terminal stops; a
+  # supported-but-non-executable intent set (phase_not_executable) preserves legacy BEFORE any fact
+  # repository call. Execution authorization is backend-policy-owned — no capability reasons remain.
   ADAPTER_FAILURE = {
     Adapter::REASON_UNSUPPORTED_SCHEMA => [OUTCOME_STOP, REASON_UNSUPPORTED_PLAN],
     Adapter::REASON_UNRESOLVED_SCENARIO => [OUTCOME_STOP, REASON_SCENARIO_MISMATCH],
     Adapter::REASON_SCENARIO_MISMATCH => [OUTCOME_STOP, REASON_SCENARIO_MISMATCH],
     Adapter::REASON_UNSUPPORTED_INTENT => [OUTCOME_STOP, REASON_UNSUPPORTED_PLAN],
-    Adapter::REASON_CAPABILITY_UNCONFIGURED => [OUTCOME_LEGACY_PRESERVED, REASON_CAPABILITY_UNCONFIGURED],
-    Adapter::REASON_CAPABILITY_MALFORMED => [OUTCOME_LEGACY_PRESERVED, REASON_CAPABILITY_UNCONFIGURED],
-    Adapter::REASON_CAPABILITY_MISMATCH => [OUTCOME_LEGACY_PRESERVED, REASON_CAPABILITY_MISMATCH]
+    Adapter::REASON_PHASE_NOT_EXECUTABLE => [OUTCOME_LEGACY_PRESERVED, REASON_PHASE_NOT_EXECUTABLE]
   }.freeze
 
   # Planner response goal → clarify reason (a planner-produced clarify may still carry its packet).
@@ -104,10 +97,10 @@ class Marine::Backend::AuthorityCoordinator
 
   # phase is part of the ContextBuilder handoff contract (§7.5) and reserved for the planner-input
   # phase semantics; it is carried through for provenance but not consumed in the price-only 2A slice.
-  def call(candidate_plan:, scenario_key:, scenario_capabilities:, trigger:, history:, phase:, flow_state:, configured_language:) # rubocop:disable Lint/UnusedMethodArgument,Metrics/ParameterLists -- documented §7.5 closed signature
-    authorized = @adapter.call(plan: candidate_plan, scenario_key: scenario_key, scenario_capabilities: scenario_capabilities)
+  def call(candidate_plan:, scenario_key:, trigger:, history:, phase:, flow_state:, configured_language:) # rubocop:disable Lint/UnusedMethodArgument,Metrics/ParameterLists -- documented §7.5 closed signature
+    authorized = @adapter.call(plan: candidate_plan, scenario_key: scenario_key)
     return adapter_failure(authorized.reason, scenario_key) unless authorized.ok?
-    return phase_not_executable(authorized) unless authorized.intents == PRICE_ONLY
+    return phase_not_executable(authorized) unless ExecutionPolicy.authorized?(authorized.intents)
 
     resolved = @resolver.call(trigger: trigger, flow_state: flow_state)
     dispatch(authorized, resolved, trigger: trigger, history: history,
@@ -189,7 +182,7 @@ class Marine::Backend::AuthorityCoordinator
       attribute_candidates: [],
       customer_language: language,
       intent: 'price',
-      requested_intents: PRICE_ONLY.dup,
+      requested_intents: ExecutionPolicy::EXECUTABLE_INTENTS.dup,
       requires_exact_variant: true,
       quantity_inquiry: false
     }

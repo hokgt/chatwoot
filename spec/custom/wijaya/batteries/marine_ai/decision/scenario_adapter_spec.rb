@@ -3,10 +3,10 @@
 require 'rails_helper'
 
 # Phase 2 / Stage 4 — the read-only ScenarioAdapter. These examples drive the adapter with
-# scenario doubles + a stubbed capability registry (no DB write) and pin: enabled-only,
-# id-ordered scenarios; the stable `scenario_<id>` key (never title-derived); capabilities
-# sourced ONLY from the explicit registry (never inferred from title/description/instruction);
-# bounded, owned text; and that it mutates nothing. All scenario strings are SYNTHETIC.
+# scenario doubles and pin: enabled-only, id-ordered scenarios; the stable `scenario_<id>` key
+# (never title-derived); identity/context-only entries (NO capabilities — execution authorization
+# is backend-policy-owned); bounded, owned text; and that it mutates nothing. All scenario strings
+# are SYNTHETIC.
 RSpec.describe Marine::Decision::ScenarioAdapter do
   subject(:adapter) { described_class.new(assistant: assistant) }
 
@@ -22,32 +22,20 @@ RSpec.describe Marine::Decision::ScenarioAdapter do
     allow(relation).to receive_messages(enabled: relation, order: relation, limit: relation, to_a: list)
   end
 
-  before { allow(Marine::Decision::ShadowConfig).to receive(:scenario_capabilities).and_return({}) }
-
-  it 'maps enabled scenarios to the stable scenario_<id> contract shape' do
+  it 'maps enabled scenarios to the stable scenario_<id> identity/context shape (no capabilities)' do
     stub_scenarios([scenario(7), scenario(12)])
     result = adapter.scenarios
 
     expect(result.map { |s| s['key'] }).to eq(%w[scenario_7 scenario_12])
-    expect(result.first).to eq('key' => 'scenario_7', 'description' => 'availability',
-                               'instruction' => 'check stock', 'capabilities' => [])
+    expect(result.first).to eq('key' => 'scenario_7', 'description' => 'availability', 'instruction' => 'check stock')
+    expect(result.first).not_to have_key('capabilities')
   end
 
   it 'derives the key from the database id ONLY (never the title)' do
-    allow(Marine::Decision::ShadowConfig).to receive(:scenario_capabilities)
-      .and_return('scenario_5' => %w[price])
     stub_scenarios([scenario(5, description: 'Fancy Vase Stock', instruction: 'look up availability')])
 
     entry = adapter.scenarios.first
     expect(entry['key']).to eq('scenario_5')
-    # Capability came from the registry keyed by scenario_5, NOT inferred from the text.
-    expect(entry['capabilities']).to eq(%w[price])
-  end
-
-  it 'gives a scenario with no registry entry an empty capability list' do
-    allow(Marine::Decision::ShadowConfig).to receive(:scenario_capabilities).and_return('scenario_99' => %w[stock])
-    stub_scenarios([scenario(7)])
-    expect(adapter.scenarios.first['capabilities']).to eq([])
   end
 
   it 'bounds description/instruction to the contract summary ceiling' do
@@ -57,14 +45,10 @@ RSpec.describe Marine::Decision::ScenarioAdapter do
     expect(entry['instruction'].length).to eq(described_class::MAX_TEXT_CHARS)
   end
 
-  it 'returns owned data (fresh strings/arrays), not frozen registry values' do
-    frozen_caps = { 'scenario_1' => %w[stock].freeze }.freeze
-    allow(Marine::Decision::ShadowConfig).to receive(:scenario_capabilities).and_return(frozen_caps)
+  it 'returns owned data (fresh, mutable strings)' do
     stub_scenarios([scenario(1)])
-
-    caps = adapter.scenarios.first['capabilities']
-    expect(caps).to eq(%w[stock])
-    expect { caps << 'price' }.not_to raise_error # owned, mutable copy
+    entry = adapter.scenarios.first
+    expect { entry['description'] << 'x' }.not_to raise_error # owned, mutable copy
   end
 
   it 'returns [] when the assistant exposes no scenarios association' do

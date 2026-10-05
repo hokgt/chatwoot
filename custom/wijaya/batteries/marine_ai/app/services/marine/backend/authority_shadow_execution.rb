@@ -16,9 +16,9 @@
 #     bounded stop Result.
 #   * Rebuilds ONLY the bounded ContextBuilder (trigger/history/phase) — never the Runner.
 #   * Reads ProductFlowStateStore#current_for_planning ONLY (no start/update/terminate/write).
-#   * Loads ShadowConfig.scenario_capabilities and the assistant's configured language, then calls
-#     AuthorityCoordinator and returns ONLY its bounded, deep-frozen Result (§8) — or nil for the
-#     relationship/no-work case.
+#   * Loads the assistant's configured language, then calls AuthorityCoordinator and returns ONLY its
+#     bounded, deep-frozen Result (§8) — or nil for the relationship/no-work case. Execution
+#     authorization is backend-policy-owned (ExecutionPolicy); scenario is provenance only.
 #
 # It mutates NO state: no create/update/save, no message, no reply/routing/handoff, no product-flow
 # state, no cache/metric/log/publish/notify. Its Result never reaches a customer in 2A.
@@ -51,7 +51,6 @@ class Marine::Backend::AuthorityShadowExecution
     Coordinator.new.call(
       candidate_plan: @candidate_plan,
       scenario_key: "scenario_#{scenario.id}",
-      scenario_capabilities: Marine::Decision::ShadowConfig.scenario_capabilities,
       trigger: context.trigger, history: context.history, phase: context.phase,
       flow_state: flow_state, configured_language: configured_language
     )

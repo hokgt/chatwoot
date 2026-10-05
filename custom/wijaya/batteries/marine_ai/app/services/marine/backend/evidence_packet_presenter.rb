@@ -1,6 +1,6 @@
 # Fase 3A-1 (isolated / mock-only) — presentation seam for the Model 2 GENERATED wording path.
 #
-# It accepts ONLY the frozen marine_evidence_v1 Evidence Packet plus an INJECTED generator
+# It accepts ONLY the frozen marine_evidence_v2 Evidence Packet plus an INJECTED generator
 # interface (and an optional injected stock fact verifier) — it NEVER constructs or calls a live
 # provider, so 3A-1 tests and (until a later gate) the runtime make zero model calls through it.
 # Model 2 is used ONLY here, on the generated/natural path; the zero-model safe paths (exact FAQ
@@ -22,7 +22,7 @@
 # deterministic renderer can safely present), reserving :handoff for an explicit handoff/factless
 # or invalid packet. This is a result POLICY only; no fallback delivery is wired in 3A-1.
 class Marine::Backend::EvidencePacketPresenter
-  EVIDENCE_VERSION = 'marine_evidence_v1'.freeze
+  EVIDENCE_VERSION = 'marine_evidence_v2'.freeze
 
   # The packet answer goals that warrant a generated natural reply. clarify_* / handoff are
   # deterministic zero-model paths and are never generated here.
@@ -50,7 +50,7 @@ class Marine::Backend::EvidencePacketPresenter
     @persona_validator = persona_validator || Marine::Backend::PersonaValidator.new
   end
 
-  # packet:           a frozen marine_evidence_v1 Evidence Packet.
+  # packet:           a frozen marine_evidence_v2 Evidence Packet.
   # generator:        REQUIRED injected callable #call(system:, messages:) -> String | nil. The
   #                   ONLY model call; no live provider is constructed here.
   # customer_request: the customer's latest message.

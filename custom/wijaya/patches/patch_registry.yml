@@ -1259,6 +1259,13 @@ patches:
       # a deep-frozen, closed-key/closed-enum, bounded product-only packet; and the presenter runs the
       # bounded packet-only prompt through an INJECTED generator + deterministic fact/persona gates,
       # failing closed to a deterministic/handoff fallback (no live provider constructed).
+      # Phase 1 (Opsi B) — the single backend-owned execution-authorization + classification policy
+      # leaf: frozen EXECUTABLE_INTENTS == ["price"], CLASSIFICATION_INTENTS == ["price","unsupported"],
+      # and the exact-canonical-array #authorized? rule. A pure leaf (no production dependency, not
+      # even on Marine::Decision::Schema); every authorization site (adapter, coordinator, planner,
+      # packet builder, Model 2) and both Model 1 protocols ground on it — scenario configuration no
+      # longer participates in authorization.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/execution_policy.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/candidate_plan_to_product_intent_adapter.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/product_execution_planner.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/product_state_transition.rb
@@ -1842,6 +1849,10 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/backend/persona_validator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/backend_isolation_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/backend_pipeline_integration_spec.rb
+      # Phase 1 (Opsi B) — the backend execution-policy leaf spec: the frozen executable/classification
+      # vocabularies, the exact-canonical-array #authorized? rule (no dedupe/sort — duplicates and
+      # reordering never normalize into a pass), and the spec-only Schema-subset membership proof.
+      - spec/custom/wijaya/batteries/marine_ai/backend/execution_policy_spec.rb
       # Phase 2A — DEFAULT-OFF, read-only, PRICE-ONLY JEV -> Backend Authority shadow bridge specs:
       # the closed catalog candidate resolver (bounded/overflow-fail-closed generation, §7.4
       # precedence, ambiguity/outage fail-closed, one-token name-collision guard), the thin family

@@ -10,10 +10,9 @@
 #   * The stable key is EXACTLY `scenario_<database id>` — never derived from the title,
 #     so it stays stable across renames and is directly comparable to the ScenarioSelector's
 #     chosen scenario key.
-#   * description/instruction are bounded, owned copies (data only).
-#   * capabilities come ONLY from the explicit Marine::Decision::ShadowConfig registry keyed
-#     by that stable key — NEVER inferred from title/description/instruction/tools/model
-#     output. A scenario with no registry entry declares no capability.
+#   * description/instruction are bounded, owned copies (data only). The scenario seam carries
+#     identity/context ONLY — no capabilities. Execution authorization is backend-policy-owned
+#     (the backend execution policy) and the classification vocabulary is injected downstream.
 #
 # It reads persisted scenarios but MUTATES nothing: it never freezes or writes back to the
 # ActiveRecord rows and returns freshly-built, owned Ruby hashes/strings.
@@ -40,8 +39,7 @@ class Marine::Decision::ScenarioAdapter
   # the assistant exposes no enabled scenarios. Read-only. Callers must check #overflow? first:
   # on overflow this head is NOT a complete population and must not be compared.
   def scenarios
-    capabilities = Marine::Decision::ShadowConfig.scenario_capabilities
-    enabled_scenarios.first(MAX_SCENARIOS).map { |scenario| entry(scenario, capabilities) }
+    enabled_scenarios.first(MAX_SCENARIOS).map { |scenario| entry(scenario) }
   end
 
   private
@@ -54,13 +52,11 @@ class Marine::Decision::ScenarioAdapter
     @enabled_scenarios ||= @assistant.scenarios.enabled.order(:id).limit(MAX_SCENARIOS + 1).to_a
   end
 
-  def entry(scenario, capabilities)
-    key = "scenario_#{scenario.id}"
+  def entry(scenario)
     {
-      'key' => key,
+      'key' => "scenario_#{scenario.id}",
       'description' => clean(scenario.description),
-      'instruction' => clean(scenario.instruction),
-      'capabilities' => Array(capabilities[key]).map(&:dup)
+      'instruction' => clean(scenario.instruction)
     }
   end
 

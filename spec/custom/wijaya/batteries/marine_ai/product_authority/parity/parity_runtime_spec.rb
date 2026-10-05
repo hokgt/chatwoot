@@ -76,14 +76,14 @@ RSpec.describe 'Marine::ProductAuthority::Parity::Runtime' do
   describe 'primary contract catches outcome loss' do
     let(:lossy_conversation) do
       Class.new do
-        def self.adapt(kase)
+        def self.adapt(kase, classification_intents:)
           real = Marine::ProductAuthority::Parity::IntakeAdapters::ConversationIntake
-          return real.adapt(kase) unless kase[:id] == 'price_resolved'
+          return real.adapt(kase, classification_intents: classification_intents) unless kase[:id] == 'price_resolved'
 
           dropped = kase[:plan]['slot_operations'].reject { |op| op['slot'] == 'variant_input' }
           { ok: true, surface: 'conversation',
             input: { plan: kase[:plan].merge('slot_operations' => dropped),
-                     scenario_key: kase[:scenario_key], capabilities: kase[:capabilities] } }
+                     scenario_key: kase[:scenario_key] } }
         end
       end
     end
@@ -138,8 +138,17 @@ RSpec.describe 'Marine::ProductAuthority::Parity::Runtime' do
 
   describe 'quantity-inquiry extractor precedence' do
     it 'lets an injected extractor false beat the corpus safety:true on BOTH folds' do
+      # The safety case carries safety.exact_quantity_request == true; the injected canonical
+      # extraction false OVERRIDES it on both surfaces, so the fold passes the quantity gate and
+      # genuinely reads repositories. The seam-less fold is expressed over the Phase-1 executable
+      # intent (price) so the planner really runs against the injected fixtures.
       probe = probe_klass.new
-      report = runtime.run([corpus_case('exact_quantity_failclosed')],
+      price_safety = Marshal.load(Marshal.dump(corpus_case('exact_quantity_failclosed'))).tap do |kase|
+        kase[:id] = 'syn_price_safety_precedence'
+        kase[:plan] = kase[:plan].merge('intents' => ['price'])
+        kase[:repositories][:price] = { 'SYN-VAR-ALPHA-01' => Marine::ProductAuthority::Corpus::PRICE_ALPHA }
+      end
+      report = runtime.run([price_safety],
                            extractor: ->(_kase) { { quantity_inquiry: false } }, mutation_probe: probe)
       entry = report[:case_evidence].first
 

@@ -78,6 +78,17 @@ RSpec.describe Marine::Decision::ShadowJob do
     expect(job.perform(1, 3, 5, 9)).to be_nil
   end
 
+  it 'injects the policy-derived classification vocabulary into the ShadowExecution (composition root, site A)' do
+    stub_loads
+    execution = instance_double(Marine::Decision::ShadowExecution, call: nil)
+    expect(Marine::Decision::ShadowExecution).to receive(:new)
+      .with(account: account, assistant: assistant, conversation: conversation, message: message,
+            classification_intents: Marine::Backend::ExecutionPolicy::CLASSIFICATION_INTENTS)
+      .and_return(execution)
+
+    expect(job.perform(1, 3, 5, 9)).to be_nil
+  end
+
   it 'records NOTHING (no fake comparison) when the execution returns nil' do
     stub_loads
     stub_execution(returns: nil)

@@ -34,6 +34,7 @@
 class Marine::ProductAuthority::ShadowExecution
   Outcome = Marine::ProductAuthority::ProductOutcome
   Schema = Marine::Decision::Schema
+  ClassificationIntents = Marine::Backend::ExecutionPolicy::CLASSIFICATION_INTENTS
 
   def initialize(account:, assistant:, conversation:, message:, # rubocop:disable Metrics/ParameterLists -- injected read-only seams (all optional)
                  intent_extractor: nil, decision_runner: nil, adapter: nil,
@@ -101,8 +102,7 @@ class Marine::ProductAuthority::ShadowExecution
   end
 
   # The candidate side: the Decision Runner's canonical CandidatePlan folded through the Fase 3A-1
-  # adapter under the SAME legacy-selected scenario and the SAME per-scenario capability map the
-  # Decision Runner was given. `comparable` is true only when the Decision provider genuinely
+  # adapter under the SAME legacy-selected scenario. `comparable` is true only when the Decision provider genuinely
   # normalized a plan (not a timeout/provider/malformed fallback), so a fallback is never scored as
   # a real product decision.
   def candidate_result(context, scenarios)
@@ -111,8 +111,7 @@ class Marine::ProductAuthority::ShadowExecution
     # blocked, non-comparable candidate and never run the adapter over a fallback.
     return { outcome: Outcome.blocked, comparable: false } unless plan.is_a?(Hash) && plan[:reason] == Schema::REASON_NORMALIZED
 
-    result = adapter.call(plan: plan, scenario_key: selected_scenario_key(context.trigger),
-                          scenario_capabilities: capability_map(scenarios))
+    result = adapter.call(plan: plan, scenario_key: selected_scenario_key(context.trigger))
     outcome = result.ok? ? Outcome.project(result.product_intent) : Outcome.blocked
     { outcome: outcome, comparable: true }
   end
@@ -122,13 +121,6 @@ class Marine::ProductAuthority::ShadowExecution
   def selected_scenario_key(trigger)
     selected = scenario_selector.select(trigger)
     selected && "scenario_#{selected.id}"
-  end
-
-  # The per-scenario capability map { 'scenario_<id>' => [intents] } derived from the SAME scenario
-  # seam the Decision Runner consumed — never a fresh config read, so the two paths share one
-  # capability population.
-  def capability_map(scenarios)
-    scenarios.each_with_object({}) { |scenario, map| map[scenario['key']] = Array(scenario['capabilities']) }
   end
 
   def build_context
@@ -142,7 +134,7 @@ class Marine::ProductAuthority::ShadowExecution
   end
 
   def decision_runner
-    @decision_runner ||= Marine::Decision::Runner.new
+    @decision_runner ||= Marine::Decision::Runner.new(classification_intents: ClassificationIntents)
   end
 
   def adapter

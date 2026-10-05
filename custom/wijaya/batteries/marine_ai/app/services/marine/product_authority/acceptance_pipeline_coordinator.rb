@@ -53,12 +53,11 @@ class Marine::ProductAuthority::AcceptancePipelineCoordinator
 
   # candidate_plan:        a normalized (or raw, defensively re-normalized) marine_decision_v1 plan.
   # scenario_key:          the selected scenario key the adapter validates the plan against (String).
-  # scenario_capabilities: the per-scenario capability map { "<scenario_key>" => [intents] }.
   # quantity_inquiry:      the canonical legacy exact-quantity boolean signal (NOT raw text).
   # case_id:               a synthetic, bounded case id.
   # surface:               a controlled acceptance surface (conversation / playground / evaluator).
   # expected_outcome:      the expected normalized outcome { status, intents, slot_ops, response_goals }.
-  def run(candidate_plan:, scenario_key:, scenario_capabilities:, quantity_inquiry:, case_id:, surface:, expected_outcome:) # rubocop:disable Metrics/ParameterLists -- a flat, named acceptance-case input contract
+  def run(candidate_plan:, scenario_key:, quantity_inquiry:, case_id:, surface:, expected_outcome:) # rubocop:disable Metrics/ParameterLists -- a flat, named acceptance-case input contract
     expected = CaseResult.normalize_outcome(expected_outcome)
     return malformed_input(case_id, surface, expected) unless valid_inputs?(case_id, surface, quantity_inquiry, expected)
 
@@ -66,7 +65,7 @@ class Marine::ProductAuthority::AcceptancePipelineCoordinator
     return malformed_candidate_plan(case_id, surface, expected) if plan.nil?
     return exact_quantity_blocked(case_id, surface, expected) if quantity_inquiry == true
 
-    execute(plan, scenario_key, scenario_capabilities, case_id, surface, expected)
+    execute(plan, scenario_key, case_id, surface, expected)
   rescue StandardError
     internal_error(case_id, surface, expected)
   end
@@ -91,8 +90,9 @@ class Marine::ProductAuthority::AcceptancePipelineCoordinator
 
   # Adapter -> Planner -> EvidencePacketBuilder, each translated into a closed stage status and a
   # normalized actual outcome. A blocked adapter short-circuits the planner/builder.
-  def execute(plan, scenario_key, scenario_capabilities, case_id, surface, expected) # rubocop:disable Metrics/ParameterLists -- threads the already-validated case context into the pipeline
-    adapter_result = @adapter.call(plan: plan, scenario_key: scenario_key, scenario_capabilities: scenario_capabilities)
+  # -- threads the already-validated case context into the pipeline
+  def execute(plan, scenario_key, case_id, surface, expected)
+    adapter_result = @adapter.call(plan: plan, scenario_key: scenario_key)
     return adapter_blocked(case_id, surface, expected, adapter_result.reason) unless adapter_result.ok?
 
     projection = Outcome.project(adapter_result.product_intent)

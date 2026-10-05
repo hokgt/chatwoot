@@ -2,11 +2,13 @@
 
 require 'rails_helper'
 
-# Fase 3A-1 (isolated / mock-only) — marine_evidence_v1 PRODUCT Evidence Packet builder. A CLOSED,
-# FAIL-CLOSED validator: closed keys/enums, hard bounds, deep-frozen, product-only (no ERP
-# customer/payment blocks), no null facts. A malformed programmer-supplied evidence input raises
-# InvalidEvidenceInputError and never yields a partial packet. Clock injected. Nothing touches a
-# provider, DB, or state.
+# Phase 1 (Opsi B) — marine_evidence_v2 PRODUCT Evidence Packet builder. A CLOSED, FAIL-CLOSED
+# validator: closed keys/enums, hard bounds, deep-frozen, product-only (no ERP customer/payment
+# blocks), no null facts. Execution authorization is backend-policy-owned: the COMPLETE top-level
+# intents set must be the exact ExecutionPolicy-authorized array (Phase 1: exactly ["price"]), and
+# scenario carries only provenance ({ key, intents }) — never capabilities. A malformed
+# programmer-supplied evidence input raises InvalidEvidenceInputError and never yields a partial
+# packet. Clock injected. Nothing touches a provider, DB, or state.
 RSpec.describe Marine::Backend::EvidencePacketBuilder do
   subject(:builder) { described_class.new(clock: clock) }
 
@@ -23,41 +25,42 @@ RSpec.describe Marine::Backend::EvidencePacketBuilder do
 
   let(:variant_slot) { { code: 'BD-4', display_name: nil, attributes: { 'Colour' => '4' }, resolution_status: 'resolved', source: 'marine_catalog' } }
 
+  # The Phase-1 canonical valid input: an exact-price packet over a single resolved variant slot.
   def evidence_input(overrides = {})
     {
-      scenario: { key: 'scenario_8', capabilities: %w[price stock catalog product_overview parent_info] },
-      intents: %w[price stock],
+      scenario: { key: 'scenario_8' },
+      intents: %w[price],
       customer_language: 'id',
-      response_goals: %w[answer_price answer_stock],
+      response_goals: %w[answer_price],
       validated_slots: {
         product: { code: 'BD', name: 'Santorini', source: 'marine_catalog' },
         variant: variant_slot
       },
-      facts: { price: price_fact, stock: stock_fact },
+      facts: { price: price_fact },
       missing_slots: [],
       variant_candidates: []
     }.merge(overrides)
   end
 
-  # A price-only valid input (single resolved variant slot) for fact-shape mutation tests.
+  # A minimal price-only valid input (single resolved variant slot) for fact-shape mutation tests.
   def price_input(overrides = {})
     {
-      scenario: { key: 'scenario_5', capabilities: %w[price catalog] },
+      scenario: { key: 'scenario_5' },
       intents: %w[price], customer_language: 'id', response_goals: %w[answer_price],
       validated_slots: { variant: variant_slot }, facts: { price: price_fact },
       missing_slots: [], variant_candidates: []
     }.merge(overrides)
   end
 
-  describe 'a resolved combined price+stock packet' do
+  describe 'a resolved exact-price packet' do
     subject(:packet) { builder.build(evidence_input: evidence_input) }
 
-    it 'carries the frozen version, injected generated_at, scenario, both facts, and constraints' do
-      expect(packet[:evidence_version]).to eq('marine_evidence_v1')
+    it 'carries the frozen v2 version, injected generated_at, provenance scenario, the price fact, and constraints' do
+      expect(packet[:evidence_version]).to eq('marine_evidence_v2')
       expect(packet[:generated_at]).to eq('2026-09-30T12:00:00Z')
-      expect(packet[:scenario]).to eq(key: 'scenario_8', intents: %w[price stock], capabilities: %w[price stock catalog product_overview parent_info])
+      expect(packet[:scenario]).to eq(key: 'scenario_8', intents: %w[price])
+      expect(packet[:scenario]).not_to have_key(:capabilities)
       expect(packet[:facts][:price][:display][:amount]).to eq('12.500')
-      expect(packet[:facts][:stock][:status]).to eq('available')
       expect(packet[:response_constraints]).to eq(max_paragraphs: 2, role: 'marine_sales_assistant', handoff_self_reference: true)
       expect(packet[:customer_language]).to eq('id')
     end
@@ -71,14 +74,32 @@ RSpec.describe Marine::Backend::EvidencePacketBuilder do
       expect(packet).not_to have_key(:payment_policy)
     end
 
-    it 'omits price+stock from prohibited_claims when both facts are present' do
-      expect(packet[:prohibited_claims]).to contain_exactly('exact_stock_quantity', 'warehouse_location', 'delivery_date', 'unverified_discount')
+    it 'omits price from prohibited_claims when the price fact is present but keeps stock prohibited' do
+      expect(packet[:prohibited_claims]).to contain_exactly('exact_stock_quantity', 'warehouse_location', 'delivery_date', 'unverified_discount',
+                                                            'stock')
     end
 
     it 'is deeply frozen and within the 16 KiB serialized ceiling' do
       expect(packet).to be_frozen
       expect(packet[:facts][:price][:canonical]).to be_frozen
       expect(JSON.generate(packet).bytesize).to be <= described_class::MAX_PACKET_BYTES
+    end
+  end
+
+  describe 'whole-set execution-policy authorization (exact ["price"], no dedupe/sort)' do
+    it 'accepts exactly the ["price"] top-level intents set' do
+      expect { builder.build(evidence_input: evidence_input(intents: %w[price])) }.not_to raise_error
+    end
+
+    it 'rejects a non-price / mixed / duplicated / reordered top-level intents set' do
+      expect do
+        builder.build(evidence_input: evidence_input(intents: %w[stock], response_goals: %w[answer_stock],
+                                                     facts: { stock: stock_fact }))
+      end.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: evidence_input(intents: %w[price stock])) }.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: evidence_input(intents: %w[price price])) }.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: evidence_input(intents: %w[not_an_intent])) }.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: evidence_input(intents: 'price')) }.to raise_error(invalid_error)
     end
   end
 
@@ -124,19 +145,13 @@ RSpec.describe Marine::Backend::EvidencePacketBuilder do
       end.to raise_error(invalid_error)
     end
 
-    it 'rejects an unknown intent or an intent outside the scenario capabilities' do
-      expect { builder.build(evidence_input: evidence_input(intents: %w[price not_an_intent])) }.to raise_error(invalid_error)
-      expect do
-        builder.build(evidence_input: evidence_input(
-          scenario: { key: 'scenario_5',
-                      capabilities: %w[price] }, intents: %w[price stock], response_goals: %w[answer_price], facts: { price: price_fact }
-        ))
-      end.to raise_error(invalid_error)
+    it 'rejects a scenario carrying a capabilities subkey as an unknown key' do
+      expect { builder.build(evidence_input: evidence_input(scenario: { key: 'scenario_8', capabilities: %w[price] })) }.to raise_error(invalid_error)
     end
 
     it 'rejects a malformed scenario key' do
       expect do
-        builder.build(evidence_input: evidence_input(scenario: { key: 'Scenario-8!', capabilities: %w[price stock] }))
+        builder.build(evidence_input: evidence_input(scenario: { key: 'Scenario-8!' }))
       end.to raise_error(invalid_error)
     end
 
@@ -191,27 +206,28 @@ RSpec.describe Marine::Backend::EvidencePacketBuilder do
       expect(builder.build(evidence_input: price_input(facts: { price: int_rate }))[:facts][:price][:canonical][:price_list_rate]).to eq(12_500)
     end
 
-    it 'rejects a price/stock fact with no resolved variant slot' do
+    it 'rejects a price fact with no resolved variant slot' do
       expect { builder.build(evidence_input: price_input(validated_slots: {})) }.to raise_error(invalid_error)
-    end
-
-    it 'rejects a non-enum stock status (never emits unknown)' do
-      bad_stock = { status: 'unknown', source: 'stock_repository', checked_at: '2026-09-30T12:00:00Z' }
-      input = { scenario: { key: 'scenario_8', capabilities: %w[stock] }, intents: %w[stock], response_goals: %w[answer_stock],
-                validated_slots: { variant: variant_slot }, facts: { stock: bad_stock },
-                missing_slots: [], variant_candidates: [] }
-      expect { builder.build(evidence_input: input) }.to raise_error(invalid_error)
     end
   end
 
-  describe 'fail-closed fact/intent/goal coherence' do
+  describe 'fail-closed fact/intent/goal coherence (preserved as extra defense)' do
     it 'rejects a price fact without the answer_price goal' do
-      expect { builder.build(evidence_input: price_input(response_goals: %w[answer_product_overview])) }.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: price_input(response_goals: %w[clarify_product])) }.to raise_error(invalid_error)
     end
 
     it 'rejects an answer_price goal without a price fact' do
-      input = { scenario: { key: 'scenario_5', capabilities: %w[price] }, intents: %w[price], response_goals: %w[answer_price],
+      input = { scenario: { key: 'scenario_5' }, intents: %w[price], response_goals: %w[answer_price],
                 validated_slots: {}, facts: {}, missing_slots: [], variant_candidates: [] }
+      expect { builder.build(evidence_input: input) }.to raise_error(invalid_error)
+    end
+
+    it 'rejects a non-price (stock) fact riding in an authorized price packet' do
+      # intents is the exact ["price"] set (so the whole-set gate passes), but a stock fact is still
+      # rejected by the preserved per-fact coherence guard — extra defense in depth.
+      input = { scenario: { key: 'scenario_5' }, intents: %w[price], response_goals: %w[answer_price],
+                validated_slots: { variant: variant_slot }, facts: { price: price_fact, stock: stock_fact },
+                missing_slots: [], variant_candidates: [] }
       expect { builder.build(evidence_input: input) }.to raise_error(invalid_error)
     end
 
@@ -222,7 +238,7 @@ RSpec.describe Marine::Backend::EvidencePacketBuilder do
 
   it 'never emits a nil customer_language key' do
     # A factless handoff packet (no price fact) may omit the language entirely.
-    input = { scenario: { key: 'scenario_8', capabilities: %w[price] }, intents: %w[price],
+    input = { scenario: { key: 'scenario_8' }, intents: %w[price],
               customer_language: nil, response_goals: %w[handoff],
               validated_slots: {}, facts: {}, missing_slots: [], variant_candidates: [] }
     packet = builder.build(evidence_input: input)
@@ -275,22 +291,6 @@ RSpec.describe Marine::Backend::EvidencePacketBuilder do
         packet = builder.build(evidence_input: price_input(facts: { price: fact }))
         expect(packet[:facts][:price][:canonical][:price_list_rate]).to eq(rate)
       end
-    end
-  end
-
-  describe 'overview / capability coherence' do
-    it 'rejects answer_product_overview with no validated product slot' do
-      input = { scenario: { key: 'scenario_8', capabilities: %w[product_overview] }, intents: %w[product_overview],
-                customer_language: 'id', response_goals: %w[answer_product_overview],
-                validated_slots: {}, facts: {}, missing_slots: [], variant_candidates: [] }
-      expect { builder.build(evidence_input: input) }.to raise_error(invalid_error)
-    end
-
-    it 'rejects an empty scenario capabilities list (A3-04 capability kosong)' do
-      input = { scenario: { key: 'scenario_8', capabilities: [] }, intents: [],
-                customer_language: 'id', response_goals: %w[handoff],
-                validated_slots: {}, facts: {}, missing_slots: [], variant_candidates: [] }
-      expect { builder.build(evidence_input: input) }.to raise_error(invalid_error)
     end
   end
 end

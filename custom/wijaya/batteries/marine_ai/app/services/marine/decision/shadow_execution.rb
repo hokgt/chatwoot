@@ -18,17 +18,21 @@
 #   * The returned result carries ONLY the legacy stable scenario key and the canonical
 #     CandidatePlan — never the caller's records or the raw customer trigger/history text.
 class Marine::Decision::ShadowExecution
-  def initialize(account:, assistant:, conversation:, message:)
+  def initialize(account:, assistant:, conversation:, message:, classification_intents:)
     @account = account
     @assistant = assistant
     @conversation = conversation
     @message = message
+    @classification_intents = classification_intents
   end
 
   # A deep-frozen { legacy_scenario_key:, candidate_plan: } result, or nil when the records
-  # do not belong together / the message is not a public incoming turn.
+  # do not belong together / the message is not a public incoming turn / the injected
+  # classification vocabulary is missing or malformed (the Runner is never run on a garbage
+  # vocabulary).
   def call
     return nil unless valid_relationship?
+    return nil unless valid_classification_intents?
 
     # Overflow fails closed BEFORE the legacy selector or the Decision Runner runs: when the
     # assistant has more than the contract ceiling of enabled scenarios, the adapter can only
@@ -60,6 +64,13 @@ class Marine::Decision::ShadowExecution
     [@account, @assistant, @conversation, @message].none?(&:nil?)
   end
 
+  # The injected classification vocabulary must be a non-empty Array of Strings; anything else
+  # fails closed (no comparison) so the Runner never runs on a missing/garbage vocabulary.
+  def valid_classification_intents?
+    @classification_intents.is_a?(Array) && !@classification_intents.empty? &&
+      @classification_intents.all?(String)
+  end
+
   def same_account?
     @message.conversation_id == @conversation.id &&
       @conversation.account_id == @account.id &&
@@ -83,10 +94,12 @@ class Marine::Decision::ShadowExecution
     selected && "scenario_#{selected.id}"
   end
 
-  # The canonical, deep-frozen CandidatePlan on the same canonical trigger/history/scenarios.
-  # The Runner never raises and never mutates state; no coarse state hint is supplied.
+  # The canonical, deep-frozen CandidatePlan on the same canonical trigger/history/scenarios, over the
+  # injected Phase-1 classification vocabulary. The Runner never raises and never mutates state; no
+  # coarse state hint is supplied.
   def candidate_plan(context, scenarios)
-    Marine::Decision::Runner.new.call(message: context.trigger, scenarios: scenarios, context: context.history)
+    Marine::Decision::Runner.new(classification_intents: @classification_intents)
+                            .call(message: context.trigger, scenarios: scenarios, context: context.history)
   end
 
   # Freeze the small result wrapper and its own string; the CandidatePlan is already

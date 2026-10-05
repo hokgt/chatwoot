@@ -9,7 +9,7 @@ require 'rails_helper'
 RSpec.describe Marine::Backend::EvidenceReplyGenerator do
   subject(:generator) { described_class.new }
 
-  let(:system) { 'You are Marine. Evidence Packet: {"evidence_version":"marine_evidence_v1"}' }
+  let(:system) { 'You are Marine. Evidence Packet: {"evidence_version":"marine_evidence_v2"}' }
   let(:messages) { [{ role: 'user', content: 'Berapa harga BD-4?' }] }
 
   def stub_llm(message:, success: true, configured: true)

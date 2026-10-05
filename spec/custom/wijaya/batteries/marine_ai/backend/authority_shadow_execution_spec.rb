@@ -37,7 +37,6 @@ RSpec.describe Marine::Backend::AuthorityShadowExecution do
   before do
     allow(Marine::Conversation::ContextBuilder).to receive(:new).and_return(context_builder)
     allow(Marine::Decision::ScenarioResolver).to receive(:resolve).and_return(scenario)
-    allow(Marine::Decision::ShadowConfig).to receive(:scenario_capabilities).and_return({})
     allow(Marine::Catalog::ProductFlowStateStore).to receive(:new).and_return(flow_store)
     allow(Marine::Backend::AuthorityCoordinator).to receive(:new).and_return(coordinator)
     allow(coordinator).to receive(:call).and_return(coordinator_result)
@@ -46,7 +45,7 @@ RSpec.describe Marine::Backend::AuthorityShadowExecution do
   describe 'the happy path' do
     it 'reuses the supplied plan through the coordinator and returns its bounded Result' do
       expect(coordinator).to receive(:call).with(
-        candidate_plan: candidate_plan, scenario_key: 'scenario_3', scenario_capabilities: {},
+        candidate_plan: candidate_plan, scenario_key: 'scenario_3',
         trigger: 'berapa harga', history: [], phase: :opening, flow_state: nil, configured_language: 'id'
       ).and_return(coordinator_result)
 

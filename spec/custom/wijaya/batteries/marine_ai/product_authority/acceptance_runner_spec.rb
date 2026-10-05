@@ -55,7 +55,7 @@ RSpec.describe Marine::ProductAuthority::AcceptanceRunner do
     end
 
     it 'produces exactly one v1, frozen CaseResult per case' do
-      cases = %w[price_resolved stock_available capability_mismatch].map { |id| deep_copy(id) }
+      cases = %w[price_resolved stock_available phase_not_executable].map { |id| deep_copy(id) }
       report = described_class.run(cases)
 
       expect(report[:case_evidence].length).to eq(cases.length)
@@ -149,20 +149,21 @@ RSpec.describe Marine::ProductAuthority::AcceptanceRunner do
     end
 
     it 'folds an adapter-blocked case to a bounded blocked CaseResult' do
-      evidence = described_class.run([deep_copy('capability_mismatch')])[:case_evidence].first
+      evidence = described_class.run([deep_copy('phase_not_executable')])[:case_evidence].first
       expect(evidence.adapter_status).to eq('blocked')
-      expect(evidence.reason).to eq('capability_mismatch')
+      expect(evidence.reason).to eq('phase_not_executable')
     end
 
     it 'maps a raising repository to a bounded errored CaseResult, leaving other cases unaffected' do
-      allow_any_instance_of(evaluator::FakeStockRepository).to receive(:status_for).and_raise(RuntimeError, 'SECRET-DB-DETAIL')
-      report = described_class.run([deep_copy('stock_available'), deep_copy('price_resolved')])
+      allow_any_instance_of(evaluator::FakePriceRepository).to receive(:price_for).and_raise(RuntimeError, 'SECRET-DB-DETAIL')
+      report = described_class.run([deep_copy('price_resolved'), deep_copy('stock_available')])
 
       errored = report[:case_evidence].first
       expect(errored.planner_status).to eq('errored')
       expect(errored.repository_revalidation_status).to eq('errored')
       expect(errored.reason).to eq('planner_error')
-      # price_resolved never reads stock, so the raising repo does not touch it.
+      # stock_available is blocked at the adapter's Phase-1 policy gate, so the raising price
+      # repository is never consulted for it.
       expect(report[:case_evidence].last.pass?).to be(true)
       expect(JSON.generate(report[:case_evidence].map(&:to_h))).not_to include('SECRET-DB-DETAIL')
     end
@@ -206,7 +207,7 @@ RSpec.describe Marine::ProductAuthority::AcceptanceRunner do
         ),
         evidence_builder: evaluator::EvidenceBuilder.new(clock: described_class::FIXED_CLOCK, price_formatter: formatter)
       ).run(
-        candidate_plan: kase[:plan], scenario_key: kase[:scenario_key], scenario_capabilities: kase[:capabilities],
+        candidate_plan: kase[:plan], scenario_key: kase[:scenario_key],
         quantity_inquiry: false, case_id: kase[:id], surface: 'evaluator',
         expected_outcome: { status: 'product', intents: ['price'], slot_ops: %w[product variant_code], response_goals: ['answer_price'] }
       )
@@ -218,7 +219,7 @@ RSpec.describe Marine::ProductAuthority::AcceptanceRunner do
   describe 'no duplicate pipeline execution' do
     it 'constructs the coordinator exactly once per executed case' do
       allow(coordinator_class).to receive(:new).and_call_original
-      cases = %w[price_resolved stock_available capability_mismatch].map { |id| deep_copy(id) }
+      cases = %w[price_resolved stock_available phase_not_executable].map { |id| deep_copy(id) }
       described_class.run(cases)
       expect(coordinator_class).to have_received(:new).exactly(cases.length).times
     end

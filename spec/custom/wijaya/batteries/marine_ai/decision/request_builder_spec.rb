@@ -12,8 +12,8 @@ RSpec.describe Marine::Decision::RequestBuilder do
 
   def scenarios
     [
-      { 'key' => 'stock_check', 'description' => 'Availability question', 'instruction' => 'Check stock', 'capabilities' => %w[stock price] },
-      { 'key' => 'catalog_browse', 'description' => 'Browsing', 'instruction' => 'Show catalog', 'capabilities' => %w[catalog] }
+      { 'key' => 'stock_check', 'description' => 'Availability question', 'instruction' => 'Check stock' },
+      { 'key' => 'catalog_browse', 'description' => 'Browsing', 'instruction' => 'Show catalog' }
     ]
   end
 
@@ -22,7 +22,8 @@ RSpec.describe Marine::Decision::RequestBuilder do
       message: 'Do you have the vase in stock?',
       context: [{ 'role' => 'user', 'content' => 'hi' }],
       state: { 'current_intent' => 'stock' },
-      scenarios: scenarios
+      scenarios: scenarios,
+      classification_intents: %w[price unsupported]
     )
   end
 
@@ -40,15 +41,17 @@ RSpec.describe Marine::Decision::RequestBuilder do
       expect(envelope['context']).to eq([{ 'role' => 'user', 'content' => 'hi' }])
       expect(envelope['state']).to eq('current_intent' => 'stock')
       expect(envelope['scenarios'].map { |s| s['key'] }).to eq(%w[stock_check catalog_browse])
+      # Scenario envelope carries identity/context only — NO capabilities.
+      expect(envelope['scenarios']).to all(satisfy { |s| !s.key?('capabilities') })
     end
 
-    it 'emits a closed schema over the exact Stage 1 keys, with a scenario-key enum and full intent enum' do
+    it 'emits a closed schema over the exact Stage 1 keys, with a scenario-key enum and the injected classification enum' do
       schema = request[:schema]
       expect(schema['additionalProperties']).to be(false)
       expect(schema['required']).to eq(%w[schema_version scenario_candidate intents slot_operations customer_language confidence])
       expect(schema['properties']['schema_version']['enum']).to eq([schema_mod::SCHEMA_VERSION])
       expect(schema['properties']['scenario_candidate']['properties']['key']['enum']).to eq(%w[stock_check catalog_browse] + [nil])
-      expect(schema['properties']['intents']['items']['enum']).to eq(schema_mod::INTENTS)
+      expect(schema['properties']['intents']['items']['enum']).to eq(%w[price unsupported])
       expect(schema['properties']['intents']['maxItems']).to eq(schema_mod::MAX_INTENTS)
       expect(schema['properties']['scenario_candidate']['additionalProperties']).to be(false)
       expect(schema).not_to have_key('reason')
@@ -80,10 +83,10 @@ RSpec.describe Marine::Decision::RequestBuilder do
       expect(scenario_q).not_to have_key('question')
     end
 
-    it 'builds one NOUL question per candidate intent with exact false/true criteria' do
+    it 'builds one NOUL question per injected classification intent with exact false/true criteria' do
       keys = request[:questions].keys
-      expect(keys).to eq(%w[scenario_candidate] + %w[price stock catalog unsupported].map { |i| "mdq_intent__#{i}" })
-      noul = request[:questions]['mdq_intent__stock']
+      expect(keys).to eq(%w[scenario_candidate] + %w[price unsupported].map { |i| "mdq_intent__#{i}" })
+      noul = request[:questions]['mdq_intent__price']
       expect(noul['type']).to eq('noul')
       expect(noul['criteria'].keys).to eq(%w[false true])
     end
@@ -112,7 +115,8 @@ RSpec.describe Marine::Decision::RequestBuilder do
     it 'builds exactly one choice criterion for a single supplied scenario (no invented fallback key)' do
       single = Marine::Decision::InputContract.build(
         message: 'Do you have the vase in stock?', context: [], state: {},
-        scenarios: [{ 'key' => 'stock_check', 'description' => 'Availability question', 'instruction' => 'Check', 'capabilities' => %w[stock] }]
+        scenarios: [{ 'key' => 'stock_check', 'description' => 'Availability question', 'instruction' => 'Check' }],
+        classification_intents: %w[price unsupported]
       )
       scenario_q = described_class.build(mode: 'openrouter_decisions', input: single)[:questions]['scenario_candidate']
       expect(scenario_q['type']).to eq('choice')

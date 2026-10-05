@@ -33,8 +33,6 @@ RSpec.describe Marine::ProductAuthority::AcceptancePipelineCoordinator, type: :m
 
   let(:coordinator) { described_class.new(planner: planner, evidence_builder: evidence_builder) }
 
-  let(:capabilities) { { 'scenario_1' => %w[price stock] } }
-
   def plan_for(intents, variant_code: 'SYN-VAR-ALPHA-01', variant_type: 'variant_code', family_code: 'SYN-FAM-ALPHA')
     {
       'schema_version' => 'marine_decision_v1',
@@ -49,7 +47,7 @@ RSpec.describe Marine::ProductAuthority::AcceptancePipelineCoordinator, type: :m
   end
 
   def run(plan:, expected:, quantity_inquiry: false, case_id: 'syn_case_01', surface: 'evaluator')
-    coordinator.run(candidate_plan: plan, scenario_key: 'scenario_1', scenario_capabilities: capabilities,
+    coordinator.run(candidate_plan: plan, scenario_key: 'scenario_1',
                     quantity_inquiry: quantity_inquiry, case_id: case_id, surface: surface, expected_outcome: expected)
   end
 
@@ -70,16 +68,23 @@ RSpec.describe Marine::ProductAuthority::AcceptancePipelineCoordinator, type: :m
       expect(result.actual_outcome).to eq(expected)
     end
 
-    it 'passes a deterministic injected-fake stock case with no catalog DB' do
-      expected = { status: 'product', intents: ['stock'], slot_ops: %w[product variant_code], response_goals: ['answer_stock'] }
+    it 'blocks a supported-but-not-executable stock case at the adapter policy gate, before the planner' do
+      # Phase 1 (Opsi B): stock is a supported product intent but NOT executable — the adapter
+      # fails the whole plan closed with the bounded policy reason, the planner/evidence builder
+      # are skipped, and no repository is read.
+      expected = { status: 'blocked', intents: [], slot_ops: [], response_goals: [] }
       result = run(plan: plan_for(['stock']), expected: expected)
+      expect(result.adapter_status).to eq('blocked')
+      expect(result.planner_status).to eq('skipped')
+      expect(result.evidence_packet_status).to eq('skipped')
+      expect(result.reason).to eq('phase_not_executable')
       expect(result.pass?).to be(true)
-      expect(result.evidence_packet_status).to eq('valid')
+      expect(result.actual_outcome[:status]).to eq('blocked')
     end
 
     it 'records a bounded outcome_mismatch (not a crash) when actual diverges from expected' do
-      wrong = { status: 'product', intents: ['stock'], slot_ops: %w[product variant_code], response_goals: ['handoff'] }
-      result = run(plan: plan_for(['stock']), expected: wrong)
+      wrong = { status: 'product', intents: ['price'], slot_ops: %w[product variant_code], response_goals: ['handoff'] }
+      result = run(plan: plan_for(['price']), expected: wrong)
       expect(result.pass?).to be(false)
       expect(result.reason).to eq('outcome_mismatch')
       expect(result.planner_status).to eq('planned')
@@ -96,7 +101,7 @@ RSpec.describe Marine::ProductAuthority::AcceptancePipelineCoordinator, type: :m
 
       expected = { status: 'blocked', intents: [], slot_ops: [], response_goals: [] }
       result = coordinator.run(candidate_plan: plan_for(['stock']), scenario_key: 'scenario_1',
-                               scenario_capabilities: capabilities, quantity_inquiry: true,
+                               quantity_inquiry: true,
                                case_id: 'syn_qty_01', surface: 'evaluator', expected_outcome: expected)
 
       expect(result.exact_quantity_status).to eq('blocked')
@@ -111,13 +116,14 @@ RSpec.describe Marine::ProductAuthority::AcceptancePipelineCoordinator, type: :m
   describe 'adapter fail-closed' do
     it 'reports a bounded adapter block reason and skips planner/evidence' do
       expected = { status: 'blocked', intents: [], slot_ops: [], response_goals: [] }
-      # Capability map omits the scenario -> adapter fails closed (capability_unconfigured).
-      result = coordinator.run(candidate_plan: plan_for(['price']), scenario_key: 'scenario_1',
-                               scenario_capabilities: {}, quantity_inquiry: false,
+      # Phase 1: a supported but non-executable intent set fails the backend-owned policy gate
+      # (scenario configuration no longer participates in authorization).
+      result = coordinator.run(candidate_plan: plan_for(['stock']), scenario_key: 'scenario_1',
+                               quantity_inquiry: false,
                                case_id: 'syn_cap_01', surface: 'evaluator', expected_outcome: expected)
       expect(result.adapter_status).to eq('blocked')
       expect(result.planner_status).to eq('skipped')
-      expect(result.reason).to eq('capability_unconfigured')
+      expect(result.reason).to eq('phase_not_executable')
       expect(result.pass?).to be(true)
     end
 
@@ -134,7 +140,7 @@ RSpec.describe Marine::ProductAuthority::AcceptancePipelineCoordinator, type: :m
       # as a correct block.
       expected = { status: 'blocked', intents: [], slot_ops: [], response_goals: [] }
       result = coordinator.run(candidate_plan: plan_for(['price']), scenario_key: 'scenario_1',
-                               scenario_capabilities: capabilities, quantity_inquiry: false,
+                               quantity_inquiry: false,
                                case_id: 'syn_rogue_01', surface: 'evaluator', expected_outcome: expected)
 
       expect(result.adapter_status).to eq('blocked')
@@ -180,7 +186,7 @@ RSpec.describe Marine::ProductAuthority::AcceptancePipelineCoordinator, type: :m
       expected = { status: 'product', intents: ['price'], slot_ops: %w[product variant_code], response_goals: ['answer_price'] }
 
       result = coordinator.run(candidate_plan: plan_for(['price']), scenario_key: 'scenario_1',
-                               scenario_capabilities: capabilities, quantity_inquiry: false,
+                               quantity_inquiry: false,
                                case_id: 'syn_err_01', surface: 'evaluator', expected_outcome: expected)
       expect(result.planner_status).to eq('errored')
       expect(result.repository_revalidation_status).to eq('errored')
@@ -196,7 +202,7 @@ RSpec.describe Marine::ProductAuthority::AcceptancePipelineCoordinator, type: :m
       expected = { status: 'product', intents: ['price'], slot_ops: %w[product variant_code], response_goals: ['answer_price'] }
 
       result = coordinator.run(candidate_plan: plan_for(['price']), scenario_key: 'scenario_1',
-                               scenario_capabilities: capabilities, quantity_inquiry: false,
+                               quantity_inquiry: false,
                                case_id: 'syn_int_01', surface: 'evaluator', expected_outcome: expected)
       expect(result.reason).to eq('internal_error')
       expect(result.pass?).to be(false)

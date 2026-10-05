@@ -28,7 +28,7 @@ RSpec.describe Marine::ProductAuthority::ShadowExecution do
 
   let(:trigger) { 'SYN do you have the alpha vase in stock?' }
 
-  let(:scenarios) { [{ 'key' => 'scenario_1', 'capabilities' => %w[price stock] }] }
+  let(:scenarios) { [{ 'key' => 'scenario_1' }] }
   let(:scenario_adapter) { double('scenario_adapter', overflow?: false, scenarios: scenarios) }
 
   # A legacy IntentExtractor-shaped product-intent hash (SYNTHETIC candidates only).
@@ -51,7 +51,7 @@ RSpec.describe Marine::ProductAuthority::ShadowExecution do
 
   let(:adapter_result) do
     double('adapter_result', ok?: true, product_intent: candidate_product_intent,
-                             intents: ['price'], scenario: { key: 'scenario_1', capabilities: %w[price stock] }, reason: 'accepted')
+                             intents: ['price'], scenario: { key: 'scenario_1' }, reason: 'accepted')
   end
 
   let(:intent_extractor) { double('intent_extractor') }
@@ -60,13 +60,12 @@ RSpec.describe Marine::ProductAuthority::ShadowExecution do
 
   before do
     plan = { schema_version: 'marine_decision_v1', reason: 'normalized' }
-    capability_map = { 'scenario_1' => %w[price stock] }
     allow(intent_extractor).to receive(:extract)
       .with(text: trigger, context: [], state: nil).and_return(legacy_product_intent)
     allow(decision_runner).to receive(:call)
       .with(message: trigger, scenarios: scenarios, context: []).and_return(plan)
     allow(adapter).to receive(:call)
-      .with(plan: plan, scenario_key: 'scenario_1', scenario_capabilities: capability_map).and_return(adapter_result)
+      .with(plan: plan, scenario_key: 'scenario_1').and_return(adapter_result)
   end
 
   describe 'happy path (valid public incoming turn)' do
@@ -101,6 +100,27 @@ RSpec.describe Marine::ProductAuthority::ShadowExecution do
       result = execution.call
       expect(result[:candidate]).to eq(Marine::ProductAuthority::ProductOutcome.blocked)
       expect(result[:candidate][:status]).to eq(Marine::ProductAuthority::ProductOutcome::STATUS_BLOCKED)
+    end
+
+    it 'builds the DEFAULT Decision Runner with the policy-derived classification vocabulary (Runner site B)' do
+      # Phase 1 (Opsi B): this allowlisted Backend consumer constructs the Decision Runner over the
+      # backend-owned classification vocabulary, and calls the adapter WITHOUT a scenario capability
+      # map (authorization is backend-policy-owned).
+      allow(Marine::Decision::Runner).to receive(:new)
+        .with(classification_intents: Marine::Backend::ExecutionPolicy::CLASSIFICATION_INTENTS)
+        .and_return(decision_runner)
+
+      default_execution = described_class.new(
+        account: double('account', id: 1), assistant: assistant, conversation: conversation, message: message,
+        intent_extractor: intent_extractor, adapter: adapter,
+        scenario_selector: double('scenario_selector', select: double('scenario', id: 1)),
+        scenario_adapter: scenario_adapter,
+        context_builder: double('context_builder', call: double('context', trigger: trigger, history: []))
+      )
+      result = default_execution.call
+
+      expect(result[:comparable]).to be(true)
+      expect(adapter).to have_received(:call).with(plan: anything, scenario_key: 'scenario_1')
     end
   end
 

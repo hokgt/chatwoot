@@ -16,9 +16,9 @@
 #     No log, metric, event, raw body, exception text, or input value rides out.
 #
 # It uses NO Agent::Runner, ScenarioSelector, DB/catalog model, repository, job, cache,
-# persistence, or state mutation. Capability arrays are candidate CONSTRAINTS only: the
-# surviving intents are intersected with the union of declared capabilities + unsupported,
-# so the runner never proposes an intent no supplied scenario claims. It does NOT pick the
+# persistence, or state mutation. The classification vocabulary is INJECTED (the Phase-1
+# policy-derived allowed_intents): the surviving intents are restricted to that vocabulary, so the
+# runner never proposes an intent outside the offered classification set. It does NOT pick the
 # final scenario/intent to execute — that is a later phase.
 class Marine::Decision::Runner
   Schema = Marine::Decision::Schema
@@ -35,9 +35,10 @@ class Marine::Decision::Runner
     end
   end
 
-  def initialize(client: nil, settings: nil)
+  def initialize(client: nil, settings: nil, classification_intents: nil)
     @settings = settings || Marine::Llm::SettingsStore.for(:decision_maker)
     @client = client || Marine::Decision::Client.new(settings: @settings)
+    @classification_intents = classification_intents
   end
 
   # Returns a canonical, deep-frozen CandidatePlan. `scenarios` is required; the rest
@@ -74,9 +75,12 @@ class Marine::Decision::Runner
     raise Fold, 'malformed_response'
   end
 
-  # Bad caller input is a malformed request, not a provider fault.
+  # Bad caller input is a malformed request, not a provider fault. The injected classification
+  # vocabulary is validated by the contract; an invalid/missing list raises InputContract::Invalid
+  # and folds to a safe unknown plan (never runs over a garbage vocabulary).
   def build_input(message, context, state, scenarios)
-    Marine::Decision::InputContract.build(message: message, context: context, state: state, scenarios: scenarios)
+    Marine::Decision::InputContract.build(message: message, context: context, state: state, scenarios: scenarios,
+                                          classification_intents: @classification_intents)
   rescue Marine::Decision::InputContract::Invalid
     raise Fold, 'malformed_response'
   end
@@ -140,7 +144,7 @@ class Marine::Decision::Runner
   def normalize(raw, input)
     raise Fold, 'unsupported_schema' unless schema_version(raw) == Schema::SCHEMA_VERSION
 
-    Marine::Decision::CandidatePlan.normalize(intersect_capabilities(raw, input[:allowed_intents]))
+    Marine::Decision::CandidatePlan.normalize(restrict_to_classification_vocabulary(raw, input[:allowed_intents]))
   rescue Marine::Decision::Errors::InvalidCandidatePlan
     raise Fold, 'malformed_response'
   end
@@ -151,11 +155,11 @@ class Marine::Decision::Runner
     raw['schema_version'] || raw[:schema_version]
   end
 
-  # Candidate intents that no supplied scenario declares (nor 'unsupported') are dropped
-  # BEFORE normalization. Builds a fresh hash (parser/mapper output is never mutated) and
-  # preserves the existing key form so no duplicate String/Symbol key is introduced; a
-  # missing or non-array intents value is left for the normalizer to handle.
-  def intersect_capabilities(raw, allowed_intents)
+  # Candidate intents outside the injected classification vocabulary are dropped BEFORE
+  # normalization. Builds a fresh hash (parser/mapper output is never mutated) and preserves the
+  # existing key form so no duplicate String/Symbol key is introduced; a missing or non-array
+  # intents value is left for the normalizer to handle.
+  def restrict_to_classification_vocabulary(raw, allowed_intents)
     return raw unless raw.is_a?(Hash)
 
     key = raw.key?('intents') ? 'intents' : (:intents if raw.key?(:intents))

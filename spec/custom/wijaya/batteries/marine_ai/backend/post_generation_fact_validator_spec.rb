@@ -19,25 +19,38 @@ RSpec.describe Marine::Backend::PostGenerationFactValidator do
 
   let(:price_input) do
     {
-      scenario: { key: 'scenario_5', capabilities: %w[price catalog] }, intents: %w[price],
+      scenario: { key: 'scenario_5' }, intents: %w[price],
       customer_language: 'id', response_goals: %w[answer_price],
       validated_slots: { variant: { code: 'BD-4', resolution_status: 'resolved', source: 'marine_catalog', attributes: {} } },
       facts: { price: price_fact }, missing_slots: [], variant_candidates: []
     }
   end
 
-  let(:stock_input) do
-    {
-      scenario: { key: 'scenario_8', capabilities: %w[stock] }, intents: %w[stock],
-      customer_language: 'id', response_goals: %w[answer_stock],
+  let(:price_packet) { builder.build(evidence_input: price_input) }
+
+  # Phase 1 (Opsi B): the EvidencePacketBuilder is price-only, so a stock packet is hand-built as a
+  # deeply-frozen v2 packet. The validator is a general packet-only fact gate (variant code +
+  # inventory), so this exercises its stock path as defense in depth.
+  let(:stock_packet) do
+    deep_freeze(
+      evidence_version: 'marine_evidence_v2', generated_at: '2026-09-30T12:00:00Z',
+      response_goals: %w[answer_stock], scenario: { key: 'scenario_8', intents: %w[stock] },
       validated_slots: { variant: { code: 'BD-4', resolution_status: 'resolved', source: 'marine_catalog', attributes: {} } },
       facts: { stock: { status: 'available', source: 'stock_repository', checked_at: '2026-09-30T12:00:00Z' } },
-      missing_slots: [], variant_candidates: []
-    }
+      missing_slots: [], variant_candidates: [],
+      prohibited_claims: %w[exact_stock_quantity warehouse_location delivery_date unverified_discount price],
+      response_constraints: { max_paragraphs: 2, role: 'marine_sales_assistant', handoff_self_reference: true },
+      customer_language: 'id'
+    )
   end
 
-  let(:price_packet) { builder.build(evidence_input: price_input) }
-  let(:stock_packet) { builder.build(evidence_input: stock_input) }
+  def deep_freeze(value)
+    case value
+    when Hash then value.each_value { |child| deep_freeze(child) }
+    when Array then value.each { |child| deep_freeze(child) }
+    end
+    value.freeze
+  end
 
   describe 'price' do
     it 'accepts a natural reply carrying the exact code + immutable display facts' do
@@ -80,11 +93,13 @@ RSpec.describe Marine::Backend::PostGenerationFactValidator do
       expect(validator.call(packet: price_packet, candidate: "```\nBD-4 Rp 12.500 yard\n```").reason).to eq(:malformed_candidate)
     end
 
-    it 'rejects a packet-structure leak (original and expanded structural keys)' do
+    it 'rejects a packet-structure leak (original and expanded structural keys; both version strings)' do
       leak = 'BD-4 Rp 12.500 per yard evidence_version marine_evidence_v1'
+      leak_v2 = 'BD-4 Rp 12.500 per yard evidence_version marine_evidence_v2'
       expanded = 'BD-4 Rp 12.500 per yard response_constraints'
       rate_leak = 'BD-4 Rp 12.500 per yard price_list_rate'
       expect(validator.call(packet: price_packet, candidate: leak).reason).to eq(:packet_leak)
+      expect(validator.call(packet: price_packet, candidate: leak_v2).reason).to eq(:packet_leak)
       expect(validator.call(packet: price_packet, candidate: expanded).reason).to eq(:packet_leak)
       expect(validator.call(packet: price_packet, candidate: rate_leak).reason).to eq(:packet_leak)
     end

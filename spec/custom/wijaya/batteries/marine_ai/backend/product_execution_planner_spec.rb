@@ -2,9 +2,12 @@
 
 require 'rails_helper'
 
-# Fase 3A-1 (isolated / mock-only) — backend repository validation & execution plan. Every
-# repository is INJECTED and mocked; no catalog DB, provider, or state is touched. The real
-# PriceDisplayFormatter is used for the immutable display envelope (pure/deterministic).
+# Phase 1 (Opsi B) — backend repository validation & execution plan. Every repository is INJECTED
+# and mocked; no catalog DB, provider, or state is touched. Execution authorization is
+# backend-policy-owned (Marine::Backend::ExecutionPolicy): the executable set is exactly ["price"],
+# and a non-price / empty / mixed intent set fails closed to a factless handoff BEFORE any repository
+# read. Scenario carries provenance only ({ key: }). The real PriceDisplayFormatter is used for the
+# immutable display envelope (pure/deterministic).
 RSpec.describe Marine::Backend::ProductExecutionPlanner do
   subject(:planner) do
     described_class.new(
@@ -35,26 +38,59 @@ RSpec.describe Marine::Backend::ProductExecutionPlanner do
     allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'BD-4')
   end
 
-  def call(intents:, capabilities:, intent_overrides: {})
+  def call(intents:, intent_overrides: {})
     planner.call(product_intent: product_intent(intent_overrides), intents: intents,
-                 scenario: { key: 'scenario_8', capabilities: capabilities })
+                 scenario: { key: 'scenario_8' })
   end
 
-  describe 'execution boundary (defense in depth — never trusts the adapter)' do
+  describe 'execution boundary (ExecutionPolicy-authorized; fails closed BEFORE any repository read)' do
     it 'hands off on an empty intent set' do
-      result = call(intents: [], capabilities: %w[price])
+      result = call(intents: [])
       expect(result[:response_goals]).to eq(%w[handoff])
       expect(result[:facts]).to eq({})
     end
 
-    it 'hands off on an unsupported intent even if the scenario lists it as a capability' do
-      result = call(intents: %w[order_status], capabilities: %w[order_status price])
+    it 'hands off on an unsupported intent without touching any repository' do
+      expect(family_repository).not_to receive(:resolve_exact)
+      expect(variant_resolver).not_to receive(:resolve)
+      expect(price_repository).not_to receive(:price_for)
+      expect(stock_repository).not_to receive(:status_for)
+      result = call(intents: %w[order_status])
       expect(result[:response_goals]).to eq(%w[handoff])
     end
 
-    it 'hands off when an intent is outside the scenario capabilities' do
-      result = call(intents: %w[stock], capabilities: %w[price])
+    it 'hands off on a non-price (stock) intent without touching any repository' do
+      expect(family_repository).not_to receive(:resolve_exact)
+      expect(variant_resolver).not_to receive(:resolve)
+      expect(price_repository).not_to receive(:price_for)
+      expect(stock_repository).not_to receive(:status_for)
+      result = call(intents: %w[stock])
       expect(result[:response_goals]).to eq(%w[handoff])
+      expect(result[:facts]).to eq({})
+    end
+
+    it 'hands off on a mixed price+stock intent set without touching any repository' do
+      expect(family_repository).not_to receive(:resolve_exact)
+      expect(variant_resolver).not_to receive(:resolve)
+      expect(price_repository).not_to receive(:price_for)
+      expect(stock_repository).not_to receive(:status_for)
+      result = call(intents: %w[price stock])
+      expect(result[:response_goals]).to eq(%w[handoff])
+      expect(result[:facts]).to eq({})
+    end
+
+    it 'hands off on a duplicated price set (exact-canonical-array policy)' do
+      expect(price_repository).not_to receive(:price_for)
+      result = call(intents: %w[price price])
+      expect(result[:response_goals]).to eq(%w[handoff])
+    end
+
+    it 'hands off (never answers) a supported-but-unauthorized product_overview intent without a repository read' do
+      expect(family_repository).not_to receive(:resolve_exact)
+      result = planner.call(product_intent: product_intent(family_mention: 'Santorini', explicit_child_code: nil),
+                            intents: %w[product_overview], scenario: { key: 'scenario_8' })
+      expect(result[:response_goals]).to eq(%w[handoff])
+      expect(result[:facts]).to eq({})
     end
   end
 
@@ -65,7 +101,7 @@ RSpec.describe Marine::Backend::ProductExecutionPlanner do
     end
 
     it 'produces the exact canonical + immutable display price fact' do
-      result = call(intents: %w[price], capabilities: %w[price catalog])
+      result = call(intents: %w[price])
 
       expect(result[:response_goals]).to eq(%w[answer_price])
       expect(result[:facts][:price]).to eq(
@@ -74,35 +110,14 @@ RSpec.describe Marine::Backend::ProductExecutionPlanner do
         policy_version: 'price-display-v1', source: 'catalog_price_repository', checked_at: checked_at
       )
       expect(result[:validated_slots][:variant][:code]).to eq('BD-4')
+      expect(result[:scenario]).to eq(key: 'scenario_8')
     end
 
     it 'hands off (no price fact) when the price is unavailable' do
       allow(price_repository).to receive(:price_for).with('BD-4').and_return(status: :unavailable)
-      result = call(intents: %w[price], capabilities: %w[price catalog])
+      result = call(intents: %w[price])
 
       expect(result[:facts]).not_to have_key(:price)
-      expect(result[:response_goals]).to include('handoff')
-    end
-  end
-
-  describe 'stock' do
-    it 'maps available -> available' do
-      allow(stock_repository).to receive(:status_for).with('BD-4').and_return(:available)
-      result = call(intents: %w[stock], capabilities: %w[stock])
-      expect(result[:facts][:stock]).to eq(status: 'available', source: 'stock_repository', checked_at: checked_at)
-    end
-
-    it 'maps empty -> unavailable' do
-      allow(stock_repository).to receive(:status_for).with('BD-4').and_return(:empty)
-      result = call(intents: %w[stock], capabilities: %w[stock])
-      expect(result[:facts][:stock][:status]).to eq('unavailable')
-    end
-
-    it 'OMITS the stock fact and hands off on a repository outage (never unknown/quantity)' do
-      allow(stock_repository).to receive(:status_for).with('BD-4').and_raise(catalog_error)
-      result = call(intents: %w[stock], capabilities: %w[stock])
-
-      expect(result[:facts]).not_to have_key(:stock)
       expect(result[:response_goals]).to include('handoff')
     end
   end
@@ -115,39 +130,24 @@ RSpec.describe Marine::Backend::ProductExecutionPlanner do
       allow(price_repository).to receive(:price_for).with('BD-4').and_return(status: :available, price_list_rate: '12500', currency: 'IDR',
                                                                              uom: 'Yard')
 
-      call(intents: %w[price], capabilities: %w[price], intent_overrides: { attribute_candidates: %w[Blue] })
+      call(intents: %w[price], intent_overrides: { attribute_candidates: %w[Blue] })
     end
 
     it 'clarifies (never resolves) when only an attribute candidate is present and no exact code' do
       allow(variant_resolver).to receive(:resolve)
         .with(family_code: 'BD', explicit_child_code: nil, attribute_candidates: [])
         .and_return(status: :unresolved, reason: :missing)
-      result = call(intents: %w[price], capabilities: %w[price],
+      result = call(intents: %w[price],
                     intent_overrides: { explicit_child_code: nil, attribute_candidates: %w[Blue] })
 
       expect(result[:response_goals]).to eq(%w[clarify_variant])
     end
   end
 
-  describe 'combined price+stock (one compatible scenario)' do
-    it 'produces two verified fact blocks with independent checked_at' do
-      allow(price_repository).to receive(:price_for).with('BD-4').and_return(status: :available, price_list_rate: '12500', currency: 'IDR',
-                                                                             uom: 'Yard')
-      allow(stock_repository).to receive(:status_for).with('BD-4').and_return(:available)
-
-      result = call(intents: %w[price stock], capabilities: %w[price stock catalog product_overview parent_info])
-
-      expect(result[:response_goals]).to contain_exactly('answer_price', 'answer_stock')
-      expect(result[:facts].keys).to contain_exactly(:price, :stock)
-      expect(result[:facts][:price][:checked_at]).to eq(checked_at)
-      expect(result[:facts][:stock][:checked_at]).to eq(checked_at)
-    end
-  end
-
   describe 'unresolved / ambiguous slots (never guessed)' do
     it 'clarifies the product when no exact family matches' do
       allow(family_repository).to receive(:resolve_exact).with('Ghost').and_return(nil)
-      result = call(intents: %w[price], capabilities: %w[price], intent_overrides: { family_mention: 'Ghost' })
+      result = call(intents: %w[price], intent_overrides: { family_mention: 'Ghost' })
 
       expect(result[:response_goals]).to eq(%w[clarify_product])
       expect(result[:missing_slots]).to eq(%w[product])
@@ -156,7 +156,7 @@ RSpec.describe Marine::Backend::ProductExecutionPlanner do
 
     it 'clarifies an ambiguous variant' do
       allow(variant_resolver).to receive(:resolve).and_return(status: :unresolved, reason: :ambiguous)
-      result = call(intents: %w[price], capabilities: %w[price])
+      result = call(intents: %w[price])
 
       expect(result[:response_goals]).to eq(%w[clarify_ambiguous_variant])
       expect(result[:missing_slots]).to eq(%w[variant_input])
@@ -164,14 +164,14 @@ RSpec.describe Marine::Backend::ProductExecutionPlanner do
 
     it 'clarifies a missing variant' do
       allow(variant_resolver).to receive(:resolve).and_return(status: :unresolved, reason: :missing)
-      result = call(intents: %w[price], capabilities: %w[price])
+      result = call(intents: %w[price])
       expect(result[:response_goals]).to eq(%w[clarify_variant])
     end
   end
 
   describe 'defense in depth on a direct call' do
     it 'hands off (never raises) when product_intent is not a Hash' do
-      result = planner.call(product_intent: nil, intents: %w[price], scenario: { key: 'scenario_8', capabilities: %w[price] })
+      result = planner.call(product_intent: nil, intents: %w[price], scenario: { key: 'scenario_8' })
       expect(result[:response_goals]).to eq(%w[handoff])
       expect(result[:facts]).to eq({})
     end
@@ -180,33 +180,15 @@ RSpec.describe Marine::Backend::ProductExecutionPlanner do
   describe 'catalog outage' do
     it 'hands off on a family repository outage' do
       allow(family_repository).to receive(:resolve_exact).with('Santorini').and_raise(catalog_error)
-      result = call(intents: %w[price], capabilities: %w[price])
+      result = call(intents: %w[price])
       expect(result[:response_goals]).to eq(%w[handoff])
-      expect(result[:facts]).to eq({})
-    end
-  end
-
-  describe 'informational product_overview' do
-    it 'answers product overview WITH a validated family (over its product slot)' do
-      result = planner.call(product_intent: product_intent(family_mention: 'Santorini', explicit_child_code: nil),
-                            intents: %w[product_overview], scenario: { key: 'scenario_8', capabilities: %w[product_overview] })
-      expect(result[:response_goals]).to eq(%w[answer_product_overview])
-      expect(result[:validated_slots][:product][:code]).to eq('BD')
-      expect(result[:facts]).to eq({})
-    end
-
-    it 'hands off (never answers over an empty slot/fact packet) with NO family evidence' do
-      result = planner.call(product_intent: product_intent(family_mention: nil, explicit_child_code: nil),
-                            intents: %w[product_overview], scenario: { key: 'scenario_8', capabilities: %w[product_overview] })
-      expect(result[:response_goals]).to eq(%w[handoff])
-      expect(result[:validated_slots]).to eq({})
       expect(result[:facts]).to eq({})
     end
   end
 
   it 'returns a deeply frozen evidence input' do
     allow(price_repository).to receive(:price_for).and_return(status: :available, price_list_rate: '12500', currency: 'IDR', uom: 'Yard')
-    result = call(intents: %w[price], capabilities: %w[price])
+    result = call(intents: %w[price])
     expect(result).to be_frozen
     expect(result[:facts][:price]).to be_frozen
   end

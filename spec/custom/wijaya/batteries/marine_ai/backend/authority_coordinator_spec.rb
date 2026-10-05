@@ -3,12 +3,13 @@
 require 'rails_helper'
 
 # Phase 2A — the AuthorityCoordinator closing seam. It uses the REAL
-# CandidatePlanToProductIntentAdapter for schema/scenario/intent/capability authorization (so the
-# fail-closed contract is exercised end to end) and injected doubles for the resolver / planner /
-# packet builder / range authority / language resolver so no catalog DB or provider is touched.
+# CandidatePlanToProductIntentAdapter for schema/scenario/intent authorization grounded on the backend
+# ExecutionPolicy (so the fail-closed contract is exercised end to end) and injected doubles for the
+# resolver / planner / packet builder / range authority / language resolver so no catalog DB or
+# provider is touched.
 #
-# These examples pin §6/§7: the exact `["price"]` allowlist (every other single/multi intent stops
-# BEFORE any fact repository call — the resolver is never even consulted), the FRESH resolver-sourced
+# These examples pin §6/§7: the exact `["price"]` ExecutionPolicy gate (every other single/multi intent
+# stops BEFORE any fact repository call — the resolver is never even consulted), the FRESH resolver-sourced
 # planner input (JEV slot_operations never source an identifier), language injection + nil fail-closed,
 # the exact family+child packet vs clean family-only range dispatch, the closed fail-closed matrix, and
 # the deep-frozen closed Result.
@@ -23,8 +24,6 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
   let(:packet_builder) { instance_double(Marine::Backend::EvidencePacketBuilder) }
   let(:range_authority) { instance_double(Marine::Backend::FamilyPriceRangeAuthority) }
   let(:language_resolver) { class_double(Marine::Catalog::ConversationLanguageResolver) }
-
-  let(:capabilities) { { 'scenario_5' => %w[price] } }
 
   def raw_plan(intents: %w[price], key: 'scenario_5', conf: 'high')
     {
@@ -49,10 +48,10 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
     ).freeze
   end
 
-  def call(candidate_plan: plan, scenario_key: 'scenario_5', scenario_capabilities: capabilities, # rubocop:disable Metrics/ParameterLists -- a flat keyword call-helper mirroring the coordinator signature
+  def call(candidate_plan: plan, scenario_key: 'scenario_5', # rubocop:disable Metrics/ParameterLists -- a flat keyword call-helper mirroring the coordinator signature
            trigger: 'berapa harga FAM1', history: [], flow_state: nil, configured_language: 'id')
     coordinator.call(candidate_plan: candidate_plan, scenario_key: scenario_key,
-                     scenario_capabilities: scenario_capabilities, trigger: trigger, history: history,
+                     trigger: trigger, history: history,
                      phase: :follow_up, flow_state: flow_state, configured_language: configured_language)
   end
 
@@ -65,21 +64,6 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
   end
 
   describe 'adapter authorization failures' do
-    it 'preserves legacy for an unconfigured capability map' do
-      result = call(scenario_capabilities: {})
-
-      expect(result.outcome_type).to eq(:legacy_preserved)
-      expect(result.reason).to eq(:capability_unconfigured)
-      expect(resolver).not_to have_received(:call)
-    end
-
-    it 'preserves legacy for a capability mismatch' do
-      result = call(scenario_capabilities: { 'scenario_5' => %w[stock] })
-
-      expect(result.outcome_type).to eq(:legacy_preserved)
-      expect(result.reason).to eq(:capability_mismatch)
-    end
-
     it 'stops on a scenario mismatch' do
       result = call(scenario_key: 'scenario_9')
 
@@ -88,35 +72,33 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
     end
 
     it 'stops (unsupported_plan) for a non-product intent that fails closed at the adapter' do
-      result = call(candidate_plan: plan(intents: %w[order_status]), scenario_capabilities: { 'scenario_5' => %w[price] })
+      result = call(candidate_plan: plan(intents: %w[order_status]))
 
       expect(result.outcome_type).to eq(:stop)
       expect(result.reason).to eq(:unsupported_plan)
     end
   end
 
-  describe 'PRICE-ONLY technical allowlist' do
-    it 'preserves legacy (phase_not_executable) for a non-price single intent WITHOUT any fact call' do
-      result = call(candidate_plan: plan(intents: %w[catalog]), scenario_capabilities: { 'scenario_5' => %w[price catalog] })
+  describe 'ExecutionPolicy whole-set gate (exact ["price"]; backend-owned)' do
+    it 'preserves legacy (phase_not_executable) for a supported-but-unauthorized single intent WITHOUT any fact call' do
+      result = call(candidate_plan: plan(intents: %w[catalog]))
 
       expect(result.outcome_type).to eq(:legacy_preserved)
       expect(result.reason).to eq(:phase_not_executable)
-      expect(result.intents).to eq(%w[catalog])
       expect(resolver).not_to have_received(:call)
     end
 
     it 'preserves legacy for price+stock (no partial price/range, StockRepository never reached)' do
-      result = call(candidate_plan: plan(intents: %w[price stock]), scenario_capabilities: { 'scenario_5' => %w[price stock] })
+      result = call(candidate_plan: plan(intents: %w[price stock]))
 
       expect(result.outcome_type).to eq(:legacy_preserved)
       expect(result.reason).to eq(:phase_not_executable)
-      expect(result.intents).to eq(%w[price stock])
       expect(resolver).not_to have_received(:call)
     end
   end
 
   describe 'exact family + child → evidence packet' do
-    let(:packet) { { response_goals: %w[answer_price], evidence_version: 'marine_evidence_v1' }.freeze }
+    let(:packet) { { response_goals: %w[answer_price], evidence_version: 'marine_evidence_v2' }.freeze }
 
     before do
       allow(resolver).to receive(:call).and_return(resolved(status: :exact_child, child_code: 'FAM1-CHILD'))
@@ -133,7 +115,7 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
       result = call
 
       expect(captured[:intents]).to eq(%w[price])
-      expect(captured[:scenario]).to eq(key: 'scenario_5', capabilities: %w[price])
+      expect(captured[:scenario]).to eq(key: 'scenario_5')
       expect(captured[:product_intent]).to include(
         family_mention: 'FAM1', explicit_child_code: 'FAM1-CHILD', attribute_candidates: [],
         customer_language: 'id', intent: 'price', requested_intents: %w[price],
@@ -293,13 +275,13 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
       expect(result.intents).to all(be_frozen)
     end
 
-    it 'freezes every intent String for a multi-intent phase_not_executable result' do
-      result = call(candidate_plan: plan(intents: %w[price stock]), scenario_capabilities: { 'scenario_5' => %w[price stock] })
+    it 'returns a frozen (empty) intents array for an adapter phase_not_executable result' do
+      result = call(candidate_plan: plan(intents: %w[price stock]))
 
       expect(result.outcome_type).to eq(:legacy_preserved)
-      expect(result.intents).to eq(%w[price stock])
+      expect(result.reason).to eq(:phase_not_executable)
+      expect(result.intents).to eq([])
       expect(result.intents).to be_frozen
-      expect(result.intents).to all(be_frozen)
     end
   end
 end

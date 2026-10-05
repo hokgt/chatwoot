@@ -13,13 +13,12 @@
 #      partial product action (C1 "intent tak-supported ... ditolak").
 #   2. The plan's nominated scenario_candidate.key MUST exactly match the scenario the
 #      backend already SELECTED. A plan built under another scenario is never executed
-#      against this scenario's capability map.
-#   3. The carried intents MUST be a subset of the SELECTED scenario's declared
-#      capabilities (the caller supplies the capability map). The Runner's global
-#      capability union is only a first filter; this is the per-scenario execution
-#      authority. Capability declarations themselves must be closed/valid: a malformed or
-#      unknown capability value fails closed rather than being silently filtered into an
-#      apparently valid map.
+#      for this scenario.
+#   3. The carried intents MUST be ExecutionPolicy-authorized (Phase 1 / Opsi B: exactly
+#      ["price"]). Execution authorization is backend-policy-owned
+#      (Marine::Backend::ExecutionPolicy), NOT derived from scenario — scenario carries no
+#      capabilities. A non-price / mixed set fails the WHOLE plan closed
+#      (phase_not_executable); no partial product action executes.
 #   4. EXACT-code-only variant authority (3A): only a variant_code candidate may become an
 #      executable explicit_child_code. A display_label / attribute_value candidate stays
 #      visible as an untrusted typed operation but is NEVER promoted to an executable
@@ -34,6 +33,7 @@
 class Marine::Backend::CandidatePlanToProductIntentAdapter
   Schema = Marine::Decision::Schema
   IntentExtractor = Marine::Catalog::IntentExtractor
+  ExecutionPolicy = Marine::Backend::ExecutionPolicy
 
   # The product intents this seam may execute. Exactly the IntentExtractor allowlist
   # (transactional + the informational product_overview); reused so the two can never drift.
@@ -51,10 +51,10 @@ class Marine::Backend::CandidatePlanToProductIntentAdapter
   REASON_UNSUPPORTED_SCHEMA = 'unsupported_schema'.freeze
   REASON_UNRESOLVED_SCENARIO = 'unresolved_scenario'.freeze
   REASON_SCENARIO_MISMATCH = 'scenario_mismatch'.freeze
-  REASON_CAPABILITY_UNCONFIGURED = 'capability_unconfigured'.freeze
-  REASON_CAPABILITY_MALFORMED = 'capability_malformed'.freeze
-  REASON_CAPABILITY_MISMATCH = 'capability_mismatch'.freeze
   REASON_UNSUPPORTED_INTENT = 'unsupported_intent'.freeze
+  # The Phase-1 execution-policy reject: a supported-but-non-executable intent set (e.g. stock, or a
+  # mixed price+stock) that is not the exact ExecutionPolicy-authorized executable array.
+  REASON_PHASE_NOT_EXECUTABLE = 'phase_not_executable'.freeze
 
   # Deeply immutable outcome. `ok?` gates the product-intent input; a fail-closed result
   # carries only a reason code and no authority.
@@ -62,13 +62,12 @@ class Marine::Backend::CandidatePlanToProductIntentAdapter
     def ok? = ok == true
   end
 
-  # plan:                  a normalized marine_decision_v1 candidate plan (or owned equivalent).
-  #                        Re-normalized defensively so a raw/oversized/malformed/duplicate-slot
-  #                        input fails closed rather than being trusted.
-  # scenario_key:          the scenario the backend already SELECTED (String, canonical key).
-  # scenario_capabilities: the explicit capability MAP { "<scenario_key>" => [<intents>] }
-  #                        the caller supplies (mirrors MARINE_DECISION_SCENARIO_CAPABILITIES).
-  def call(plan:, scenario_key:, scenario_capabilities:) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- a flat sequence of independent fail-closed guards
+  # plan:         a normalized marine_decision_v1 candidate plan (or owned equivalent). Re-normalized
+  #               defensively so a raw/oversized/malformed/duplicate-slot input fails closed rather
+  #               than being trusted.
+  # scenario_key: the scenario the backend already SELECTED (String, canonical key).
+  # -- a flat sequence of independent fail-closed guards
+  def call(plan:, scenario_key:)
     normalized = normalize(plan)
     return failure(REASON_UNSUPPORTED_SCHEMA) if normalized.nil?
 
@@ -76,18 +75,17 @@ class Marine::Backend::CandidatePlanToProductIntentAdapter
     return failure(REASON_UNRESOLVED_SCENARIO) if key.nil?
     return failure(REASON_SCENARIO_MISMATCH) unless normalized[:scenario_candidate][:key] == key
 
-    capabilities = capabilities_for(scenario_capabilities, key)
-    return failure(REASON_CAPABILITY_UNCONFIGURED) if capabilities == :unconfigured
-    return failure(REASON_CAPABILITY_MALFORMED) if capabilities == :malformed
-
     intents = normalized[:intents]
     return failure(REASON_UNSUPPORTED_INTENT) if intents.empty?
     # Reject the WHOLE plan if ANY nominated intent is not a supported executable product intent
     # (mixed price+order_status/sample/unsupported never partially executes).
     return failure(REASON_UNSUPPORTED_INTENT) unless (intents - SUPPORTED_INTENTS).empty?
-    return failure(REASON_CAPABILITY_MISMATCH) unless (intents - capabilities).empty?
+    # Execution authorization is backend-policy-owned: the WHOLE intent set must be the exact
+    # ExecutionPolicy-authorized executable array (Phase 1: ["price"]). A supported-but-non-executable
+    # set (stock, or a mixed price+stock) fails the whole plan closed — no partial product action.
+    return failure(REASON_PHASE_NOT_EXECUTABLE) unless ExecutionPolicy.authorized?(intents)
 
-    accept(normalized, key, capabilities, supported_in_canonical_order(intents))
+    accept(normalized, key, supported_in_canonical_order(intents))
   end
 
   private
@@ -108,37 +106,18 @@ class Marine::Backend::CandidatePlanToProductIntentAdapter
     key if key.match?(Schema::SCENARIO_KEY_PATTERN)
   end
 
-  # The declared capability array for the selected scenario, or a fail-closed sentinel:
-  #   :unconfigured — a non-Hash map, an absent entry, or an empty capability list (A3-04
-  #                   "capability kosong: Reject").
-  #   :malformed    — a non-Array entry, or an entry carrying a non-String / unknown-intent
-  #                   value (a malformed capability is never silently filtered into an
-  #                   apparently valid map).
-  # Otherwise the caller's declared capability order (deduped), every member a valid intent.
-  def capabilities_for(map, key) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- a flat sequence of independent fail-closed guards
-    return :unconfigured unless map.is_a?(Hash)
-
-    declared = map[key] || map[key.to_sym]
-    return :unconfigured if declared.nil?
-    return :malformed unless declared.is_a?(Array)
-    return :unconfigured if declared.empty?
-    return :malformed unless declared.all? { |intent| intent.is_a?(String) && Schema::INTENTS.include?(intent) }
-
-    declared.uniq
-  end
-
   # Project the validated intents through the SUPPORTED_INTENTS allowlist so the carried set is
   # always in the canonical rendering order regardless of the normalizer's ordering.
   def supported_in_canonical_order(intents)
     SUPPORTED_INTENTS.select { |intent| intents.include?(intent) }
   end
 
-  def accept(normalized, key, capabilities, supported)
+  def accept(normalized, key, supported)
     operations = operations(normalized[:slot_operations])
     Result.new(
       ok: true,
       reason: REASON_ACCEPTED,
-      scenario: deep_freeze(key: key, capabilities: capabilities.dup),
+      scenario: deep_freeze(key: key),
       intents: deep_freeze(supported.dup),
       operations: deep_freeze(operations),
       product_intent: deep_freeze(product_intent(normalized, supported, operations))

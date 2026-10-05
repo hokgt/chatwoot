@@ -1,4 +1,4 @@
-# Fase 3A-1 (isolated / mock-only) — marine_evidence_v1 PRODUCT Evidence Packet builder.
+# Fase 3A-1 (isolated / mock-only) — marine_evidence_v2 PRODUCT Evidence Packet builder.
 #
 # The Evidence Packet is the SOLE presentation boundary: it is the only thing Model 2 ever
 # sees. This builder folds a planner-produced evidence input into a deeply immutable,
@@ -10,10 +10,12 @@
 #
 # It is a CLOSED, FAIL-CLOSED validator, not a permissive filter: a malformed programmer-supplied
 # evidence input raises InvalidEvidenceInputError and NEVER yields a partly-authoritative packet.
-# It rejects unknown top-level/nested keys, unknown/overflow goals/intents/capabilities, a
-# malformed scenario key, scenario intents not a subset of capabilities, malformed slots, unknown
-# fact keys, a fact whose strict shape/source/policy/timestamp is wrong, a fact that does not match
-# its resolved variant slot, and any fact/intent/goal incoherence. Repository failure is
+# It rejects unknown top-level/nested keys, unknown/overflow goals/intents, a top-level intents set
+# that is not the exact ExecutionPolicy-authorized executable array (Phase 1: exactly ["price"]), a
+# malformed scenario key, malformed slots, unknown fact keys, a fact whose strict shape/source/policy/
+# timestamp is wrong, a fact that does not match its resolved variant slot, and any fact/intent/goal
+# incoherence. Execution authorization is backend-policy-owned (Marine::Backend::ExecutionPolicy);
+# scenario carries only provenance ({ key, intents }), never capabilities. Repository failure is
 # represented UPSTREAM by no fact + handoff (the planner), never by a repaired fact here. Only free
 # catalog display text (a product/variant name, an item group, attribute values) is length-bounded
 # rather than rejected; every authoritative value is validated exactly.
@@ -22,8 +24,9 @@
 # clock is injected for deterministic timestamps.
 class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLength -- a flat sequence of independent closed-field validators
   Schema = Marine::Decision::Schema
+  ExecutionPolicy = Marine::Backend::ExecutionPolicy
 
-  EVIDENCE_VERSION = 'marine_evidence_v1'.freeze
+  EVIDENCE_VERSION = 'marine_evidence_v2'.freeze
 
   # Exhaustive top-level input keys (the ProductExecutionPlanner output contract). Anything else
   # fails closed.
@@ -72,7 +75,6 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
   MAX_RESPONSE_GOALS = 4
   MAX_FACTS = 4
   MAX_INTENTS = Schema::MAX_INTENTS
-  MAX_CAPABILITIES = INTENTS.length
   MAX_VARIANT_CANDIDATES = 5
   MAX_MISSING_SLOTS = 2
   MAX_PROHIBITED_CLAIMS = 16
@@ -106,11 +108,7 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
   # evidence_input: the ProductExecutionPlanner output (or an equivalent test-built hash).
   # Raises InvalidEvidenceInputError on any closed-contract violation.
   def build(evidence_input:)
-    input = evidence_input
-    raise invalid unless input.is_a?(Hash)
-
-    reject_unknown_keys!(input, INPUT_KEYS)
-
+    input = validated_input(evidence_input)
     intents = intents(input[:intents])
     scenario = scenario(input[:scenario], intents)
     goals = response_goals(input[:response_goals])
@@ -128,6 +126,17 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
   end
 
   private
+
+  def validated_input(input)
+    raise invalid unless input.is_a?(Hash)
+
+    reject_unknown_keys!(input, INPUT_KEYS)
+    # Execution authorization is the ONE backend policy: the COMPLETE top-level intents set — as
+    # submitted, never deduped/sorted — must be the exact ExecutionPolicy-authorized executable array.
+    raise invalid unless ExecutionPolicy.authorized?(input[:intents])
+
+    input
+  end
 
   def assemble(scenario, goals, slots, facts, missing, candidates) # rubocop:disable Metrics/ParameterLists -- a flat packet assembly from already-validated parts
     {
@@ -167,32 +176,17 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
     deduped.map(&:dup)
   end
 
-  # scenario { key, intents, capabilities }: a canonical key, capabilities a closed subset of the
-  # intent vocabulary, and the candidate intents a subset of the capabilities (per-scenario
-  # execution authority).
+  # scenario { key, intents }: a canonical provenance key plus the turn's candidate intents
+  # (provenance of what was asked, NOT authorization — execution authorization is backend-policy-owned
+  # by ExecutionPolicy). A `capabilities` subkey is rejected as an unknown key.
   def scenario(scenario, intents)
     raise invalid unless scenario.is_a?(Hash)
 
-    reject_unknown_keys!(scenario, %i[key capabilities])
+    reject_unknown_keys!(scenario, %i[key])
     key = required_string!(scenario[:key], MAX_CODE_BYTES)
     raise invalid unless key.match?(Schema::SCENARIO_KEY_PATTERN)
 
-    capabilities = capabilities(scenario[:capabilities])
-    raise invalid unless (intents - capabilities).empty?
-
-    { key: key, intents: intents, capabilities: capabilities }
-  end
-
-  # Capabilities must be a non-empty, closed subset of the intent vocabulary. An empty capability
-  # list (A3-04 capability kosong) fails closed — a scenario with no authority executes nothing.
-  def capabilities(capabilities)
-    raise invalid unless capabilities.is_a?(Array) && !capabilities.empty?
-
-    deduped = capabilities.uniq
-    raise invalid unless deduped.all? { |capability| INTENTS.include?(capability) }
-    raise invalid if deduped.length > MAX_CAPABILITIES
-
-    deduped.map(&:dup)
+    { key: key, intents: intents }
   end
 
   def validated_slots(slots)

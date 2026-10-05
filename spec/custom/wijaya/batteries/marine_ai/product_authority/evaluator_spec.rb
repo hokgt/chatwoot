@@ -72,7 +72,7 @@ RSpec.describe Marine::ProductAuthority::Evaluator do
       'an unknown label key' => ->(c) { c[:label][:bogus] = 1 },
       'an invalid surface' => ->(c) { c[:surface] = 'mars' },
       'an oversized id string' => ->(c) { c[:id] = 'x' * 200 },
-      'an oversized capability collection' => ->(c) { c[:capabilities] = { 'scenario_1' => Array.new(100, 'p') } },
+      'a re-introduced capability map key' => ->(c) { c[:capabilities] = { 'scenario_1' => Array.new(100, 'p') } },
       'a malformed repositories key' => ->(c) { c[:repositories] = { bogus: {} } },
       'a non-hash repository fixture' => ->(c) { c[:repositories][:family] = 'nope' },
       'a malformed safety shape' => ->(c) { c[:safety] = { exact_quantity_request: 'yes' } },
@@ -132,12 +132,16 @@ RSpec.describe Marine::ProductAuthority::Evaluator do
     end
 
     it 'passes the strict safety-seam boolean to the coordinator as quantity_inquiry' do
-      # A case WITHOUT the safety seam resolves normally (adapter+planner invoked); the same plan WITH
+      # A case WITHOUT the safety seam resolves normally (adapter+planner invoked); the same case WITH
       # the seam short-circuits. The only difference is the strict boolean the Evaluator derives from
-      # safety.exact_quantity_request and forwards to the coordinator.
+      # safety.exact_quantity_request and forwards to the coordinator. The seam-less fold is expressed
+      # over the Phase-1 executable intent (price) so the adapter genuinely accepts it and the
+      # planner is invoked against the injected fixtures.
       without_seam = Marshal.load(Marshal.dump(safety_case)).tap do |kase|
         kase.delete(:safety)
-        kase[:label] = { status: 'product', intents: ['stock'], slot_ops: %w[product variant_code], response_goals: ['answer_stock'] }
+        kase[:plan] = kase[:plan].merge('intents' => ['price'])
+        kase[:repositories][:price] = { 'SYN-VAR-ALPHA-01' => Marine::ProductAuthority::Corpus::PRICE_ALPHA }
+        kase[:label] = { status: 'product', intents: ['price'], slot_ops: %w[product variant_code], response_goals: ['answer_price'] }
       end
       normal = described_class.evaluate([without_seam])[:case_evidence].first
       guarded = described_class.evaluate([safety_case])[:case_evidence].first
@@ -172,7 +176,7 @@ RSpec.describe Marine::ProductAuthority::Evaluator do
           stripped = turn[:plan].merge(
             'slot_operations' => turn[:plan]['slot_operations'].reject { |op| op['slot'] == 'variant_input' }
           )
-          { plan: stripped, scenario_key: turn[:scenario_key], capabilities: turn[:capabilities] }
+          { plan: stripped, scenario_key: turn[:scenario_key] }
         end
       )
     end
@@ -188,7 +192,7 @@ RSpec.describe Marine::ProductAuthority::Evaluator do
     it 'fails parity when a surface normalization is malformed (missing plan)' do
       malformed = described_class::SurfaceContext.new(
         name: 'malformed', project: ->(turn) { turn },
-        normalize: ->(turn) { { scenario_key: turn[:scenario_key], capabilities: turn[:capabilities] } }
+        normalize: ->(turn) { { scenario_key: turn[:scenario_key] } }
       )
       report = described_class.evaluate(corpus_cases, surfaces: [described_class::CONVERSATION_SURFACE, malformed])
       expect(report[:counts][:parity_ok]).to be(false)
@@ -326,7 +330,7 @@ RSpec.describe Marine::ProductAuthority::Evaluator do
   # rejects and are covered by the coordinator's own spec (acceptance_pipeline_coordinator_spec.rb). We
   # deliberately do NOT add evaluator abstractions to force those unreachable states through the corpus.
   describe 'single-execution block-reason mapping (Gap 5)' do
-    blocked_ids = %w[stock_vs_order_status unsupported_mixed_intent capability_mismatch scenario_mismatch
+    blocked_ids = %w[stock_vs_order_status unsupported_mixed_intent phase_not_executable scenario_mismatch
                      malformed_unknown_field malformed_bad_schema_version exact_quantity_failclosed]
 
     blocked_ids.each do |id|
@@ -352,23 +356,28 @@ RSpec.describe Marine::ProductAuthority::Evaluator do
       # The derived aggregate is STRICTER than the coordinator's own blocked verdict: even though the
       # coordinator passes (expected == blocked outcome), a block_reason the pipeline did not produce
       # fails the aggregate — exactly the legacy block_reason check, kept without a second execution.
-      kase = Marshal.load(Marshal.dump(corpus_cases.find { |c| c[:id] == 'capability_mismatch' }))
+      kase = Marshal.load(Marshal.dump(corpus_cases.find { |c| c[:id] == 'phase_not_executable' }))
       kase[:label][:block_reason] = 'scenario_mismatch'
       report = described_class.evaluate([kase])
-      expect(report[:case_evidence].first.reason).to eq('capability_mismatch')
+      expect(report[:case_evidence].first.reason).to eq('phase_not_executable')
       expect(report[:failures]).to eq([kase[:id]])
     end
   end
 
-  describe 'response-goal emission order (Gap 10)' do
-    it 'agrees on canonical planner-emission order between the label and the CaseResult (no silent sort)' do
+  # Phase 1 (Opsi B): the combined price+stock product set is NOT the exact executable array
+  # ["price"], so the adapter blocks the whole plan at the policy gate — no partial execution, no
+  # planner run, no goal emission. The former multi-goal order proof is unreachable in the Phase-1
+  # price-only policy (only price cases reach the planner, emitting the single answer_price goal);
+  # this example pins the exact-array block that replaces it.
+  describe 'Phase-1 exact-array policy block (combined product intents)' do
+    it 'blocks a compatible price+stock plan whole — no partial execution, no goals emitted' do
       compatible = corpus_cases.find { |kase| kase[:id] == 'price_stock_compatible' }
-      expect(compatible[:label][:response_goals]).to eq(%w[answer_price answer_stock])
+      expect(compatible[:label]).to include(status: 'blocked', block_reason: 'phase_not_executable')
       evidence = described_class.evaluate([compatible])[:case_evidence].first
       expect(evidence.pass?).to be(true)
-      # The coordinator compares response_goals ORDER-SENSITIVELY, so a passing result proves the planner
-      # emits them in exactly the label's order (not merely the same set); neither side is silently sorted.
-      expect(evidence.actual_outcome[:response_goals]).to eq(%w[answer_price answer_stock])
+      expect(evidence.adapter_status).to eq('blocked')
+      expect(evidence.planner_status).to eq('skipped')
+      expect(evidence.actual_outcome).to eq(status: 'blocked', intents: [], slot_ops: [], response_goals: [])
     end
   end
 
@@ -380,7 +389,7 @@ RSpec.describe Marine::ProductAuthority::Evaluator do
           stripped = turn[:plan].merge(
             'slot_operations' => turn[:plan]['slot_operations'].reject { |op| op['slot'] == 'variant_input' }
           )
-          { plan: stripped, scenario_key: turn[:scenario_key], capabilities: turn[:capabilities] }
+          { plan: stripped, scenario_key: turn[:scenario_key] }
         end
       )
     end

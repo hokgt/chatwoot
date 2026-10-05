@@ -1,5 +1,5 @@
 # Fase 3A-1 (isolated / mock-only) — bounded Model 2 prompt builder for the generated
-# wording path. It accepts ONLY the frozen marine_evidence_v1 Evidence Packet plus the
+# wording path. It accepts ONLY the frozen marine_evidence_v2 Evidence Packet plus the
 # customer's own request/history, and renders a prompt whose sole fact source is that packet
 # serialized as a labelled DATA block. It NEVER receives or embeds the Candidate Plan, a raw
 # DB row, raw repository internals, chain-of-thought, or Model 1 prose — the packet is the
@@ -14,7 +14,7 @@
 class Marine::Backend::EvidencePromptBuilder
   Extractor = Marine::Catalog::IntentExtractor
 
-  EVIDENCE_VERSION = 'marine_evidence_v1'.freeze
+  EVIDENCE_VERSION = 'marine_evidence_v2'.freeze
 
   # Only these two conversational roles survive canonicalization; every other role is dropped.
   ALLOWED_ROLES = %w[user assistant].freeze
@@ -50,7 +50,7 @@ class Marine::Backend::EvidencePromptBuilder
     Output only your reply text, with no JSON, markdown, quotes, or explanation.
   PROMPT
 
-  # packet:           a frozen marine_evidence_v1 Evidence Packet.
+  # packet:           a frozen marine_evidence_v2 Evidence Packet.
   # customer_request: the customer's latest message (their own words — allowed, not a fact source).
   # message_history:  bounded prior canonical turns.
   def build(packet:, customer_request:, message_history: [])
@@ -82,7 +82,7 @@ class Marine::Backend::EvidencePromptBuilder
     "Required target language (authoritative): #{language}"
   end
 
-  # Defense in depth: the prompt is built ONLY over a frozen marine_evidence_v1 packet (the
+  # Defense in depth: the prompt is built ONLY over a frozen marine_evidence_v2 packet (the
   # EvidencePacketBuilder remains the full semantic validator). A non-frozen or non-evidence input
   # fails closed rather than being rendered into a prompt.
   def evidence_packet?(packet)

@@ -51,7 +51,13 @@ class Marine::Decision::ShadowJob < ApplicationJob
     # runs for an assistant that is no longer allowlisted.
     return unless Marine::Decision::ShadowConfig.enabled_for?(records[:assistant].id)
 
-    result = Marine::Decision::ShadowExecution.new(**records).call
+    # Composition root: inject the Phase-1 policy-derived classification vocabulary (a plain frozen
+    # array VALUE) so no Decision-layer class names Marine::Backend. ShadowJob is the only production
+    # unit that already references both namespaces (it calls Backend::AuthorityShadowExecution below)
+    # and is on the ProductAuthority isolation allowlist.
+    result = Marine::Decision::ShadowExecution.new(
+      **records, classification_intents: Marine::Backend::ExecutionPolicy::CLASSIFICATION_INTENTS
+    ).call
     return if result.nil? # nil execution: record NO fake comparison.
 
     record_metrics(records, result)

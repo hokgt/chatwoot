@@ -1,6 +1,6 @@
 # Fase 3A-1 (isolated / mock-only) — deterministic post-generation fact gate for the Model 2
 # generated wording path. It judges an UNTRUSTED generated candidate against the frozen
-# marine_evidence_v1 Evidence Packet ONLY (no live provider, no DB). It proves, by
+# marine_evidence_v2 Evidence Packet ONLY (no live provider, no DB). It proves, by
 # construction, that the candidate:
 #   * carries the exact validated variant code unchanged (required literal presence);
 #   * carries the immutable price display amount / currency / UOM unchanged when a price fact
@@ -42,7 +42,7 @@ class Marine::Backend::PostGenerationFactValidator
   # identifiers and the marine_* enums are listed — never a common domain word (price, stock,
   # product, code, amount, currency, …) that a legitimate reply may contain.
   LEAK_MARKERS = %w[
-    evidence_version marine_evidence_v1 generated_at response_goals response_constraints
+    evidence_version marine_evidence_v1 marine_evidence_v2 generated_at response_goals response_constraints
     prohibited_claims validated_slots missing_slots variant_candidates customer_language
     policy_version price_list_rate checked_at resolution_status item_group max_paragraphs
     handoff_self_reference marine_sales_assistant catalog_price_repository stock_repository
@@ -61,7 +61,7 @@ class Marine::Backend::PostGenerationFactValidator
     @control_leak_inspector = control_leak_inspector || Marine::Charge::ControlLeakInspector.new
   end
 
-  # packet:    a frozen marine_evidence_v1 Evidence Packet.
+  # packet:    a frozen marine_evidence_v2 Evidence Packet.
   # candidate: the untrusted generated reply text.
   def call(packet:, candidate:) # rubocop:disable Metrics/CyclomaticComplexity -- a flat sequence of independent fail-closed gates
     return reject(:malformed_candidate) unless valid_text?(candidate)
