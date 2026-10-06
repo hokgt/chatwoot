@@ -102,6 +102,43 @@ RSpec.describe Marine::Decision::RequestBuilder do
       end
     end
 
+    it 'gives the mutually-exclusive product intents discriminating criteria (not the generic wording)' do
+      product_input = Marine::Decision::InputContract.build(
+        message: 'Produk apa saja yang tersedia', context: [], state: {},
+        scenarios: [{ 'key' => 'product_scenario', 'description' => 'catalog', 'instruction' => 'read' }],
+        classification_intents: %w[product_listing product_information price unsupported]
+      )
+      questions = described_class.build(mode: 'openrouter_decisions', input: product_input)[:questions]
+      listing = questions['mdq_intent__product_listing']
+      information = questions['mdq_intent__product_information']
+
+      # Each member's criteria name the OTHER member as out-of-scope, so an overlapping turn no
+      # longer scores both high; generic intents keep the generic wording.
+      expect(listing['criteria']['true']).to include('WITHOUT requesting any description')
+      expect(listing['criteria']['false']).to include('product_information')
+      expect(information['criteria']['true']).to include('EXPLICITLY asks for a description')
+      expect(information['criteria']['false']).to include('product_listing')
+      expect(questions['mdq_intent__price']['criteria']['true'])
+        .to eq("The 'price' intent IS explicitly present in the latest customer turn or context.")
+    end
+
+    it 'covers broad catalog/list product-information requests without requiring a specific or named product' do
+      broad_input = Marine::Decision::InputContract.build(
+        message: 'Jelaskan produk kain yang tersedia', context: [], state: {},
+        scenarios: [{ 'key' => 'product_scenario', 'description' => 'catalog', 'instruction' => 'read' }],
+        classification_intents: %w[product_listing product_information]
+      )
+      information = described_class.build(mode: 'openrouter_decisions', input: broad_input)[:questions]['mdq_intent__product_information']
+      true_criterion = information['criteria']['true']
+
+      # The description/explanation of the products in a requested catalog / list qualifies as
+      # product_information — a named product is one case, not a precondition.
+      expect(true_criterion).to match(/catalog|list/i)
+      expect(true_criterion).to include('named product OR')
+      # And it must NOT bias the provider back toward demanding a pre-identified/specific product.
+      expect(true_criterion).not_to match(/specific products?/i)
+    end
+
     it 'never asks Jev to extract free text (no non-choice/noul question types)' do
       types = request[:questions].values.map { |q| q['type'] }.uniq
       expect(types).to match_array(%w[choice noul])

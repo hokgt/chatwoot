@@ -91,16 +91,36 @@ module Marine::Decision::DecisionsResponseMapper
   # Canonically-ordered, capped candidate intents whose NOUL probability clears the bar, or
   # the :invalid sentinel if any intent answer is malformed. valid_envelope? already required
   # a NOUL answer for EVERY asked intent, so a missing answer is impossible here; a nil answer
-  # is still treated as :invalid defensively.
+  # is still treated as :invalid defensively. The per-intent probabilities are retained only to
+  # resolve the Schema mutual-exclusivity contract; they are never emitted.
   def intents(answers, allowed_intents)
-    selected = []
+    scored = {}
     allowed_intents.each do |intent|
       answer = answers["#{Builder::INTENT_QUESTION_PREFIX}#{intent}"]
       return :invalid unless valid_noul?(answer)
 
-      selected << intent if answer['noul'] >= INTENT_THRESHOLD
+      scored[intent] = answer['noul'] if answer['noul'] >= INTENT_THRESHOLD
     end
+    selected = resolve_mutually_exclusive(scored)
     Schema::INTENTS.select { |intent| selected.include?(intent) }.first(Schema::MAX_INTENTS).map(&:dup)
+  end
+
+  # Enforce the Schema mutually-exclusive contract over the above-threshold intents: within each
+  # exclusive group at most ONE member may survive — the one with the strictly-higher NOUL
+  # probability. An exact tie is genuinely ambiguous, so EVERY member of that group is dropped
+  # (fail closed), never emitted together. Intents outside any group are untouched, so unrelated
+  # multi-intent sets (e.g. price + stock) are fully preserved.
+  def resolve_mutually_exclusive(scored)
+    dropped = []
+    Schema::MUTUALLY_EXCLUSIVE_INTENTS.each do |group|
+      present = group.select { |intent| scored.key?(intent) }
+      next if present.length < 2
+
+      top = scored.values_at(*present).max
+      winners = present.select { |intent| scored[intent] == top }
+      dropped.concat(winners.length == 1 ? present - winners : present)
+    end
+    scored.keys - dropped
   end
 
   # A valid NOUL answer has EXACTLY the String keys type/noul (no unknown/missing/symbol/mixed

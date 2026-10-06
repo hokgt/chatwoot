@@ -62,6 +62,40 @@ RSpec.describe Marine::Decision::DecisionsResponseMapper do
     expect(map(answers_for(scenario: choice(probs: { 'stock_check' => 0.8, 'catalog_browse' => 0.1 })))['confidence']).to eq('high')
   end
 
+  # product_listing and product_information are contractually mutually exclusive (names/catalog
+  # listing vs an explicit description/explanation request). Independent NOUL questions can both
+  # clear the threshold on an overlapping turn; the mapper must enforce the exclusivity over the
+  # typed probabilities so ExecutionPolicy's single-intent product authorization is never defeated.
+  describe 'product_listing / product_information mutual-exclusivity contract' do
+    let(:scenario_keys) { %w[product_scenario] }
+    let(:allowed_intents) { %w[product_listing product_information price unsupported] }
+
+    def product_answers(listing:, information:)
+      {
+        'scenario_candidate' => { 'type' => 'choice', 'choice' => 'product_scenario', 'confidence' => 0.9,
+                                  'probabilities' => { 'product_scenario' => 0.9 } },
+        'mdq_intent__product_listing' => { 'type' => 'noul', 'noul' => listing },
+        'mdq_intent__product_information' => { 'type' => 'noul', 'noul' => information },
+        'mdq_intent__price' => { 'type' => 'noul', 'noul' => 0.0 },
+        'mdq_intent__unsupported' => { 'type' => 'noul', 'noul' => 0.0 }
+      }
+    end
+
+    it 'keeps only the strictly-higher-probability member when both clear the threshold' do
+      expect(map(product_answers(listing: 0.82, information: 0.63))['intents']).to eq(%w[product_listing])
+      expect(map(product_answers(listing: 0.62, information: 0.85))['intents']).to eq(%w[product_information])
+    end
+
+    it 'never emits both members together, dropping both on an exact tie (fail closed)' do
+      expect(map(product_answers(listing: 0.9, information: 0.9))['intents']).to eq([])
+    end
+
+    it 'leaves a lone, unambiguous member untouched' do
+      expect(map(product_answers(listing: 0.1, information: 0.9))['intents']).to eq(%w[product_information])
+      expect(map(product_answers(listing: 0.9, information: 0.1))['intents']).to eq(%w[product_listing])
+    end
+  end
+
   describe 'answer completeness (exactly scenario + every intent question asked)' do
     it 'rejects an envelope missing any asked intent NOUL answer' do
       incomplete = answers_for.except('mdq_intent__catalog')

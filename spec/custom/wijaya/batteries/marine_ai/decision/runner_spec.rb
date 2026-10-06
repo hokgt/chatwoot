@@ -120,6 +120,50 @@ RSpec.describe Marine::Decision::Runner do
     end
   end
 
+  # Step 3A boundary: the deployed defect classified `Produk apa saja yang tersedia`
+  # ("what products are available") — a pure product LISTING turn — as BOTH product_listing
+  # and product_information, which fails ExecutionPolicy.product_authorized? (single-intent
+  # only) and drops to legacy fallback. These examples drive the fixed protocol end-to-end.
+  describe 'Step 3A product_listing / product_information boundary (openrouter_decisions)' do
+    let(:settings) { instance_double(Marine::Llm::SettingsStore, api_mode: 'openrouter_decisions') }
+    let(:classification) { %w[product_listing product_information price unsupported] }
+
+    def product_scenarios
+      [{ 'key' => 'product_scenario', 'description' => 'product catalog', 'instruction' => 'read catalog' }]
+    end
+
+    def product_answers(listing:, information:)
+      {
+        'scenario_candidate' => { 'type' => 'choice', 'choice' => 'product_scenario', 'confidence' => 0.9,
+                                  'probabilities' => { 'product_scenario' => 0.9 } },
+        'mdq_intent__product_listing' => { 'type' => 'noul', 'noul' => listing },
+        'mdq_intent__product_information' => { 'type' => 'noul', 'noul' => information },
+        'mdq_intent__price' => { 'type' => 'noul', 'noul' => 0.0 },
+        'mdq_intent__unsupported' => { 'type' => 'noul', 'noul' => 0.0 }
+      }
+    end
+
+    it 'classifies "Produk apa saja yang tersedia" as exactly [product_listing] (packet-authorized)' do
+      allow(client).to receive(:call).and_return(decisions_ok(product_answers(listing: 0.82, information: 0.63)))
+      result = runner.call(message: 'Produk apa saja yang tersedia', scenarios: product_scenarios)
+      expect(result[:intents]).to eq(%w[product_listing])
+      expect(Marine::Backend::ExecutionPolicy.product_authorized?(result[:intents])).to be(true)
+    end
+
+    it 'keeps a genuine description request as exactly [product_information] (packet-authorized)' do
+      allow(client).to receive(:call).and_return(decisions_ok(product_answers(listing: 0.6, information: 0.88)))
+      result = runner.call(message: 'Jelaskan produk kain yang tersedia', scenarios: product_scenarios)
+      expect(result[:intents]).to eq(%w[product_information])
+      expect(Marine::Backend::ExecutionPolicy.product_authorized?(result[:intents])).to be(true)
+    end
+
+    it 'never yields the mutually-exclusive pair, so the packet path is never defeated' do
+      allow(client).to receive(:call).and_return(decisions_ok(product_answers(listing: 0.9, information: 0.9)))
+      result = runner.call(message: 'Produk apa saja yang tersedia', scenarios: product_scenarios)
+      expect(result[:intents]).not_to eq(%w[product_listing product_information])
+    end
+  end
+
   describe 'aggregate request-byte guard (Stage 2 transport is final)' do
     # An in-contract but MAXED input (20 scenarios × 500-char summaries + a 2000-char message)
     # serializes past the Decisions transport's aggregate request-byte budget (32_000). The

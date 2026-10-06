@@ -33,6 +33,29 @@ module Marine::Decision::RequestBuilder # rubocop:disable Metrics/ModuleLength -
   SCENARIO_QUESTION_KEY = 'scenario_candidate'.freeze
   INTENT_QUESTION_PREFIX = 'mdq_intent__'.freeze
 
+  # Per-intent NOUL criteria. Most intents use the generic present/absent wording; the two
+  # contractually mutually-exclusive product intents get EXPLICIT boundary criteria so the
+  # provider's typed probabilities reflect the real distinction — a names/catalog availability
+  # listing vs an explicit request for descriptions/explanations/details. Each says, in its
+  # own 'false', that the OTHER member's request is NOT this intent, so an overlapping turn no
+  # longer scores both high. This is a semantic contract boundary, NOT a language-specific
+  # phrase list, and the mapper still enforces the exclusivity deterministically.
+  INTENT_CRITERIA = {
+    'product_listing' => {
+      'false' => 'The customer does NOT ask which products exist or are available, OR they explicitly ask ' \
+                 'for a description / explanation / details of products (that is product_information, not a listing).',
+      'true' => 'The customer asks WHICH products exist or are available — a names / catalog availability listing — ' \
+                'WITHOUT requesting any description, explanation, specification, or details.'
+    }.freeze,
+    'product_information' => {
+      'false' => 'The customer does NOT ask for any product description/explanation — e.g. they only ask which ' \
+                 'products exist or are available (that is product_listing, not information).',
+      'true' => 'The customer EXPLICITLY asks for a description, explanation, specification, or details of one or ' \
+                'more products — whether a named product OR the products in a requested catalog / list. It need ' \
+                'NOT name or pre-identify a single product.'
+    }.freeze
+  }.freeze
+
   # Static, candidate-only classifier instruction. It NEVER changes with input, so scenario
   # text can only ever be data, never instruction.
   SYSTEM_PROMPT = <<~PROMPT.freeze
@@ -184,10 +207,14 @@ module Marine::Decision::RequestBuilder # rubocop:disable Metrics/ModuleLength -
     {
       'type' => 'noul',
       'instructions' => "Is the '#{intent}' intent explicitly present in the latest customer turn or recent context?",
-      'criteria' => {
-        'false' => "The '#{intent}' intent is NOT explicitly present in the latest customer turn or context.",
-        'true' => "The '#{intent}' intent IS explicitly present in the latest customer turn or context."
-      }
+      'criteria' => INTENT_CRITERIA.fetch(intent) { generic_intent_criteria(intent) }
+    }
+  end
+
+  def generic_intent_criteria(intent)
+    {
+      'false' => "The '#{intent}' intent is NOT explicitly present in the latest customer turn or context.",
+      'true' => "The '#{intent}' intent IS explicitly present in the latest customer turn or context."
     }
   end
 
