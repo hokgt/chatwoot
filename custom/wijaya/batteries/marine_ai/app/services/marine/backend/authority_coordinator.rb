@@ -1,8 +1,12 @@
-# Phase 2A (PRICE-ONLY shadow bridge) — the closing seam between the already-computed, UNTRUSTED
-# JEV CandidatePlan and the Backend Authority. It is reached ONLY from the read-only
-# AuthorityShadowExecution, inside the default-OFF Decision shadow, and produces NO customer output:
-# it stops at a bounded, deep-frozen Result describing the evidence INPUT / range / terminal outcome
-# a later phase would act on.
+# The closing seam between the already-computed, UNTRUSTED JEV CandidatePlan and the Backend Authority.
+# It is reached through AuthorityShadowExecution — both inside the default-OFF Decision shadow AND, since
+# Phase 6, as the default authority of the generalized customer execution — and routes EVERY accepted
+# single product capability (exact price, family price_range, binary stock, product_listing, and
+# product_information) through the SAME ExecutionPolicy authorization + repositories/planner/packet
+# builder. It returns a bounded, deep-frozen Result (evidence packet / range / terminal outcome); a
+# rejected, unavailable, or non-executable outcome fails closed so the caller runs its unchanged legacy
+# path. The price-only language below in the §-notes is historical; the whole-set gate and dispatch now
+# cover all five capabilities (see the Phase 3 / Phase 5 notes inline).
 #
 # Pipeline (all read-only; every step fails closed):
 #   1. CandidatePlanToProductIntentAdapter authorizes the plan's schema/scenario/intent via the

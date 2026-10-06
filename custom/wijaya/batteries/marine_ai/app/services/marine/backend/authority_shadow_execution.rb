@@ -1,8 +1,11 @@
-# Phase 2A (PRICE-ONLY shadow bridge) — the read-only hook that bridges an ALREADY-COMPUTED JEV
-# CandidatePlan into the Backend Authority. It is invoked by Marine::Decision::ShadowJob strictly
-# AFTER Marine::Decision::ShadowExecution has produced its deep-frozen { legacy_scenario_key:,
-# candidate_plan: } result, REUSING `result[:candidate_plan]` — it never instantiates the Decision
-# Runner / ScenarioAdapter and NEVER makes a second JEV/provider call.
+# The read-only hook that bridges an ALREADY-COMPUTED JEV CandidatePlan into the Backend Authority for
+# EVERY accepted single product capability (price, price_range, stock, product_listing,
+# product_information — the AuthorityCoordinator routes them all). In the default-OFF Decision shadow it
+# is invoked by Marine::Decision::ShadowJob strictly AFTER Marine::Decision::ShadowExecution has produced
+# its deep-frozen { legacy_scenario_key:, candidate_plan: } result; since Phase 6 it is ALSO the default
+# authority of the generalized customer execution (Marine::Backend::ExactPriceCustomerExecution), which
+# passes it the exact per-turn CandidatePlan. Either way it REUSES the given plan — it never instantiates
+# the Decision Runner / ScenarioAdapter and NEVER makes a second JEV/provider call.
 #
 # Strict discipline (mirrors Decision::ShadowExecution):
 #   * Validates the four records genuinely belong together and the message is a PUBLIC INCOMING turn;
@@ -21,7 +24,9 @@
 #     authorization is backend-policy-owned (ExecutionPolicy); scenario is provenance only.
 #
 # It mutates NO state: no create/update/save, no message, no reply/routing/handoff, no product-flow
-# state, no cache/metric/log/publish/notify. Its Result never reaches a customer in 2A.
+# state, no cache/metric/log/publish/notify. In the shadow its Result is observed only; in the customer
+# path the caller — never this class — owns all delivery, applying only presenter-validated text and
+# otherwise falling back to the legacy path.
 class Marine::Backend::AuthorityShadowExecution
   Schema = Marine::Decision::Schema
   Coordinator = Marine::Backend::AuthorityCoordinator
