@@ -36,7 +36,7 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
   # Closed response-goal enum (A8-01). answer_product_listing / answer_product_information are the
   # Phase 3 bounded-catalog answers. answer_payment_terms / clarify_payment are reserved for 3B.
   RESPONSE_GOALS = %w[
-    answer_price answer_stock answer_product_overview answer_product_listing answer_product_information
+    answer_price answer_price_range answer_stock answer_product_overview answer_product_listing answer_product_information
     clarify_product clarify_variant clarify_ambiguous_variant handoff
   ].freeze
 
@@ -60,6 +60,14 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
   STOCK_FACT_KEYS = %i[status source checked_at].freeze
   STOCK_STATUSES = %w[available unavailable].freeze
   STOCK_SOURCE = 'stock_repository'.freeze
+
+  # Closed family price-RANGE fact (Phase 5). The canonical block carries the authoritative family
+  # code + exact min/max amounts + currency/uom; the display block (min/max display amounts) is NOT
+  # trusted but reconstructed from the canonical via the PriceDisplayFormatter at the packet locale.
+  PRICE_RANGE_FACT_KEYS = %i[canonical display policy_version source checked_at].freeze
+  PRICE_RANGE_CANONICAL_KEYS = %i[family_code currency min max uom].freeze
+  PRICE_RANGE_DISPLAY_KEYS = %i[currency min max uom].freeze
+  PRICE_RANGE_SOURCE = 'catalog_price_range_repository'.freeze
 
   # Closed product-listing fact (Phase 3). A bounded page of active top-level catalog products plus
   # EXACT completeness metadata (returned_count, optional total_count, complete boolean). Each product
@@ -281,14 +289,15 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
 
   # Closed facts: price/stock (over a resolved variant slot) and the catalog-wide product_listing,
   # each strictly validated. Unknown fact keys fail closed.
-  def facts(facts, slots, language, goals) # rubocop:disable Metrics/CyclomaticComplexity -- a flat dispatch over the closed fact keys
+  def facts(facts, slots, language, goals) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity, Metrics/AbcSize -- a flat dispatch over the closed fact keys
     return {} if facts.nil? || facts == {}
     raise invalid unless facts.is_a?(Hash)
 
-    reject_unknown_keys!(facts, %i[price stock product_listing])
+    reject_unknown_keys!(facts, %i[price price_range stock product_listing])
     variant_code = slots.dig(:variant, :code)
     result = {}
     result[:price] = price_fact(facts[:price], variant_code, language) if facts.key?(:price)
+    result[:price_range] = price_range_fact(facts[:price_range], slots, language) if facts.key?(:price_range)
     result[:stock] = stock_fact(facts[:stock], variant_code) if facts.key?(:stock)
     result[:product_listing] = product_listing_fact(facts[:product_listing], goals) if facts.key?(:product_listing)
     raise invalid if result.length > MAX_FACTS
@@ -364,6 +373,78 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
     raise invalid unless submitted == expected
 
     submitted.transform_values(&:dup)
+  end
+
+  # A family price-RANGE fact only exists over a validated PRODUCT slot whose family code the canonical
+  # block matches; the display endpoints are NOT trusted from the input but reconstructed from the
+  # strict canonical min/max + packet locale via the PriceDisplayFormatter, then required to equal the
+  # submitted block exactly — so a forged display amount/currency/uom cannot pass with a valid canonical.
+  def price_range_fact(fact, slots, language)
+    raise invalid unless fact.is_a?(Hash)
+
+    family_code = slots.dig(:product, :code)
+    raise invalid if family_code.nil?
+
+    reject_unknown_keys!(fact, PRICE_RANGE_FACT_KEYS)
+    canonical = price_range_canonical(fact[:canonical], family_code)
+    display, policy_version = price_range_display!(fact[:display], canonical, language)
+    {
+      canonical: canonical,
+      display: display,
+      policy_version: exact!(fact[:policy_version], policy_version),
+      source: exact!(fact[:source], PRICE_RANGE_SOURCE),
+      checked_at: utc_timestamp!(fact[:checked_at])
+    }
+  end
+
+  # Canonical range: the family code (bound to the product slot), a homogeneous currency/uom, and an
+  # exact, non-negative min <= max (both exact decimals, never a Float). Equal endpoints are allowed.
+  def price_range_canonical(canonical, family_code)
+    raise invalid unless canonical.is_a?(Hash)
+
+    reject_unknown_keys!(canonical, PRICE_RANGE_CANONICAL_KEYS)
+    code = required_string!(canonical[:family_code], MAX_CODE_BYTES)
+    raise invalid unless code == family_code
+
+    min = rate!(canonical[:min])
+    max = rate!(canonical[:max])
+    raise invalid unless decimal(min) <= decimal(max)
+
+    { family_code: code, currency: required_string!(canonical[:currency], MAX_STRING_BYTES),
+      min: min, max: max, uom: required_string!(canonical[:uom], MAX_STRING_BYTES) }
+  end
+
+  # Reconstruct each endpoint's immutable display view from the canonical facts at the packet locale,
+  # then require the submitted display to equal it exactly. Returns [display_block, policy_version].
+  def price_range_display!(display, canonical, language) # rubocop:disable Metrics/AbcSize -- a flat reconstruct-both-endpoints-then-compare validation
+    raise invalid unless display.is_a?(Hash)
+    raise invalid if language.nil?
+
+    reject_unknown_keys!(display, PRICE_RANGE_DISPLAY_KEYS)
+    min_env = range_endpoint_envelope!(canonical, canonical[:min], language)
+    max_env = range_endpoint_envelope!(canonical, canonical[:max], language)
+    expected = { currency: min_env[:display][:currency], min: min_env[:display][:amount],
+                 max: max_env[:display][:amount], uom: min_env[:display][:uom] }
+    submitted = { currency: display[:currency], min: display[:min], max: display[:max], uom: display[:uom] }
+    raise invalid unless submitted == expected
+
+    [submitted.transform_values(&:dup), min_env[:policy_version]]
+  end
+
+  def range_endpoint_envelope!(canonical, amount, language)
+    result = @price_formatter.format(descriptor: range_formatter_descriptor(canonical, amount), locale: language)
+    raise invalid unless result.ok?
+
+    result.envelope
+  end
+
+  def range_formatter_descriptor(canonical, amount)
+    { kind: :price_available, variant_code: canonical[:family_code],
+      price_list_rate: amount, currency: canonical[:currency], uom: canonical[:uom] }
+  end
+
+  def decimal(value)
+    BigDecimal(value.to_s)
   end
 
   # A binary stock fact only exists over a resolved variant slot.
@@ -477,6 +558,11 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
   def ensure_coherent!(facts, goals, intents, slots) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity, Metrics/AbcSize -- a flat sequence of independent fact/goal/slot coherence guards
     raise invalid if facts.key?(:price) != goals.include?('answer_price')
     raise invalid if facts.key?(:price) && intents.exclude?('price')
+    # A price_range fact exists iff answer_price_range is a goal AND price_range was a candidate
+    # intent AND a validated product (family) slot grounds it.
+    raise invalid if facts.key?(:price_range) != goals.include?('answer_price_range')
+    raise invalid if facts.key?(:price_range) && intents.exclude?('price_range')
+    raise invalid if facts.key?(:price_range) && !slots.key?(:product)
     raise invalid if facts.key?(:stock) != goals.include?('answer_stock')
     raise invalid if facts.key?(:stock) && intents.exclude?('stock')
     raise invalid if goals.include?('answer_product_overview') && !slots.key?(:product)
@@ -504,10 +590,11 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
     candidates.map { |candidate| required_string!(candidate, MAX_CODE_BYTES) }
   end
 
-  # Base claims + price/stock whenever that fact is absent/unauthorized (omission rule).
+  # Base claims + price/stock whenever that fact is absent/unauthorized (omission rule). A price_range
+  # fact authorizes stating the range endpoints, so it also lifts the generic 'price' prohibition.
   def prohibited_claims(facts)
     claims = BASE_PROHIBITED_CLAIMS.dup
-    claims << 'price' unless facts.key?(:price)
+    claims << 'price' unless facts.key?(:price) || facts.key?(:price_range)
     claims << 'stock' unless facts.key?(:stock)
     claims.uniq.first(MAX_PROHIBITED_CLAIMS)
   end

@@ -68,18 +68,29 @@ RSpec.describe Marine::ProductAuthority::AcceptancePipelineCoordinator, type: :m
       expect(result.actual_outcome).to eq(expected)
     end
 
-    it 'blocks a supported-but-not-executable stock case at the adapter policy gate, before the planner' do
-      # Phase 1 (Opsi B): stock is a supported product intent but NOT executable — the adapter
-      # fails the whole plan closed with the bounded policy reason, the planner/evidence builder
-      # are skipped, and no repository is read.
+    it 'blocks a supported-but-not-executable (variant_info) case at the adapter policy gate, before the planner' do
+      # variant_info is a supported product intent but NOT executable — the adapter fails the whole
+      # plan closed with the bounded policy reason, the planner/evidence builder are skipped, and no
+      # repository is read. (Phase 5 activated stock/price_range; variant_info is the remaining exemplar.)
       expected = { status: 'blocked', intents: [], slot_ops: [], response_goals: [] }
-      result = run(plan: plan_for(['stock']), expected: expected)
+      result = run(plan: plan_for(['variant_info']), expected: expected)
       expect(result.adapter_status).to eq('blocked')
       expect(result.planner_status).to eq('skipped')
       expect(result.evidence_packet_status).to eq('skipped')
       expect(result.reason).to eq('phase_not_executable')
       expect(result.pass?).to be(true)
       expect(result.actual_outcome[:status]).to eq('blocked')
+    end
+
+    it 'runs an executable stock case end-to-end to a binary answer_stock outcome (Phase 5)' do
+      expected = { status: 'product', intents: ['stock'], slot_ops: %w[product variant_code], response_goals: ['answer_stock'] }
+      result = run(plan: plan_for(['stock']), expected: expected)
+
+      expect(result.pass?).to be(true)
+      expect(result.adapter_status).to eq('accepted')
+      expect(result.planner_status).to eq('planned')
+      expect(result.evidence_packet_status).to eq('valid')
+      expect(result.actual_outcome).to eq(expected)
     end
 
     it 'records a bounded outcome_mismatch (not a crash) when actual diverges from expected' do
@@ -116,9 +127,9 @@ RSpec.describe Marine::ProductAuthority::AcceptancePipelineCoordinator, type: :m
   describe 'adapter fail-closed' do
     it 'reports a bounded adapter block reason and skips planner/evidence' do
       expected = { status: 'blocked', intents: [], slot_ops: [], response_goals: [] }
-      # Phase 1: a supported but non-executable intent set fails the backend-owned policy gate
+      # A supported but non-executable intent set fails the backend-owned policy gate
       # (scenario configuration no longer participates in authorization).
-      result = coordinator.run(candidate_plan: plan_for(['stock']), scenario_key: 'scenario_1',
+      result = coordinator.run(candidate_plan: plan_for(['variant_info']), scenario_key: 'scenario_1',
                                quantity_inquiry: false,
                                case_id: 'syn_cap_01', surface: 'evaluator', expected_outcome: expected)
       expect(result.adapter_status).to eq('blocked')

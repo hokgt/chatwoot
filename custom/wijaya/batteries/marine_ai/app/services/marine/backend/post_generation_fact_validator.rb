@@ -51,6 +51,7 @@ class Marine::Backend::PostGenerationFactValidator
     handoff_self_reference marine_sales_assistant catalog_price_repository stock_repository
     price-display-v1 capabilities canonical
     product_listing returned_count total_count catalog_listing_repository
+    price_range family_code catalog_price_range_repository
   ].freeze
 
   # The Model 2 control instruction whose wording a reply must never copy back verbatim. Reused as
@@ -129,6 +130,11 @@ class Marine::Backend::PostGenerationFactValidator
       display = price[:display] || {}
       values.push(display[:amount], display[:currency], display[:uom])
     end
+    range = dig(packet, :facts, :price_range)
+    if range.is_a?(Hash)
+      display = range[:display] || {}
+      values.push(display[:min], display[:max], display[:currency], display[:uom])
+    end
     values.concat(listing_required_values(dig(packet, :facts, :product_listing)))
     values.compact.uniq
   end
@@ -177,12 +183,25 @@ class Marine::Backend::PostGenerationFactValidator
       parts.push(canonical[:variant_code], canonical[:currency], canonical[:price_list_rate], canonical[:uom],
                  display[:product], display[:currency], display[:amount], display[:uom])
     end
+    parts.concat(price_range_inventory_parts(packet))
     listing = dig(packet, :facts, :product_listing)
     if listing.is_a?(Hash)
       Array(listing[:products]).each { |product| parts.push(product[:code], product[:name], product[:description]) }
       parts.push(listing[:returned_count], listing[:total_count])
     end
     parts.compact.map(&:to_s).join(' ')
+  end
+
+  # The price_range inventory parts: the family-level canonical + display range values the reply
+  # may legitimately echo. Returns [] when no price_range fact is present.
+  def price_range_inventory_parts(packet)
+    range = dig(packet, :facts, :price_range)
+    return [] unless range.is_a?(Hash)
+
+    canonical = range[:canonical] || {}
+    display = range[:display] || {}
+    [canonical[:family_code], canonical[:currency], canonical[:min], canonical[:max], canonical[:uom],
+     display[:currency], display[:min], display[:max], display[:uom]]
   end
 
   def identifier_tokens(text)

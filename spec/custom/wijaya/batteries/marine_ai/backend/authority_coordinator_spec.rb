@@ -240,6 +240,85 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
     end
   end
 
+  describe 'Phase 5 — explicit price_range / stock routed to Evidence v2 (same resolver + planner + builder)' do
+    it 'routes price_range through the resolver (family identity) with a family-level planner input' do
+      allow(resolver).to receive(:call).and_return(resolved(status: :exact_family))
+      allow(packet_builder).to receive(:build).and_return({ response_goals: %w[answer_price_range], evidence_version: 'marine_evidence_v2' }.freeze)
+      captured = nil
+      allow(planner).to receive(:call) { |**kwargs|
+        captured = kwargs
+        { planner: :input }
+      }
+
+      result = call(candidate_plan: plan(intents: %w[price_range]))
+
+      expect(resolver).to have_received(:call)
+      expect(captured[:intents]).to eq(%w[price_range])
+      expect(captured[:product_intent]).to include(
+        family_mention: 'FAM1', intent: 'price_range', requested_intents: %w[price_range], requires_exact_variant: false
+      )
+      expect(captured[:product_intent][:family_mention]).not_to eq('JEV-SUGGESTED')
+      expect(result.outcome_type).to eq(:evidence_packet)
+      expect(result.reason).to eq(:accepted)
+    end
+
+    it 'routes stock through the resolver (exact child) requiring an exact variant' do
+      allow(resolver).to receive(:call).and_return(resolved(status: :exact_child, child_code: 'FAM1-CHILD'))
+      allow(packet_builder).to receive(:build).and_return({ response_goals: %w[answer_stock], evidence_version: 'marine_evidence_v2' }.freeze)
+      captured = nil
+      allow(planner).to receive(:call) { |**kwargs|
+        captured = kwargs
+        { planner: :input }
+      }
+
+      result = call(candidate_plan: plan(intents: %w[stock]))
+
+      expect(captured[:intents]).to eq(%w[stock])
+      expect(captured[:product_intent]).to include(
+        intent: 'stock', requested_intents: %w[stock], explicit_child_code: 'FAM1-CHILD', requires_exact_variant: true
+      )
+      expect(result.outcome_type).to eq(:evidence_packet)
+      expect(result.reason).to eq(:accepted)
+    end
+
+    it 'maps a planner handoff to range_unavailable / stock_unavailable respectively' do
+      allow(resolver).to receive(:call).and_return(resolved(status: :exact_child, child_code: 'FAM1-CHILD'))
+      allow(planner).to receive(:call).and_return({ planner: :input })
+      allow(packet_builder).to receive(:build).and_return({ response_goals: %w[handoff] }.freeze)
+
+      expect(call(candidate_plan: plan(intents: %w[price_range])).reason).to eq(:range_unavailable)
+      expect(call(candidate_plan: plan(intents: %w[stock])).reason).to eq(:stock_unavailable)
+    end
+
+    it 'maps a planner clarify (stock without an exact variant) to a clarify outcome' do
+      allow(resolver).to receive(:call).and_return(resolved(status: :exact_family))
+      allow(planner).to receive(:call).and_return({ planner: :input })
+      allow(packet_builder).to receive(:build).and_return({ response_goals: %w[clarify_variant] }.freeze)
+
+      result = call(candidate_plan: plan(intents: %w[stock]))
+      expect(result.outcome_type).to eq(:clarify)
+    end
+
+    it 'preserves legacy on no catalog match, hands off on outage, and never defaults an unknown status to a fact' do
+      allow(resolver).to receive(:call).and_return(resolved(status: :no_catalog_match, source: :none, family_code: nil, family_name: nil,
+                                                            reason: :candidate_context_insufficient))
+      expect(call(candidate_plan: plan(intents: %w[price_range])).outcome_type).to eq(:legacy_preserved)
+
+      allow(resolver).to receive(:call).and_return(resolved(status: :unavailable, source: :none, reason: :catalog_unavailable))
+      expect(call(candidate_plan: plan(intents: %w[stock])).reason).to eq(:catalog_unavailable)
+    end
+
+    it 'hands off (language_unresolved) on a nil language WITHOUT calling the planner' do
+      allow(resolver).to receive(:call).and_return(resolved(status: :exact_family))
+      allow(language_resolver).to receive(:resolve).and_return(double('lang', language: nil))
+
+      result = call(candidate_plan: plan(intents: %w[price_range]))
+      expect(result.outcome_type).to eq(:handoff)
+      expect(result.reason).to eq(:language_unresolved)
+      expect(planner).not_to have_received(:call)
+    end
+  end
+
   describe 'language resolution' do
     it 'hands off (language_unresolved) on a nil language WITHOUT calling the planner' do
       allow(resolver).to receive(:call).and_return(resolved(status: :exact_child, child_code: 'FAM1-CHILD'))

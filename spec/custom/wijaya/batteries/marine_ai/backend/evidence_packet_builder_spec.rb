@@ -86,15 +86,14 @@ RSpec.describe Marine::Backend::EvidencePacketBuilder do
     end
   end
 
-  describe 'whole-set execution-policy authorization (exact ["price"], no dedupe/sort)' do
+  describe 'whole-set execution-policy authorization (single authorized product intent, no dedupe/sort)' do
     it 'accepts exactly the ["price"] top-level intents set' do
       expect { builder.build(evidence_input: evidence_input(intents: %w[price])) }.not_to raise_error
     end
 
-    it 'rejects a non-price / mixed / duplicated / reordered top-level intents set' do
+    it 'rejects an unauthorized / mixed / duplicated / reordered top-level intents set' do
       expect do
-        builder.build(evidence_input: evidence_input(intents: %w[stock], response_goals: %w[answer_stock],
-                                                     facts: { stock: stock_fact }))
+        builder.build(evidence_input: evidence_input(intents: %w[catalog], response_goals: %w[answer_product_overview], facts: {}))
       end.to raise_error(invalid_error)
       expect { builder.build(evidence_input: evidence_input(intents: %w[price stock])) }.to raise_error(invalid_error)
       expect { builder.build(evidence_input: evidence_input(intents: %w[price price])) }.to raise_error(invalid_error)
@@ -128,6 +127,95 @@ RSpec.describe Marine::Backend::EvidencePacketBuilder do
       attrs = packet[:validated_slots][:variant][:attributes]
       expect(attrs.size).to be <= 16
       expect(attrs.values.map(&:bytesize).max).to be <= 80
+    end
+  end
+
+  describe 'stock fact (Phase 5 — binary availability only)' do
+    def stock_build(fact)
+      builder.build(evidence_input: {
+                      scenario: { key: 'scenario_8' }, intents: %w[stock], customer_language: 'id',
+                      response_goals: %w[answer_stock],
+                      validated_slots: { product: { code: 'BD', name: 'Santorini', source: 'marine_catalog' }, variant: variant_slot },
+                      facts: { stock: fact }, missing_slots: [], variant_candidates: []
+                    })
+    end
+
+    it 'builds both binary states and carries ONLY status/source/checked_at (no numeric inventory)' do
+      available = stock_build(stock_fact)
+      expect(available[:facts][:stock]).to eq(status: 'available', source: 'stock_repository', checked_at: '2026-09-30T12:00:00Z')
+      expect(available[:facts][:stock].keys).to contain_exactly(:status, :source, :checked_at)
+      unavailable = stock_build(stock_fact.merge(status: 'unavailable'))
+      expect(unavailable[:facts][:stock][:status]).to eq('unavailable')
+      # The serialized FACT never carries a quantity/qty/warehouse/bin token or any numeric inventory
+      # (the packet's prohibited_claims labels are negative constraints, so scope the check to facts).
+      expect(JSON.generate(available[:facts])).not_to match(/actual_qty|quantity|warehouse|\bbin\b|\bqty\b/)
+      expect(available[:facts][:stock].values.none?(Numeric)).to be(true)
+    end
+
+    it 'rejects an unknown stock status and any extra numeric/quantity key' do
+      expect { stock_build(stock_fact.merge(status: 'low')) }.to raise_error(invalid_error)
+      expect { stock_build(stock_fact.merge(actual_qty: 20)) }.to raise_error(invalid_error)
+      expect { stock_build(stock_fact.merge(quantity: 20)) }.to raise_error(invalid_error)
+    end
+  end
+
+  describe 'price_range fact (Phase 5 — family-level range, formatter-reconstructed display)' do
+    let(:range_canonical) { { family_code: 'BD', currency: 'IDR', min: '10000', max: '12500', uom: 'Yard' } }
+    let(:range_display) { { currency: 'Rp', min: '10.000', max: '12.500', uom: 'yard' } }
+    let(:range_fact) do
+      { canonical: range_canonical, display: range_display,
+        policy_version: 'price-display-v1', source: 'catalog_price_range_repository', checked_at: '2026-09-30T12:00:00Z' }
+    end
+
+    def range_build(fact_overrides = {}, input_overrides = {})
+      builder.build(evidence_input: {
+        scenario: { key: 'scenario_8' }, intents: %w[price_range], customer_language: 'id',
+        response_goals: %w[answer_price_range],
+        validated_slots: { product: { code: 'BD', name: 'Santorini', source: 'marine_catalog' } },
+        facts: { price_range: range_fact.merge(fact_overrides) }, missing_slots: [], variant_candidates: []
+      }.merge(input_overrides))
+    end
+
+    it 'builds a frozen price_range fact bound to the product slot, display reconstructed from the canonical' do
+      packet = range_build
+      expect(packet[:response_goals]).to eq(%w[answer_price_range])
+      expect(packet[:facts][:price_range]).to eq(range_fact)
+      expect(packet[:facts][:price_range]).to be_frozen
+      expect(packet[:facts][:price_range][:canonical]).to be_frozen
+    end
+
+    it 'keeps equal endpoints exact and coherent (min == max)' do
+      packet = range_build({ canonical: range_canonical.merge(min: '12500'), display: range_display.merge(min: '12.500') })
+      expect(packet[:facts][:price_range][:display]).to eq(currency: 'Rp', min: '12.500', max: '12.500', uom: 'yard')
+    end
+
+    it 'rejects a forged display endpoint/currency/uom (display is never trusted)' do
+      expect { range_build({ display: range_display.merge(min: '9.999') }) }.to raise_error(invalid_error)
+      expect { range_build({ display: range_display.merge(max: '13.000') }) }.to raise_error(invalid_error)
+      expect { range_build({ display: range_display.merge(currency: 'USD') }) }.to raise_error(invalid_error)
+    end
+
+    it 'rejects a forged source and an incoherent min > max' do
+      expect { range_build({ source: 'catalog_price_repository' }) }.to raise_error(invalid_error)
+      expect do
+        range_build({ canonical: range_canonical.merge(min: '12500', max: '10000'),
+                      display: range_display.merge(min: '12.500', max: '10.000') })
+      end.to raise_error(invalid_error)
+    end
+
+    it 'rejects a non-UTC / malformed price_range checked_at (forged provenance fails closed)' do
+      expect { range_build({ checked_at: '2026-09-30 12:00:00' }) }.to raise_error(invalid_error)
+      expect { range_build({ checked_at: '2026-09-30T12:00:00+07:00' }) }.to raise_error(invalid_error)
+    end
+
+    it 'rejects a canonical family_code that does not match the product slot' do
+      expect { range_build({ canonical: range_canonical.merge(family_code: 'ZZ') }) }.to raise_error(invalid_error)
+    end
+
+    it 'rejects a price_range fact with no product slot, or an incoherent goal/intent set' do
+      expect { range_build({}, { validated_slots: {} }) }.to raise_error(invalid_error)
+      expect { range_build({}, { response_goals: %w[answer_price] }) }.to raise_error(invalid_error)
+      expect { range_build({}, { intents: %w[price] }) }.to raise_error(invalid_error)
     end
   end
 

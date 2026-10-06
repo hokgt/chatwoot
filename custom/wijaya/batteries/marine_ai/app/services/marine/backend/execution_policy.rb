@@ -12,11 +12,13 @@ module Marine::Backend::ExecutionPolicy
   # the Phase 3 product-packet additions below — #authorized? still means exactly ["price"].
   EXECUTABLE_INTENTS = %w[price].freeze
 
-  # Phase 3: the backend catalog-authority product intents the isolated Evidence-packet path
+  # Phase 3/5: the backend catalog-authority product intents the isolated Evidence-packet path
   # (EvidencePacketBuilder / ProductExecutionPlanner) may execute, each as a SINGLE-intent set only.
   # price is included so the exact-price packet is unchanged; product_listing and product_information
-  # are the new bounded-catalog reads. These are NOT wired into the live price bridge in Phase 3.
-  PRODUCT_INTENTS = %w[price product_listing product_information].freeze
+  # are the bounded-catalog reads; price_range (Phase 5) is the family-level selling-price range and
+  # stock (Phase 5) is the binary availability read. These are NOT wired into the live price bridge
+  # (the EXECUTABLE_INTENTS == ["price"] contract above is unchanged).
+  PRODUCT_INTENTS = %w[price price_range stock product_listing product_information].freeze
 
   # The classification vocabulary offered to Model 1: every executable product intent plus the
   # non-executable fallback. unsupported is classification-only and NEVER authorizes execution.
@@ -43,11 +45,11 @@ module Marine::Backend::ExecutionPolicy
     intents == EXECUTABLE_INTENTS
   end
 
-  # Phase 3 product-packet authorization (fail closed): the intent set must be exactly ONE executable
-  # product intent, as a single-element array — ["price"], ["product_listing"], or
-  # ["product_information"]. A deduped/reordered/mixed/empty set or a non-array fails closed, so the
-  # Evidence packet can never be built over anything but a single authorized product intent. ["price"]
-  # still passes, so the exact-price packet is unchanged.
+  # Phase 3/5 product-packet authorization (fail closed): the intent set must be exactly ONE executable
+  # product intent, as a single-element array — ["price"], ["price_range"], ["stock"],
+  # ["product_listing"], or ["product_information"]. A deduped/reordered/mixed/empty set or a non-array
+  # fails closed, so the Evidence packet can never be built over anything but a single authorized
+  # product intent. ["price"] still passes, so the exact-price packet is unchanged.
   def product_authorized?(intents)
     PRODUCT_INTENT_SETS.include?(intents)
   end

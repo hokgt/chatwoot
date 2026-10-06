@@ -91,9 +91,9 @@ RSpec.describe Marine::Backend::CandidatePlanToProductIntentAdapter do
     end
   end
 
-  describe 'execution-policy authorization (exact ["price"]; backend-owned, not scenario-derived)' do
-    it 'fails closed on a supported-but-unauthorized single intent (stock)' do
-      result = adapter.call(plan: plan('intents' => %w[stock], 'slot_operations' => []), scenario_key: 'scenario_8')
+  describe 'execution-policy authorization (single authorized product intent; backend-owned, not scenario-derived)' do
+    it 'fails closed on a supported-but-unauthorized single intent (variant_info)' do
+      result = adapter.call(plan: plan('intents' => %w[variant_info], 'slot_operations' => []), scenario_key: 'scenario_8')
 
       expect(result.ok?).to be(false)
       expect(result.reason).to eq('phase_not_executable')
@@ -146,6 +146,45 @@ RSpec.describe Marine::Backend::CandidatePlanToProductIntentAdapter do
       expect(result.ok?).to be(false)
       expect(result.reason).to eq('phase_not_executable')
       expect(result.product_intent).to be_nil
+    end
+  end
+
+  describe 'Phase 5 — single price_range / stock authorization' do
+    it 'accepts ["price_range"] carrying the (untrusted) family candidate, no exact variant required' do
+      result = adapter.call(
+        plan: plan('intents' => %w[price_range], 'slot_operations' => [op('set', 'product', %w[Santorini display_name])]),
+        scenario_key: 'scenario_8'
+      )
+
+      expect(result.ok?).to be(true)
+      expect(result.intents).to eq(%w[price_range])
+      expect(result.product_intent).to include(
+        product_related: true, intent: 'price_range', requested_intents: [],
+        family_mention: 'Santorini', requires_exact_variant: false
+      )
+    end
+
+    it 'accepts ["stock"] carrying the exact child code, requiring an exact variant' do
+      result = adapter.call(
+        plan: plan('intents' => %w[stock],
+                   'slot_operations' => [op('set', 'product', %w[Santorini display_name]),
+                                         op('set', 'variant_input', %w[BD-4 variant_code])]),
+        scenario_key: 'scenario_8'
+      )
+
+      expect(result.ok?).to be(true)
+      expect(result.intents).to eq(%w[stock])
+      expect(result.product_intent).to include(
+        intent: 'stock', requested_intents: %w[stock], explicit_child_code: 'BD-4', requires_exact_variant: true
+      )
+    end
+
+    it 'fails closed on a price_range/stock set mixed with another intent (never a partial product action)' do
+      %w[price product_listing].each do |other|
+        result = adapter.call(plan: plan('intents' => ['price_range', other], 'slot_operations' => []), scenario_key: 'scenario_8')
+        expect(result.ok?).to be(false)
+        expect(result.reason).to eq('phase_not_executable')
+      end
     end
   end
 

@@ -162,8 +162,8 @@ RSpec.describe Marine::ProductAuthority::AcceptanceRunner do
       expect(errored.planner_status).to eq('errored')
       expect(errored.repository_revalidation_status).to eq('errored')
       expect(errored.reason).to eq('planner_error')
-      # stock_available is blocked at the adapter's Phase-1 policy gate, so the raising price
-      # repository is never consulted for it.
+      # stock_available executes but a stock intent only reads the StockRepository, so the raising
+      # price repository is never consulted for it.
       expect(report[:case_evidence].last.pass?).to be(true)
       expect(JSON.generate(report[:case_evidence].map(&:to_h))).not_to include('SECRET-DB-DETAIL')
     end

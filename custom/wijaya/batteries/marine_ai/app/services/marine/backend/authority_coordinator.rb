@@ -54,7 +54,17 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   REASON_LANGUAGE_UNRESOLVED = :language_unresolved
   REASON_PRICE_UNAVAILABLE = :price_unavailable
   REASON_RANGE_UNAVAILABLE = :range_unavailable
+  REASON_STOCK_UNAVAILABLE = :stock_unavailable
   REASON_INTERNAL_ERROR = :internal_error
+
+  # Phase 5 — the catalog-identity-grounded Evidence intents and the accepted answer goal / unavailable
+  # reason each maps to. price_range is family-level (a validated family only); stock requires an exact
+  # child/variant. Both route through the SAME resolver + planner + packet builder as exact price, and
+  # the planner owns whether the identity is sufficient (a stock turn with only a family clarifies the
+  # variant). The exact-price path and the internal exact-family range path are untouched.
+  IDENTITY_INTENTS = %w[price_range stock].freeze
+  IDENTITY_ANSWER_GOAL = { 'price_range' => 'answer_price_range', 'stock' => 'answer_stock' }.freeze
+  IDENTITY_UNAVAILABLE_REASON = { 'price_range' => REASON_RANGE_UNAVAILABLE, 'stock' => REASON_STOCK_UNAVAILABLE }.freeze
 
   # Adapter fail-closed reason → coordinator (outcome_type, reason). unresolved_scenario /
   # scenario_mismatch / unsupported_schema / unsupported_intent are terminal stops; a
@@ -112,6 +122,15 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
     # A single listing/information intent is catalog-wide: it needs NO exact price-identity grounding,
     # so it routes the dedicated listing path instead of the CatalogCandidateResolver family/child flow.
     return listing_dispatch(authorized, trigger: trigger, history: history, configured_language: configured_language) if listing?(authorized.intents)
+
+    # Phase 5 — an explicit single price_range / stock intent is catalog-identity-grounded via the SAME
+    # resolver, then routed through the planner + packet builder to an Evidence v2 fact. The exact-price
+    # path below (and its internal exact-family range branch) is reached only for exactly ["price"].
+    if identity?(authorized.intents)
+      return identity_dispatch(authorized, identity_intent(authorized.intents),
+                               trigger: trigger, history: history, flow_state: flow_state,
+                               configured_language: configured_language)
+    end
 
     resolved = @resolver.call(trigger: trigger, flow_state: flow_state)
     dispatch(authorized, resolved, trigger: trigger, history: history,
@@ -172,6 +191,76 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
 
   def listing?(intents)
     intents.length == 1 && LISTING_INTENTS.include?(intents.first)
+  end
+
+  def identity?(intents)
+    intents.length == 1 && IDENTITY_INTENTS.include?(intents.first)
+  end
+
+  def identity_intent(intents)
+    intents.first
+  end
+
+  # The Phase-5 catalog-identity Evidence path (price_range / stock): resolve the exact catalog
+  # identity via the SAME resolver as exact price, fix the delivery language, then let the planner read
+  # the authoritative range / binary stock and build the packet. An unavailable/ambiguous/no-match
+  # resolver status fails closed exactly as the price path does; an unknown status can never fall
+  # through to a fact.
+  def identity_dispatch(authorized, intent, trigger:, history:, flow_state:, configured_language:) # rubocop:disable Metrics/ParameterLists -- the closed §7.5 resolver inputs threaded verbatim
+    resolved = @resolver.call(trigger: trigger, flow_state: flow_state)
+    case resolved.status
+    when Resolver::STATUS_EXACT_FAMILY, Resolver::STATUS_EXACT_CHILD
+      identity_evidence(authorized, intent, resolved, trigger: trigger, history: history, configured_language: configured_language)
+    when Resolver::STATUS_UNAVAILABLE
+      terminal(OUTCOME_HANDOFF, REASON_CATALOG_UNAVAILABLE, authorized, resolved)
+    when Resolver::STATUS_AMBIGUOUS
+      terminal(OUTCOME_CLARIFY, resolved.reason, authorized, resolved)
+    when Resolver::STATUS_NO_CATALOG_MATCH
+      terminal(OUTCOME_LEGACY_PRESERVED, REASON_CANDIDATE_CONTEXT_INSUFFICIENT, authorized, resolved)
+    else
+      self.class.stop(reason: REASON_INTERNAL_ERROR)
+    end
+  end
+
+  # Resolve the delivery language BEFORE the planner (nil fails closed factless), build the packet, and
+  # classify its goals: the intent's answer goal is accepted; a planner handoff (range/stock
+  # unavailable, or an insufficient identity) is a closed handoff; anything else is a clarify.
+  def identity_evidence(authorized, intent, resolved, trigger:, history:, configured_language:) # rubocop:disable Metrics/ParameterLists -- closed resolver inputs threaded verbatim
+    language = resolve_language(resolved, trigger: trigger, history: history, configured_language: configured_language)
+    return terminal(OUTCOME_HANDOFF, REASON_LANGUAGE_UNRESOLVED, authorized, resolved) if language.nil?
+
+    packet = @packet_builder.build(evidence_input: @planner.call(
+      product_intent: identity_planner_input(resolved, language, intent), intents: authorized.intents, scenario: authorized.scenario
+    ))
+    classify_identity_packet(packet, authorized, resolved, intent)
+  end
+
+  def classify_identity_packet(packet, authorized, resolved, intent)
+    goals = packet[:response_goals]
+    if goals.include?(IDENTITY_ANSWER_GOAL[intent])
+      terminal(OUTCOME_EVIDENCE_PACKET, REASON_ACCEPTED, authorized, resolved, evidence_packet: packet)
+    elsif goals.include?('handoff')
+      terminal(OUTCOME_HANDOFF, IDENTITY_UNAVAILABLE_REASON[intent], authorized, resolved, evidence_packet: packet)
+    else
+      terminal(OUTCOME_CLARIFY, clarify_reason(goals), authorized, resolved, evidence_packet: packet)
+    end
+  end
+
+  # A FRESH planner input for a price_range / stock turn, sourced ONLY from the resolver / language
+  # resolver. The authoritative identifiers come from the resolver; the untrusted plan slot_operations
+  # never source them. Only stock needs an exact variant; price_range is family-level.
+  def identity_planner_input(resolved, language, intent)
+    {
+      product_related: true,
+      family_mention: resolved.family_code,
+      explicit_child_code: resolved.child_code,
+      attribute_candidates: [],
+      customer_language: language,
+      intent: intent,
+      requested_intents: [intent],
+      requires_exact_variant: intent == 'stock',
+      quantity_inquiry: false
+    }
   end
 
   # The catalog-wide listing/information path: resolve the delivery language, then let the planner read

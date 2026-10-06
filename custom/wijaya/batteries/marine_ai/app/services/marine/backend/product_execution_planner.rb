@@ -29,6 +29,7 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
   # answer_product_overview (the packet has no distinct catalog/parent/variant answer goal in 3A).
   RESPONSE_GOAL_FOR_INTENT = {
     'price' => 'answer_price',
+    'price_range' => 'answer_price_range',
     'stock' => 'answer_stock',
     'product_overview' => 'answer_product_overview',
     'catalog' => 'answer_product_overview',
@@ -48,8 +49,9 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
   # outside this set itself rather than trusting the adapter to have filtered it.
   SUPPORTED_INTENTS = RESPONSE_GOAL_FOR_INTENT.keys.freeze
 
-  # Intents that require a validated family / a validated variant before any fact/answer.
-  FAMILY_NEEDED = %w[price stock parent_info variant_info catalog].freeze
+  # Intents that require a validated family / a validated variant before any fact/answer. price_range
+  # needs a validated FAMILY only (the range spans every active child), never a single variant.
+  FAMILY_NEEDED = %w[price price_range stock parent_info variant_info catalog].freeze
   VARIANT_NEEDED = %w[price stock variant_info].freeze
 
   # Binary StockRepository status -> the A8-01 packet stock enum. An unexpected status never
@@ -58,13 +60,16 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
 
   def initialize(family_repository: nil, variant_resolver: nil, price_repository: nil, # rubocop:disable Metrics/ParameterLists,Metrics/CyclomaticComplexity,Metrics/PerceivedComplexity -- injected read-only repository dependencies (all optional)
                  stock_repository: nil, price_formatter: nil, listing_repository: nil,
-                 description_source: nil, clock: nil)
+                 range_authority: nil, description_source: nil, clock: nil)
     @family_repository = family_repository || Marine::Catalog::ProductFamilyRepository.new
     @variant_resolver = variant_resolver || Marine::Catalog::VariantResolver.new
     @price_repository = price_repository || Marine::Catalog::PriceRepository.new
     @stock_repository = stock_repository || Marine::Catalog::StockRepository.new
     @price_formatter = price_formatter || Marine::Catalog::PriceDisplayFormatter.new
     @listing_repository = listing_repository || Marine::Catalog::ProductListingRepository.new
+    # The Phase-5 family-level price RANGE authority (reuses the exact-price qualifying policy across
+    # every active child). Injected for isolated tests; it owns no customer text.
+    @range_authority = range_authority || Marine::Backend::FamilyPriceRangeAuthority.new
     # RAG description source for product_information: a callable products -> { code => description }
     # over the ALREADY catalog-authorized page (one bounded approved query; never per-code). It may
     # ONLY annotate a listed code; it can never add, rename, or invent a product. Defaults to a null
@@ -118,7 +123,7 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
   end
 
   attr_reader :family_repository, :variant_resolver, :price_repository, :stock_repository,
-              :price_formatter, :listing_repository, :description_source
+              :price_formatter, :listing_repository, :description_source, :range_authority
 
   # { code:, name: } | nil (blank mention or no exact match) | :unavailable (catalog outage).
   # A blank mention never touches the repository.
@@ -167,6 +172,7 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
   def resolve_intent(intent, family, variant_code, language, facts)
     case intent
     when 'price' then store_fact(facts, :price, price_fact(variant_code, language), 'answer_price')
+    when 'price_range' then store_fact(facts, :price_range, price_range_fact(family, language), 'answer_price_range')
     when 'stock' then store_fact(facts, :stock, stock_fact(variant_code), 'answer_stock')
     when 'product_overview' then family ? 'answer_product_overview' : 'handoff'
     else RESPONSE_GOAL_FOR_INTENT[intent]
@@ -247,6 +253,47 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
       source: 'catalog_price_repository',
       checked_at: now_iso8601
     }
+  end
+
+  # Exact family price RANGE fact, or nil (no family, range unavailable/conflict/outage, or an
+  # unsupported display locale). The authoritative min/max/currency/uom come from the reused
+  # FamilyPriceRangeAuthority (exact-price qualifying policy across every active child); the
+  # customer-visible display endpoints are reconstructed deterministically from those canonical
+  # amounts via the EXISTING PriceDisplayFormatter at the packet locale — never trusted. Equal
+  # endpoints stay exact (min == max renders two identical display amounts). Never a Float.
+  # Provenance (source + checked_at) is carried verbatim from the SAME authority Result that returned
+  # min/max/currency/uom — the planner never re-stamps a literal source or its own clock, so the
+  # recorded provenance always belongs to the authority that produced the amounts. EvidencePacketBuilder
+  # still validates both against its closed exact source / UTC-timestamp contract (fail-closed on forgery).
+  def price_range_fact(family, language) # rubocop:disable Metrics/AbcSize -- a flat authority-call then two-endpoint display assembly
+    return nil if family.nil?
+
+    range = range_authority.call(family_code: family[:code])
+    return nil unless range.available?
+
+    min_display = format_range_endpoint(family[:code], range.min, range.currency, range.uom, language)
+    max_display = format_range_endpoint(family[:code], range.max, range.currency, range.uom, language)
+    return nil if min_display.nil? || max_display.nil?
+
+    {
+      canonical: { family_code: family[:code], currency: range.currency, min: range.min, max: range.max, uom: range.uom },
+      display: { currency: min_display[:currency], min: min_display[:amount], max: max_display[:amount], uom: min_display[:uom] },
+      policy_version: min_display[:policy_version],
+      source: range.source,
+      checked_at: range.checked_at
+    }
+  end
+
+  # One range endpoint's immutable display view via the shared formatter, or nil on any format failure.
+  def format_range_endpoint(family_code, amount, currency, uom, language)
+    result = price_formatter.format(
+      descriptor: { kind: :price_available, variant_code: family_code, price_list_rate: amount, currency: currency, uom: uom },
+      locale: language.to_s
+    )
+    return nil unless result.ok?
+
+    { currency: result.envelope[:display][:currency], amount: result.envelope[:display][:amount],
+      uom: result.envelope[:display][:uom], policy_version: result.envelope[:policy_version] }
   end
 
   # A bounded product-listing fact. `product` is nil for the broad top-level page, or an exact-resolved

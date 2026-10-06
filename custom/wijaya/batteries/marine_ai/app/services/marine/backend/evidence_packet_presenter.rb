@@ -26,11 +26,13 @@ class Marine::Backend::EvidencePacketPresenter
 
   # The packet answer goals that warrant a generated natural reply. clarify_* / handoff are
   # deterministic zero-model paths and are never generated here. The Phase-3 bounded-catalog answers
-  # (answer_product_listing / answer_product_information) are generated here too.
-  ANSWER_GOALS = %w[answer_price answer_stock answer_product_overview answer_product_listing answer_product_information].freeze
+  # (answer_product_listing / answer_product_information) and the Phase-5 answer_price_range are
+  # generated here too.
+  ANSWER_GOALS = %w[answer_price answer_price_range answer_stock answer_product_overview
+                    answer_product_listing answer_product_information].freeze
   # The answer goals that have an EXISTING deterministic renderer to fall back on. The Phase-3 listing
-  # answers have none, so a listing generation failure falls back to :handoff rather than a renderer
-  # that cannot present a catalog page.
+  # answers and the Phase-5 answer_price_range have none, so a generation failure there falls back to
+  # :handoff rather than a renderer that cannot present it.
   DETERMINISTIC_ANSWER_GOALS = %w[answer_price answer_stock answer_product_overview].freeze
   # Clarification goals are still valid, presentable (deterministic) packets — just not generated.
   CLARIFY_GOALS = %w[clarify_product clarify_variant clarify_ambiguous_variant].freeze

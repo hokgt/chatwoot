@@ -130,7 +130,7 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
   it 'never presents unauthorized, non-price, multi, not-found, clarify, handoff, malformed, or wrong-v2 outcomes' do
     rejected = [
       authority_result(reason: Coordinator::REASON_UNSUPPORTED_PLAN),
-      authority_result(intents: %w[stock]),
+      authority_result(intents: %w[catalog]),
       authority_result(intents: %w[price stock]),
       authority_result(outcome: Coordinator::OUTCOME_LEGACY_PRESERVED,
                        reason: Coordinator::REASON_CANDIDATE_CONTEXT_INSUFFICIENT),
@@ -207,6 +207,37 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
       mismatch = authority_result(intents: %w[product_listing],
                                   evidence_packet: packet(goals: %w[answer_product_listing], facts: { price: { display: 'x' } }))
       allow(authority_execution).to receive(:call).and_return(mismatch)
+      expect(execution.call).not_to be_deliverable
+      expect(presenter).not_to have_received(:call)
+    end
+  end
+
+  describe 'Phase 5 — the same single attempt delivers an exact-shape price_range / stock target' do
+    it 'delivers a price_range target only for the exact answer_price_range => [:price_range] shape' do
+      accepted = authority_result(intents: %w[price_range],
+                                  evidence_packet: packet(goals: %w[answer_price_range], facts: { price_range: { display: 'r' } }))
+      allow(authority_execution).to receive(:call).and_return(accepted)
+      allow(presenter).to receive(:call).and_return(Struct.new(:ok?, :text, :reason).new(true, 'Kisaran harga BD: Rp 10.000–12.500 per yard.',
+                                                                                         :accepted))
+
+      result = execution.call
+      expect(result).to be_deliverable
+      expect(result.text).to eq('Kisaran harga BD: Rp 10.000–12.500 per yard.')
+    end
+
+    it 'delivers a stock target only for the exact answer_stock => [:stock] shape' do
+      accepted = authority_result(intents: %w[stock], evidence_packet: packet(goals: %w[answer_stock], facts: { stock: { status: 'available' } }))
+      allow(authority_execution).to receive(:call).and_return(accepted)
+      allow(presenter).to receive(:call).and_return(Struct.new(:ok?, :text, :reason).new(true, 'BD-4 tersedia.', :accepted))
+
+      expect(execution.call).to be_deliverable
+    end
+
+    it 'rejects (fallback, presenter untouched) a price_range goal whose facts do not match the closed matrix' do
+      mismatch = authority_result(intents: %w[price_range],
+                                  evidence_packet: packet(goals: %w[answer_price_range], facts: { price: { display: 'x' } }))
+      allow(authority_execution).to receive(:call).and_return(mismatch)
+
       expect(execution.call).not_to be_deliverable
       expect(presenter).not_to have_received(:call)
     end

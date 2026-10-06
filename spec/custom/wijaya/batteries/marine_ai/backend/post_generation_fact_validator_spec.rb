@@ -203,4 +203,39 @@ RSpec.describe Marine::Backend::PostGenerationFactValidator do
       end
     end
   end
+
+  describe 'price_range (Phase 5 — both display endpoints required, no out-of-range amount)' do
+    let(:range_packet) do
+      builder.build(evidence_input: {
+                      scenario: { key: 'scenario_8' }, intents: %w[price_range], customer_language: 'id',
+                      response_goals: %w[answer_price_range],
+                      validated_slots: { product: { code: 'BABYDOLL', source: 'marine_catalog' } },
+                      facts: { price_range: {
+                        canonical: { family_code: 'BABYDOLL', currency: 'IDR', min: '10000', max: '12500', uom: 'Yard' },
+                        display: { currency: 'Rp', min: '10.000', max: '12.500', uom: 'yard' },
+                        policy_version: 'price-display-v1', source: 'catalog_price_range_repository', checked_at: '2026-09-30T12:00:00Z'
+                      } },
+                      missing_slots: [], variant_candidates: []
+                    })
+    end
+
+    it 'accepts a natural range reply carrying the family code and both display endpoints' do
+      reply = 'Untuk BABYDOLL, kisaran harganya Rp 10.000 sampai Rp 12.500 per yard ya.'
+      expect(validator.call(packet: range_packet, candidate: reply).ok?).to be(true)
+    end
+
+    it 'rejects a reply that omits an authorized endpoint' do
+      expect(validator.call(packet: range_packet, candidate: 'BABYDOLL kisaran mulai Rp 10.000 per yard.').reason).to eq(:missing_required_value)
+    end
+
+    it 'rejects an invented out-of-range amount (unauthorized numeric)' do
+      out_of_range = 'BABYDOLL Rp 10.000 sampai Rp 12.500 per yard, diskon jadi Rp 9.000.'
+      expect(validator.call(packet: range_packet, candidate: out_of_range).reason).to eq(:unauthorized_token)
+    end
+
+    it 'rejects a price_range structural-key leak' do
+      leak = 'BABYDOLL Rp 10.000 sampai Rp 12.500 per yard catalog_price_range_repository'
+      expect(validator.call(packet: range_packet, candidate: leak).reason).to eq(:packet_leak)
+    end
+  end
 end

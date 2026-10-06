@@ -16,16 +16,16 @@ RSpec.describe Marine::Backend::ExecutionPolicy do
     end
   end
 
-  describe 'PRODUCT_INTENTS (the Phase-3 packet-path executable intents)' do
-    it 'is exactly ["price","product_listing","product_information"] and frozen' do
-      expect(described_class::PRODUCT_INTENTS).to eq(%w[price product_listing product_information])
+  describe 'PRODUCT_INTENTS (the Phase-3/5 packet-path executable intents)' do
+    it 'is exactly the five single-intent product reads and frozen' do
+      expect(described_class::PRODUCT_INTENTS).to eq(%w[price price_range stock product_listing product_information])
       expect(described_class::PRODUCT_INTENTS).to be_frozen
     end
   end
 
   describe 'CLASSIFICATION_INTENTS' do
     it 'is the product intents plus the unsupported fallback, frozen' do
-      expect(described_class::CLASSIFICATION_INTENTS).to eq(%w[price product_listing product_information unsupported])
+      expect(described_class::CLASSIFICATION_INTENTS).to eq(%w[price price_range stock product_listing product_information unsupported])
       expect(described_class::CLASSIFICATION_INTENTS).to be_frozen
     end
   end
@@ -58,21 +58,26 @@ RSpec.describe Marine::Backend::ExecutionPolicy do
     end
   end
 
-  describe '.product_authorized? (Phase-3 packet path — single-intent sets only)' do
+  describe '.product_authorized? (Phase-3/5 packet path — single-intent sets only)' do
     it 'accepts EXACTLY each executable product intent as a one-element array' do
       expect(described_class.product_authorized?(%w[price])).to be(true)
+      expect(described_class.product_authorized?(%w[price_range])).to be(true)
+      expect(described_class.product_authorized?(%w[stock])).to be(true)
       expect(described_class.product_authorized?(%w[product_listing])).to be(true)
       expect(described_class.product_authorized?(%w[product_information])).to be(true)
       # A fresh (non-identical) array equal to a canonical single-intent set still passes.
-      expect(described_class.product_authorized?(%w[product_listing].dup)).to be(true)
+      expect(described_class.product_authorized?(%w[price_range].dup)).to be(true)
     end
 
     it 'rejects a duplicated/reordered/mixed/empty/non-array or unactivated set (no dedupe, no sort)' do
       expect(described_class.product_authorized?(%w[price price])).to be(false)
-      expect(described_class.product_authorized?(%w[price product_listing])).to be(false)
+      expect(described_class.product_authorized?(%w[price_range price_range])).to be(false)
+      expect(described_class.product_authorized?(%w[stock stock])).to be(false)
+      expect(described_class.product_authorized?(%w[price stock])).to be(false)
+      expect(described_class.product_authorized?(%w[price price_range])).to be(false)
       expect(described_class.product_authorized?(%w[product_listing product_information])).to be(false)
-      expect(described_class.product_authorized?(%w[stock])).to be(false)
       expect(described_class.product_authorized?(%w[catalog])).to be(false)
+      expect(described_class.product_authorized?(%w[variant_info])).to be(false)
       expect(described_class.product_authorized?(%w[unsupported])).to be(false)
       expect(described_class.product_authorized?([])).to be(false)
       expect(described_class.product_authorized?('product_listing')).to be(false)
@@ -81,17 +86,20 @@ RSpec.describe Marine::Backend::ExecutionPolicy do
   end
 
   describe '.executable? / .product_executable?' do
-    it 'executable? is true only for the live price intent' do
+    it 'executable? is true only for the live price intent (the live bridge is unchanged)' do
       expect(described_class.executable?('price')).to be(true)
-      expect(described_class.executable?('product_listing')).to be(false)
+      expect(described_class.executable?('price_range')).to be(false)
       expect(described_class.executable?('stock')).to be(false)
+      expect(described_class.executable?('product_listing')).to be(false)
     end
 
-    it 'product_executable? is true for each Phase-3 product intent only' do
+    it 'product_executable? is true for each Phase-3/5 product intent only' do
       expect(described_class.product_executable?('price')).to be(true)
+      expect(described_class.product_executable?('price_range')).to be(true)
+      expect(described_class.product_executable?('stock')).to be(true)
       expect(described_class.product_executable?('product_listing')).to be(true)
       expect(described_class.product_executable?('product_information')).to be(true)
-      expect(described_class.product_executable?('stock')).to be(false)
+      expect(described_class.product_executable?('catalog')).to be(false)
       expect(described_class.product_executable?('unsupported')).to be(false)
     end
   end

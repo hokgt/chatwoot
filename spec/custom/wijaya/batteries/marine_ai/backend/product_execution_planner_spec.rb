@@ -59,12 +59,12 @@ RSpec.describe Marine::Backend::ProductExecutionPlanner do
       expect(result[:response_goals]).to eq(%w[handoff])
     end
 
-    it 'hands off on a non-price (stock) intent without touching any repository' do
+    it 'hands off on a supported-but-unauthorized (variant_info) intent without touching any repository' do
       expect(family_repository).not_to receive(:resolve_exact)
       expect(variant_resolver).not_to receive(:resolve)
       expect(price_repository).not_to receive(:price_for)
       expect(stock_repository).not_to receive(:status_for)
-      result = call(intents: %w[stock])
+      result = call(intents: %w[variant_info])
       expect(result[:response_goals]).to eq(%w[handoff])
       expect(result[:facts]).to eq({})
     end
@@ -119,6 +119,140 @@ RSpec.describe Marine::Backend::ProductExecutionPlanner do
 
       expect(result[:facts]).not_to have_key(:price)
       expect(result[:response_goals]).to include('handoff')
+    end
+  end
+
+  describe 'stock (Phase 5 — binary availability only)' do
+    it 'produces a binary available fact over the exact resolved variant (never a quantity)' do
+      allow(stock_repository).to receive(:status_for).with('BD-4').and_return(:available)
+      result = call(intents: %w[stock])
+
+      expect(result[:response_goals]).to eq(%w[answer_stock])
+      expect(result[:facts][:stock]).to eq(status: 'available', source: 'stock_repository', checked_at: checked_at)
+      expect(result[:validated_slots][:variant][:code]).to eq('BD-4')
+      # No numeric inventory ever enters the fact.
+      expect(result[:facts][:stock].keys).to contain_exactly(:status, :source, :checked_at)
+    end
+
+    it 'produces a binary unavailable fact for an empty variant' do
+      allow(stock_repository).to receive(:status_for).with('BD-4').and_return(:empty)
+      expect(call(intents: %w[stock])[:facts][:stock][:status]).to eq('unavailable')
+    end
+
+    it 'clarifies the variant when stock is asked with only a family (no exact child)' do
+      allow(variant_resolver).to receive(:resolve).and_return(status: :unresolved, reason: :missing)
+      result = call(intents: %w[stock], intent_overrides: { explicit_child_code: nil })
+      expect(result[:response_goals]).to eq(%w[clarify_variant])
+      expect(result[:facts]).to eq({})
+    end
+
+    it 'hands off (no stock fact) on a stock repository outage' do
+      allow(stock_repository).to receive(:status_for).with('BD-4').and_raise(catalog_error)
+      result = call(intents: %w[stock])
+      expect(result[:response_goals]).to eq(%w[handoff])
+      expect(result[:facts]).to eq({})
+    end
+  end
+
+  describe 'price_range (Phase 5 — family-level selling-price range)' do
+    let(:range_authority) { instance_double(Marine::Backend::FamilyPriceRangeAuthority) }
+    let(:range_planner) do
+      described_class.new(
+        family_repository: family_repository, variant_resolver: variant_resolver,
+        price_repository: price_repository, stock_repository: stock_repository,
+        price_formatter: Marine::Catalog::PriceDisplayFormatter.new, range_authority: range_authority, clock: clock
+      )
+    end
+    # The authority Result carries its OWN source + checked_at; the planner must carry both VERBATIM
+    # into the fact (never re-stamp a literal source or its own clock). The default checked_at is a
+    # valid UTC instant DISTINCT from the planner clock (`checked_at`), so a carried timestamp is
+    # provably the authority's and not the planner's.
+    let(:authority_source) { Marine::Backend::FamilyPriceRangeAuthority::SOURCE }
+    let(:authority_checked_at) { '2026-09-29T08:30:00Z' }
+
+    def range_call(mention: 'Santorini')
+      range_planner.call(product_intent: { customer_language: 'id', family_mention: mention, explicit_child_code: nil, attribute_candidates: [] },
+                         intents: %w[price_range], scenario: { key: 'scenario_8' })
+    end
+
+    def range_result(min:, max:, source: authority_source, checked_at: authority_checked_at)
+      Marine::Backend::FamilyPriceRangeAuthority::Result.new(
+        status: :available, min: min, max: max, currency: 'IDR', uom: 'Yard', source: source, checked_at: checked_at
+      ).freeze
+    end
+
+    it 'emits an answer_price_range fact with canonical + formatter-reconstructed display endpoints, no variant resolution' do
+      expect(variant_resolver).not_to receive(:resolve)
+      allow(range_authority).to receive(:call).with(family_code: 'BD').and_return(range_result(min: '10000', max: '12500'))
+
+      result = range_call
+
+      expect(result[:response_goals]).to eq(%w[answer_price_range])
+      expect(result[:validated_slots][:variant]).to be_nil
+      expect(result[:validated_slots][:product][:code]).to eq('BD')
+      expect(result[:facts][:price_range]).to eq(
+        canonical: { family_code: 'BD', currency: 'IDR', min: '10000', max: '12500', uom: 'Yard' },
+        display: { currency: 'Rp', min: '10.000', max: '12.500', uom: 'yard' },
+        policy_version: 'price-display-v1', source: authority_source, checked_at: authority_checked_at
+      )
+    end
+
+    it 'carries the authority Result source + checked_at verbatim (never re-stamps a literal source or the planner clock)' do
+      allow(range_authority).to receive(:call).and_return(range_result(min: '10000', max: '12500'))
+
+      fact = range_call[:facts][:price_range]
+      expect(fact[:source]).to eq(authority_source)
+      # The authority's checked_at is preserved — NOT the planner clock (`checked_at`).
+      expect(fact[:checked_at]).to eq(authority_checked_at)
+      expect(fact[:checked_at]).not_to eq(checked_at)
+    end
+
+    it 'carries a forged authority source/timestamp through unchanged, and EvidencePacketBuilder rejects each (fail-closed backstop)' do
+      invalid_error = Marine::Backend::EvidencePacketBuilder::InvalidEvidenceInputError
+
+      allow(range_authority).to receive(:call).and_return(range_result(min: '10000', max: '12500', source: 'forged_source'))
+      forged_source_input = range_call
+      expect(forged_source_input[:facts][:price_range][:source]).to eq('forged_source')
+      expect { Marine::Backend::EvidencePacketBuilder.new(clock: clock).build(evidence_input: forged_source_input) }
+        .to raise_error(invalid_error)
+
+      allow(range_authority).to receive(:call).and_return(range_result(min: '10000', max: '12500', checked_at: '2026-09-29 08:30:00'))
+      forged_ts_input = range_call
+      expect(forged_ts_input[:facts][:price_range][:checked_at]).to eq('2026-09-29 08:30:00')
+      expect { Marine::Backend::EvidencePacketBuilder.new(clock: clock).build(evidence_input: forged_ts_input) }
+        .to raise_error(invalid_error)
+    end
+
+    it 'keeps equal endpoints exact and coherent (min == max)' do
+      allow(range_authority).to receive(:call).and_return(range_result(min: '12500', max: '12500'))
+      display = range_call[:facts][:price_range][:display]
+      expect(display[:min]).to eq('12.500')
+      expect(display[:max]).to eq('12.500')
+    end
+
+    it 'clarifies the product when no exact family matches (never a guessed range)' do
+      allow(family_repository).to receive(:resolve_exact).with('Ghost').and_return(nil)
+      expect(range_authority).not_to receive(:call)
+      result = range_call(mention: 'Ghost')
+      expect(result[:response_goals]).to eq(%w[clarify_product])
+      expect(result[:facts]).to eq({})
+    end
+
+    it 'hands off (no range fact) when the authoritative range is unavailable' do
+      allow(range_authority).to receive(:call).and_return(Marine::Backend::FamilyPriceRangeAuthority::Result.new(status: :range_unavailable).freeze)
+      result = range_call
+      expect(result[:response_goals]).to eq(%w[handoff])
+      expect(result[:facts]).to eq({})
+    end
+
+    it 'produces an evidence input the EvidencePacketBuilder accepts end-to-end' do
+      allow(range_authority).to receive(:call).and_return(range_result(min: '10000', max: '12500'))
+      input = range_call
+      packet = Marine::Backend::EvidencePacketBuilder.new(clock: clock).build(evidence_input: input)
+      expect(packet[:response_goals]).to eq(%w[answer_price_range])
+      expect(packet[:facts][:price_range][:display]).to eq(currency: 'Rp', min: '10.000', max: '12.500', uom: 'yard')
+      # The authority provenance rides through the builder's closed validation unchanged.
+      expect(packet[:facts][:price_range][:checked_at]).to eq(authority_checked_at)
     end
   end
 

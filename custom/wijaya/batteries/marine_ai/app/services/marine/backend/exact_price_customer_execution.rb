@@ -14,9 +14,12 @@ class Marine::Backend::ExactPriceCustomerExecution
 
   # The exact single-intent target matrix: each accepted response goal maps to the EXACT fact-key set
   # its packet must carry. A target packet carries exactly one of these goals and exactly its fact set
-  # — price is unchanged (answer_price → [:price]); the two listing answers carry [:product_listing].
+  # — price is unchanged (answer_price → [:price]); the two listing answers carry [:product_listing];
+  # the Phase-5 answers carry exactly [:price_range] / [:stock].
   TARGET_FACTS = {
     'answer_price' => %i[price],
+    'answer_price_range' => %i[price_range],
+    'answer_stock' => %i[stock],
     'answer_product_listing' => %i[product_listing],
     'answer_product_information' => %i[product_listing]
   }.freeze

@@ -170,8 +170,8 @@ RSpec.describe 'Marine Model 1 structured product candidate (Step 2)' do
   end
 
   describe 'ExecutionPolicy is authoritative and fails closed (proof #5)' do
-    it 'rejects a forged non-price (stock) plan at the adapter with phase_not_executable' do
-      forged = Marine::Decision::CandidatePlan.normalize(product_candidate('intents' => %w[stock], 'slot_operations' => []))
+    it 'rejects a forged non-executable (variant_info) plan at the adapter with phase_not_executable' do
+      forged = Marine::Decision::CandidatePlan.normalize(product_candidate('intents' => %w[variant_info], 'slot_operations' => []))
       result = adapter.call(plan: forged, scenario_key: 'scenario_4242')
       expect(result.ok?).to be(false)
       expect(result.reason).to eq('phase_not_executable')
