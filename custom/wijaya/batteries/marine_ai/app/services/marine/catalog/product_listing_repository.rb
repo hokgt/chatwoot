@@ -14,14 +14,24 @@
 # only risk dropping a legitimately listable row on a dirty flag. Deterministically ordered by
 # item_code.
 #
+# Authoritative identity is the item_code, NEVER the item_name. The active-set query DEDUPLICATES
+# on item_code (SQL `DISTINCT ON (item_code)`) BEFORE the page limit, and the total is a
+# `COUNT(DISTINCT item_code)` over the SAME filter — so a duplicate physical row for one item_code
+# can never appear twice in the page, inflate the total, or (in the exact lookup) manufacture a
+# false ambiguity. A blank/whitespace item_code is excluded (it is not a usable identity: the dedup
+# key would collapse unrelated rows into one phantom "" product).
+#
 # The listing is a BOUNDED PAGE with EXACT completeness metadata, never an exhaustive dump and
 # never a silent truncation:
-#   * a single SELECT fetches page_limit + 1 rows, so `has_more` (and thus `complete`) is known
-#     exactly from whether an extra row came back;
-#   * `returned_count` is the size of the capped page actually returned;
-#   * `total_count` is the page size itself when complete (no extra query), or a safe COUNT(*)
-#     when there is more — and nil if that count cannot be obtained safely (the caller stays
-#     honest about a bounded selection rather than claiming a total it does not have).
+#   * a single SELECT fetches page_limit + 1 DEDUPLICATED rows, so `has_more` (and thus `complete`)
+#     is known exactly from whether an extra distinct item_code came back;
+#   * `returned_count` is the size of the capped (already-deduplicated) page actually returned;
+#   * `total_count` is the page size itself when complete (no extra query), or a safe
+#     COUNT(DISTINCT item_code) when there is more — and nil if that count cannot be obtained safely
+#     (the caller stays honest about a bounded selection rather than claiming a total it does not
+#     have);
+#   * `has_more` is returned explicitly and is always the exact complement of `complete`
+#     (`complete == !has_more`), so the caller never has to re-derive completeness.
 # `limit` is clamped to [1, MAX_PAGE]; MAX_PAGE is the hard repository ceiling. Everything is
 # parameterized, SELECT-only, and fails closed with CatalogUnavailableError when the catalog DB
 # is unconfigured/unreachable. No UI, no provider, no state is built here.
@@ -33,9 +43,10 @@ module Marine
       MAX_PAGE = 20
       DEFAULT_PAGE = 20
 
-      # Bounded, deterministic listing of ACTIVE TOP-LEVEL products. Returns:
-      #   { products: [{ code:, name: }], returned_count:, total_count: (Integer|nil), complete: }
-      # complete == true means the returned page IS the whole active top-level set.
+      # Bounded, deterministic listing of ACTIVE TOP-LEVEL products, DEDUPLICATED on item_code. Returns:
+      #   { products: [{ code:, name: }], returned_count:, total_count: (Integer|nil), complete:, has_more: }
+      # complete == true means the returned page IS the whole active top-level set, and is always the
+      # exact complement of has_more (complete == !has_more).
       def active_top_level(limit: DEFAULT_PAGE)
         ensure_configured!
         capped = clamp_limit(limit)
@@ -46,15 +57,18 @@ module Marine
           products: page,
           returned_count: page.length,
           total_count: total_count(has_more, page.length),
-          complete: !has_more
+          complete: !has_more,
+          has_more: has_more
         }
       end
 
       # Exact resolution of ONE active top-level product (template OR standalone) by its exact
-      # item_code or exact (case-insensitive) item_name, under the IDENTICAL top-level predicate used
-      # by the page/count. Returns { code:, name: } for a single unique match, or nil for a blank
-      # mention, no match, or an AMBIGUOUS match (more than one row) — so a caller never binds to a
-      # guessed or non-unique product. A child/variant or disabled row can never be returned.
+      # item_code or exact (case-insensitive) item_name, under the IDENTICAL authoritative predicate
+      # used by the page/count and DEDUPLICATED on item_code. Returns { code:, name: } for a single
+      # unique item_code match, or nil for a blank mention, no match, or an AMBIGUOUS match (more than
+      # one DISTINCT item_code) — so a caller never binds to a guessed or non-unique product.
+      # Duplicate physical rows for the SAME item_code collapse to one identity and never manufacture
+      # a false ambiguity. A child/variant or disabled row can never be returned.
       def exact_top_level(mention)
         ensure_configured!
         normalized = mention.to_s.strip
@@ -72,8 +86,9 @@ module Marine
         raise Marine::Catalog::Errors::CatalogUnavailableError unless Marine::Catalog::Config.configured?
       end
 
-      # The exact total: the page size itself when the page is the whole set (no extra query), the
-      # real COUNT(*) when there is more, or nil when that count cannot be obtained safely.
+      # The exact total of the SAME deduplicated authoritative set: the page size itself when the page
+      # is the whole set (no extra query), the real COUNT(DISTINCT item_code) when there is more, or
+      # nil when that count cannot be obtained safely.
       def total_count(has_more, returned)
         return returned unless has_more
 
@@ -99,37 +114,56 @@ module Marine
       # discriminate top-level-ness).
       TOP_LEVEL_PREDICATE = "disabled = false AND COALESCE(BTRIM(variant_of), '') = ''".freeze
 
-      # Active top-level rows (templates + standalone; variants and disabled excluded), ordered
-      # deterministically. LIMIT is bound as $1 (= page_limit + 1) so completeness is known.
+      # The authoritative identity is item_code. A blank/whitespace item_code is NOT a usable
+      # identity: since the active set deduplicates on item_code, a blank code would collapse
+      # unrelated rows into one phantom "" product and corrupt the count/completeness semantics. It is
+      # therefore excluded alongside the top-level membership test. This is an identity guard, not a
+      # change to the canonical membership predicate (TOP_LEVEL_PREDICATE is preserved verbatim).
+      IDENTITY_PREDICATE = "COALESCE(BTRIM(item_code), '') <> ''".freeze
+
+      # The full authoritative filter — membership (TOP_LEVEL_PREDICATE) AND a usable item_code
+      # identity — shared VERBATIM by page / count / exact lookup so the three can never disagree
+      # about which rows are the active, deduplicable top-level set.
+      AUTHORITATIVE_PREDICATE = "#{TOP_LEVEL_PREDICATE} AND #{IDENTITY_PREDICATE}".freeze
+
+      # Active top-level rows (templates + standalone; variants and disabled excluded), DEDUPLICATED
+      # on the authoritative item_code and ordered deterministically. `DISTINCT ON (item_code)` keeps
+      # exactly one physical row per item_code; the ORDER BY leads with item_code (required by
+      # DISTINCT ON and the deterministic page order) and breaks ties on item_name ASC, so the name
+      # chosen for a duplicated item_code is deterministic too. LIMIT is bound as $1 (= page_limit + 1
+      # distinct codes) so completeness is known exactly from the extra distinct row.
       def listing_sql
         <<~SQL.squish
-          SELECT item_code AS code, item_name AS name
+          SELECT DISTINCT ON (item_code) item_code AS code, item_name AS name
           FROM #{Marine::Catalog::Config.qualified_table}
-          WHERE #{TOP_LEVEL_PREDICATE}
-          ORDER BY item_code ASC
+          WHERE #{AUTHORITATIVE_PREDICATE}
+          ORDER BY item_code ASC, item_name ASC
           LIMIT $1
         SQL
       end
 
-      # Exact count of the same active top-level set, for the completeness metadata.
+      # Exact count of the SAME authoritative set, deduplicated on item_code, for the completeness
+      # metadata — COUNT(DISTINCT item_code) so duplicate physical rows never inflate the total.
       def count_sql
         <<~SQL.squish
-          SELECT COUNT(*) AS total
+          SELECT COUNT(DISTINCT item_code) AS total
           FROM #{Marine::Catalog::Config.qualified_table}
-          WHERE #{TOP_LEVEL_PREDICATE}
+          WHERE #{AUTHORITATIVE_PREDICATE}
         SQL
       end
 
-      # Exact lookup over the SAME top-level predicate: match the exact item_code ($1) or the
-      # case-insensitive exact item_name ($2 = lowered mention). LIMIT 2 so the caller can detect an
-      # ambiguous (non-unique) match and refuse to bind rather than guessing the first row.
+      # Exact lookup over the SAME authoritative predicate, DEDUPLICATED on item_code: match the exact
+      # item_code ($1) or the case-insensitive exact item_name ($2 = lowered mention). DISTINCT ON
+      # (item_code) collapses duplicate physical rows for one item_code to a single identity so they
+      # cannot manufacture a false ambiguity; LIMIT 2 still lets the caller detect a genuine ambiguity
+      # across DISTINCT item_codes and refuse to bind rather than guessing the first row.
       def exact_sql
         <<~SQL.squish
-          SELECT item_code AS code, item_name AS name
+          SELECT DISTINCT ON (item_code) item_code AS code, item_name AS name
           FROM #{Marine::Catalog::Config.qualified_table}
-          WHERE #{TOP_LEVEL_PREDICATE}
+          WHERE #{AUTHORITATIVE_PREDICATE}
             AND (item_code = $1 OR LOWER(item_name) = $2)
-          ORDER BY item_code ASC
+          ORDER BY item_code ASC, item_name ASC
           LIMIT 2
         SQL
       end

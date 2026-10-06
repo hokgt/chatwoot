@@ -22,7 +22,7 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
     allow(Marine::Catalog::Config).to receive(:qualified_table).and_return('marine_ai.item')
     allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
       captured << { sql: sql, params: params }
-      if sql.include?('COUNT(*)')
+      if sql.include?('COUNT(DISTINCT item_code)')
         count_rows
       elsif sql.include?('item_code = $1')
         exact_rows
@@ -51,6 +51,45 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
     end
   end
 
+  # The authoritative identity is item_code: the active set is deduplicated on item_code BEFORE the
+  # page limit, the total is COUNT(DISTINCT item_code), and a blank/whitespace item_code is excluded
+  # so it can never become a phantom "" product.
+  describe 'item_code dedup and identity' do
+    before do
+      repository.active_top_level(limit: 1)
+      repository.exact_top_level('AAA')
+    end
+
+    let(:sqls) { captured.map { |c| c[:sql] } }
+    let(:row_sqls) { captured.map { |c| c[:sql] }.reject { |sql| sql.include?('COUNT(') } }
+
+    it 'deduplicates every row query on item_code via DISTINCT ON (item_code)' do
+      expect(row_sqls).to all(include('DISTINCT ON (item_code)'))
+    end
+
+    it 'counts DISTINCT item_code, never physical rows' do
+      # The count query is only issued when has_more; force it with a probe that overflows the page.
+      allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
+        captured << { sql: sql, params: params }
+        next [{ 'total' => 7 }] if sql.include?('COUNT(DISTINCT item_code)')
+
+        [{ 'code' => 'AAA', 'name' => 'Alpha' }, { 'code' => 'BBB', 'name' => 'Bravo' }]
+      end
+      repository.active_top_level(limit: 1)
+      count_sql = captured.last[:sql]
+      expect(count_sql).to include('COUNT(DISTINCT item_code)')
+      expect(count_sql).not_to include('COUNT(*)')
+    end
+
+    it 'guards against a blank/whitespace item_code identity in every query' do
+      expect(sqls).to all(include("COALESCE(BTRIM(item_code), '') <> ''"))
+    end
+
+    it 'orders deterministically by item_code then item_name (the duplicate-row tiebreak)' do
+      expect(row_sqls).to all(include('ORDER BY item_code ASC, item_name ASC'))
+    end
+  end
+
   describe '#active_top_level' do
     context 'when the page is the whole set (no extra row)' do
       let(:listing_rows) { [{ 'code' => 'AAA', 'name' => 'Alpha' }, { 'code' => 'BBB', 'name' => 'Bravo' }] }
@@ -72,8 +111,9 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
         expect(result[:returned_count]).to eq(2)
         expect(result[:total_count]).to eq(2)
         expect(result[:complete]).to be(true)
+        expect(result[:has_more]).to be(false)
         expect(captured.length).to eq(1)
-        expect(captured.none? { |c| c[:sql].include?('COUNT(*)') }).to be(true)
+        expect(captured.none? { |c| c[:sql].include?('COUNT(') }).to be(true)
       end
     end
 
@@ -90,21 +130,23 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
         expect(result[:products]).to eq([{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }])
         expect(result[:returned_count]).to eq(2)
         expect(result[:complete]).to be(false)
+        expect(result[:has_more]).to be(true)
         expect(result[:total_count]).to eq(42)
-        expect(captured.last[:sql]).to include('COUNT(*)')
+        expect(captured.last[:sql]).to include('COUNT(DISTINCT item_code)')
         expect(captured.last[:sql]).to include("disabled = false AND COALESCE(BTRIM(variant_of), '') = ''")
       end
 
       it 'reports a nil total_count when the COUNT query fails (honest bounded selection)' do
         allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
           captured << { sql: sql, params: params }
-          raise StandardError, 'count boom' if sql.include?('COUNT(*)')
+          raise StandardError, 'count boom' if sql.include?('COUNT(DISTINCT item_code)')
 
           listing_rows
         end
 
         result = repository.active_top_level(limit: 2)
         expect(result[:complete]).to be(false)
+        expect(result[:has_more]).to be(true)
         expect(result[:total_count]).to be_nil
       end
     end
@@ -144,8 +186,21 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
         expect(call[:params]).to eq(%w[Alpha alpha])
         expect(call[:sql]).to include("disabled = false AND COALESCE(BTRIM(variant_of), '') = ''")
         expect(call[:sql]).to include('item_code = $1 OR LOWER(item_name) = $2')
+        # DISTINCT ON (item_code) collapses duplicate physical rows for one item_code to a single
+        # identity; LIMIT 2 still surfaces a genuine ambiguity across DISTINCT item_codes.
+        expect(call[:sql]).to include('DISTINCT ON (item_code)')
         expect(call[:sql]).to include('LIMIT 2')
         expect(result).to eq(code: 'AAA', name: 'Alpha')
+      end
+    end
+
+    context 'with duplicate physical rows that the DB collapses to one item_code identity' do
+      # DISTINCT ON (item_code) means the DB returns a single row for one item_code even when several
+      # physical rows share it, so the lookup resolves rather than manufacturing a false ambiguity.
+      let(:exact_rows) { [{ 'code' => 'AAA', 'name' => 'Alpha' }] }
+
+      it 'resolves the single collapsed identity' do
+        expect(repository.exact_top_level('AAA')).to eq(code: 'AAA', name: 'Alpha')
       end
     end
 
@@ -163,7 +218,8 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
       end
     end
 
-    context 'with an AMBIGUOUS (non-unique) match' do
+    context 'with an AMBIGUOUS match across DISTINCT item_codes' do
+      # Two different item_codes share the name Alpha — a genuine ambiguity DISTINCT ON does not hide.
       let(:exact_rows) { [{ 'code' => 'AAA', 'name' => 'Alpha' }, { 'code' => 'AAB', 'name' => 'Alpha' }] }
 
       it 'returns nil rather than guessing the first row' do

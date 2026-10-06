@@ -255,9 +255,10 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
   # product_information the already-authorized page is FILTERED to exactly the subset carrying a bound
   # approved RAG description (a product is never selected from RAG; an undescribed product is dropped),
   # and zero bound descriptions fails closed. returned_count is recomputed to the emitted subset;
-  # total_count stays the Catalog-authoritative top-level total; complete is true only when the original
-  # page was complete AND nothing was filtered out — so a filtered page is never claimed as the whole
-  # catalogue.
+  # total_count stays the Catalog-authoritative top-level total; completeness is read from the repository's
+  # explicit has_more (the authoritative completeness signal, complete == !has_more), and complete is true
+  # only when the original page had no more AND nothing was filtered out — so a filtered page is never
+  # claimed as the whole catalogue.
   def listing_fact(descriptions:, product:)
     page = product ? single_product_page(product) : listing_repository.active_top_level
     return nil if page[:products].empty?
@@ -270,7 +271,7 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
       products: products,
       returned_count: products.length,
       total_count: page[:total_count],
-      complete: page[:complete] && !filtered,
+      complete: !page[:has_more] && !filtered,
       source: 'catalog_listing_repository',
       checked_at: now_iso8601
     }
@@ -278,9 +279,10 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
     nil
   end
 
-  # A single exact-resolved product rendered as a one-row, complete page.
+  # A single exact-resolved product rendered as a one-row, complete page. has_more is false so the
+  # page shares the repository's completeness contract (complete == !has_more) that listing_fact reads.
   def single_product_page(product)
-    { products: [{ code: product[:code], name: product[:name] }], returned_count: 1, total_count: 1, complete: true }
+    { products: [{ code: product[:code], name: product[:name] }], returned_count: 1, total_count: 1, has_more: false }
   end
 
   # Fold each authorized catalog row to { code, name } for a names-only listing. For

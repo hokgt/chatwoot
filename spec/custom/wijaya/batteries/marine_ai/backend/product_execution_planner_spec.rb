@@ -198,7 +198,7 @@ RSpec.describe Marine::Backend::ProductExecutionPlanner do
     let(:description_source) { ->(_products) { {} } }
     let(:listing_result) do
       { products: [{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }],
-        returned_count: 2, total_count: 2, complete: true }
+        returned_count: 2, total_count: 2, complete: true, has_more: false }
     end
     let(:listing_planner) do
       described_class.new(
@@ -331,14 +331,23 @@ RSpec.describe Marine::Backend::ProductExecutionPlanner do
 
     it 'carries not-complete metadata through (complete=false, total_count>returned)' do
       allow(listing_repository).to receive(:active_top_level)
-        .and_return(products: [{ code: 'AAA', name: 'Alpha' }], returned_count: 1, total_count: 9, complete: false)
+        .and_return(products: [{ code: 'AAA', name: 'Alpha' }], returned_count: 1, total_count: 9, complete: false, has_more: true)
       listing = listing_call(intents: %w[product_listing])[:facts][:product_listing]
       expect(listing[:complete]).to be(false)
       expect(listing[:total_count]).to eq(9)
     end
 
+    it 'maps the repository has_more directly into Evidence completeness (complete == !has_more)' do
+      allow(listing_repository).to receive(:active_top_level)
+        .and_return(products: [{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }],
+                    returned_count: 2, total_count: 2, complete: true, has_more: false)
+      listing = listing_call(intents: %w[product_listing])[:facts][:product_listing]
+      expect(listing[:complete]).to be(true)
+    end
+
     it 'hands off (factless) on an empty catalog or a catalog outage' do
-      allow(listing_repository).to receive(:active_top_level).and_return(products: [], returned_count: 0, total_count: 0, complete: true)
+      allow(listing_repository).to receive(:active_top_level)
+        .and_return(products: [], returned_count: 0, total_count: 0, complete: true, has_more: false)
       expect(listing_call(intents: %w[product_listing])[:response_goals]).to eq(%w[handoff])
       allow(listing_repository).to receive(:active_top_level).and_raise(catalog_error)
       result = listing_call(intents: %w[product_information])
