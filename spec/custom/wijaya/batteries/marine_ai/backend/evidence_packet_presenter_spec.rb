@@ -233,4 +233,52 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
       expect(result).to have_attributes(ok: false, reason: :generation_failed, fallback: :deterministic)
     end
   end
+
+  describe 'bounded product_listing generation (Phase 3)' do
+    let(:listing_input) do
+      {
+        scenario: { key: 'scenario_9' }, intents: %w[product_listing], customer_language: 'id',
+        response_goals: %w[answer_product_listing], validated_slots: {},
+        facts: { product_listing: { products: [{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }],
+                                    returned_count: 2, total_count: 2, complete: true,
+                                    source: 'catalog_listing_repository', checked_at: '2026-09-30T12:00:00Z' } },
+        missing_slots: [], variant_candidates: []
+      }
+    end
+    let(:listing_packet) { builder.build(evidence_input: listing_input) }
+    let(:verifier_reject) { ->(**) { false } }
+
+    it 'delivers a listing reply that cites exactly the listed codes (verifier confirms)' do
+      result = presenter.call(packet: listing_packet, generator: generator('Kami punya AAA (Alpha) dan BBB (Bravo).'),
+                              customer_request: 'Produk apa saja?', fact_verifier: verifier_ok)
+      expect(result.ok?).to be(true)
+    end
+
+    it 'reserves :handoff (no deterministic listing renderer) when generation fails' do
+      result = presenter.call(packet: listing_packet, generator: generator(nil), customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: false, reason: :generation_failed, fallback: :handoff)
+    end
+
+    it 'rejects a reply that omits a listed product code' do
+      result = presenter.call(packet: listing_packet, generator: generator('Kami hanya punya AAA (Alpha).'),
+                              customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: false, reason: :fact_rejected, fallback: :handoff)
+    end
+
+    # Section E — a reply that passes the deterministic guard (cites every authorized code+name) but
+    # introduces a RAG-only product or an ungrounded/swapped description is caught by the REQUIRED
+    # semantic verifier; a missing or rejecting verifier fails closed to :handoff.
+    it 'rejects a RAG-only / ungrounded-description reply via the required semantic verifier' do
+      reply = 'Kami punya AAA (Alpha), BBB (Bravo), dan produk istimewa lainnya.'
+      result = presenter.call(packet: listing_packet, generator: generator(reply),
+                              customer_request: 'x', fact_verifier: verifier_reject)
+      expect(result).to have_attributes(ok: false, reason: :fact_unverified, fallback: :handoff)
+    end
+
+    it 'requires the semantic verifier for a listing answer (a missing verifier fails closed)' do
+      result = presenter.call(packet: listing_packet, generator: generator('Kami punya AAA (Alpha) dan BBB (Bravo).'),
+                              customer_request: 'x', fact_verifier: nil)
+      expect(result).to have_attributes(ok: false, reason: :fact_unverified, fallback: :handoff)
+    end
+  end
 end

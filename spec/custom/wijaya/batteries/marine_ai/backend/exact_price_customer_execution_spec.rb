@@ -179,6 +179,39 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
     expect(presenter).to have_received(:call).once
   end
 
+  describe 'Phase 3 — one Model 1 attempt routes price, product_listing, or product_information' do
+    def listing_packet(goals)
+      packet(goals: goals, facts: { product_listing: { products: [{ code: 'AAA', name: 'Alpha' }] } })
+    end
+
+    it 'delivers a bounded product_listing target through the single generalized attempt' do
+      accepted = authority_result(intents: %w[product_listing], evidence_packet: listing_packet(%w[answer_product_listing]))
+      allow(authority_execution).to receive(:call).and_return(accepted)
+      allow(presenter).to receive(:call).and_return(Struct.new(:ok?, :text, :reason).new(true, 'Berikut produk: AAA (Alpha).', :accepted))
+
+      result = execution.call
+      expect(result).to be_deliverable
+      expect(result.text).to eq('Berikut produk: AAA (Alpha).')
+    end
+
+    it 'delivers a product_information target (same single Model 1 call per turn)' do
+      accepted = authority_result(intents: %w[product_information], evidence_packet: listing_packet(%w[answer_product_information]))
+      allow(authority_execution).to receive(:call).and_return(accepted)
+      allow(presenter).to receive(:call).and_return(Struct.new(:ok?, :text, :reason).new(true, 'AAA (Alpha): info.', :accepted))
+
+      expect(decision_runner).to receive(:call).once.and_return(candidate_plan)
+      expect(execution.call).to be_deliverable
+    end
+
+    it 'still rejects a listing packet whose facts do not match the listing goal' do
+      mismatch = authority_result(intents: %w[product_listing],
+                                  evidence_packet: packet(goals: %w[answer_product_listing], facts: { price: { display: 'x' } }))
+      allow(authority_execution).to receive(:call).and_return(mismatch)
+      expect(execution.call).not_to be_deliverable
+      expect(presenter).not_to have_received(:call)
+    end
+  end
+
   it 'folds collaborator exceptions and malformed successful presentation to closed fallback results' do
     allow(decision_runner).to receive(:call).and_raise('private provider detail')
     result = execution.call

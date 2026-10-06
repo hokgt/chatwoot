@@ -115,6 +115,40 @@ RSpec.describe Marine::Backend::CandidatePlanToProductIntentAdapter do
     end
   end
 
+  describe 'Phase 3 — single listing / information authorization' do
+    it 'accepts ["product_listing"] and carries the (untrusted) product candidate, no variant required' do
+      result = adapter.call(
+        plan: plan('intents' => %w[product_listing],
+                   'slot_operations' => [op('set', 'product', %w[Santorini display_name])]),
+        scenario_key: 'scenario_8'
+      )
+
+      expect(result.ok?).to be(true)
+      expect(result.intents).to eq(%w[product_listing])
+      expect(result.product_intent).to include(
+        product_related: true, intent: 'product_listing', requested_intents: [],
+        family_mention: 'Santorini', requires_exact_variant: false
+      )
+    end
+
+    it 'accepts ["product_information"] with NO product slot (a broad listing, family_mention nil)' do
+      result = adapter.call(plan: plan('intents' => %w[product_information], 'slot_operations' => []), scenario_key: 'scenario_8')
+
+      expect(result.ok?).to be(true)
+      expect(result.intents).to eq(%w[product_information])
+      expect(result.product_intent[:family_mention]).to be_nil
+      expect(result.product_intent[:intent]).to eq('product_information')
+    end
+
+    it 'fails closed on a listing intent mixed with price (never a partial product action)' do
+      result = adapter.call(plan: plan('intents' => %w[price product_listing], 'slot_operations' => []), scenario_key: 'scenario_8')
+
+      expect(result.ok?).to be(false)
+      expect(result.reason).to eq('phase_not_executable')
+      expect(result.product_intent).to be_nil
+    end
+  end
+
   describe 'fail-closed rejections' do
     it 'rejects a malformed / non-hash plan' do
       expect(adapter.call(plan: 'nope', scenario_key: 'scenario_8').reason).to eq('unsupported_schema')

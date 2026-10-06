@@ -122,4 +122,33 @@ RSpec.describe Marine::Backend::EvidenceFactVerifier do
     expect(verifier.call(packet: { customer_language: 'id' }, candidate: '   ')).to be(false)
     expect(verifier.call(packet: 'nope', candidate: candidate)).to be(false)
   end
+
+  # Section E — the semantic rubric must explicitly judge the bounded-listing properties (exactly the
+  # authorized products, no introduced product, no swapped/ungrounded description, no false
+  # completeness or count), WITHOUT adding any field beyond the frozen six-field verdict contract.
+  describe 'product-listing semantic rubric (prompt content)' do
+    let(:prompt) { described_class::SYSTEM_PROMPT }
+
+    it 'judges exactly-the-authorized-products and forbids an introduced product' do
+      expect(prompt).to include('facts.product_listing')
+      expect(prompt).to match(/introducing a product not in the listing/)
+    end
+
+    it 'forbids an ungrounded or swapped per-product description' do
+      expect(prompt).to match(/description that is not entailed by that same product/)
+      expect(prompt).to match(/swapping a description from another product/)
+    end
+
+    it 'forbids a false completeness claim or a mutated count' do
+      expect(prompt).to match(/claiming the listing is the whole catalogue/)
+      expect(prompt).to match(/returned.*total count other than those given/)
+    end
+
+    it 'keeps the verdict contract at exactly the six required boolean fields' do
+      expect(described_class::REQUIRED_KEYS).to contain_exactly(
+        'all_facts_preserved', 'no_unsupported_facts_added', 'no_contradiction',
+        'meaning_equivalent', 'target_language_matches', 'certain'
+      )
+    end
+  end
 end

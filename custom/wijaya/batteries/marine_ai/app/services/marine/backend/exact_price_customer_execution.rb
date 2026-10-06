@@ -1,15 +1,25 @@
-# Phase 2 checkpoint A — synchronous, side-effect-free exact-price customer attempt.
+# Phase 2 checkpoint A → Phase 3 — synchronous, side-effect-free single-target customer attempt.
 #
-# This seam deliberately stops before delivery. It builds one Decision CandidatePlan, reuses that
-# exact object through the existing Backend Authority, and exposes only presenter-validated text.
-# Every ineligible, malformed, rejected, or exceptional outcome folds to a closed fallback Result;
-# Customer delivery wiring and activation belong to checkpoint B.
+# The historical class name is kept (the live trigger-bound job references this seam by name), but the
+# behaviour is generalized: it builds ONE Decision CandidatePlan (a single Model 1 call) and reuses
+# that exact object through the existing Backend Authority to produce ONE target answer — an exact
+# price, a bounded product listing, or a bounded product_information listing — whichever single
+# authorized product intent the plan carried. It exposes only presenter-validated text; every
+# ineligible, malformed, rejected, or exceptional outcome folds to a closed fallback Result so the
+# caller runs its unchanged legacy path. It never makes a second Model 1 call per turn.
 class Marine::Backend::ExactPriceCustomerExecution
   Coordinator = Marine::Backend::AuthorityCoordinator
   ExecutionPolicy = Marine::Backend::ExecutionPolicy
   EVIDENCE_VERSION = 'marine_evidence_v2'.freeze
-  PRICE_GOALS = %w[answer_price].freeze
-  PRICE_FACTS = %i[price].freeze
+
+  # The exact single-intent target matrix: each accepted response goal maps to the EXACT fact-key set
+  # its packet must carry. A target packet carries exactly one of these goals and exactly its fact set
+  # — price is unchanged (answer_price → [:price]); the two listing answers carry [:product_listing].
+  TARGET_FACTS = {
+    'answer_price' => %i[price],
+    'answer_product_listing' => %i[product_listing],
+    'answer_product_information' => %i[product_listing]
+  }.freeze
 
   STATUS_DELIVERABLE = :deliverable
   STATUS_FALLBACK = :fallback
@@ -62,7 +72,7 @@ class Marine::Backend::ExactPriceCustomerExecution
     return fallback(REASON_AUTHORITY_REJECTED) unless accepted_authority_result?(authority_result)
 
     packet = authority_result.evidence_packet
-    return fallback(REASON_INVALID_PACKET) unless exact_price_packet?(packet)
+    return fallback(REASON_INVALID_PACKET) unless target_packet?(packet)
 
     present(packet, context)
   end
@@ -141,15 +151,21 @@ class Marine::Backend::ExactPriceCustomerExecution
     result.is_a?(Coordinator::Result) &&
       result.outcome_type == Coordinator::OUTCOME_EVIDENCE_PACKET &&
       result.reason == Coordinator::REASON_ACCEPTED &&
-      ExecutionPolicy.authorized?(result.intents) &&
+      ExecutionPolicy.product_authorized?(result.intents) &&
       result.evidence_packet?
   end
 
-  def exact_price_packet?(packet)
-    packet.is_a?(Hash) && deeply_frozen?(packet) &&
-      packet[:evidence_version] == EVIDENCE_VERSION &&
-      packet[:response_goals] == PRICE_GOALS &&
-      packet[:facts].is_a?(Hash) && packet[:facts].keys == PRICE_FACTS
+  # A deliverable target packet: deeply frozen marine_evidence_v2, carrying EXACTLY ONE accepted
+  # target goal AND exactly that goal's authorized fact-key set (per TARGET_FACTS). A multi-goal
+  # packet, an unexpected goal, or a mismatched fact set fails closed to the legacy fallback.
+  def target_packet?(packet) # rubocop:disable Metrics/CyclomaticComplexity -- a flat sequence of independent fail-closed packet guards
+    return false unless packet.is_a?(Hash) && deeply_frozen?(packet) && packet[:evidence_version] == EVIDENCE_VERSION
+
+    goals = packet[:response_goals]
+    return false unless goals.is_a?(Array) && goals.length == 1
+
+    expected = TARGET_FACTS[goals.first]
+    !expected.nil? && packet[:facts].is_a?(Hash) && packet[:facts].keys == expected
   end
 
   def deeply_frozen?(value)

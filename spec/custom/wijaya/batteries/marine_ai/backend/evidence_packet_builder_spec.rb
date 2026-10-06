@@ -293,4 +293,122 @@ RSpec.describe Marine::Backend::EvidencePacketBuilder do
       end
     end
   end
+
+  describe 'a bounded product_listing packet (Phase 3)' do
+    let(:listing_fact) do
+      {
+        products: [{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }],
+        returned_count: 2, total_count: 2, complete: true,
+        source: 'catalog_listing_repository', checked_at: '2026-09-30T12:00:00Z'
+      }
+    end
+
+    # A fully-described listing fact (every product carries a nonblank description) — the only shape a
+    # valid answer_product_information packet may carry.
+    let(:described_listing_fact) do
+      listing_fact.merge(products: [{ code: 'AAA', name: 'Alpha', description: 'Soft cotton' },
+                                    { code: 'BBB', name: 'Bravo', description: 'Warm wool' }])
+    end
+
+    def listing_input(overrides = {})
+      {
+        scenario: { key: 'scenario_9' }, intents: %w[product_listing], customer_language: 'id',
+        response_goals: %w[answer_product_listing], validated_slots: {}, facts: { product_listing: listing_fact },
+        missing_slots: [], variant_candidates: []
+      }.merge(overrides)
+    end
+
+    # A valid answer_product_information input over a fully-described listing fact.
+    def info_input(overrides = {})
+      listing_input({ intents: %w[product_information], response_goals: %w[answer_product_information],
+                      facts: { product_listing: described_listing_fact } }.merge(overrides))
+    end
+
+    it 'builds a complete names-only listing with exact completeness metadata, deep-frozen and within the ceiling' do
+      packet = builder.build(evidence_input: listing_input)
+      listing = packet[:facts][:product_listing]
+      expect(listing[:products]).to eq([{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }])
+      expect(listing[:returned_count]).to eq(2)
+      expect(listing[:total_count]).to eq(2)
+      expect(listing[:complete]).to be(true)
+      expect(listing[:source]).to eq('catalog_listing_repository')
+      expect(packet[:scenario]).to eq(key: 'scenario_9', intents: %w[product_listing])
+      expect(packet[:prohibited_claims]).to include('price', 'stock')
+      expect(packet).to be_frozen
+      expect(JSON.generate(packet).bytesize).to be <= described_class::MAX_PACKET_BYTES
+    end
+
+    it 'authorizes ["product_listing"] and ["product_information"] but rejects mixed/duplicated listing sets' do
+      expect { builder.build(evidence_input: listing_input) }.not_to raise_error
+      expect { builder.build(evidence_input: info_input) }.not_to raise_error
+      expect { builder.build(evidence_input: listing_input(intents: %w[price product_listing])) }.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: listing_input(intents: %w[product_listing product_listing])) }.to raise_error(invalid_error)
+    end
+
+    it 'carries total_count > returned_count when not complete' do
+      partial = listing_fact.merge(returned_count: 2, total_count: 9, complete: false)
+      packet = builder.build(evidence_input: listing_input(facts: { product_listing: partial }))
+      expect(packet[:facts][:product_listing][:complete]).to be(false)
+      expect(packet[:facts][:product_listing][:total_count]).to eq(9)
+    end
+
+    it 'omits total_count entirely when it is absent (nil) and the page is not complete' do
+      partial = listing_fact.merge(total_count: nil, complete: false)
+      packet = builder.build(evidence_input: listing_input(facts: { product_listing: partial }))
+      expect(packet[:facts][:product_listing]).not_to have_key(:total_count)
+      expect(packet[:facts][:product_listing][:complete]).to be(false)
+    end
+
+    it 'fails closed on an inexact completeness/count claim' do
+      bad_count = listing_fact.merge(returned_count: 5) # != products.length
+      wrong_total = listing_fact.merge(total_count: 3, complete: true) # complete but total != returned
+      small_total = listing_fact.merge(total_count: 2, complete: false) # has_more but total not > returned
+      expect { builder.build(evidence_input: listing_input(facts: { product_listing: bad_count })) }.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: listing_input(facts: { product_listing: wrong_total })) }.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: listing_input(facts: { product_listing: small_total })) }.to raise_error(invalid_error)
+    end
+
+    it 'fails closed on duplicate product codes or an overflowing page' do
+      dupes = listing_fact.merge(products: [{ code: 'AAA', name: 'A' }, { code: 'AAA', name: 'A2' }], returned_count: 2)
+      overflow_products = (1..(described_class::MAX_LISTING_PRODUCTS + 1)).map { |i| { code: "C#{i}", name: "N#{i}" } }
+      overflow = listing_fact.merge(products: overflow_products, returned_count: overflow_products.length, total_count: overflow_products.length)
+      expect { builder.build(evidence_input: listing_input(facts: { product_listing: dupes })) }.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: listing_input(facts: { product_listing: overflow })) }.to raise_error(invalid_error)
+    end
+
+    it 'requires a nonblank description on EVERY product under answer_product_information' do
+      packet = builder.build(evidence_input: info_input)
+      descriptions = packet[:facts][:product_listing][:products].map { |product| product[:description] }
+      expect(descriptions).to eq(['Soft cotton', 'Warm wool'])
+    end
+
+    it 'fails closed on an answer_product_information product missing (or blank) a description' do
+      missing = described_listing_fact.merge(
+        products: [{ code: 'AAA', name: 'Alpha', description: 'Soft cotton' }, { code: 'BBB', name: 'Bravo' }]
+      )
+      blank = described_listing_fact.merge(
+        products: [{ code: 'AAA', name: 'Alpha', description: 'Soft cotton' }, { code: 'BBB', name: 'Bravo', description: '   ' }]
+      )
+      expect { builder.build(evidence_input: info_input(facts: { product_listing: missing })) }.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: info_input(facts: { product_listing: blank })) }.to raise_error(invalid_error)
+    end
+
+    it 'forbids a per-product description on a names-only answer_product_listing' do
+      described = listing_fact.merge(
+        products: [{ code: 'AAA', name: 'Alpha', description: 'Soft cotton' }, { code: 'BBB', name: 'Bravo' }]
+      )
+      expect { builder.build(evidence_input: listing_input(facts: { product_listing: described })) }.to raise_error(invalid_error)
+    end
+
+    it 'enforces listing fact/goal/intent coherence' do
+      no_goal = listing_input(response_goals: %w[handoff])
+      no_fact = listing_input(facts: {})
+      wrong_intent = { scenario: { key: 'scenario_9' }, intents: %w[price], customer_language: 'id',
+                       response_goals: %w[answer_product_listing], validated_slots: {},
+                       facts: { product_listing: listing_fact }, missing_slots: [], variant_candidates: [] }
+      expect { builder.build(evidence_input: no_goal) }.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: no_fact) }.to raise_error(invalid_error)
+      expect { builder.build(evidence_input: wrong_intent) }.to raise_error(invalid_error)
+    end
+  end
 end

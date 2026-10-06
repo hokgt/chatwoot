@@ -27,6 +27,9 @@ class Marine::Backend::PostGenerationFactValidator
   # A generated reply is at most a couple of short paragraphs; anything larger is malformed and
   # fails closed (well under the 16 KiB packet ceiling).
   MAX_CANDIDATE_BYTES = 2000
+  # A bounded product-listing reply enumerates up to a full page of products (optionally with short
+  # descriptions), so it is allowed a larger ceiling — still well under the 16 KiB packet ceiling.
+  MAX_LISTING_CANDIDATE_BYTES = 8000
 
   # Generic token classes. NUMERIC and identifier/currency tokens in the candidate must be a
   # SUBSET of the packet-authorized inventory (free prose varies, so this is subset — not the
@@ -47,6 +50,7 @@ class Marine::Backend::PostGenerationFactValidator
     policy_version price_list_rate checked_at resolution_status item_group max_paragraphs
     handoff_self_reference marine_sales_assistant catalog_price_repository stock_repository
     price-display-v1 capabilities canonical
+    product_listing returned_count total_count catalog_listing_repository
   ].freeze
 
   # The Model 2 control instruction whose wording a reply must never copy back verbatim. Reused as
@@ -64,7 +68,7 @@ class Marine::Backend::PostGenerationFactValidator
   # packet:    a frozen marine_evidence_v2 Evidence Packet.
   # candidate: the untrusted generated reply text.
   def call(packet:, candidate:) # rubocop:disable Metrics/CyclomaticComplexity -- a flat sequence of independent fail-closed gates
-    return reject(:malformed_candidate) unless valid_text?(candidate)
+    return reject(:malformed_candidate) unless valid_text?(candidate, max_candidate_bytes(packet))
     return reject(:packet_leak) if leaks_packet?(candidate)
     return reject(:control_leak) if leaks_control_instruction?(candidate)
     return reject(:missing_required_value) unless required_values(packet).all? { |value| present_as_literal?(candidate, value) }
@@ -77,12 +81,18 @@ class Marine::Backend::PostGenerationFactValidator
 
   private
 
-  def valid_text?(text)
+  # The byte ceiling depends on the packet: a bounded product listing may enumerate a full page, so it
+  # is allowed MAX_LISTING_CANDIDATE_BYTES; every other reply stays at the short MAX_CANDIDATE_BYTES.
+  def max_candidate_bytes(packet)
+    dig(packet, :facts, :product_listing).is_a?(Hash) ? MAX_LISTING_CANDIDATE_BYTES : MAX_CANDIDATE_BYTES
+  end
+
+  def valid_text?(text, max_bytes)
     return false unless text.is_a?(String) && text.valid_encoding?
 
     stripped = text.strip
     return false if stripped.empty?
-    return false if text.bytesize > MAX_CANDIDATE_BYTES
+    return false if text.bytesize > max_bytes
     return false if text.match?(UNSAFE_CONTROL_CHARS)
     return false if stripped.start_with?('```')
 
@@ -119,7 +129,24 @@ class Marine::Backend::PostGenerationFactValidator
       display = price[:display] || {}
       values.push(display[:amount], display[:currency], display[:uom])
     end
+    values.concat(listing_required_values(dig(packet, :facts, :product_listing)))
     values.compact.uniq
+  end
+
+  # For a product listing, EVERY authorized product's code AND its display name (when present) MUST
+  # appear literally — so an omitted product (missing code/name) or a renamed product (changed name)
+  # fails closed. When the page is NOT complete, the EXACT bounded-coverage counts (returned_count and,
+  # when the packet carries it, total_count) must also appear literally, so an incomplete page can
+  # never be presented as the whole catalogue with a silently-dropped or mutated count.
+  def listing_required_values(listing)
+    return [] unless listing.is_a?(Hash)
+
+    values = Array(listing[:products]).flat_map { |product| [product[:code], product[:name]] }
+    unless listing[:complete] == true
+      values << listing[:returned_count]&.to_s
+      values << listing[:total_count]&.to_s
+    end
+    values
   end
 
   # Unicode-aware literal presence with alphanumeric boundaries, so a short code is not treated
@@ -139,7 +166,7 @@ class Marine::Backend::PostGenerationFactValidator
 
   # The concatenation of every packet value the reply may legitimately echo: the validated
   # slot codes and, when present, the price canonical + display facts.
-  def inventory_source(packet)
+  def inventory_source(packet) # rubocop:disable Metrics/AbcSize -- a flat concatenation of the packet's echoable slot/price/listing values
     parts = []
     parts << dig(packet, :validated_slots, :product, :code)
     parts << dig(packet, :validated_slots, :variant, :code)
@@ -149,6 +176,11 @@ class Marine::Backend::PostGenerationFactValidator
       display = price[:display] || {}
       parts.push(canonical[:variant_code], canonical[:currency], canonical[:price_list_rate], canonical[:uom],
                  display[:product], display[:currency], display[:amount], display[:uom])
+    end
+    listing = dig(packet, :facts, :product_listing)
+    if listing.is_a?(Hash)
+      Array(listing[:products]).each { |product| parts.push(product[:code], product[:name], product[:description]) }
+      parts.push(listing[:returned_count], listing[:total_count])
     end
     parts.compact.map(&:to_s).join(' ')
   end

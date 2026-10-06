@@ -192,4 +192,165 @@ RSpec.describe Marine::Backend::ProductExecutionPlanner do
     expect(result).to be_frozen
     expect(result[:facts][:price]).to be_frozen
   end
+
+  describe 'product_listing / product_information (Phase 3 bounded catalog)' do
+    let(:listing_repository) { instance_double(Marine::Catalog::ProductListingRepository) }
+    let(:description_source) { ->(_products) { {} } }
+    let(:listing_result) do
+      { products: [{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }],
+        returned_count: 2, total_count: 2, complete: true }
+    end
+    let(:listing_planner) do
+      described_class.new(
+        family_repository: family_repository, variant_resolver: variant_resolver,
+        price_repository: price_repository, stock_repository: stock_repository,
+        price_formatter: Marine::Catalog::PriceDisplayFormatter.new,
+        listing_repository: listing_repository, description_source: description_source, clock: clock
+      )
+    end
+
+    before { allow(listing_repository).to receive(:active_top_level).and_return(listing_result) }
+
+    def listing_call(intents:)
+      listing_planner.call(product_intent: { customer_language: 'id' }, intents: intents, scenario: { key: 'scenario_9' })
+    end
+
+    it 'builds a names-only listing input without resolving any family/variant' do
+      expect(family_repository).not_to receive(:resolve_exact)
+      expect(variant_resolver).not_to receive(:resolve)
+      result = listing_call(intents: %w[product_listing])
+
+      expect(result[:response_goals]).to eq(%w[answer_product_listing])
+      expect(result[:validated_slots]).to eq({})
+      listing = result[:facts][:product_listing]
+      expect(listing[:products]).to eq([{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }])
+      expect(listing[:returned_count]).to eq(2)
+      expect(listing[:total_count]).to eq(2)
+      expect(listing[:complete]).to be(true)
+      expect(listing[:source]).to eq('catalog_listing_repository')
+    end
+
+    context 'with product_information and a wired description source' do
+      # The batch source receives the whole authorized page and returns a { code => description } map
+      # for ONLY the codes it exactly bound — it can never add a product.
+      let(:description_source) { ->(products) { products.any? { |p| p[:code] == 'AAA' } ? { 'AAA' => 'Soft cotton' } : {} } }
+
+      it 'filters a mixed broad page to the described subset, recomputing counts (complete=false)' do
+        result = listing_call(intents: %w[product_information])
+        expect(result[:response_goals]).to eq(%w[answer_product_information])
+        listing = result[:facts][:product_listing]
+        # Only AAA bound a description; BBB (undescribed) is dropped — never emitted description-less.
+        expect(listing[:products]).to eq([{ code: 'AAA', name: 'Alpha', description: 'Soft cotton' }])
+        expect(listing[:returned_count]).to eq(1)
+        # total_count stays the Catalog-authoritative top-level total; a filtered page is not complete.
+        expect(listing[:total_count]).to eq(2)
+        expect(listing[:complete]).to be(false)
+      end
+    end
+
+    context 'with product_information when no description binds (broad)' do
+      let(:description_source) { ->(_products) { {} } }
+
+      it 'hands off (factless) rather than emit a names-only or undescribed information page' do
+        result = listing_call(intents: %w[product_information])
+        expect(result[:response_goals]).to eq(%w[handoff])
+        expect(result[:facts]).to eq({})
+      end
+    end
+
+    context 'with product_information when the description source returns an off-page code' do
+      # A code the authorized page never listed is ignored — a product is never introduced from RAG.
+      let(:description_source) { ->(_products) { { 'AAA' => 'Soft cotton', 'ZZZ' => 'ghost off-page' } } }
+
+      it 'emits only on-page described products and never the off-page code' do
+        listing = listing_call(intents: %w[product_information])[:facts][:product_listing]
+        expect(listing[:products]).to eq([{ code: 'AAA', name: 'Alpha', description: 'Soft cotton' }])
+        expect(listing[:products].map { |p| p[:code] }).not_to include('ZZZ')
+      end
+    end
+
+    context 'with product_information for a specific exact product' do
+      def info_mention_call(mention:)
+        listing_planner.call(product_intent: { customer_language: 'id', family_mention: mention },
+                             intents: %w[product_information], scenario: { key: 'scenario_9' })
+      end
+
+      before { allow(listing_repository).to receive(:exact_top_level).with('Alpha').and_return(code: 'AAA', name: 'Alpha') }
+
+      context 'when its RAG description exists' do
+        let(:description_source) { ->(_products) { { 'AAA' => 'Soft cotton' } } }
+
+        it 'emits one complete described product (returned_count=total_count=1, complete=true)' do
+          listing = info_mention_call(mention: 'Alpha')[:facts][:product_listing]
+          expect(listing[:products]).to eq([{ code: 'AAA', name: 'Alpha', description: 'Soft cotton' }])
+          expect(listing[:returned_count]).to eq(1)
+          expect(listing[:total_count]).to eq(1)
+          expect(listing[:complete]).to be(true)
+        end
+      end
+
+      context 'with no RAG description' do
+        let(:description_source) { ->(_products) { {} } }
+
+        it 'hands off (never an undescribed specific product)' do
+          result = info_mention_call(mention: 'Alpha')
+          expect(result[:response_goals]).to eq(%w[handoff])
+          expect(result[:facts]).to eq({})
+        end
+      end
+    end
+
+    context 'when Model 1 supplies a product candidate (Section D)' do
+      def mention_call(intents:, mention:)
+        listing_planner.call(product_intent: { customer_language: 'id', family_mention: mention },
+                             intents: intents, scenario: { key: 'scenario_9' })
+      end
+
+      it 'exact-resolves the candidate against top-level authority and restricts the page to it' do
+        allow(listing_repository).to receive(:exact_top_level).with('Alpha').and_return(code: 'AAA', name: 'Alpha')
+        expect(listing_repository).not_to receive(:active_top_level)
+        listing = mention_call(intents: %w[product_listing], mention: 'Alpha')[:facts][:product_listing]
+        expect(listing[:products]).to eq([{ code: 'AAA', name: 'Alpha' }])
+        expect(listing[:returned_count]).to eq(1)
+        expect(listing[:total_count]).to eq(1)
+        expect(listing[:complete]).to be(true)
+      end
+
+      it 'hands off (never shows the product as available) when the candidate has no exact top-level match' do
+        allow(listing_repository).to receive(:exact_top_level).with('Ghost').and_return(nil)
+        result = mention_call(intents: %w[product_information], mention: 'Ghost')
+        expect(result[:response_goals]).to eq(%w[handoff])
+        expect(result[:facts]).to eq({})
+      end
+
+      it 'hands off on a catalog outage while resolving the candidate' do
+        allow(listing_repository).to receive(:exact_top_level).and_raise(catalog_error)
+        expect(mention_call(intents: %w[product_listing], mention: 'Alpha')[:response_goals]).to eq(%w[handoff])
+      end
+    end
+
+    it 'carries not-complete metadata through (complete=false, total_count>returned)' do
+      allow(listing_repository).to receive(:active_top_level)
+        .and_return(products: [{ code: 'AAA', name: 'Alpha' }], returned_count: 1, total_count: 9, complete: false)
+      listing = listing_call(intents: %w[product_listing])[:facts][:product_listing]
+      expect(listing[:complete]).to be(false)
+      expect(listing[:total_count]).to eq(9)
+    end
+
+    it 'hands off (factless) on an empty catalog or a catalog outage' do
+      allow(listing_repository).to receive(:active_top_level).and_return(products: [], returned_count: 0, total_count: 0, complete: true)
+      expect(listing_call(intents: %w[product_listing])[:response_goals]).to eq(%w[handoff])
+      allow(listing_repository).to receive(:active_top_level).and_raise(catalog_error)
+      result = listing_call(intents: %w[product_information])
+      expect(result[:response_goals]).to eq(%w[handoff])
+      expect(result[:facts]).to eq({})
+    end
+
+    it 'produces an evidence input the EvidencePacketBuilder accepts end-to-end' do
+      input = listing_call(intents: %w[product_listing])
+      packet = Marine::Backend::EvidencePacketBuilder.new(clock: clock).build(evidence_input: input)
+      expect(packet[:facts][:product_listing][:products].map { |product| product[:code] }).to eq(%w[AAA BBB])
+      expect(packet[:response_goals]).to eq(%w[answer_product_listing])
+    end
+  end
 end

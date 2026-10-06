@@ -152,6 +152,58 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
     end
   end
 
+  describe 'Phase 3 — single listing / information path (no catalog-identity resolver)' do
+    let(:listing_packet) { { response_goals: %w[answer_product_listing], evidence_version: 'marine_evidence_v2' }.freeze }
+
+    before { allow(packet_builder).to receive(:build).and_return(listing_packet) }
+
+    it 'routes a listing intent to the bounded listing planner input, bypassing the resolver' do
+      captured = nil
+      allow(planner).to receive(:call) { |**kwargs|
+        captured = kwargs
+        { planner: :input }
+      }
+
+      result = call(candidate_plan: plan(intents: %w[product_listing]), trigger: 'produk apa saja?')
+
+      expect(resolver).not_to have_received(:call)
+      expect(captured[:intents]).to eq(%w[product_listing])
+      expect(captured[:product_intent]).to include(
+        intent: 'product_listing', requested_intents: [], requires_exact_variant: false,
+        explicit_child_code: nil, customer_language: 'id', family_mention: 'JEV-SUGGESTED'
+      )
+      expect(result.outcome_type).to eq(:evidence_packet)
+      expect(result.reason).to eq(:accepted)
+      expect(result.evidence_packet).to equal(listing_packet)
+      expect(result.source).to eq(:none)
+      expect(result).to be_frozen
+    end
+
+    it 'accepts a product_information listing packet too' do
+      allow(packet_builder).to receive(:build).and_return(
+        { response_goals: %w[answer_product_information], evidence_version: 'marine_evidence_v2' }.freeze
+      )
+      result = call(candidate_plan: plan(intents: %w[product_information]))
+      expect(result.outcome_type).to eq(:evidence_packet)
+      expect(result.reason).to eq(:accepted)
+    end
+
+    it 'hands off (catalog_unavailable) when the listing planner produced a factless handoff' do
+      allow(packet_builder).to receive(:build).and_return({ response_goals: %w[handoff] }.freeze)
+      result = call(candidate_plan: plan(intents: %w[product_listing]))
+      expect(result.outcome_type).to eq(:handoff)
+      expect(result.reason).to eq(:catalog_unavailable)
+    end
+
+    it 'hands off (language_unresolved) on a nil language WITHOUT calling the planner' do
+      allow(language_resolver).to receive(:resolve).and_return(double('lang', language: nil))
+      result = call(candidate_plan: plan(intents: %w[product_listing]))
+      expect(result.outcome_type).to eq(:handoff)
+      expect(result.reason).to eq(:language_unresolved)
+      expect(planner).not_to have_received(:call)
+    end
+  end
+
   describe 'exact family (no child) → family price range' do
     before { allow(resolver).to receive(:call).and_return(resolved(status: :exact_family)) }
 

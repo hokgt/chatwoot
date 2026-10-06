@@ -20,9 +20,13 @@ module Marine::Decision::Schema
   # informational product_overview, and the explicit unsupported bucket. order_status
   # and sample are included as CANDIDATE-ONLY, NON-EXECUTABLE intents: their presence in
   # a plan is a suggestion the runtime may act on in a later phase, never an authority to
-  # fulfil an order or ship a sample here. Array order is the CANONICAL rendering order so
-  # a deduped intent set is deterministic regardless of the provider's ordering.
-  INTENTS = %w[price stock parent_info variant_info catalog product_overview order_status sample unsupported].freeze
+  # fulfil an order or ship a sample here. product_listing/product_information are the Phase 3
+  # bounded-catalog reads (a names-only listing vs listing+descriptions); they are executable only
+  # as SINGLE-intent sets on the backend packet path (the backend-owned execution policy), never
+  # combined here. Array order is the CANONICAL rendering order so a deduped intent set is
+  # deterministic regardless of the provider's ordering.
+  INTENTS = %w[price stock parent_info variant_info catalog product_overview product_listing product_information
+               order_status sample unsupported].freeze
 
   # Slot mutation verbs and the two slots a plan may propose to change. A slot value is
   # always a CANDIDATE (raw string + a declared candidate_type), never a resolved or

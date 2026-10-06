@@ -25,8 +25,13 @@ class Marine::Backend::EvidencePacketPresenter
   EVIDENCE_VERSION = 'marine_evidence_v2'.freeze
 
   # The packet answer goals that warrant a generated natural reply. clarify_* / handoff are
-  # deterministic zero-model paths and are never generated here.
-  ANSWER_GOALS = %w[answer_price answer_stock answer_product_overview].freeze
+  # deterministic zero-model paths and are never generated here. The Phase-3 bounded-catalog answers
+  # (answer_product_listing / answer_product_information) are generated here too.
+  ANSWER_GOALS = %w[answer_price answer_stock answer_product_overview answer_product_listing answer_product_information].freeze
+  # The answer goals that have an EXISTING deterministic renderer to fall back on. The Phase-3 listing
+  # answers have none, so a listing generation failure falls back to :handoff rather than a renderer
+  # that cannot present a catalog page.
+  DETERMINISTIC_ANSWER_GOALS = %w[answer_price answer_stock answer_product_overview].freeze
   # Clarification goals are still valid, presentable (deterministic) packets — just not generated.
   CLARIFY_GOALS = %w[clarify_product clarify_variant clarify_ambiguous_variant].freeze
   # The closed response-goal enum (answer + clarify + handoff), used by the structural packet gate.
@@ -122,10 +127,11 @@ class Marine::Backend::EvidencePacketPresenter
     Array(packet[:response_goals]).intersect?(ANSWER_GOALS)
   end
 
-  # A valid answer/clarification packet falls back to the existing deterministic renderer; only an
-  # explicit handoff/factless packet reserves :handoff.
+  # A price/stock/overview answer or a clarification packet falls back to the existing deterministic
+  # renderer; a listing answer with no deterministic renderer, and an explicit handoff/factless packet,
+  # reserve :handoff.
   def fallback_for(packet)
-    Array(packet[:response_goals]).intersect?(ANSWER_GOALS + CLARIFY_GOALS) ? :deterministic : :handoff
+    Array(packet[:response_goals]).intersect?(DETERMINISTIC_ANSWER_GOALS + CLARIFY_GOALS) ? :deterministic : :handoff
   end
 
   # The closed rejection reason for an untrusted candidate, or nil when every gate accepts. The

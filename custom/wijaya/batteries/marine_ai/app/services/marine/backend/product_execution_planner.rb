@@ -21,7 +21,7 @@
 # Phase 1 (Opsi B): execution authorization is backend-policy-owned (Marine::Backend::ExecutionPolicy)
 # and the executable set is exactly ["price"]. Scenario carries provenance only ({ key: }); the planner
 # never reads a per-scenario capability list.
-class Marine::Backend::ProductExecutionPlanner
+class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLength -- a flat sequence of independent per-intent fail-closed planners
   ExecutionPolicy = Marine::Backend::ExecutionPolicy
 
   # The frozen product goal each supported intent maps to, within the A8-01 closed enum. price
@@ -33,8 +33,15 @@ class Marine::Backend::ProductExecutionPlanner
     'product_overview' => 'answer_product_overview',
     'catalog' => 'answer_product_overview',
     'parent_info' => 'answer_product_overview',
-    'variant_info' => 'answer_product_overview'
+    'variant_info' => 'answer_product_overview',
+    'product_listing' => 'answer_product_listing',
+    'product_information' => 'answer_product_information'
   }.freeze
+
+  # The Phase-3 catalog-wide listing intents. They need NO family/variant: the answer is a bounded
+  # page of active top-level products (product_listing = names only; product_information = the same
+  # bounded set, with RAG descriptions attached ONLY to those authorized entries).
+  LISTING_INTENTS = %w[product_listing product_information].freeze
 
   # The only intents this planner may execute (transactional + informational product_overview) —
   # exactly the keys it can map to a response goal. Defense in depth: the planner rejects anything
@@ -49,13 +56,20 @@ class Marine::Backend::ProductExecutionPlanner
   # reaches here (the repository fails closed with CatalogUnavailableError instead).
   STOCK_STATUS = { available: 'available', empty: 'unavailable' }.freeze
 
-  def initialize(family_repository: nil, variant_resolver: nil, price_repository: nil, # rubocop:disable Metrics/ParameterLists -- injected read-only repository dependencies (all optional)
-                 stock_repository: nil, price_formatter: nil, clock: nil)
+  def initialize(family_repository: nil, variant_resolver: nil, price_repository: nil, # rubocop:disable Metrics/ParameterLists,Metrics/CyclomaticComplexity,Metrics/PerceivedComplexity -- injected read-only repository dependencies (all optional)
+                 stock_repository: nil, price_formatter: nil, listing_repository: nil,
+                 description_source: nil, clock: nil)
     @family_repository = family_repository || Marine::Catalog::ProductFamilyRepository.new
     @variant_resolver = variant_resolver || Marine::Catalog::VariantResolver.new
     @price_repository = price_repository || Marine::Catalog::PriceRepository.new
     @stock_repository = stock_repository || Marine::Catalog::StockRepository.new
     @price_formatter = price_formatter || Marine::Catalog::PriceDisplayFormatter.new
+    @listing_repository = listing_repository || Marine::Catalog::ProductListingRepository.new
+    # RAG description source for product_information: a callable products -> { code => description }
+    # over the ALREADY catalog-authorized page (one bounded approved query; never per-code). It may
+    # ONLY annotate a listed code; it can never add, rename, or invent a product. Defaults to a null
+    # source (no descriptions wired), so an absent description stays absent.
+    @description_source = description_source || ->(_products) { {} }
     @clock = clock || -> { Time.current }
   end
 
@@ -71,6 +85,10 @@ class Marine::Backend::ProductExecutionPlanner
     # Defense in depth: never trust that only the adapter reached here. An empty, unsupported, or
     # non-ExecutionPolicy-authorized intent set fails closed to a factless handoff rather than executing.
     return handoff(context) unless executable?(intents)
+
+    # The catalog-wide listing intents need NO price family/variant resolution: a bounded top-level
+    # page (optionally narrowed to one exact-resolved product), with descriptions only for info.
+    return listing_answer(context, product_intent) if listing_only?(intents)
 
     family = resolve_family(product_intent[:family_mention])
     return handoff(context) if family == :unavailable
@@ -89,16 +107,18 @@ class Marine::Backend::ProductExecutionPlanner
   # ride into every evidence input, so the helpers avoid long parameter lists.
   Context = Struct.new(:scenario, :intents, :language)
 
-  # A plan is executable only when the intents are the exact ExecutionPolicy-authorized executable set
-  # (Phase 1: exactly ["price"]) AND a subset of the supported product intents. Anything else — empty,
-  # non-price, mixed, duplicated, or out-of-support — fails closed BEFORE any repository read.
+  # A plan is executable only when the intents are exactly ONE ExecutionPolicy-authorized product
+  # intent (["price"], ["product_listing"], or ["product_information"]) AND a subset of the supported
+  # product intents. Anything else — empty, unactivated (stock/catalog/...), mixed, duplicated, or
+  # out-of-support — fails closed BEFORE any repository read.
   def executable?(intents)
     return false unless intents.is_a?(Array) && !intents.empty?
 
-    (intents - SUPPORTED_INTENTS).empty? && ExecutionPolicy.authorized?(intents)
+    (intents - SUPPORTED_INTENTS).empty? && ExecutionPolicy.product_authorized?(intents)
   end
 
-  attr_reader :family_repository, :variant_resolver, :price_repository, :stock_repository, :price_formatter
+  attr_reader :family_repository, :variant_resolver, :price_repository, :stock_repository,
+              :price_formatter, :listing_repository, :description_source
 
   # { code:, name: } | nil (blank mention or no exact match) | :unavailable (catalog outage).
   # A blank mention never touches the repository.
@@ -153,6 +173,39 @@ class Marine::Backend::ProductExecutionPlanner
     end
   end
 
+  def listing_only?(intents)
+    intents.length == 1 && LISTING_INTENTS.include?(intents.first)
+  end
+
+  # The listing/info answer. A bounded top-level page by default; when Model 1 supplied a product
+  # candidate it is exact-resolved against the active top-level Catalog authority and the page is
+  # restricted to that one product. A supplied-but-unresolved candidate (:unknown) or a catalog
+  # outage (:unavailable) fails closed to a factless handoff — an unknown product is NEVER shown as
+  # available. product_information attaches approved RAG descriptions to the authorized entries only.
+  def listing_answer(context, product_intent)
+    descriptions = context.intents.first == 'product_information'
+    product = resolve_listing_product(product_intent[:family_mention])
+    return handoff(context) if %i[unavailable unknown].include?(product)
+
+    fact = listing_fact(descriptions: descriptions, product: product)
+    return handoff(context) if fact.nil?
+
+    goal = descriptions ? 'answer_product_information' : 'answer_product_listing'
+    evidence_input(context, goals: [goal], facts: { product_listing: fact })
+  end
+
+  # nil (no candidate → broad page) | { code:, name: } (exact unique top-level match) | :unknown
+  # (a candidate was supplied but is not an exact unique active top-level product) | :unavailable
+  # (catalog outage). A blank candidate never touches the repository.
+  def resolve_listing_product(mention)
+    return nil if mention.to_s.strip.empty?
+
+    match = listing_repository.exact_top_level(mention)
+    match.nil? ? :unknown : match
+  rescue Marine::Catalog::Errors::CatalogUnavailableError
+    :unavailable
+  end
+
   def store_fact(facts, key, fact, goal)
     return 'handoff' if fact.nil?
 
@@ -194,6 +247,56 @@ class Marine::Backend::ProductExecutionPlanner
       source: 'catalog_price_repository',
       checked_at: now_iso8601
     }
+  end
+
+  # A bounded product-listing fact. `product` is nil for the broad top-level page, or an exact-resolved
+  # { code:, name: } that restricts the page to that one authorized product. Returns nil (fail closed to
+  # a handoff) on an empty catalog or catalog outage. The product SET is catalog-authoritative; for
+  # product_information the already-authorized page is FILTERED to exactly the subset carrying a bound
+  # approved RAG description (a product is never selected from RAG; an undescribed product is dropped),
+  # and zero bound descriptions fails closed. returned_count is recomputed to the emitted subset;
+  # total_count stays the Catalog-authoritative top-level total; complete is true only when the original
+  # page was complete AND nothing was filtered out — so a filtered page is never claimed as the whole
+  # catalogue.
+  def listing_fact(descriptions:, product:)
+    page = product ? single_product_page(product) : listing_repository.active_top_level
+    return nil if page[:products].empty?
+
+    products = listing_products(page[:products], descriptions)
+    return nil if descriptions && products.empty?
+
+    filtered = products.length < page[:returned_count]
+    {
+      products: products,
+      returned_count: products.length,
+      total_count: page[:total_count],
+      complete: page[:complete] && !filtered,
+      source: 'catalog_listing_repository',
+      checked_at: now_iso8601
+    }
+  rescue Marine::Catalog::Errors::CatalogUnavailableError
+    nil
+  end
+
+  # A single exact-resolved product rendered as a one-row, complete page.
+  def single_product_page(product)
+    { products: [{ code: product[:code], name: product[:name] }], returned_count: 1, total_count: 1, complete: true }
+  end
+
+  # Fold each authorized catalog row to { code, name } for a names-only listing. For
+  # product_information, attach approved RAG descriptions from ONE bounded source call over the whole
+  # authorized page and KEEP ONLY the entries that bound a nonblank description — so every emitted
+  # product carries its own approved description, and an undescribed (or RAG-only / off-page) product is
+  # dropped rather than appended. The source may only annotate a listed code, never add a product.
+  def listing_products(products, descriptions)
+    return products.map { |product| { code: product[:code], name: product[:name] } } unless descriptions
+
+    bound = description_source.call(products)
+    bound = {} unless bound.is_a?(Hash)
+    products.filter_map do |product|
+      description = bound[product[:code]]
+      { code: product[:code], name: product[:name], description: description } if present_string?(description)
+    end
   end
 
   # Binary availability fact, or nil on outage/error/indeterminate (never a `unknown` status).
@@ -240,6 +343,10 @@ class Marine::Backend::ProductExecutionPlanner
       missing_slots: missing,
       variant_candidates: []
     )
+  end
+
+  def present_string?(value)
+    value.is_a?(String) && !value.strip.empty?
   end
 
   def now_iso8601 = @clock.call.utc.iso8601

@@ -127,4 +127,80 @@ RSpec.describe Marine::Backend::PostGenerationFactValidator do
       expect(validator.call(packet: price_packet, candidate: nil).reason).to eq(:malformed_candidate)
     end
   end
+
+  describe 'product_listing (Phase 3)' do
+    let(:listing_packet) do
+      builder.build(evidence_input: {
+                      scenario: { key: 'scenario_9' }, intents: %w[product_listing], customer_language: 'id',
+                      response_goals: %w[answer_product_listing], validated_slots: {},
+                      facts: { product_listing: { products: [{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }],
+                                                  returned_count: 2, total_count: 9, complete: false,
+                                                  source: 'catalog_listing_repository', checked_at: '2026-09-30T12:00:00Z' } },
+                      missing_slots: [], variant_candidates: []
+                    })
+    end
+
+    it 'accepts a reply citing every listed code AND name and the exact returned/total counts' do
+      reply = 'Berikut 2 dari 9 produk kami: AAA (Alpha) dan BBB (Bravo). Beri tahu kriterianya.'
+      expect(validator.call(packet: listing_packet, candidate: reply).ok?).to be(true)
+    end
+
+    it 'rejects a reply that omits a listed product (missing code/name)' do
+      expect(validator.call(packet: listing_packet, candidate: 'Berikut 2 dari 9: AAA (Alpha).').reason).to eq(:missing_required_value)
+    end
+
+    it 'rejects a RENAMED product (the authorized name is absent)' do
+      renamed = 'Berikut 2 dari 9: AAA (Omega) dan BBB (Bravo).'
+      expect(validator.call(packet: listing_packet, candidate: renamed).reason).to eq(:missing_required_value)
+    end
+
+    it 'rejects a MUTATED total count (the true total is absent)' do
+      mutated = 'Berikut 2 dari 50 produk: AAA (Alpha) dan BBB (Bravo).'
+      expect(validator.call(packet: listing_packet, candidate: mutated).reason).to eq(:missing_required_value)
+    end
+
+    it 'rejects a FALSE completeness claim with the bounded counts dropped' do
+      false_complete = 'Ini semua produk kami: AAA (Alpha) dan BBB (Bravo).'
+      expect(validator.call(packet: listing_packet, candidate: false_complete).reason).to eq(:missing_required_value)
+    end
+
+    it 'rejects an unauthorized code-like identifier the packet does not carry' do
+      added = 'Berikut 2 dari 9: AAA (Alpha), BBB (Bravo), dan SKU9 (Gamma).'
+      expect(validator.call(packet: listing_packet, candidate: added).reason).to eq(:unauthorized_token)
+    end
+
+    it 'rejects an unauthorized numeric token the packet does not carry' do
+      added_number = 'Berikut 2 dari 9: AAA (Alpha) dan BBB (Bravo). Diskon 15%.'
+      expect(validator.call(packet: listing_packet, candidate: added_number).reason).to eq(:unauthorized_token)
+    end
+
+    it 'allows a long listing reply up to the listing ceiling but rejects beyond it' do
+      long_ok = "Berikut 2 dari 9: AAA (Alpha) dan BBB (Bravo). #{'a' * 5000}"
+      too_long = "Berikut 2 dari 9: AAA (Alpha) dan BBB (Bravo). #{'a' * 9000}"
+      expect(validator.call(packet: listing_packet, candidate: long_ok).ok?).to be(true)
+      expect(validator.call(packet: listing_packet, candidate: too_long).reason).to eq(:malformed_candidate)
+    end
+
+    it 'rejects a listing structural-key leak' do
+      leak = 'Berikut 2 dari 9: AAA (Alpha) BBB (Bravo) returned_count'
+      expect(validator.call(packet: listing_packet, candidate: leak).reason).to eq(:packet_leak)
+    end
+
+    context 'when the listing is COMPLETE (returned == total) and needs no count disclosure' do
+      let(:listing_packet) do
+        builder.build(evidence_input: {
+                        scenario: { key: 'scenario_9' }, intents: %w[product_listing], customer_language: 'id',
+                        response_goals: %w[answer_product_listing], validated_slots: {},
+                        facts: { product_listing: { products: [{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }],
+                                                    returned_count: 2, total_count: 2, complete: true,
+                                                    source: 'catalog_listing_repository', checked_at: '2026-09-30T12:00:00Z' } },
+                        missing_slots: [], variant_candidates: []
+                      })
+      end
+
+      it 'accepts a reply that cites every code and name without a count' do
+        expect(validator.call(packet: listing_packet, candidate: 'Produk kami: AAA (Alpha) dan BBB (Bravo).').ok?).to be(true)
+      end
+    end
+  end
 end

@@ -35,9 +35,13 @@ class Marine::Backend::CandidatePlanToProductIntentAdapter
   IntentExtractor = Marine::Catalog::IntentExtractor
   ExecutionPolicy = Marine::Backend::ExecutionPolicy
 
-  # The product intents this seam may execute. Exactly the IntentExtractor allowlist
-  # (transactional + the informational product_overview); reused so the two can never drift.
-  SUPPORTED_INTENTS = IntentExtractor::ALLOWED_PRODUCT_INTENTS
+  # The product intents this seam may carry through the pre-policy support filter: the IntentExtractor
+  # allowlist (transactional + informational product_overview) UNION the Phase-3 backend product
+  # intents (price / product_listing / product_information). The union lets a listing/information plan
+  # survive the support filter; the ExecutionPolicy single-intent gate below then narrows execution to
+  # exactly one authorized product intent, so every supported-but-unauthorized set (stock, catalog,
+  # parent_info, variant_info, product_overview, and every mixed/duplicated set) still fails closed.
+  SUPPORTED_INTENTS = (IntentExtractor::ALLOWED_PRODUCT_INTENTS | ExecutionPolicy::PRODUCT_INTENTS).freeze
   # The combinable per-turn set (price/stock/parent_info/variant_info/catalog — product_overview
   # never combines), reused from the extractor so the multi-intent contract stays identical.
   COMBINABLE_INTENTS = IntentExtractor::SUPPORTED_PRODUCT_INTENTS
@@ -80,10 +84,11 @@ class Marine::Backend::CandidatePlanToProductIntentAdapter
     # Reject the WHOLE plan if ANY nominated intent is not a supported executable product intent
     # (mixed price+order_status/sample/unsupported never partially executes).
     return failure(REASON_UNSUPPORTED_INTENT) unless (intents - SUPPORTED_INTENTS).empty?
-    # Execution authorization is backend-policy-owned: the WHOLE intent set must be the exact
-    # ExecutionPolicy-authorized executable array (Phase 1: ["price"]). A supported-but-non-executable
-    # set (stock, or a mixed price+stock) fails the whole plan closed — no partial product action.
-    return failure(REASON_PHASE_NOT_EXECUTABLE) unless ExecutionPolicy.authorized?(intents)
+    # Execution authorization is backend-policy-owned: the WHOLE intent set must be exactly ONE
+    # ExecutionPolicy-authorized product intent (["price"], ["product_listing"], or
+    # ["product_information"]). A supported-but-non-executable set (stock, catalog, a mixed price+stock,
+    # or a duplicated set) fails the whole plan closed — no partial product action.
+    return failure(REASON_PHASE_NOT_EXECUTABLE) unless ExecutionPolicy.product_authorized?(intents)
 
     accept(normalized, key, supported_in_canonical_order(intents))
   end

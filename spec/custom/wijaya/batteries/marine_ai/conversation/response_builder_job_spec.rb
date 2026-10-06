@@ -95,13 +95,30 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       reply = conversation.messages.outgoing.last
       expect(reply.content).to eq(target.text)
       expect(reply.additional_attributes).to include(
-        'source_type' => 'marine_exact_price_evidence_v2',
-        'orchestration_path' => 'exact_price_target'
+        'source_type' => 'marine_backend_evidence_v2',
+        'orchestration_path' => 'backend_evidence_target'
       )
       expect(conversation.messages.outgoing.count).to eq(1)
       expect(usage_count).to eq(1)
       expect(claim_status).to eq('completed')
       expect(exact_price_attempt).to have_received(:call).once
+    end
+
+    it 'delivers a bounded product-listing target reply through the same generic evidence-v2 path' do
+      target = Marine::Backend::ExactPriceCustomerExecution::Result.new(
+        status: :deliverable, reason: :accepted, text: 'Berikut 2 dari 9 produk kami: IMP (Impala) dan ZEB (Zebra).'
+      ).freeze
+      allow(exact_price_attempt).to receive(:call).and_return(target)
+      expect(Marine::Llm::AssistantChatService).not_to receive(:new)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq(target.text)
+      expect(reply.additional_attributes).to include(
+        'source_type' => 'marine_backend_evidence_v2',
+        'orchestration_path' => 'backend_evidence_target'
+      )
     end
 
     it 'runs the unchanged legacy path when the exact-price target declines the turn' do

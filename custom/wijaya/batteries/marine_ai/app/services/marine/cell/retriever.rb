@@ -51,6 +51,29 @@ class Marine::Cell::Retriever
     responses(query, limit: 1).first
   end
 
+  # Batch-safe CANDIDATE load for catalog description binding (Phase 3): the APPROVED, assistant-scoped
+  # responses whose QUESTION OR ANSWER CONTAINS any of `keys`, fetched in a SINGLE bounded query off the
+  # same approved base scope — no per-key retrieval, no N+1. Each key is matched with a parameter-bound,
+  # LIKE-escaped substring ILIKE against both the question and answer columns; a blank/empty key set
+  # yields the empty relation. Capped at CANDIDATE_LIMIT.
+  #
+  # This is CANDIDATE RETRIEVAL ONLY — substring containment is deliberately permissive (it also matches
+  # partial/embedded occurrences). It does NOT authorize an identity: the backend description source caller
+  # must re-verify each returned row by EXACT normalized identity with Unicode alphanumeric boundaries
+  # before binding any description.
+  def approved_mentioning(keys)
+    normalized = Array(keys).map { |key| key.to_s.strip.downcase }.reject(&:empty?).uniq
+    return Marine::AssistantResponse.none if normalized.empty?
+
+    clauses = normalized.map.with_index { |_key, i| "question ILIKE :k#{i} OR answer ILIKE :k#{i}" }.join(' OR ')
+    params = normalized.each_with_index.with_object({}) do |(key, i), hash|
+      hash[:"k#{i}"] = "%#{ActiveRecord::Base.sanitize_sql_like(key)}%"
+    end
+    # Only question/answer text is read for identity binding, so this path skips the retrieve/score
+    # `includes(:documentable)` preload — it stays a single bounded query (no documentable round-trip).
+    assistant.responses.approved.where(clauses, params).limit(CANDIDATE_LIMIT)
+  end
+
   private
 
   attr_reader :assistant

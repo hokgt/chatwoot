@@ -33,9 +33,10 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
   INPUT_KEYS = %i[scenario intents customer_language response_goals validated_slots facts
                   missing_slots variant_candidates].freeze
 
-  # Closed response-goal enum (A8-01). answer_payment_terms / clarify_payment are reserved for 3B.
+  # Closed response-goal enum (A8-01). answer_product_listing / answer_product_information are the
+  # Phase 3 bounded-catalog answers. answer_payment_terms / clarify_payment are reserved for 3B.
   RESPONSE_GOALS = %w[
-    answer_price answer_stock answer_product_overview
+    answer_price answer_stock answer_product_overview answer_product_listing answer_product_information
     clarify_product clarify_variant clarify_ambiguous_variant handoff
   ].freeze
 
@@ -59,6 +60,18 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
   STOCK_FACT_KEYS = %i[status source checked_at].freeze
   STOCK_STATUSES = %w[available unavailable].freeze
   STOCK_SOURCE = 'stock_repository'.freeze
+
+  # Closed product-listing fact (Phase 3). A bounded page of active top-level catalog products plus
+  # EXACT completeness metadata (returned_count, optional total_count, complete boolean). Each product
+  # carries a code + optional display name; a per-product description is REQUIRED (nonblank) under the
+  # answer_product_information goal (every product described) and FORBIDDEN under a names-only listing.
+  LISTING_FACT_KEYS = %i[products returned_count total_count complete source checked_at].freeze
+  LISTING_PRODUCT_KEYS = %i[code name description].freeze
+  LISTING_SOURCE = 'catalog_listing_repository'.freeze
+  # The two Phase-3 listing goals; a product_listing fact exists iff one of these is a response goal.
+  LISTING_GOALS = %w[answer_product_listing answer_product_information].freeze
+  # The Phase-3 listing candidate intents; a product_listing fact requires one of these in intents.
+  LISTING_INTENTS = %w[product_listing product_information].freeze
 
   # An exact, non-negative decimal string (mirrors PriceDisplayFormatter::AMOUNT_STRING) — a
   # string rate must be losslessly representable; an Integer / finite BigDecimal is also accepted.
@@ -84,6 +97,11 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
   MAX_ATTRIBUTE_KEY_BYTES = 80
   MAX_ATTRIBUTE_VALUE_BYTES = 80
   MAX_PACKET_BYTES = 16 * 1024
+  # Bounded listing page (aligned with ProductListingRepository::MAX_PAGE) and a per-product
+  # description cap, both chosen so a full page fits under MAX_PACKET_BYTES (the enforce_ceiling!
+  # backstop still fails closed if an oversized page/description would exceed it).
+  MAX_LISTING_PRODUCTS = 20
+  MAX_DESCRIPTION_BYTES = 300
 
   # Raised (fail closed) when a programmer-supplied evidence input violates the closed contract.
   # It carries a FIXED message only — never the offending value / raw provider prose.
@@ -116,7 +134,7 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
     # from the formatter at this locale, so the locale must be resolved first.
     language = language(input[:customer_language])
     slots = validated_slots(input[:validated_slots])
-    facts = facts(input[:facts], slots, language)
+    facts = facts(input[:facts], slots, language, goals)
     ensure_coherent!(facts, goals, intents, slots)
 
     packet = assemble(scenario, goals, slots, facts, input[:missing_slots], input[:variant_candidates])
@@ -132,8 +150,10 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
 
     reject_unknown_keys!(input, INPUT_KEYS)
     # Execution authorization is the ONE backend policy: the COMPLETE top-level intents set — as
-    # submitted, never deduped/sorted — must be the exact ExecutionPolicy-authorized executable array.
-    raise invalid unless ExecutionPolicy.authorized?(input[:intents])
+    # submitted, never deduped/sorted — must be exactly ONE ExecutionPolicy-authorized product intent
+    # (["price"], ["product_listing"], or ["product_information"]). ["price"] still passes, so the
+    # exact-price packet contract is unchanged.
+    raise invalid unless ExecutionPolicy.product_authorized?(input[:intents])
 
     input
   end
@@ -259,16 +279,18 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
     end
   end
 
-  # Closed facts: only price/stock, each strictly validated. Unknown fact keys fail closed.
-  def facts(facts, slots, language)
+  # Closed facts: price/stock (over a resolved variant slot) and the catalog-wide product_listing,
+  # each strictly validated. Unknown fact keys fail closed.
+  def facts(facts, slots, language, goals) # rubocop:disable Metrics/CyclomaticComplexity -- a flat dispatch over the closed fact keys
     return {} if facts.nil? || facts == {}
     raise invalid unless facts.is_a?(Hash)
 
-    reject_unknown_keys!(facts, %i[price stock])
+    reject_unknown_keys!(facts, %i[price stock product_listing])
     variant_code = slots.dig(:variant, :code)
     result = {}
     result[:price] = price_fact(facts[:price], variant_code, language) if facts.key?(:price)
     result[:stock] = stock_fact(facts[:stock], variant_code) if facts.key?(:stock)
+    result[:product_listing] = product_listing_fact(facts[:product_listing], goals) if facts.key?(:product_listing)
     raise invalid if result.length > MAX_FACTS
 
     result
@@ -355,17 +377,112 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
     { status: fact[:status].dup, source: exact!(fact[:source], STOCK_SOURCE), checked_at: utc_timestamp!(fact[:checked_at]) }
   end
 
+  # A bounded product-listing fact: the authorized returned page plus EXACT completeness metadata.
+  # Each product carries a validated code + optional display name; a per-product description is
+  # permitted ONLY under the answer_product_information goal. returned_count must equal the page size;
+  # when complete, total_count must equal returned_count; when not complete, total_count is an Integer
+  # strictly greater than returned_count (or omitted when it could not be obtained safely) — so the
+  # completeness/count claim the packet carries is always exact.
+  def product_listing_fact(fact, goals)
+    raise invalid unless fact.is_a?(Hash)
+
+    reject_unknown_keys!(fact, LISTING_FACT_KEYS)
+    products = listing_products(fact[:products], information: goals.include?('answer_product_information'))
+    returned = listing_count!(fact[:returned_count], products.length)
+    complete = boolean!(fact[:complete])
+    {
+      products: products,
+      returned_count: returned,
+      total_count: listing_total!(fact[:total_count], returned, complete),
+      complete: complete,
+      source: exact!(fact[:source], LISTING_SOURCE),
+      checked_at: utc_timestamp!(fact[:checked_at])
+    }.compact
+  end
+
+  # Non-empty, bounded, duplicate-free products. Each is a closed { code, name?, description? }; the
+  # code is a required authoritative value and the name is free display text. The description obeys the
+  # goal shape INDEPENDENTLY of the planner: under answer_product_information EVERY product must carry a
+  # nonblank description (so an undescribed information product fails closed), and under a names-only
+  # answer_product_listing a description is forbidden.
+  def listing_products(products, information:)
+    raise invalid unless products.is_a?(Array) && !products.empty?
+    raise invalid if products.length > MAX_LISTING_PRODUCTS
+
+    seen = []
+    products.map do |entry|
+      raise invalid unless entry.is_a?(Hash)
+
+      reject_unknown_keys!(entry, LISTING_PRODUCT_KEYS)
+      code = required_string!(entry[:code], MAX_CODE_BYTES)
+      raise invalid if seen.include?(code)
+
+      seen << code
+      { code: code, name: optional_bounded_string(entry[:name], MAX_STRING_BYTES),
+        description: listing_description!(entry[:description], information) }.compact
+    end
+  end
+
+  # The goal-shaped description discipline. Under answer_product_information a description is REQUIRED
+  # and nonblank (a blank/absent description fails closed, so no information packet with an undescribed
+  # product can build). Under a names-only answer_product_listing a description is FORBIDDEN. In both
+  # cases the builder enforces the shape itself rather than trusting the planner to have filtered.
+  def listing_description!(value, information)
+    return required_description!(value) if information
+    return nil if value.nil?
+
+    raise invalid
+  end
+
+  def required_description!(value)
+    description = optional_bounded_string(value, MAX_DESCRIPTION_BYTES)
+    raise invalid if description.nil?
+
+    description
+  end
+
+  # returned_count must be the exact size of the returned page.
+  def listing_count!(value, expected)
+    raise invalid unless value.is_a?(Integer) && value == expected
+
+    value
+  end
+
+  # total_count discipline: when complete it must equal returned_count (the page is the whole set);
+  # when not complete it is an Integer strictly greater than returned_count, or nil (omitted) when it
+  # was not obtained safely.
+  def listing_total!(value, returned, complete)
+    if complete
+      raise invalid unless value == returned
+
+      return returned
+    end
+    return nil if value.nil?
+    raise invalid unless value.is_a?(Integer) && value > returned
+
+    value
+  end
+
+  def boolean!(value)
+    raise invalid unless [true, false].include?(value)
+
+    value
+  end
+
   # Fact/intent/goal coherence: a price fact exists iff answer_price is a goal AND price is a
   # candidate intent; likewise stock/answer_stock. Repository failure is a no-fact handoff, never a
   # fact with an incoherent goal set. answer_product_overview requires authoritative validated
   # product evidence (at minimum a validated product slot) — it is never emitted over an empty
   # slot/fact packet Model 2 could hallucinate from.
-  def ensure_coherent!(facts, goals, intents, slots) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- a flat sequence of independent fact/goal/slot coherence guards
+  def ensure_coherent!(facts, goals, intents, slots) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity, Metrics/AbcSize -- a flat sequence of independent fact/goal/slot coherence guards
     raise invalid if facts.key?(:price) != goals.include?('answer_price')
     raise invalid if facts.key?(:price) && intents.exclude?('price')
     raise invalid if facts.key?(:stock) != goals.include?('answer_stock')
     raise invalid if facts.key?(:stock) && intents.exclude?('stock')
     raise invalid if goals.include?('answer_product_overview') && !slots.key?(:product)
+    # A product_listing fact exists iff a listing goal is present AND a listing intent was asked.
+    raise invalid if facts.key?(:product_listing) != goals.intersect?(LISTING_GOALS)
+    raise invalid if facts.key?(:product_listing) && !intents.intersect?(LISTING_INTENTS)
   end
 
   def missing_slots(slots)

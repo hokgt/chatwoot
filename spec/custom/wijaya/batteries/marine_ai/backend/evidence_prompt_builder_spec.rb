@@ -114,4 +114,31 @@ RSpec.describe Marine::Backend::EvidencePromptBuilder do
     expect(built[:messages].first).to be_frozen
     expect(history).to eq([{ role: 'user', content: 'keep' }])
   end
+
+  describe 'bounded product_listing (Phase 3)' do
+    let(:listing_packet) do
+      Marine::Backend::EvidencePacketBuilder.new(clock: -> { Time.utc(2026, 9, 30, 12, 0, 0) }).build(
+        evidence_input: {
+          scenario: { key: 'scenario_9' }, intents: %w[product_listing], customer_language: 'id',
+          response_goals: %w[answer_product_listing], validated_slots: {},
+          facts: { product_listing: { products: [{ code: 'AAA', name: 'Alpha' }], returned_count: 1, total_count: 5,
+                                      complete: false, source: 'catalog_listing_repository', checked_at: '2026-09-30T12:00:00Z' } },
+          missing_slots: [], variant_candidates: []
+        }
+      )
+    end
+
+    it 'instructs honest bounded-listing presentation (cite listed products, no false completeness claim)' do
+      instruction = described_class::SYSTEM_INSTRUCTION
+      expect(instruction).to match(/present exactly the products it lists and no others/)
+      expect(instruction).to match(/do not claim it is the whole catalogue/)
+      expect(instruction).to match(/explain each product individually, using only its own description/)
+    end
+
+    it 'renders a product_listing packet as the only fact source' do
+      built = prompt_builder.build(packet: listing_packet, customer_request: 'Produk apa saja?')
+      expect(built[:system]).to include('AAA')
+      expect(built[:system]).to include('catalog_listing_repository')
+    end
+  end
 end

@@ -1104,6 +1104,10 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/config.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/connection.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_family_repository.rb
+      # Phase 3 — bounded, deterministic catalog LISTING of active top-level products (templates +
+      # standalone; variants/disabled excluded) with exact completeness metadata (returned_count,
+      # optional total_count, complete). Read-only, parameterized, page+1 probe, fail-closed.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_listing_repository.rb
       # Phase 1 — Deterministic Catalog Data Layer: generic variant resolution, general
       # selling User Price lookup, and binary stock-availability status (numeric stock
       # never leaves PostgreSQL). Read-only, parameterized, bounded, fail-closed.
@@ -1304,6 +1308,10 @@ patches:
       # one policy-injected CandidatePlan, Backend Authority, marine_evidence_v2, and the existing
       # presenter/fact guards; it returns validated text or a closed fallback and never delivers.
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/exact_price_customer_execution.rb
+      # Marine Phase 3 — approved-only, assistant-scoped product-description evidence source for the
+      # product_information listing path. One bounded approved knowledge-base query, exact normalized
+      # code/name binding, closed per-authorized-product evidence only (never adds/invents a product).
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/approved_product_description_source.rb
       # Fase 3A-2 — Product Shadow Authority. DEFAULT-OFF, fail-closed observation-only layer that
       # compares the LEGACY Marine::Catalog::IntentExtractor product outcome against the Fase 3A-1
       # CandidatePlanToProductIntentAdapter outcome, aggregates privacy-safe metrics, and stages a
@@ -1757,6 +1765,7 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/documents/sop/extraction_smoke_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/documents_sop_controller_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_family_repository_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_listing_repository_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/connection_spec.rb
       # Reload-safe sibling-resolution regression for the whole Marine::Catalog tree.
       - spec/custom/wijaya/batteries/marine_ai/catalog/namespace_resolution_spec.rb
@@ -1882,6 +1891,8 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/backend/evidence_fact_verifier_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/model2_shadow_execution_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/exact_price_customer_execution_spec.rb
+      # Marine Phase 3 — approved product-description evidence source spec.
+      - spec/custom/wijaya/batteries/marine_ai/backend/approved_product_description_source_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/resolve_any_spec.rb
       # Fase 3A-2 — Product Shadow Authority specs. ProductOutcome projection/compare; ShadowConfig
       # default-off + exact-true + fail-closed allowlist (max 50) + candidate-mode + rollback

@@ -111,11 +111,12 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     return complete_no_output unless eligible? # takeover/resolved/snoozed BEFORE reasoning
 
     Current.executed_by = @assistant
-    # Phase 2 exact-price activation attempts the target architecture first. It returns a
-    # delivery-compatible response only for a policy-authorized, repository-backed exact price
-    # whose Evidence v2 wording passed every fact guard. Every other outcome runs this job's
-    # unchanged trigger-bound legacy service locally; no global cutover gate is opened.
-    @response = exact_price_response(message) || generate_trigger_bound_legacy_response(message)
+    # Phase 2/3 target activation attempts the Backend Evidence-v2 architecture first. It returns a
+    # delivery-compatible response only for a policy-authorized, repository-backed single target
+    # (exact price, bounded product listing, or bounded product_information) whose Evidence v2 wording
+    # passed every fact guard. Every other outcome runs this job's unchanged trigger-bound legacy
+    # service locally; no global cutover gate is opened.
+    @response = target_evidence_response(message) || generate_trigger_bound_legacy_response(message)
     # Phase 6 — precompute the deterministic localized fallback and (only if it survives BOTH
     # the deterministic protected-fact checker and the semantic validator) a natural-wording
     # candidate for eligible product replies, OUTSIDE the finalize row lock. Finalize still
@@ -134,8 +135,10 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   end
 
   # Target execution is side-effect-free: this job remains the only delivery/claim owner. Rescue
-  # construction as well as execution so any target defect still reaches the required legacy path.
-  def exact_price_response(message)
+  # construction as well as execution so any target defect still reaches the required legacy path. The
+  # source_type/orchestration_path are GENERIC (a Backend Evidence-v2 target, not necessarily price),
+  # so a listing/information target is never mislabelled as a price.
+  def target_evidence_response(message)
     result = Marine::Backend::ExactPriceCustomerExecution.new(
       account: @conversation.account, assistant: @assistant, conversation: @conversation, message: message
     ).call
@@ -143,8 +146,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
     {
       'response' => result.text,
-      'source_type' => 'marine_exact_price_evidence_v2',
-      'orchestration_path' => 'exact_price_target'
+      'source_type' => 'marine_backend_evidence_v2',
+      'orchestration_path' => 'backend_evidence_target'
     }
   rescue StandardError
     nil

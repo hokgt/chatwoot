@@ -48,7 +48,7 @@ class Marine::Backend::AuthorityShadowExecution
     return Coordinator.stop(reason: Coordinator::REASON_SCENARIO_MISMATCH) if scenario.nil?
 
     context = Marine::Conversation::ContextBuilder.new(conversation: @conversation, trigger_message: @message).build
-    Coordinator.new.call(
+    Coordinator.new(description_source: description_source).call(
       candidate_plan: @candidate_plan,
       scenario_key: "scenario_#{scenario.id}",
       trigger: context.trigger, history: context.history, phase: context.phase,
@@ -57,6 +57,13 @@ class Marine::Backend::AuthorityShadowExecution
   end
 
   private
+
+  # The approved-only, assistant-scoped RAG description source for a product_information listing. It
+  # is only ever CALLED on a product_information turn (the planner skips it otherwise), so building it
+  # here is cheap; it reuses the existing Marine knowledge-base retrieval and reads nothing else.
+  def description_source
+    Marine::Backend::ApprovedProductDescriptionSource.new(assistant: @assistant)
+  end
 
   # Every record must belong to the same account, the message must be this conversation's public
   # incoming turn, and the conversation's inbox must be linked to exactly this Marine assistant.

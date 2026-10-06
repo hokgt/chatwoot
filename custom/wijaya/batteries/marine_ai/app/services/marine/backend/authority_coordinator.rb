@@ -24,10 +24,15 @@
 # The Result carries only closed enums + at most one of evidence_packet/price_range (both already
 # deep-frozen by their builders). It never carries raw text, DB rows, product lists, provider prose,
 # or a mutable object.
-class Marine::Backend::AuthorityCoordinator
+class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLength -- a flat sequence of independent, fail-closed dispatch branches (price + listing)
   Adapter = Marine::Backend::CandidatePlanToProductIntentAdapter
   Resolver = Marine::Backend::CatalogCandidateResolver
   ExecutionPolicy = Marine::Backend::ExecutionPolicy
+
+  # The Phase-3 catalog-wide listing intents and the goals their packets carry. A single listing
+  # intent routes the dedicated listing path (no price family/variant catalog-identity resolution).
+  LISTING_INTENTS = %w[product_listing product_information].freeze
+  LISTING_GOALS = %w[answer_product_listing answer_product_information].freeze
 
   OUTCOME_EVIDENCE_PACKET = :evidence_packet
   OUTCOME_FAMILY_PRICE_RANGE = :family_price_range
@@ -86,10 +91,12 @@ class Marine::Backend::AuthorityCoordinator
   end
 
   def initialize(adapter: nil, resolver: nil, planner: nil, packet_builder: nil, # rubocop:disable Metrics/ParameterLists -- injected read-only collaborators (all optional)
-                 range_authority: nil, language_resolver: nil)
+                 range_authority: nil, language_resolver: nil, description_source: nil)
     @adapter = adapter || Adapter.new
     @resolver = resolver || Resolver.new
-    @planner = planner || Marine::Backend::ProductExecutionPlanner.new
+    # The product_information RAG description source is threaded into the default planner so a listing
+    # fact can be annotated; an explicitly injected planner (tests) keeps its own source.
+    @planner = planner || Marine::Backend::ProductExecutionPlanner.new(description_source: description_source)
     @packet_builder = packet_builder || Marine::Backend::EvidencePacketBuilder.new
     @range_authority = range_authority || Marine::Backend::FamilyPriceRangeAuthority.new
     @language_resolver = language_resolver || Marine::Catalog::ConversationLanguageResolver
@@ -100,7 +107,11 @@ class Marine::Backend::AuthorityCoordinator
   def call(candidate_plan:, scenario_key:, trigger:, history:, phase:, flow_state:, configured_language:) # rubocop:disable Lint/UnusedMethodArgument,Metrics/ParameterLists -- documented §7.5 closed signature
     authorized = @adapter.call(plan: candidate_plan, scenario_key: scenario_key)
     return adapter_failure(authorized.reason, scenario_key) unless authorized.ok?
-    return phase_not_executable(authorized) unless ExecutionPolicy.authorized?(authorized.intents)
+    return phase_not_executable(authorized) unless ExecutionPolicy.product_authorized?(authorized.intents)
+
+    # A single listing/information intent is catalog-wide: it needs NO exact price-identity grounding,
+    # so it routes the dedicated listing path instead of the CatalogCandidateResolver family/child flow.
+    return listing_dispatch(authorized, trigger: trigger, history: history, configured_language: configured_language) if listing?(authorized.intents)
 
     resolved = @resolver.call(trigger: trigger, flow_state: flow_state)
     dispatch(authorized, resolved, trigger: trigger, history: history,
@@ -157,6 +168,63 @@ class Marine::Backend::AuthorityCoordinator
     else
       terminal(OUTCOME_CLARIFY, clarify_reason(goals), authorized, resolved, evidence_packet: packet)
     end
+  end
+
+  def listing?(intents)
+    intents.length == 1 && LISTING_INTENTS.include?(intents.first)
+  end
+
+  # The catalog-wide listing/information path: resolve the delivery language, then let the planner read
+  # the bounded top-level catalog page (exact-resolving the plan's untrusted product candidate against
+  # the catalog authority when present). An accepted listing packet is terminal; a planner handoff
+  # (empty catalog / outage / unresolved candidate) is a closed handoff. No resolver identity is used,
+  # so the Result carries SOURCE_NONE.
+  def listing_dispatch(authorized, trigger:, history:, configured_language:)
+    language = resolve_listing_language(authorized, trigger: trigger, history: history, configured_language: configured_language)
+    return listing_terminal(OUTCOME_HANDOFF, REASON_LANGUAGE_UNRESOLVED, authorized) if language.nil?
+
+    packet = @packet_builder.build(evidence_input: @planner.call(
+      product_intent: listing_planner_input(authorized, language), intents: authorized.intents, scenario: authorized.scenario
+    ))
+    if packet[:response_goals].intersect?(LISTING_GOALS)
+      listing_terminal(OUTCOME_EVIDENCE_PACKET, REASON_ACCEPTED, authorized, evidence_packet: packet)
+    else
+      listing_terminal(OUTCOME_HANDOFF, REASON_CATALOG_UNAVAILABLE, authorized, evidence_packet: packet)
+    end
+  end
+
+  # A FRESH planner input for the listing path. It carries the plan's UNTRUSTED product candidate as
+  # family_mention — the planner is the catalog authority that exact-resolves it (or lists the bounded
+  # page when blank); no price variant is ever requested.
+  def listing_planner_input(authorized, language)
+    {
+      product_related: true,
+      family_mention: authorized.product_intent[:family_mention],
+      explicit_child_code: nil,
+      attribute_candidates: [],
+      customer_language: language,
+      intent: authorized.intents.first,
+      requested_intents: [],
+      requires_exact_variant: false,
+      quantity_inquiry: false
+    }
+  end
+
+  # Delivery language for a listing turn, fixed BEFORE the planner. A nil language fails closed to a
+  # handoff (no silent default). The untrusted candidate only anchors language detection — never a
+  # trusted token, since it is not catalog-validated at this point.
+  def resolve_listing_language(authorized, trigger:, history:, configured_language:)
+    mention = authorized.product_intent[:family_mention]
+    @language_resolver.resolve(
+      text: trigger, provider_language: nil, context: history,
+      configured_language: configured_language,
+      entity_candidates: [mention].compact, trusted_tokens: []
+    ).language
+  end
+
+  def listing_terminal(outcome_type, reason, authorized, evidence_packet: nil)
+    build(outcome_type: outcome_type, reason: reason, scenario_key: authorized.scenario[:key],
+          intents: authorized.intents, source: SOURCE_NONE, evidence_packet: evidence_packet)
   end
 
   # Exact family without a child → family price RANGE (internal canonical structure, never customer-facing).
