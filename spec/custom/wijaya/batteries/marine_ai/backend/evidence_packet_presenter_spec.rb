@@ -246,7 +246,22 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
       }
     end
     let(:listing_packet) { builder.build(evidence_input: listing_input) }
-    let(:verifier_reject) { ->(**) { false } }
+    let(:information_packet) do
+      builder.build(evidence_input: {
+                      scenario: { key: 'scenario_9' }, intents: %w[product_information], customer_language: 'id',
+                      response_goals: %w[answer_product_information], validated_slots: {},
+                      facts: { product_listing: { products: [{ code: 'AAA', name: 'Alpha', description: 'kain marine' }],
+                                                  returned_count: 1, total_count: 1, complete: true,
+                                                  source: 'catalog_listing_repository', checked_at: '2026-09-30T12:00:00Z' } },
+                      missing_slots: [], variant_candidates: []
+                    })
+    end
+
+    # A candidate that passes the deterministic fact + persona gates but introduces a RAG-only product
+    # the semantic verifier will reject. Used across the Step 17 discard/fallback cases below.
+    def rag_only_candidate
+      'Kami punya AAA (Alpha), BBB (Bravo), dan produk istimewa lainnya.'
+    end
 
     it 'delivers a listing reply that cites exactly the listed codes (verifier confirms)' do
       result = presenter.call(packet: listing_packet, generator: generator('Kami punya AAA (Alpha) dan BBB (Bravo).'),
@@ -254,30 +269,62 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
       expect(result.ok?).to be(true)
     end
 
-    it 'reserves :handoff (no deterministic listing renderer) when generation fails' do
+    it 'reserves :handoff when generation fails (no candidate to render a semantic fallback for)' do
       result = presenter.call(packet: listing_packet, generator: generator(nil), customer_request: 'x', fact_verifier: verifier_ok)
       expect(result).to have_attributes(ok: false, reason: :generation_failed, fallback: :handoff)
     end
 
-    it 'rejects a reply that omits a listed product code' do
+    it 'keeps the deterministic fact gate closed (:handoff) when a reply omits a listed product code' do
       result = presenter.call(packet: listing_packet, generator: generator('Kami hanya punya AAA (Alpha).'),
                               customer_request: 'x', fact_verifier: verifier_ok)
       expect(result).to have_attributes(ok: false, reason: :fact_rejected, fallback: :handoff)
     end
 
-    # Section E — a reply that passes the deterministic guard (cites every authorized code+name) but
-    # introduces a RAG-only product or an ungrounded/swapped description is caught by the REQUIRED
-    # semantic verifier; a missing or rejecting verifier fails closed to :handoff.
-    it 'rejects a RAG-only / ungrounded-description reply via the required semantic verifier' do
-      reply = 'Kami punya AAA (Alpha), BBB (Bravo), dan produk istimewa lainnya.'
-      result = presenter.call(packet: listing_packet, generator: generator(reply),
-                              customer_request: 'x', fact_verifier: verifier_reject)
-      expect(result).to have_attributes(ok: false, reason: :fact_unverified, fallback: :handoff)
+    # Step 17 — on a listing SEMANTIC rejection/error/missing (after the deterministic fact + persona
+    # gates pass) the untrusted candidate is DISCARDED and a deterministic reply is rendered from the
+    # packet's product_listing Evidence; the presenter returns ok=true with that deterministic text, so
+    # the customer execution never invokes the legacy RAG path. The rejected candidate never survives.
+    it 'discards a semantically-rejected candidate and delivers deterministic Evidence text' do
+      result = presenter.call(packet: listing_packet, generator: generator(rag_only_candidate),
+                              customer_request: 'x', fact_verifier: ->(**) { false })
+      expect(result.ok?).to be(true)
+      expect(result.text).to include('AAA', 'Alpha', 'BBB', 'Bravo')
+      expect(result.text).not_to include('produk istimewa lainnya')
     end
 
-    it 'requires the semantic verifier for a listing answer (a missing verifier fails closed)' do
-      result = presenter.call(packet: listing_packet, generator: generator('Kami punya AAA (Alpha) dan BBB (Bravo).'),
-                              customer_request: 'x', fact_verifier: nil)
+    it 'renders deterministic Evidence text when the semantic verifier raises' do
+      result = presenter.call(packet: listing_packet, generator: generator(rag_only_candidate),
+                              customer_request: 'x', fact_verifier: ->(**) { raise 'boom' })
+      expect(result.ok?).to be(true)
+      expect(result.text).to include('AAA', 'BBB')
+      expect(result.text).not_to include('produk istimewa lainnya')
+    end
+
+    it 'renders deterministic Evidence text when the semantic verifier is missing / non-callable' do
+      [nil, Object.new].each do |unusable_verifier|
+        result = presenter.call(packet: listing_packet, generator: generator(rag_only_candidate),
+                                customer_request: 'x', fact_verifier: unusable_verifier)
+        expect(result.ok?).to be(true)
+        expect(result.text).to include('AAA', 'BBB')
+        expect(result.text).not_to include('produk istimewa lainnya')
+      end
+    end
+
+    it 'returns the accepted candidate unchanged and does NOT render when the verifier confirms' do
+      spy_renderer = double('listing_renderer')
+      allow(spy_renderer).to receive(:call)
+      presenter_with_spy = described_class.new(listing_renderer: spy_renderer)
+
+      result = presenter_with_spy.call(packet: listing_packet, generator: generator('Kami punya AAA (Alpha) dan BBB (Bravo).'),
+                                       customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result.ok?).to be(true)
+      expect(result.text).to eq('Kami punya AAA (Alpha) dan BBB (Bravo).')
+      expect(spy_renderer).not_to have_received(:call)
+    end
+
+    it 'keeps product_information semantic rejection closed (:handoff) and never renders listing text' do
+      result = presenter.call(packet: information_packet, generator: generator('AAA (Alpha): kain marine premium.'),
+                              customer_request: 'x', fact_verifier: ->(**) { false })
       expect(result).to have_attributes(ok: false, reason: :fact_unverified, fallback: :handoff)
     end
   end

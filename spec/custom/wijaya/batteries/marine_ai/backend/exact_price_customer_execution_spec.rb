@@ -243,6 +243,44 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
     end
   end
 
+  # Step 17 — the customer execution seam itself returns a DELIVERABLE for a listing semantic
+  # rejection (real presenter + real renderer): the Model 2 candidate fails the semantic verifier,
+  # is discarded, and a deterministic reply is rendered from the packet's product_listing Evidence.
+  # A deliverable means the trigger-bound job never reaches its legacy RAG fallback for this turn.
+  describe 'listing semantic rejection yields a deliverable Evidence reply (no legacy fallback)' do
+    def real_listing_packet
+      Marine::Backend::EvidencePacketBuilder.new(clock: -> { Time.utc(2026, 9, 30, 12, 0, 0) }).build(
+        evidence_input: {
+          scenario: { key: 'scenario_9' }, intents: %w[product_listing], customer_language: 'id',
+          response_goals: %w[answer_product_listing], validated_slots: {},
+          facts: { product_listing: { products: [{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }],
+                                      returned_count: 2, total_count: 2, complete: true,
+                                      source: 'catalog_listing_repository', checked_at: '2026-09-30T12:00:00Z' } },
+          missing_slots: [], variant_candidates: []
+        }
+      )
+    end
+
+    it 'delivers deterministic Evidence text (candidate discarded) rather than declining the turn' do
+      packet = real_listing_packet
+      allow(authority_execution).to receive(:call).and_return(
+        authority_result(intents: %w[product_listing], evidence_packet: packet)
+      )
+
+      result = described_class.new(
+        account: account, assistant: assistant, conversation: conversation, message: message,
+        decision_runner: decision_runner, scenario_adapter: scenario_adapter,
+        authority_execution: authority_execution, presenter: Marine::Backend::EvidencePacketPresenter.new,
+        generator: ->(**) { 'Kami punya AAA (Alpha) dan BBB (Bravo), plus produk istimewa lainnya.' },
+        fact_verifier: ->(**) { false }, context_builder: context_builder
+      ).call
+
+      expect(result).to be_deliverable
+      expect(result.text).to include('AAA', 'Alpha', 'BBB', 'Bravo')
+      expect(result.text).not_to include('produk istimewa lainnya')
+    end
+  end
+
   it 'folds collaborator exceptions and malformed successful presentation to closed fallback results' do
     allow(decision_runner).to receive(:call).and_raise('private provider detail')
     result = execution.call

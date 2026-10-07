@@ -589,6 +589,9 @@ require_file spec/custom/wijaya/batteries/marine_ai/backend/execution_policy_spe
 # Phase 2 exact-price customer activation — synchronous non-delivering seam (checkpoint A).
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/backend/exact_price_customer_execution.rb
 require_file spec/custom/wijaya/batteries/marine_ai/backend/exact_price_customer_execution_spec.rb
+# Step 17 — deterministic product_listing Evidence renderer (listing semantic-rejection fallback).
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/backend/product_listing_evidence_renderer.rb
+require_file spec/custom/wijaya/batteries/marine_ai/backend/product_listing_evidence_renderer_spec.rb
 # Marine Phase 3 — approved-only product-description evidence source (product_information RAG bind).
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/backend/approved_product_description_source.rb
 require_file spec/custom/wijaya/batteries/marine_ai/backend/approved_product_description_source_spec.rb

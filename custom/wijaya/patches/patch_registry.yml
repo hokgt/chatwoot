@@ -1308,6 +1308,13 @@ patches:
       # one policy-injected CandidatePlan, Backend Authority, marine_evidence_v2, and the existing
       # presenter/fact guards; it returns validated text or a closed fallback and never delivers.
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/exact_price_customer_execution.rb
+      # Step 17 — deterministic product_listing Evidence renderer. On a listing SEMANTIC
+      # rejection/error/missing (after the deterministic fact + persona gates pass) the presenter
+      # discards the untrusted Model 2 candidate and renders a bounded listing reply from the
+      # marine_evidence_v2 product_listing Evidence alone (localized id/en templates, code+name+counts
+      # only), returned ok=true so the customer execution never invokes the legacy RAG path. Listing
+      # goal only; product_information keeps the closed fallback.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/product_listing_evidence_renderer.rb
       # Marine Phase 3 — approved-only, assistant-scoped product-description evidence source for the
       # product_information listing path. One bounded approved knowledge-base query, exact normalized
       # code/name binding, closed per-authorized-product evidence only (never adds/invents a product).
@@ -1891,6 +1898,8 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/backend/evidence_fact_verifier_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/model2_shadow_execution_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/exact_price_customer_execution_spec.rb
+      # Step 17 — deterministic product_listing Evidence renderer spec.
+      - spec/custom/wijaya/batteries/marine_ai/backend/product_listing_evidence_renderer_spec.rb
       # Marine Phase 3 — approved product-description evidence source spec.
       - spec/custom/wijaya/batteries/marine_ai/backend/approved_product_description_source_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/resolve_any_spec.rb

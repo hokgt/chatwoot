@@ -16,6 +16,13 @@
 # (price / stock / product_overview) — a missing, erroring, or rejecting verifier fails closed.
 # Only an all-accept candidate is returned.
 #
+# Step 17 exception (answer_product_listing ONLY): after the deterministic fact + persona gates pass,
+# a semantic rejection/error/missing DISCARDS the candidate and renders a deterministic reply from the
+# packet's product_listing Evidence (via ProductListingEvidenceRenderer), returned as an ok=true
+# Result so the customer execution never invokes the legacy path. Every other goal — product_information
+# included — keeps the closed :fact_unverified fallback below. Fact/persona failures stay closed for
+# listing too.
+#
 # Fallback policy (A8-01 / no needless handoff): any ineligibility, generator failure, malformed
 # output, or validator/verifier rejection returns a CLOSED reason plus the packet's safe fallback —
 # :deterministic for a valid answer/clarification packet (whose verified facts/slots the existing
@@ -51,10 +58,11 @@ class Marine::Backend::EvidencePacketPresenter
     def ok? = ok == true
   end
 
-  def initialize(prompt_builder: nil, fact_validator: nil, persona_validator: nil)
+  def initialize(prompt_builder: nil, fact_validator: nil, persona_validator: nil, listing_renderer: nil)
     @prompt_builder = prompt_builder || Marine::Backend::EvidencePromptBuilder.new
     @fact_validator = fact_validator || Marine::Backend::PostGenerationFactValidator.new
     @persona_validator = persona_validator || Marine::Backend::PersonaValidator.new
+    @listing_renderer = listing_renderer || Marine::Backend::ProductListingEvidenceRenderer.new
   end
 
   # packet:           a frozen marine_evidence_v2 Evidence Packet.
@@ -66,7 +74,7 @@ class Marine::Backend::EvidencePacketPresenter
   #                   independent semantic proof the reply's facts equal the packet's (an interface
   #                   only in 3A-1; no provider constructed/called here). Missing/error/false fails
   #                   closed for EVERY generated answer path.
-  def call(packet:, generator:, customer_request:, message_history: [], fact_verifier: nil)
+  def call(packet:, generator:, customer_request:, message_history: [], fact_verifier: nil) # rubocop:disable Metrics/CyclomaticComplexity -- a flat sequence of independent fail-closed generation/validation gates
     return failure(:invalid_packet, fallback: :handoff) unless valid_packet?(packet)
 
     fallback = fallback_for(packet)
@@ -75,13 +83,32 @@ class Marine::Backend::EvidencePacketPresenter
     candidate = generate(generator, packet, customer_request, message_history)
     return failure(:generation_failed, fallback: fallback) if candidate.nil?
 
-    reason = rejection_reason(packet, candidate, fact_verifier)
-    return failure(reason, fallback: fallback) if reason
+    # The deterministic fact + persona gates stay fail-closed. EVERY generated answer then requires the
+    # injected semantic verifier; an accepted candidate is returned verbatim.
+    return failure(:fact_rejected, fallback: fallback) unless @fact_validator.call(packet: packet, candidate: candidate).ok?
+    return failure(:persona_rejected, fallback: fallback) unless @persona_validator.call(candidate: candidate).ok?
+    return accepted(candidate) if semantically_verified?(fact_verifier, packet, candidate)
 
-    Result.new(ok: true, text: candidate, reason: 'accepted', detail: nil, fallback: nil).freeze
+    # Step 17 — a listing semantic rejection/error/missing DISCARDS the untrusted candidate and renders
+    # a deterministic reply from the packet's product_listing Evidence (returned ok=true), so the
+    # customer execution never invokes the legacy path for this condition. The renderer is scoped to
+    # answer_product_listing only; every other goal (product_information included) keeps the closed
+    # :fact_unverified fallback.
+    listing_text = @listing_renderer.call(packet: packet)
+    return listing_fallback(listing_text) if listing_text
+
+    failure(:fact_unverified, fallback: fallback)
   end
 
   private
+
+  def accepted(candidate)
+    Result.new(ok: true, text: candidate, reason: 'accepted', detail: nil, fallback: nil).freeze
+  end
+
+  def listing_fallback(text)
+    Result.new(ok: true, text: text, reason: 'listing_evidence_fallback', detail: nil, fallback: nil).freeze
+  end
 
   # A valid packet is a DEEPLY FROZEN, closed top-level Evidence Packet: exact required keys (only
   # customer_language optional), no unknown keys, expected container types, a closed non-empty
@@ -134,17 +161,6 @@ class Marine::Backend::EvidencePacketPresenter
   # reserve :handoff.
   def fallback_for(packet)
     Array(packet[:response_goals]).intersect?(DETERMINISTIC_ANSWER_GOALS + CLARIFY_GOALS) ? :deterministic : :handoff
-  end
-
-  # The closed rejection reason for an untrusted candidate, or nil when every gate accepts. The
-  # deterministic fact + persona gates run first; EVERY generated answer then requires the injected
-  # semantic verifier to confirm the reply's facts equal the packet's.
-  def rejection_reason(packet, candidate, fact_verifier)
-    return :fact_rejected unless @fact_validator.call(packet: packet, candidate: candidate).ok?
-    return :persona_rejected unless @persona_validator.call(candidate: candidate).ok?
-    return :fact_unverified unless semantically_verified?(fact_verifier, packet, candidate)
-
-    nil
   end
 
   def generate(generator, packet, customer_request, message_history)
