@@ -96,6 +96,37 @@ RSpec.describe Marine::Decision::DecisionsResponseMapper do
     end
   end
 
+  # price and price_range are disjoint at the classification contract (specific item vs family-wide
+  # span), but they are deliberately NOT in MUTUALLY_EXCLUSIVE_INTENTS: the correct discriminator is
+  # the catalog exact-child authority, which is unavailable at the mapper, not a NOUL probability.
+  # So the mapper must NEVER silently collapse the pair; when both clear the threshold both survive,
+  # which downstream ExecutionPolicy rejects fail-closed (preserved behaviour, no wrong family-range).
+  describe 'price / price_range are not collapsed by probability at the mapper' do
+    let(:scenario_keys) { %w[product_scenario] }
+    let(:allowed_intents) { %w[price price_range stock unsupported] }
+
+    def price_answers(price:, price_range:)
+      {
+        'scenario_candidate' => { 'type' => 'choice', 'choice' => 'product_scenario', 'confidence' => 0.9,
+                                  'probabilities' => { 'product_scenario' => 0.9 } },
+        'mdq_intent__price' => { 'type' => 'noul', 'noul' => price },
+        'mdq_intent__price_range' => { 'type' => 'noul', 'noul' => price_range },
+        'mdq_intent__stock' => { 'type' => 'noul', 'noul' => 0.0 },
+        'mdq_intent__unsupported' => { 'type' => 'noul', 'noul' => 0.0 }
+      }
+    end
+
+    it 'keeps both when both clear the threshold (no silent collapse to price)' do
+      expect(map(price_answers(price: 0.9, price_range: 0.7))['intents']).to eq(%w[price price_range])
+      expect(map(price_answers(price: 0.7, price_range: 0.9))['intents']).to eq(%w[price price_range])
+    end
+
+    it 'leaves a lone member untouched' do
+      expect(map(price_answers(price: 0.9, price_range: 0.1))['intents']).to eq(%w[price])
+      expect(map(price_answers(price: 0.1, price_range: 0.9))['intents']).to eq(%w[price_range])
+    end
+  end
+
   describe 'answer completeness (exactly scenario + every intent question asked)' do
     it 'rejects an envelope missing any asked intent NOUL answer' do
       incomplete = answers_for.except('mdq_intent__catalog')

@@ -33,14 +33,30 @@ module Marine::Decision::RequestBuilder # rubocop:disable Metrics/ModuleLength -
   SCENARIO_QUESTION_KEY = 'scenario_candidate'.freeze
   INTENT_QUESTION_PREFIX = 'mdq_intent__'.freeze
 
-  # Per-intent NOUL criteria. Most intents use the generic present/absent wording; the two
-  # contractually mutually-exclusive product intents get EXPLICIT boundary criteria so the
-  # provider's typed probabilities reflect the real distinction — a names/catalog availability
-  # listing vs an explicit request for descriptions/explanations/details. Each says, in its
-  # own 'false', that the OTHER member's request is NOT this intent, so an overlapping turn no
-  # longer scores both high. This is a semantic contract boundary, NOT a language-specific
-  # phrase list, and the mapper still enforces the exclusivity deterministically.
+  # Per-intent NOUL criteria. Most intents use the generic present/absent wording; the disjoint
+  # product-intent pairs get EXPLICIT boundary criteria so the provider's typed probabilities
+  # reflect the real distinction — price (a SPECIFIC item/variant) vs price_range (the family-wide
+  # span with NO specific item), and a names/catalog availability listing vs an explicit request for
+  # descriptions/explanations/details. Each member says, in its own 'false', that the OTHER member's
+  # request is NOT this intent, so an overlapping turn no longer scores both high. This is a semantic
+  # contract boundary, NOT a language-specific phrase list. For listing/information the mapper also
+  # enforces the exclusivity deterministically; price/price_range are intentionally left out of that
+  # probability tie-break (their correct discriminator is the catalog exact-child authority, not a
+  # NOUL score), so a residual overlap stays fail-closed to legacy rather than guessing a family range.
   INTENT_CRITERIA = {
+    'price' => {
+      'false' => 'The customer does NOT ask the price of a specific item/variant, OR they ask only for the ' \
+                 'general selling-price range of a whole product family without singling out any specific ' \
+                 'item/variant (that is price_range, not price).',
+      'true' => 'The customer asks the price of a SPECIFIC item or variant — one particular product they have ' \
+                'singled out (by code, name, or clear reference), not the family as a whole.'
+    }.freeze,
+    'price_range' => {
+      'false' => 'The customer does NOT ask a family-wide selling-price range, OR they ask the price of a ' \
+                 'specific singled-out item/variant (that is price, not price_range).',
+      'true' => 'The customer asks the GENERAL selling-price range/span of a whole product family, with NO ' \
+                'specific item or variant singled out.'
+    }.freeze,
     'product_listing' => {
       'false' => 'The customer does NOT ask which products exist or are available, OR they explicitly ask ' \
                  'for a description / explanation / details of products (that is product_information, not a listing).',
@@ -70,8 +86,16 @@ module Marine::Decision::RequestBuilder # rubocop:disable Metrics/ModuleLength -
     slot-candidate operations, an optional customer-language code, and confidence.
 
     Base every field strictly on evidence in the supplied data. If evidence is weak or absent,
-    prefer null / an empty list / low confidence rather than guessing. Return EXACTLY ONE JSON
-    object matching the provided schema and nothing else — no prose, no code fences.
+    prefer null / an empty list / low confidence rather than guessing. Never nominate two intents
+    that are refinements of the SAME request: when two candidate intents are overlapping/subsuming
+    alternatives of one underlying request, pick only the single most-specific one. Genuinely
+    distinct, independently present requests (for example an item's price AND its stock) are NOT
+    refinements of one another — nominate each that the evidence supports. In particular, price and
+    price_range are subsuming alternatives of the SAME pricing request and are mutually exclusive:
+    use price when the customer asks the price of a specific item/variant they have singled out, and
+    price_range ONLY when they ask the general selling-price range of a whole product family with no
+    specific item singled out — never both for the same turn. Return EXACTLY ONE JSON object matching
+    the provided schema and nothing else — no prose, no code fences.
   PROMPT
 
   CHAT_TEMPERATURE = 0

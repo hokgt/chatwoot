@@ -95,6 +95,18 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
       expect(result.reason).to eq(:phase_not_executable)
       expect(resolver).not_to have_received(:call)
     end
+
+    # The deployed exact-price ambiguity: Model 1 returns price + price_range. The coordinator must NOT
+    # collapse it to price here — the authoritative exact-child signal (the resolver) is only computed
+    # AFTER this gate, so collapsing would require an unsafe pre-policy catalog read. It stays
+    # fail-closed to legacy, and the resolver is never consulted (no pre-policy repository read).
+    it 'preserves legacy for price+price_range without any pre-policy resolver/catalog read' do
+      result = call(candidate_plan: plan(intents: %w[price price_range]))
+
+      expect(result.outcome_type).to eq(:legacy_preserved)
+      expect(result.reason).to eq(:phase_not_executable)
+      expect(resolver).not_to have_received(:call)
+    end
   end
 
   describe 'exact family + child → evidence packet' do

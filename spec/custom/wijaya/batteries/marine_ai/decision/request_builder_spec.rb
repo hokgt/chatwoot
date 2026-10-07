@@ -118,8 +118,27 @@ RSpec.describe Marine::Decision::RequestBuilder do
       expect(listing['criteria']['false']).to include('product_information')
       expect(information['criteria']['true']).to include('EXPLICITLY asks for a description')
       expect(information['criteria']['false']).to include('product_listing')
-      expect(questions['mdq_intent__price']['criteria']['true'])
-        .to eq("The 'price' intent IS explicitly present in the latest customer turn or context.")
+    end
+
+    it 'gives price and price_range mutually-exclusive discriminating criteria (specific item vs family-wide span)' do
+      product_input = Marine::Decision::InputContract.build(
+        message: 'Yang itu harganya berapa', context: [], state: {},
+        scenarios: [{ 'key' => 'product_scenario', 'description' => 'catalog', 'instruction' => 'read' }],
+        classification_intents: %w[price price_range stock unsupported]
+      )
+      questions = described_class.build(mode: 'openrouter_decisions', input: product_input)[:questions]
+      price = questions['mdq_intent__price']
+      price_range = questions['mdq_intent__price_range']
+
+      # price = a SPECIFIC item/variant; price_range = a general family-wide span with NO specific item.
+      # Each names the other as out-of-scope so an exact-item turn no longer scores both high.
+      expect(price['criteria']['true']).to match(/specific/i)
+      expect(price['criteria']['false']).to include('price_range')
+      expect(price_range['criteria']['true']).to match(/\bno\b.*specific|without.*specific|whole.*family|family-wide/i)
+      expect(price_range['criteria']['false']).to include('price')
+      # generic intents keep the generic wording.
+      expect(questions['mdq_intent__stock']['criteria']['true'])
+        .to eq("The 'stock' intent IS explicitly present in the latest customer turn or context.")
     end
 
     it 'covers broad catalog/list product-information requests without requiring a specific or named product' do
@@ -159,6 +178,31 @@ RSpec.describe Marine::Decision::RequestBuilder do
       expect(scenario_q['type']).to eq('choice')
       expect(scenario_q['criteria'].keys).to eq(%w[stock_check])
       expect(scenario_q['criteria']['stock_check']).to eq('Availability question')
+    end
+  end
+
+  describe 'price vs price_range classification contract (SYSTEM_PROMPT, chat mode)' do
+    # chat_completions is the live default api_mode; the model emits the intents array directly
+    # against the enum, so SYSTEM_PROMPT is the only lever that can keep a specific-item price turn
+    # from also proposing the family-wide price_range.
+    it 'collapses subsuming price/price_range alternatives to one most-specific member' do
+      prompt = described_class::SYSTEM_PROMPT
+      # price and price_range are refinements of the SAME pricing request → pick only the most-specific one.
+      expect(prompt).to match(/price_range/)
+      expect(prompt).to match(/most-specific/i)
+      expect(prompt).to match(/refinement|subsuming|same request|same.*pricing/i)
+      # price = a specific item; price_range = a general family-wide span with no specific item.
+      expect(prompt).to match(/specific/i)
+    end
+
+    it 'does NOT force genuinely distinct independent intents to collapse to a single primary' do
+      prompt = described_class::SYSTEM_PROMPT
+      # The collapse rule is scoped to refinements of one request; distinct co-present requests
+      # (e.g. price AND stock) must each remain nominable so the whole-plan policy can fall back
+      # to the legacy composite path rather than silently dropping one intent.
+      expect(prompt).to match(/distinct/i)
+      expect(prompt).to match(/independent/i)
+      expect(prompt).not_to match(/nominate the SINGLE most-specific primary intent rather than overlapping ones/)
     end
   end
 
