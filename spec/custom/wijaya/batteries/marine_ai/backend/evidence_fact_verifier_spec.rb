@@ -152,23 +152,25 @@ RSpec.describe Marine::Backend::EvidenceFactVerifier do
     end
   end
 
-  # Section F — runtime regression (deployed image devbot-993d85eb5c, input "Produk apa saja yang
-  # tersedia"). The provider returned a well-formed all-six-field verdict, but flipped
-  # no_unsupported_facts_added / no_contradiction / meaning_equivalent to false: it read the
-  # catalog-membership wording "produk yang tersedia" (these products are available/offered) in a
-  # product-listing answer as an unauthorized binary stock-availability claim, since the rubric lists
-  # binary stock availability as a material fact and the packet prohibits stock claims. The rubric
-  # must distinguish catalog-membership framing from a binary stock claim WITHOUT weakening the real
-  # stock prohibition or adding a verdict field.
+  # Section F — runtime regression (deployed image devbot-e17c8d5442, input "Produk apa saja yang
+  # tersedia"). The DEPLOYED prompt ALREADY carried the Step 7 catalog-membership sentence, yet the
+  # provider returned a well-formed all-six-field verdict that STILL flipped no_unsupported_facts_added
+  # / no_contradiction / meaning_equivalent to false. Source trace of why the Step 7 wording was
+  # insufficient: its carve-out is scoped, in its own words, to "must not be counted as an added or
+  # contradictory fact" — it addresses two dimensions and is SILENT on meaning_equivalent, while the
+  # authoritative per-field definitions (all_facts_preserved lists "binary stock availability" as a
+  # material fact; meaning_equivalent carries no membership exception) never echo the carve-out. The
+  # fix must bind the catalog-membership-vs-stock distinction consistently to ALL THREE dimensions that
+  # flipped, WITHOUT weakening the real stock prohibition, hardcoding a verdict, or adding a field.
   #
   # Fidelity note: the first two examples below are RED->GREEN prompt-content assertions — they fail on
-  # a SYSTEM_PROMPT missing the catalog-membership-vs-stock instruction and pass once it is present, so
-  # they are source-level proof the catalog-membership clause is present in SYSTEM_PROMPT; they do NOT
-  # prove a live provider flip, a built artifact, a deployment, or any shipped runtime behavior. The
-  # third example stubs an all-true verdict and therefore
-  # proves ONLY the exact request transport/contract (the deployed facts, candidate, and target
-  # language reach the provider verbatim under the reused envelope); it does NOT re-run the provider
-  # and must not be read as a live provider semantic flip.
+  # the deployed SYSTEM_PROMPT (whose carve-out omits meaning_equivalent and the explicit stock terms)
+  # and pass once the three-dimension carve-out and stock distinction are present, so they are
+  # source-level proof the corrected clause is in SYSTEM_PROMPT; they do NOT prove a live provider flip,
+  # a built artifact, a deployment, or any shipped runtime behavior. The third example stubs an all-true
+  # verdict and therefore proves ONLY the exact request transport/contract (the deployed facts,
+  # candidate, and target language reach the provider verbatim under the reused envelope); it does NOT
+  # re-run the provider and must not be read as a live provider semantic flip.
   describe 'catalog-membership wording vs binary stock (runtime product-listing regression)' do
     let(:listing_packet) do
       {
@@ -209,15 +211,32 @@ RSpec.describe Marine::Backend::EvidenceFactVerifier do
         'Apakah ada jenis produk tertentu yang Anda cari?'
     end
 
-    it 'instructs the provider that catalog-membership wording is not a binary stock claim' do
+    # A. The carve-out must bind the SAME three dimensions the live verdict flipped false
+    # (no_unsupported_facts_added, no_contradiction, meaning_equivalent) in one instruction, defining
+    # the framing as product-set membership rather than inventory/stock status — so no single dimension
+    # rejects "produk yang tersedia" solely as a stock claim.
+    it 'directs all three affected dimensions to treat catalog-membership framing as product-set membership, not stock' do
       prompt = described_class::SYSTEM_PROMPT
       expect(prompt).to include('authorized catalog-membership framing')
+      expect(prompt).to include('members of the listed product set')
+      expect(prompt).to include('NOT any inventory or stock status')
       expect(prompt).to include('NOT a binary stock-availability claim')
+      expect(prompt).to match(
+        /MUST NOT set "no_unsupported_facts_added", "no_contradiction", or "meaning_equivalent" to false solely because/
+      )
     end
 
-    it 'still forbids a binary stock claim the packet does not state' do
-      expect(described_class::SYSTEM_PROMPT)
-        .to match(/binary in-stock or out-of-stock claim.+remains unsupported unless the packet states it/m)
+    # B. The stock distinction must survive: explicit inventory/stock wording and other unsupported
+    # business facts remain unsupported, contradictory, AND non-meaning-equivalent without Evidence.
+    it 'keeps explicit stock/quantity/location/delivery/price claims unsupported, contradictory, and non-equivalent without Evidence' do
+      prompt = described_class::SYSTEM_PROMPT
+      ['"in stock"', '"out of stock"', '"tersedia stoknya"'].each do |phrase|
+        expect(prompt).to include(phrase)
+      end
+      expect(prompt).to match(/stock quantity.+warehouse or location.+delivery or lead time/m)
+      expect(prompt).to match(
+        /remains an unsupported and contradictory claim that breaks meaning-equivalence unless the packet states the corresponding Evidence/
+      )
     end
 
     # Transport/contract only: the verdict is stubbed all-true, so this proves the deployed packet
