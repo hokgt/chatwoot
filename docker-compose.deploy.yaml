@@ -1,0 +1,81 @@
+version: "3"
+
+services:
+  base: &base
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile
+      args:
+        RAILS_ENV: production
+        BUNDLE_WITHOUT: development:test
+        RAILS_SERVE_STATIC_FILES: true
+    image: hokgt-chatwoot:devbot-3f0f0b96f7
+    env_file: .env
+    volumes:
+      - storage_data:/app/storage
+      - /home/stef/chatwoot/.secrets/marine_catalog_ro_password:/run/secrets/marine_catalog_ro_password:ro
+
+  rails:
+    <<: *base
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - 127.0.0.1:3000:3000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      # Explicit default-deny allowlist of trusted internal hosts the API-inbox webhook
+      # path may reach despite SSRF filtering (the WhatsApp Web connector service name).
+      # Non-secret; the trusted_internal_webhook battery also derives this host from
+      # WHATSAPP_WEB_CONNECTOR_URL, so this line is an auditable, explicit override.
+      - WIJAYA_TRUSTED_INTERNAL_WEBHOOK_HOSTS=whatsapp-web-connector
+    entrypoint: docker/entrypoints/rails.sh
+    command: ["bundle", "exec", "rails", "s", "-p", "3000", "-b", "0.0.0.0"]
+    restart: always
+
+  sidekiq:
+    <<: *base
+    depends_on:
+      - postgres
+      - redis
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      # WebhookJob runs here (sidekiq); same explicit trusted-host allowlist as rails.
+      - WIJAYA_TRUSTED_INTERNAL_WEBHOOK_HOSTS=whatsapp-web-connector
+    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+    restart: always
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: always
+    ports:
+      - 127.0.0.1:5433:5432
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=chatwoot
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=
+
+  redis:
+    image: redis:alpine
+    restart: always
+    command: ["sh", "-c", "redis-server --requirepass \"$REDIS_PASSWORD\""]
+    env_file: .env
+    volumes:
+      - redis_data:/data
+    ports:
+      - 127.0.0.1:6380:6379
+
+volumes:
+  storage_data:
+  postgres_data:
+  redis_data:
