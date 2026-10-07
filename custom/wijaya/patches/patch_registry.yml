@@ -1315,6 +1315,13 @@ patches:
       # only), returned ok=true so the customer execution never invokes the legacy RAG path. Listing
       # goal only; product_information keeps the closed fallback.
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/product_listing_evidence_renderer.rb
+      # Step 18 — deterministic exact-price Evidence renderer. For a renderable answer_price packet
+      # EVERY Model 2 candidate failure (generation / fact / persona / semantic) discards the untrusted
+      # candidate and renders the exact price from the marine_evidence_v2 price Evidence alone, through
+      # the existing approved price-display-v1 id/en template (authoritative display product/currency/
+      # amount/uom only), returned ok=true so the customer execution never invokes the legacy path.
+      # answer_price goal only; price_range / stock / product_information keep their closed fallback.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/exact_price_evidence_renderer.rb
       # Marine Phase 3 — approved-only, assistant-scoped product-description evidence source for the
       # product_information listing path. One bounded approved knowledge-base query, exact normalized
       # code/name binding, closed per-authorized-product evidence only (never adds/invents a product).
@@ -1900,6 +1907,8 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/backend/exact_price_customer_execution_spec.rb
       # Step 17 — deterministic product_listing Evidence renderer spec.
       - spec/custom/wijaya/batteries/marine_ai/backend/product_listing_evidence_renderer_spec.rb
+      # Step 18 — deterministic exact-price Evidence renderer spec.
+      - spec/custom/wijaya/batteries/marine_ai/backend/exact_price_evidence_renderer_spec.rb
       # Marine Phase 3 — approved product-description evidence source spec.
       - spec/custom/wijaya/batteries/marine_ai/backend/approved_product_description_source_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/resolve_any_spec.rb

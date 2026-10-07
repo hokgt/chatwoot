@@ -114,9 +114,11 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
   end
 
   describe 'semantic verifier is required for EVERY generated answer path' do
-    it 'fails closed (no verifier) for price, stock, and product_overview alike' do
+    # stock / product_overview keep the closed :fact_unverified fallback (no deterministic Evidence
+    # renderer). Only answer_price (Step 18) and answer_product_listing (Step 17) render deterministic
+    # Evidence instead of failing closed — proven in their own blocks below.
+    it 'fails closed (no verifier) for stock and product_overview alike' do
       {
-        price_packet => 'Untuk BD-4, harganya Rp 12.500 per yard.',
         stock_packet => 'BD-4 saat ini tersedia.',
         overview_packet => 'BD mencakup berbagai kain berkualitas untuk kebutuhan Anda.'
       }.each do |packet, text|
@@ -136,38 +138,61 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
                               customer_request: 'x', fact_verifier: verifier_ok)
       expect(result.ok?).to be(true)
     end
-
-    it 'fails closed on a malformed (non-true) or erroring verifier' do
-      non_true = presenter.call(packet: price_packet, generator: generator('Untuk BD-4, harganya Rp 12.500 per yard.'),
-                                customer_request: 'x', fact_verifier: ->(**) { 'yes' })
-      erroring = presenter.call(packet: price_packet, generator: generator('Untuk BD-4, harganya Rp 12.500 per yard.'),
-                                customer_request: 'x', fact_verifier: ->(**) { raise 'boom' })
-      expect(non_true).to have_attributes(ok: false, reason: :fact_unverified)
-      expect(erroring).to have_attributes(ok: false, reason: :fact_unverified)
-    end
   end
 
   describe 'deterministic fallback (no needless handoff on a verified-fact packet)' do
-    it 'falls back to deterministic when the generator fails' do
-      result = presenter.call(packet: price_packet, generator: generator(nil), customer_request: 'x', fact_verifier: verifier_ok)
-      expect(result).to have_attributes(ok: false, reason: :generation_failed, fallback: :deterministic)
-    end
-
-    it 'falls back to deterministic on an ungrounded / fact-violating reply' do
-      result = presenter.call(packet: price_packet, generator: generator('BD-4 harganya Rp 99.999 per yard.'),
-                              customer_request: 'x', fact_verifier: verifier_ok)
-      expect(result).to have_attributes(ok: false, reason: :fact_rejected, fallback: :deterministic)
-    end
-
-    it 'falls back to deterministic on a persona self-deflection' do
-      result = presenter.call(packet: price_packet, generator: generator('BD-4 Rp 12.500 per yard. Silakan hubungi tim sales kami.'),
-                              customer_request: 'x', fact_verifier: verifier_ok)
-      expect(result).to have_attributes(ok: false, reason: :persona_rejected, fallback: :deterministic)
-    end
-
     it 'uses the deterministic path for a valid clarify (non-answerable) packet' do
       result = presenter.call(packet: clarify_packet, generator: generator('anything'), customer_request: 'x')
       expect(result).to have_attributes(ok: false, reason: :not_generatable, fallback: :deterministic)
+    end
+  end
+
+  # Step 18 — a renderable exact-price (answer_price) packet never fails closed on a candidate failure:
+  # EVERY failure (generation / fact / persona / semantic) DISCARDS the untrusted candidate and renders
+  # a deterministic reply from the packet's price Evidence ALONE, returned ok=true so the customer
+  # execution never invokes the legacy path. The deterministic text carries the exact authoritative
+  # display identity / price / currency / UOM and never the rejected candidate's forged value.
+  describe 'exact-price deterministic Evidence fallback (Step 18)' do
+    let(:deterministic_price) { 'Harga BD-4 adalah Rp 12.500 per yard.' }
+
+    it 'renders deterministic Evidence text when the generator fails' do
+      result = presenter.call(packet: price_packet, generator: generator(nil), customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: deterministic_price, reason: 'price_evidence_fallback', detail: :generation_failed)
+    end
+
+    it 'discards an ungrounded / fact-violating candidate and renders deterministic Evidence text' do
+      result = presenter.call(packet: price_packet, generator: generator('BD-4 harganya Rp 99.999 per yard.'),
+                              customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: deterministic_price, reason: 'price_evidence_fallback', detail: :fact_rejected)
+      expect(result.text).not_to include('99.999')
+    end
+
+    it 'discards a persona self-deflection candidate and renders deterministic Evidence text' do
+      result = presenter.call(packet: price_packet, generator: generator('BD-4 Rp 12.500 per yard. Silakan hubungi tim sales kami.'),
+                              customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: deterministic_price, reason: 'price_evidence_fallback', detail: :persona_rejected)
+      expect(result.text).not_to match(/hubungi tim sales/i)
+    end
+
+    it 'discards a semantically-unverified candidate (false / raise / missing / non-callable / non-true) and renders Evidence text' do
+      # A candidate that PASSES the deterministic fact + persona gates (exact display facts, in persona)
+      # but is not semantically verified. Its distinct phrasing ("Untuk ... harganya") must not survive.
+      candidate = 'Untuk BD-4, harganya Rp 12.500 per yard.'
+      [->(**) { false }, ->(**) { raise 'boom' }, nil, Object.new, ->(**) { 'yes' }].each do |verifier|
+        result = presenter.call(packet: price_packet, generator: generator(candidate), customer_request: 'x', fact_verifier: verifier)
+        expect(result).to have_attributes(ok: true, text: deterministic_price, reason: 'price_evidence_fallback', detail: :fact_unverified)
+        expect(result.text).not_to include('Untuk BD-4', 'harganya')
+      end
+    end
+
+    it 'returns the accepted candidate verbatim and does NOT render when the verifier confirms' do
+      spy_renderer = instance_spy(Marine::Backend::ExactPriceEvidenceRenderer)
+      presenter_with_spy = described_class.new(price_renderer: spy_renderer)
+
+      result = presenter_with_spy.call(packet: price_packet, generator: generator('Untuk BD-4, harganya Rp 12.500 per yard.'),
+                                       customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: 'Untuk BD-4, harganya Rp 12.500 per yard.', reason: 'accepted')
+      expect(spy_renderer).not_to have_received(:call)
     end
   end
 
@@ -225,12 +250,15 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
       expect(result).to have_attributes(ok: false, reason: :invalid_packet, fallback: :handoff)
     end
 
-    it 'does not invoke the generator for a blank customer_request (deterministic fallback)' do
+    it 'does not invoke the generator for a blank customer_request (renders exact-price Evidence)' do
       invoked = false
       gen = ->(**) { invoked = true }
       result = presenter.call(packet: price_packet, generator: gen, customer_request: '   ', fact_verifier: verifier_ok)
       expect(invoked).to be(false)
-      expect(result).to have_attributes(ok: false, reason: :generation_failed, fallback: :deterministic)
+      # Step 18: a price packet with no candidate renders the deterministic price Evidence (ok=true)
+      # rather than failing closed; the generator is still never invoked.
+      expect(result).to have_attributes(ok: true, text: 'Harga BD-4 adalah Rp 12.500 per yard.',
+                                        reason: 'price_evidence_fallback', detail: :generation_failed)
     end
   end
 

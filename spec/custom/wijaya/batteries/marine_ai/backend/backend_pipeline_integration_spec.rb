@@ -362,31 +362,35 @@ RSpec.describe 'Marine::Backend Phase 6 unified customer orchestration', type: :
       expect(@generator).not_to have_received(:call)
     end
 
-    it 'falls back when Model 2 generation fails (no candidate), never reaching the semantic verifier' do
+    # Step 18 — for exact_price the untrusted Model 2 candidate is still DISCARDED at every gate, but the
+    # turn no longer falls back to the legacy path: the deterministic price Evidence is rendered and
+    # delivered (ok=true). These three prove the discard holds AND the deterministic Evidence is delivered.
+    it 'renders deterministic exact-price Evidence when Model 2 generation fails (candidate never reaches the verifier)' do
       allow(@catalog_resolver).to receive(:call).and_return(resolver_result(status: :exact_child, child_code: 'BD-4'))
       stub_decision(normalized_plan(intents: %w[price]))
       @model2 = nil
 
       result = execution.call
 
-      expect(result).not_to be_deliverable
-      expect(result).to have_attributes(status: :fallback, reason: :presentation_rejected)
+      expect(result).to be_deliverable
+      expect(result.text).to eq('Harga BD-4 adalah Rp 12.500 per yard.')
       expect(@fact_verifier).not_to have_received(:call)
     end
 
-    it 'the deterministic Fact Guard rejects a mutated price amount BEFORE the semantic verifier' do
+    it 'discards a candidate the deterministic Fact Guard rejects and renders deterministic exact-price Evidence' do
       allow(@catalog_resolver).to receive(:call).and_return(resolver_result(status: :exact_child, child_code: 'BD-4'))
       stub_decision(normalized_plan(intents: %w[price]))
       @model2 = 'Harga Santorini BD varian BD-4 adalah Rp 99.999 per yard.'
 
       result = execution.call
 
-      expect(result).not_to be_deliverable
-      expect(result.status).to eq(:fallback)
+      expect(result).to be_deliverable
+      expect(result.text).to eq('Harga BD-4 adalah Rp 12.500 per yard.')
+      expect(result.text).not_to include('99.999')
       expect(@fact_verifier).not_to have_received(:call)
     end
 
-    it 'falls back when the semantic verifier rejects an otherwise fact-clean candidate' do
+    it 'discards a semantically-rejected but fact-clean candidate and renders deterministic exact-price Evidence' do
       allow(@catalog_resolver).to receive(:call).and_return(resolver_result(status: :exact_child, child_code: 'BD-4'))
       stub_decision(normalized_plan(intents: %w[price]))
       @model2 = 'Harga Santorini BD varian BD-4 adalah Rp 12.500 per yard.'
@@ -394,8 +398,8 @@ RSpec.describe 'Marine::Backend Phase 6 unified customer orchestration', type: :
 
       result = execution.call
 
-      expect(result).not_to be_deliverable
-      expect(result).to have_attributes(status: :fallback, reason: :presentation_rejected)
+      expect(result).to be_deliverable
+      expect(result.text).to eq('Harga BD-4 adalah Rp 12.500 per yard.')
       expect(@fact_verifier).to have_received(:call).once
     end
 

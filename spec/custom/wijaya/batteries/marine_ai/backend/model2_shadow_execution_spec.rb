@@ -238,6 +238,41 @@ RSpec.describe Marine::Backend::Model2ShadowExecution do
     end
   end
 
+  # Step 18 — the presenter now returns ok=true reason 'price_evidence_fallback' when it DISCARDED the
+  # Model 2 candidate and rendered deterministic price Evidence instead. That is NOT accepted Model 2
+  # wording — the candidate was rejected at its originating gate (carried in the result detail) — so the
+  # shadow must observe it as a :rejected outcome keyed on that originating gate, never as accepted.
+  describe 'exact-price deterministic fallback is observed as the originating gate rejection (Step 18)' do
+    let(:fallback_presenter) { double('presenter') }
+
+    def execution_with_presenter(result)
+      described_class.new(
+        account: account, assistant: assistant, conversation: conversation, message: message,
+        authority_result: result, presenter: fallback_presenter,
+        generator: generator, fact_verifier: fact_verifier, context_builder: context_builder
+      )
+    end
+
+    it 'maps each price_evidence_fallback origin back to its gate as a rejection (not accepted wording)' do
+      {
+        generation_failed: :generation_failed, fact_rejected: :fact_rejected,
+        persona_rejected: :persona_rejected, fact_unverified: :fact_unverified
+      }.each do |origin, expected_reason|
+        allow(fallback_presenter).to receive(:call).and_return(
+          Marine::Backend::EvidencePacketPresenter::Result.new(
+            ok: true, text: 'Harga BD-4 adalah Rp 12.500 per yard.',
+            reason: described_class::PRICE_EVIDENCE_FALLBACK, detail: origin, fallback: nil
+          ).freeze
+        )
+
+        result = execution_with_presenter(authority_result).call
+
+        expect(result.status).to eq(described_class::STATUS_REJECTED)
+        expect(result.reason).to eq(expected_reason)
+      end
+    end
+  end
+
   # BLOCKER: the DEFAULT generator/verifier must be built WITHOUT an account so a provider exception
   # inside Marine::Llm::BaseService#chat can never construct a ChatwootExceptionTracker (its #capture
   # is a no-op when account is nil) — honoring Step 3's no-log/no-track/no-publish contract. These

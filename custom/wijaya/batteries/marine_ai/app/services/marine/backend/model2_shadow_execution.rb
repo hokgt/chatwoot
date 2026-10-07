@@ -31,6 +31,9 @@ class Marine::Backend::Model2ShadowExecution
   # goals must be EXACTLY [answer_price] and its facts EXACTLY the single :price fact.
   PRICE_ONLY_GOALS = %w[answer_price].freeze
   PRICE_ONLY_FACTS = %i[price].freeze
+  # The presenter's Step-18 deterministic exact-price fallback reason (ok=true, Model 2 candidate
+  # discarded). Observed as a rejection of the Model 2 candidate, keyed on its originating gate detail.
+  PRICE_EVIDENCE_FALLBACK = 'price_evidence_fallback'.freeze
 
   STATUS_ACCEPTED = :accepted
   STATUS_REJECTED = :rejected
@@ -162,11 +165,23 @@ class Marine::Backend::Model2ShadowExecution
   end
 
   # Map the presenter outcome to a closed status/reason — ALWAYS discarding the generated text.
+  #
+  # Step 18: for an exact-price packet the presenter now returns ok=true with reason
+  # 'price_evidence_fallback' when it DISCARDED the Model 2 candidate and rendered deterministic price
+  # Evidence instead. That is NOT accepted Model 2 wording — the candidate was rejected — so this shadow
+  # continues to observe the ORIGINATING gate outcome (carried in the result detail), leaving its
+  # accepted/rejected observability of Model 2 unchanged.
   def map_result(result)
+    reason = result.respond_to?(:reason) ? result.reason : nil
+    return rejected(PRESENTER_REASON.fetch(fallback_origin(result), REASON_INTERNAL_ERROR)) if reason == PRICE_EVIDENCE_FALLBACK
+
     return accepted(REASON_DELIVERABLE_WORDING) if result.respond_to?(:ok?) && result.ok?
 
-    reason = result.respond_to?(:reason) ? result.reason : nil
     rejected(PRESENTER_REASON.fetch(reason, REASON_INTERNAL_ERROR))
+  end
+
+  def fallback_origin(result)
+    result.respond_to?(:detail) ? result.detail : nil
   end
 
   def accepted(reason) = Result.new(status: STATUS_ACCEPTED, reason: reason).freeze

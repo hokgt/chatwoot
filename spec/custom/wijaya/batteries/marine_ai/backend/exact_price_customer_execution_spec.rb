@@ -281,6 +281,60 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
     end
   end
 
+  # Step 18 — the customer execution seam itself returns a DELIVERABLE for an exact-price candidate
+  # failure (real presenter + real ExactPriceEvidenceRenderer): the Model 2 candidate fails a gate, is
+  # discarded, and a deterministic reply is rendered from the packet's price Evidence. A deliverable
+  # means the trigger-bound job never reaches its legacy fallback for this turn.
+  describe 'exact-price candidate failure yields a deliverable Evidence reply (no legacy fallback)' do
+    def real_price_packet
+      Marine::Backend::EvidencePacketBuilder.new(clock: -> { Time.utc(2026, 9, 30, 12, 0, 0) }).build(
+        evidence_input: {
+          scenario: { key: 'scenario_5' }, intents: %w[price], customer_language: 'id', response_goals: %w[answer_price],
+          validated_slots: { variant: { code: 'BD-4', resolution_status: 'resolved', source: 'marine_catalog', attributes: {} } },
+          facts: { price: { canonical: { variant_code: 'BD-4', currency: 'IDR', price_list_rate: '12500', uom: 'Yard' },
+                            display: { product: 'BD-4', currency: 'Rp', amount: '12.500', uom: 'yard' },
+                            policy_version: 'price-display-v1', source: 'catalog_price_repository', checked_at: '2026-09-30T12:00:00Z' } },
+          missing_slots: [], variant_candidates: []
+        }
+      )
+    end
+
+    def deliver_through_real_presenter(generator:, fact_verifier:)
+      packet = real_price_packet
+      allow(authority_execution).to receive(:call).and_return(authority_result(intents: %w[price], evidence_packet: packet))
+      described_class.new(
+        account: account, assistant: assistant, conversation: conversation, message: message,
+        decision_runner: decision_runner, scenario_adapter: scenario_adapter,
+        authority_execution: authority_execution, presenter: Marine::Backend::EvidencePacketPresenter.new,
+        generator: generator, fact_verifier: fact_verifier, context_builder: context_builder
+      ).call
+    end
+
+    it 'delivers deterministic Evidence text on a semantic rejection (fact+persona pass, verifier invoked => false)' do
+      # The candidate carries ONLY the authoritative display facts in persona, so it passes the
+      # deterministic PostGenerationFactValidator and PersonaValidator; the semantic verifier is the
+      # gate that actually rejects it (returns false). Its distinct phrasing must not survive.
+      semantic_verifier = double('fact_verifier')
+      allow(semantic_verifier).to receive(:call).and_return(false)
+
+      result = deliver_through_real_presenter(
+        generator: ->(**) { 'Untuk BD-4, harganya Rp 12.500 per yard.' },
+        fact_verifier: semantic_verifier
+      )
+
+      expect(semantic_verifier).to have_received(:call).once
+      expect(result).to be_deliverable
+      expect(result.text).to eq('Harga BD-4 adalah Rp 12.500 per yard.')
+      expect(result.text).not_to include('Untuk BD-4', 'harganya')
+    end
+
+    it 'delivers deterministic Evidence text on a generation failure (no candidate)' do
+      result = deliver_through_real_presenter(generator: ->(**) {}, fact_verifier: ->(**) { true })
+      expect(result).to be_deliverable
+      expect(result.text).to eq('Harga BD-4 adalah Rp 12.500 per yard.')
+    end
+  end
+
   it 'folds collaborator exceptions and malformed successful presentation to closed fallback results' do
     allow(decision_runner).to receive(:call).and_raise('private provider detail')
     result = execution.call
