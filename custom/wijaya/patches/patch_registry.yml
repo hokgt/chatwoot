@@ -1483,6 +1483,12 @@ patches:
       # Assistant/history turns never set customer language; deprecated aliases (in -> id) canonicalize.
       # No DB read, no provider call, no state mutation; consumed by both Conversation and Playground.
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/conversation_language_resolver.rb
+      # Bug 2 — shared, battery-local collaborator computing the bounded Catalog-derived trusted tokens
+      # for a turn and enriching the bounded context with PER-TURN trusted tokens, so a prior customer
+      # turn that is only a Catalog product name never poisons the strict-sticky language. One bounded
+      # algorithm for the current turn and every prior customer turn (no drift between callers); read-only
+      # ProductFamilyRepository; consumed by ProductQueryOrchestrator and Backend::AuthorityCoordinator.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/catalog_trusted_tokens.rb
       # Pure, side-effect-free presenter for the deterministic English product/catalog TEXT
       # (extracted from ResponseBuilderJob). The single source of truth for that wording, shared
       # by the trigger-bound job and the source-less PlaygroundPreview so the two never drift.

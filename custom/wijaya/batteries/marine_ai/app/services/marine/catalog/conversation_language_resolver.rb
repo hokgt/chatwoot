@@ -52,6 +52,12 @@ module Marine
       MEANINGFUL_TOKEN = /[[:alnum:]]{3,}/
       MIN_MEANINGFUL_TOKENS = 2
 
+      # Bug 2 — a defensive bound on the per-turn trusted-token array read off a (untrusted) context
+      # entry, so a malformed/oversized metadata value can never create unbounded token work. The
+      # caller's legitimate Catalog-derived list is far smaller than this; a forged, over-long array is
+      # simply truncated and non-String members are dropped (fail closed to no subtraction).
+      MAX_TRUSTED_TOKENS = 256
+
       # Only a CUSTOMER-role bounded context turn may determine customer language.
       CUSTOMER_ROLE = 'user'.freeze
 
@@ -142,12 +148,18 @@ module Marine
 
       # The union of 3+ char alphanumeric tokens across the bounded extracted candidates.
       def candidate_tokens
-        @entity_candidates.each_with_object(Set.new) { |candidate, set| set.merge(token_set(candidate)) }
+        token_union(@entity_candidates)
       end
 
-      # The union of 3+ char alphanumeric tokens across the caller-supplied trusted catalog tokens.
+      # The union of 3+ char alphanumeric tokens across the caller-supplied CURRENT-turn trusted catalog
+      # tokens (never a prior turn's — those are read per-turn in #prior_entity_only?).
       def trusted_token_set
-        @trusted_tokens.each_with_object(Set.new) { |token, set| set.merge(token_set(token)) }
+        token_union(@trusted_tokens)
+      end
+
+      # The union of 3+ char alphanumeric tokens across a bounded list of values.
+      def token_union(values)
+        Array(values).each_with_object(Set.new) { |value, set| set.merge(token_set(value)) }
       end
 
       def token_set(value)
@@ -156,10 +168,15 @@ module Marine
 
       # The nearest reliable prior CUSTOMER-role turn's language (newest first). Assistant/history and
       # role-less turns are never consulted, so the assistant's own language can never masquerade as
-      # the customer's.
+      # the customer's. Bug 2: a prior turn that is only a Catalog product name carries no meaningful
+      # linguistic residue once ITS OWN caller-computed trusted catalog tokens are subtracted — it is
+      # skipped WITHOUT a CLD3 detection (so it can never poison the sticky language), and the next
+      # older customer turn is tried; the first reliable eligible prior still wins.
       def prior_customer_language
-        customer_turns_newest_first.each do |content|
-          language = detected_reliable(content)
+        customer_turns_newest_first.each do |turn|
+          next if prior_entity_only?(turn)
+
+          language = detected_reliable(turn[:content])
           return language if language
         end
         nil
@@ -170,8 +187,30 @@ module Marine
           next unless turn.is_a?(Hash)
           next unless (turn[:role] || turn['role']).to_s == CUSTOMER_ROLE
 
-          (turn[:content] || turn['content']).to_s.presence
+          content = (turn[:content] || turn['content']).to_s.presence
+          next unless content
+
+          { content: content, trusted_tokens: sanitized_trusted_tokens(turn) }
         end
+      end
+
+      # A prior customer turn carries no meaningful linguistic evidence once ITS OWN per-turn trusted
+      # catalog tokens are removed — a product-name-only turn. The trusted tokens come from THAT context
+      # turn (never the current @trusted_tokens), so one turn's product name never erases another's
+      # genuine wording.
+      def prior_entity_only?(turn)
+        (token_set(turn[:content]) - token_union(turn[:trusted_tokens])).length < MIN_MEANINGFUL_TOKENS
+      end
+
+      # The per-turn trusted catalog tokens read off a (untrusted) context entry, sanitized to a bounded
+      # array of Strings: a malformed/non-array/non-String/oversized value fails closed to NO
+      # subtraction and never creates unbounded token work. The caller recomputes these from authoritative
+      # Catalog rows, so a forged value never survives into the context the resolver reads anyway.
+      def sanitized_trusted_tokens(turn)
+        raw = turn[:trusted_tokens] || turn['trusted_tokens']
+        return [] unless raw.is_a?(Array)
+
+        raw.first(MAX_TRUSTED_TOKENS).select { |token| token.is_a?(String) }
       end
 
       # A canonical language code the shared local detector reads RELIABLY from `text`, else nil (an

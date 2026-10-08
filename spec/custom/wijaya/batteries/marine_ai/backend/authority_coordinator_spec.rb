@@ -548,4 +548,65 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
       expect(call(candidate_plan: plan(intents: %w[product_listing])).proposed_state_transition).to be_nil
     end
   end
+
+  # Bug 2 — the coordinator closes the SAME prior-history asymmetry as the orchestrator: each prior
+  # CUSTOMER turn is enriched with its own Catalog-derived trusted tokens (via a REAL CatalogTrustedTokens
+  # over an injected read-only family repository) before the REAL ConversationLanguageResolver runs, so a
+  # product-name-only prior turn never poisons the strict-sticky delivery language, and a forged
+  # `trusted_tokens` on the incoming history is recomputed/overwritten from authoritative rows.
+  describe 'Bug 2: per-turn trusted tokens on the prior history (validated-family price path)' do
+    subject(:coordinator) do
+      described_class.new(resolver: resolver, planner: planner, packet_builder: packet_builder,
+                          range_authority: range_authority,
+                          language_resolver: Marine::Catalog::ConversationLanguageResolver,
+                          catalog_trusted_tokens: Marine::Catalog::CatalogTrustedTokens.new(family_repository: family_repository))
+    end
+
+    let(:family_repository) { instance_double(Marine::Catalog::ProductFamilyRepository) }
+
+    before do
+      allow(resolver).to receive(:call).and_return(resolved(status: :exact_child, child_code: 'FAM1-CHILD'))
+      allow(packet_builder).to receive(:build).and_return({ response_goals: %w[answer_price], evidence_version: 'marine_evidence_v2' }.freeze)
+      allow(family_repository).to receive(:active_candidates).and_return([])
+      allow(Marine::Llm::LanguageDetector).to receive(:new) do |text|
+        result = case text.to_s
+                 when 'berapa harganya' then { language: 'id', reliable: true, confidence: 0.99 }
+                 when 'linen flow' then { language: 'nl', reliable: true, confidence: 0.99 } # the runtime poison
+                 when 'I want fabric' then { language: 'en', reliable: true, confidence: 0.99 }
+                 else { language: 'unknown', reliable: false, confidence: 0.0 }
+                 end
+        instance_double(Marine::Llm::LanguageDetector, detect: result)
+      end
+    end
+
+    it 'skips a product-only newest prior and inherits the older Indonesian prior (repository per prior turn)' do
+      allow(family_repository).to receive(:active_candidates) do |query:, **_|
+        %w[linen flow].include?(query) ? [{ code: 'LF', name: 'Linen Flow' }] : []
+      end
+      history = [{ role: 'user', content: 'berapa harganya' }, { role: 'user', content: 'linen flow' }]
+
+      result = call(trigger: 'FAM1', history: history, configured_language: 'id')
+
+      expect(result.outcome_type).to eq(:evidence_packet)
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new).with('linen flow')
+      expect(family_repository).to have_received(:active_candidates).with(query: 'linen', limit: 50)
+    end
+
+    it 'discards forged prior trusted_tokens and keeps the English prior (Catalog returns no match)' do
+      history = [{ role: 'user', content: 'I want fabric', trusted_tokens: %w[want fabric] }]
+
+      # If the forged tokens were trusted, the prior would be erased and language would NOT be en.
+      captured = nil
+      allow(planner).to receive(:call) do |**kwargs|
+        captured = kwargs[:product_intent]
+        { planner: :input }
+      end
+
+      call(trigger: 'FAM1', history: history, configured_language: 'id')
+
+      expect(captured[:customer_language]).to eq('en')
+      expect(family_repository).to have_received(:active_candidates).with(query: 'want', limit: 50)
+      expect(family_repository).to have_received(:active_candidates).with(query: 'fabric', limit: 50)
+    end
+  end
 end

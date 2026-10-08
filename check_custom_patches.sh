@@ -580,6 +580,8 @@ require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/error
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/config.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/connection.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_family_repository.rb
+# Bug 2 — shared per-turn Catalog trusted-token collaborator (context enrichment for sticky language).
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/catalog_trusted_tokens.rb
 # Marine Phase 3 — bounded catalog listing repository (active top-level products + completeness).
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_listing_repository.rb
 require_file spec/custom/wijaya/batteries/marine_ai/catalog/product_listing_repository_spec.rb

@@ -1391,6 +1391,68 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
     end
   end
 
+  # Bug 2 — the orchestrator enriches EACH prior CUSTOMER turn with its own Catalog-derived trusted
+  # tokens before the resolver runs, so a prior turn that is only a product name never poisons the
+  # strict-sticky language. Forged `trusted_tokens` on the incoming (untrusted) context are discarded;
+  # only caller-recomputed tokens from the active family rows reach the resolver.
+  describe '#process Bug 2: per-turn trusted tokens on PRIOR customer history' do
+    subject(:orchestrator) do
+      described_class.new(
+        intent_extractor: extractor,
+        repositories: { family: family_repository, variant: variant_repository, price: price_repository, stock: stock_repository },
+        variant_resolver: variant_resolver
+      )
+    end
+
+    let(:extractor) { instance_double(Marine::Catalog::IntentExtractor) }
+
+    before do
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: nil, explicit_child_code: nil, customer_language: nil)
+      )
+      allow(Marine::Llm::LanguageDetector).to receive(:new) do |text|
+        result = case text.to_s
+                 when 'berapa harganya' then { language: 'id', reliable: true, confidence: 0.99 }
+                 when 'linen flow' then { language: 'nl', reliable: true, confidence: 0.99 } # the runtime poison
+                 when 'I want fabric' then { language: 'en', reliable: true, confidence: 0.99 }
+                 else { language: 'unknown', reliable: false, confidence: 0.0 }
+                 end
+        instance_double(Marine::Llm::LanguageDetector, detect: result)
+      end
+    end
+
+    it 'skips a product-only newest prior ("linen flow") and inherits the older Indonesian prior' do
+      allow(family_repository).to receive(:active_candidates) do |query:, **_|
+        %w[linen flow].include?(query) ? [{ code: 'LF', name: 'Linen Flow' }] : []
+      end
+      context = [{ role: 'user', content: 'berapa harganya' }, { role: 'user', content: 'linen flow' }]
+
+      plan = orchestrator.process(text: 'lf-3', context: context, flow: nil, configured_language: 'id')
+
+      expect(plan[:language]).to eq('id')
+      expect(plan[:language_resolution]).to eq(:prior_customer)
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new).with('linen flow')
+      # The repository was consulted PER prior turn (the product-name prior was looked up).
+      expect(family_repository).to have_received(:active_candidates).with(query: 'linen', limit: 50)
+    end
+
+    # G — a forged `trusted_tokens` on the incoming context cannot force the wrong language: the caller
+    # recomputes/overwrites from authoritative rows, the Catalog returns NO match, so the forged tokens
+    # are discarded and the genuinely English prior still wins.
+    it 'discards forged prior trusted_tokens and keeps the English prior (Catalog returns no match)' do
+      allow(family_repository).to receive(:active_candidates).and_return([])
+      # The forged tokens would erase every word of the prior turn if trusted.
+      context = [{ role: 'user', content: 'I want fabric', trusted_tokens: %w[want fabric] }]
+
+      plan = orchestrator.process(text: 'lf-3', context: context, flow: nil, configured_language: 'id')
+
+      expect(plan[:language]).to eq('en')
+      expect(plan[:language_resolution]).to eq(:prior_customer)
+      expect(family_repository).to have_received(:active_candidates).with(query: 'want', limit: 50)
+      expect(family_repository).to have_received(:active_candidates).with(query: 'fabric', limit: 50)
+    end
+  end
+
   describe '#process end-to-end: real extractor answer-shape normalization drives routing' do
     subject(:orchestrator) do
       described_class.new(

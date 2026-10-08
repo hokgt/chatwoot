@@ -117,8 +117,8 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
                intents: [].freeze, source: SOURCE_NONE).freeze
   end
 
-  def initialize(adapter: nil, resolver: nil, planner: nil, packet_builder: nil, # rubocop:disable Metrics/ParameterLists -- injected read-only collaborators (all optional)
-                 range_authority: nil, language_resolver: nil, description_source: nil)
+  def initialize(adapter: nil, resolver: nil, planner: nil, packet_builder: nil, # rubocop:disable Metrics/ParameterLists,Metrics/CyclomaticComplexity -- a flat list of injected read-only collaborator defaults (all optional)
+                 range_authority: nil, language_resolver: nil, description_source: nil, catalog_trusted_tokens: nil)
     @adapter = adapter || Adapter.new
     @resolver = resolver || Resolver.new
     # The product_information RAG description source is threaded into the default planner so a listing
@@ -127,6 +127,11 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
     @packet_builder = packet_builder || Marine::Backend::EvidencePacketBuilder.new
     @range_authority = range_authority || Marine::Backend::FamilyPriceRangeAuthority.new
     @language_resolver = language_resolver || Marine::Catalog::ConversationLanguageResolver
+    # Bug 2 — the shared collaborator that enriches each PRIOR customer history turn with its own
+    # bounded Catalog-derived trusted tokens, so a product-name-only prior turn never poisons the
+    # strict-sticky delivery language. Uses the read-only ProductFamilyRepository; injectable for tests.
+    @catalog_trusted_tokens = catalog_trusted_tokens ||
+                              Marine::Catalog::CatalogTrustedTokens.new(family_repository: Marine::Catalog::ProductFamilyRepository.new)
   end
 
   # phase is part of the ContextBuilder handoff contract (§7.5) and reserved for the planner-input
@@ -384,7 +389,7 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   def resolve_listing_language(authorized, trigger:, history:, configured_language:)
     mention = authorized.product_intent[:family_mention]
     @language_resolver.resolve(
-      text: trigger, provider_language: nil, context: history,
+      text: trigger, provider_language: nil, context: enriched_history(history),
       configured_language: configured_language,
       entity_candidates: [mention].compact, trusted_tokens: []
     ).language
@@ -428,11 +433,19 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
     @language_resolver.resolve(
       text: trigger,
       provider_language: nil,
-      context: history,
+      context: enriched_history(history),
       configured_language: configured_language,
       entity_candidates: [resolved.family_code, resolved.child_code].compact,
       trusted_tokens: [resolved.family_code, resolved.family_name].compact
     ).language
+  end
+
+  # Bug 2 — rebuild the bounded prior history into FRESH entries whose each CUSTOMER turn carries its
+  # own Catalog-derived trusted tokens (any incoming trusted_tokens discarded). This closes the
+  # prior-history asymmetry for the listing and validated-family exact/range language seams alike; the
+  # current-turn authority/selection behavior is untouched (only the resolver's context changes).
+  def enriched_history(history)
+    @catalog_trusted_tokens.enrich_context(history)
   end
 
   def clarify_reason(goals)

@@ -30,6 +30,12 @@ RSpec.describe Marine::Catalog::ConversationLanguageResolver do
     { role: 'assistant', content: content }
   end
 
+  # A customer turn carrying the caller-computed, per-turn trusted catalog tokens (Bug 2). Only
+  # these caller-injected tokens may be subtracted from THAT prior turn.
+  def user_trusted(content, trusted)
+    { role: 'user', content: content, trusted_tokens: trusted }
+  end
+
   def resolve(**)
     described_class.resolve(**)
   end
@@ -318,6 +324,115 @@ RSpec.describe Marine::Catalog::ConversationLanguageResolver do
       result = resolve(text: 'ZX-90', provider_language: 'en', context: [user('halo berapa harganya semuanya')])
 
       expect(result.language).to eq('id')
+    end
+  end
+
+  # Bug 2 — a PRIOR customer turn that is only a Catalog product name (e.g. "linen flow") must not be
+  # passed raw to CLD3 and poison the strict-sticky language. The CALLER computes the per-turn trusted
+  # catalog tokens from THAT turn's own content and attaches them to the context entry; the resolver
+  # subtracts them before deciding whether the prior turn carries meaningful linguistic residue. A turn
+  # with too little residue is skipped WITHOUT a CLD3 detection; the next older customer turn is tried.
+  describe 'Bug 2: per-turn trusted catalog tokens on prior customer turns' do
+    # A. Oldest->newest: "berapa harganya" then product-only "linen flow"; current bare code "lf-3".
+    # The newest product-only prior is skipped (no CLD3) and the older Indonesian prior wins.
+    it 'skips a product-only newest prior and detects the older Indonesian prior (A)' do
+      detections['berapa harganya'] = reliable('id')
+      detections['linen flow'] = reliable('nl') # the runtime poison: if passed raw, CLD3 says nl
+
+      context = [user_trusted('berapa harganya', []), user_trusted('linen flow', %w[linen flow])]
+      result = resolve(text: 'lf-3', provider_language: nil, context: context, configured_language: 'id')
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:prior_customer)
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new).with('linen flow')
+    end
+
+    # B. Only prior "baby doll ada"; trusted baby/doll leaves one residue token -> skipped; configured wins.
+    it 'skips a product-name prior leaving one residue token and falls to configured (B)' do
+      context = [user_trusted('baby doll ada', %w[baby doll])]
+      result = resolve(text: 'ada warna merah?', provider_language: nil, context: context, configured_language: 'id')
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:configured)
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new).with('baby doll ada')
+    end
+
+    # C. Every prior turn is product-only -> all skipped; configured id wins.
+    it 'skips every product-only prior and falls to configured (C)' do
+      context = [user_trusted('linen flow', %w[linen flow]), user_trusted('baby doll', %w[baby doll])]
+      result = resolve(text: 'lf-3', provider_language: nil, context: context, configured_language: 'id')
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:configured)
+    end
+
+    # D. Every prior turn is product-only and NO configured language -> unresolved (fail closed).
+    it 'resolves to unresolved when every prior is product-only and nothing is configured (D)' do
+      context = [user_trusted('linen flow', %w[linen flow]), user_trusted('baby doll', %w[baby doll])]
+      result = resolve(text: 'lf-3', provider_language: nil, context: context)
+
+      expect(result.language).to be_nil
+      expect(result.reason).to eq(:unresolved)
+    end
+
+    # E. "I want fabric" then newest product-only "baby doll ada"; the older reliable English wins.
+    it 'skips the newest product-only prior and detects the older English prior (E)' do
+      detections['I want fabric'] = reliable('en')
+
+      context = [user_trusted('I want fabric', []), user_trusted('baby doll ada', %w[baby doll])]
+      result = resolve(text: 'bd-1', provider_language: nil, context: context, configured_language: 'id')
+
+      expect(result.language).to eq('en')
+      expect(result.reason).to eq(:prior_customer)
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new).with('baby doll ada')
+    end
+
+    # F. A prior turn with >= 2 residue tokens after subtraction is NOT skipped and CLD3 is used.
+    it 'does not skip a prior that retains two residue tokens after subtraction (F)' do
+      detections['linen flow fully available'] = reliable('en')
+
+      context = [user_trusted('linen flow fully available', %w[linen flow])]
+      result = resolve(text: 'lf-3', provider_language: nil, context: context, configured_language: 'id')
+
+      expect(result.language).to eq('en')
+      expect(result.reason).to eq(:prior_customer)
+      expect(Marine::Llm::LanguageDetector).to have_received(:new).with('linen flow fully available')
+    end
+
+    # The per-turn tokens are read from the context turn itself — never from the current @trusted_tokens.
+    # The current turn's trusted tokens must NOT erase a prior turn's genuine wording.
+    it 'uses each prior turn OWN trusted tokens, not the current-turn trusted tokens' do
+      detections['linen flow available'] = reliable('en')
+
+      context = [user_trusted('linen flow available', [])] # this prior carries NO trusted tokens
+      result = resolve(text: 'linen flow', provider_language: nil, context: context,
+                       trusted_tokens: %w[linen flow], configured_language: 'id')
+
+      expect(result.language).to eq('en')
+      expect(result.reason).to eq(:prior_customer)
+    end
+
+    # Sanitize the metadata shape: a malformed/non-array/non-string trusted_tokens fails closed to NO
+    # subtraction (the prior keeps its full residue) and never creates unbounded token work.
+    it 'fails closed on a malformed trusted_tokens shape (no subtraction)' do
+      detections['linen flow'] = reliable('en')
+
+      context = [{ role: 'user', content: 'linen flow', trusted_tokens: 'linen flow' }]
+      result = resolve(text: 'lf-3', provider_language: nil, context: context, configured_language: 'id')
+
+      expect(result.language).to eq('en')
+      expect(result.reason).to eq(:prior_customer)
+    end
+  end
+
+  # H. Current-turn entity_only? filtering is unchanged: the CURRENT turn still subtracts its own
+  # entity_candidates + current trusted_tokens from @text only (regression guard for Bug 2).
+  describe 'Bug 2: current-turn filtering is unchanged (regression)' do
+    it 'still subtracts current trusted_tokens from the current turn on the opener path' do
+      result = resolve(text: 'satin velvet kakak', provider_language: 'no', trusted_tokens: %w[satin velvet])
+
+      expect(result.language).to be_nil
+      expect(result.reason).to eq(:unresolved)
     end
   end
 

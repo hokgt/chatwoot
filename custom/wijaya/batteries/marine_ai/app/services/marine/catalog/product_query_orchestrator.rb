@@ -248,40 +248,27 @@ module Marine
       # meaningful switch.
       def resolve_reply_language(text, intent, context, configured_language)
         Marine::Catalog::ConversationLanguageResolver.resolve(
-          text: text, provider_language: intent[:customer_language], context: context,
+          text: text, provider_language: intent[:customer_language],
+          context: catalog_trusted_tokens.enrich_context(context),
           configured_language: configured_language, entity_candidates: entity_candidates(intent),
           trusted_tokens: trusted_catalog_tokens(text)
         )
       end
 
+      # The shared, battery-local collaborator that computes the bounded catalog-derived trusted tokens
+      # for a turn and enriches the bounded context with per-turn trusted tokens (Bug 2) — the SAME
+      # bounded algorithm for the current turn and every prior CUSTOMER turn, using this orchestrator's
+      # injected read-only family repository so no algorithm drifts between the two callers.
+      def catalog_trusted_tokens
+        @catalog_trusted_tokens ||= Marine::Catalog::CatalogTrustedTokens.new(family_repository: family_repository)
+      end
+
       # The bounded catalog-derived tokens for THIS turn, injected into the pure resolver so a product
       # name in the turn is never counted as linguistic evidence even when the extractor's entity
-      # fields came back incomplete (provider variance). Mirrors the data-driven recovery lookup: each
-      # distinct meaningful turn token (bounded to MAX_RECOVERY_TOKENS) is searched case-insensitively
-      # against the active family rows (each search clamped by RECOVERY_FAMILY_LIMIT), and the matched
-      # families' row-derived code AND name strings are tokenized with the resolver's own
-      # MEANINGFUL_TOKEN rule into one flat, deduped token list. No product/phrase list — the only
-      # product-name knowledge comes from the repository. Catalog unavailability degrades to NO trusted
-      # tokens (behavior then equals the legacy per-turn resolution); the language path never raises on
-      # an outage.
+      # fields came back incomplete (provider variance). Catalog unavailability degrades to NO trusted
+      # tokens (behavior then equals the legacy per-turn resolution); the language path never raises.
       def trusted_catalog_tokens(text)
-        families = turn_catalog_tokens(text).flat_map { |token| family_repository.active_candidates(query: token, limit: RECOVERY_FAMILY_LIMIT) }
-                                            .uniq { |family| family[:code] }
-        families.flat_map { |family| trusted_family_tokens(family) }.uniq
-      rescue Marine::Catalog::Errors::CatalogError
-        []
-      end
-
-      # Distinct meaningful (resolver MEANINGFUL_TOKEN) tokens of the turn, bounded like recovery so
-      # at most MAX_RECOVERY_TOKENS repository lookups are issued for the language path.
-      def turn_catalog_tokens(text)
-        text.to_s.downcase.scan(Marine::Catalog::ConversationLanguageResolver::MEANINGFUL_TOKEN).uniq.first(MAX_RECOVERY_TOKENS)
-      end
-
-      # A matched family's trusted tokens: its row-derived code AND name, tokenized with the resolver's
-      # MEANINGFUL_TOKEN rule so they subtract exactly the tokens the resolver measures.
-      def trusted_family_tokens(family)
-        "#{family[:name]} #{family[:code]}".downcase.scan(Marine::Catalog::ConversationLanguageResolver::MEANINGFUL_TOKEN)
+        catalog_trusted_tokens.for_text(text)
       end
 
       # The turn's bounded extracted entity/code/attribute candidates (family_mention,
