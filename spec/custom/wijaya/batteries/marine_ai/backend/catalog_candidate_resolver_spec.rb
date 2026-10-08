@@ -278,4 +278,38 @@ RSpec.describe Marine::Backend::CatalogCandidateResolver do
       expect(result.status).to eq(:unavailable)
     end
   end
+
+  # Non-vacuous integration: a REAL VariantRepository (only the low-level Connection boundary faked)
+  # under a controlled family-repository double. A lower-case child trigger `lf-3` under an ACTIVE LF
+  # family must reach exact_child with the authoritative DB child code LF-3 — exercising the real
+  # case-insensitive resolve_child_any SQL, not a stub of it.
+  describe 'case-insensitive child continuation through the real variant repository' do
+    subject(:resolver) { described_class.new(family_repository: family_repo, variant_repository: Marine::Catalog::VariantRepository.new) }
+
+    before do
+      allow(Marine::Catalog::Config).to receive(:configured?).and_return(true)
+      allow(Marine::Catalog::Config).to receive(:qualified_table).and_return('marine_ai.item')
+      allow(Marine::Catalog::Config).to receive(:schema).and_return('marine_ai')
+      # No current family resolves from the trigger; the active state family LF revalidates.
+      allow(family_repo).to receive(:resolve_exact_any) do |cands|
+        cands == ['LF'] ? { status: :resolved, code: 'LF', name: 'LF' } : { status: :missing }
+      end
+      allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
+        family = params[0]
+        candidates = params[1..]
+        case_insensitive = sql.include?('LOWER(item_code)')
+        [{ item_code: 'LF-3', variant_of: 'LF', disabled: false }]
+          .select { |r| r[:variant_of] == family && candidates.any? { |c| case_insensitive ? r[:item_code].casecmp?(c) : r[:item_code] == c } }
+          .map { |r| { 'code' => r[:item_code] } }
+      end
+    end
+
+    it 'reaches exact_child with the DB-derived child code LF-3 for a lower-case lf-3 trigger' do
+      result = resolver.call(trigger: 'lf-3', flow_state: active_state(family: 'LF'))
+
+      expect(result.status).to eq(:exact_child)
+      expect(result.child_code).to eq('LF-3')
+      expect(result.source).to eq(:flow_state)
+    end
+  end
 end

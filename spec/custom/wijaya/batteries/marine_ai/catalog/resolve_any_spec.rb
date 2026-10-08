@@ -109,10 +109,61 @@ RSpec.describe 'Phase 2A batched exact resolution', type: :model do
         expect(call[:params]).to eq(%w[FAM1 FAM1-CH1 FAM1-CH2])
         expect(call[:sql]).to include('variant_of = $1')
         expect(call[:sql]).to include('disabled = false')
-        expect(call[:sql]).to include('item_code IN ($2, $3)')
+        expect(call[:sql]).to include('LOWER(item_code) IN (LOWER($2), LOWER($3))')
         expect(call[:sql]).to include('LIMIT 2')
+        expect(call[:sql]).not_to include('DISTINCT')
         expect(call[:sql]).not_to include('display')
         expect(call[:sql]).not_to include('attribute')
+      end
+    end
+
+    # Case-insensitive batched matching against a real-shaped row set. The Connection is faked to
+    # emulate Postgres: it honors the predicate the repository actually emits (case-sensitive
+    # `item_code IN (...)` vs case-insensitive `LOWER(item_code) IN (LOWER(...))`), filters an in-memory
+    # active row set by family (exact) + that predicate, orders by item_code ASC and caps at 2. Result
+    # rows are NEVER deduped by case, so a same-family LF-3/lf-3 collision stays :ambiguous.
+    context 'with case-insensitive matching over a faked catalog boundary' do
+      def fake_catalog(rows)
+        allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
+          captured << { sql: sql, params: params }
+          fake_select(rows, params, sql.include?('LOWER(item_code)'))
+        end
+      end
+
+      def fake_select(rows, params, case_insensitive)
+        family = params.first
+        wanted = params.drop(1)
+        wanted = wanted.map(&:downcase) if case_insensitive
+        rows.select { |r| fake_hit?(r, family, wanted, case_insensitive) }
+            .sort_by { |r| r[:item_code] }
+            .first(2)
+            .map { |r| { 'code' => r[:item_code] } }
+      end
+
+      def fake_hit?(row, family, wanted, case_insensitive)
+        return false if row[:disabled] || row[:variant_of] != family
+
+        wanted.include?(case_insensitive ? row[:item_code].downcase : row[:item_code])
+      end
+
+      it 'resolves the authoritative DB code LF-3 for a lower-case lf-3 candidate' do
+        fake_catalog([{ item_code: 'LF-3', variant_of: 'LF', disabled: false }])
+
+        expect(repository.resolve_child_any('LF', %w[lf-3])).to eq(status: :resolved, code: 'LF-3')
+        expect(captured.last[:sql]).to include('LOWER(item_code) IN (LOWER($2))')
+      end
+
+      it 'fails closed to :ambiguous on a same-family casefold DB collision (LF-3 + lf-3), never collapsing the rows' do
+        fake_catalog([{ item_code: 'LF-3', variant_of: 'LF', disabled: false },
+                      { item_code: 'lf-3', variant_of: 'LF', disabled: false }])
+
+        expect(repository.resolve_child_any('LF', %w[lf-3])).to eq(status: :ambiguous)
+      end
+
+      it 'returns :missing when no active child matches the candidate' do
+        fake_catalog([{ item_code: 'LF-3', variant_of: 'LF', disabled: false }])
+
+        expect(repository.resolve_child_any('LF', %w[lf-9])).to eq(status: :missing)
       end
     end
 
