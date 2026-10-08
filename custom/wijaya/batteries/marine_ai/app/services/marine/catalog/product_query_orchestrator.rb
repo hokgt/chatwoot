@@ -18,11 +18,15 @@
 #     action:   one of ACTIONS,
 #     reply:    a frozen ReplyRenderer descriptor or nil,
 #     state:    { operation: :none | :start | :update, changes: { <flow keys> => ... } },
-#     language: (optional) bounded customer-language code for delivery localization
+#     language: (optional) bounded customer-language code for delivery localization,
+#     language_resolution: (optional) the shared resolver's closed reason when #process ran it
 #   }
-# The optional :language key is untrusted delivery metadata drawn from the same intent
-# extraction; it is present only when a usable code was extracted and never affects the
-# family/child/catalog decision.
+# The optional :language key is delivery metadata; it is present only when a usable code was
+# resolved and never affects the family/child/catalog decision. The optional :language_resolution
+# key (prior_customer / current_turn / configured / unresolved) is recorded only on the #process
+# path and marks that an authoritative language decision was made — present even for :unresolved
+# (where :language is absent), so a consumer distinguishes authoritative-unresolved from a direct
+# caller's absence of any decision.
 # operation :start maps to ProductFlowStateStore#start! (a fresh flow — which inherently
 # clears any prior variant / attributes / catalog markers), :update maps to #update!,
 # and :none means no state change. The plan is deeply frozen and contains only
@@ -136,13 +140,16 @@ module Marine
       # role-labelled context, the extracted intent, and the assistant's `configured_language` — so a
       # provider that guessed a language for a bare product code (with no linguistic evidence) can no
       # longer set plan[:language]; the nearest reliable prior CUSTOMER turn (or the configured
-      # language) is used instead. The resolved code, canonical and possibly nil (fail-closed), is
-      # passed authoritatively to #plan_for_intent so every product-plan consumer receives it.
+      # language) is used instead. The whole resolver Result (canonical code — possibly nil when
+      # fail-closed — plus its closed reason) is passed authoritatively to #plan_for_intent, so every
+      # product-plan consumer receives BOTH the resolved code AND the fact that an authoritative
+      # decision was made (distinguishing an authoritative unresolved nil from a direct caller's
+      # absence of any decision).
       def process(text:, context: nil, flow: nil, suppressed: false, knowledge_available: false, configured_language: nil) # rubocop:disable Metrics/ParameterLists -- a flat keyword API at the reasoning entry seam
         intent = intent_extractor.extract(text: text, context: context, state: state_summary(flow))
-        reply_language = resolve_reply_language(text, intent, context, configured_language)
+        resolution = resolve_reply_language(text, intent, context, configured_language)
         plan_for_intent(intent: intent, flow: flow, suppressed: suppressed, text: text,
-                        knowledge_available: knowledge_available, reply_language: reply_language)
+                        knowledge_available: knowledge_available, reply_language: resolution)
       end
 
       # Deterministic planning over an already-extracted (untrusted) intent hash and a
@@ -152,10 +159,13 @@ module Marine
       # `text` is the OPTIONAL raw customer turn. When supplied (the full #process path),
       # it enables data-driven family recovery from the untrusted turn when the extracted
       # family mention is missing or noisy; direct-component callers may omit it.
-      # `reply_language` is the OPTIONAL resolved delivery language from #process (the sentinel
-      # :unset preserves the legacy per-turn provider language for direct callers/tests): when a
-      # value is supplied it is AUTHORITATIVE — a resolved code sets plan[:language], and a resolved
-      # nil (fail-closed) drops it, so #process never falls back to the raw provider guess.
+      # `reply_language` is the OPTIONAL resolver Result from #process (the sentinel :unset preserves
+      # the legacy per-turn provider language for direct callers/tests that never ran the resolver):
+      # when a Result is supplied it is AUTHORITATIVE — its resolved code sets plan[:language] and its
+      # closed reason sets plan[:language_resolution], a resolved nil (fail-closed :unresolved) drops
+      # plan[:language] while STILL recording the authoritative resolution, so #process never falls
+      # back to the raw provider guess and a later consumer can tell authoritative-unresolved apart
+      # from a direct caller's absence of any decision.
       def plan_for_intent(intent:, flow: nil, suppressed: false, text: nil, knowledge_available: false, reply_language: :unset) # rubocop:disable Metrics/ParameterLists -- a flat keyword API shared by #process and direct callers
         intent = symbolize(intent)
         capture_turn_metadata(intent, text, knowledge_available, reply_language)
@@ -212,9 +222,17 @@ module Marine
       # deterministic catalog behavior.
       def capture_turn_metadata(intent, text, knowledge_available, reply_language = :unset)
         @turn_text = text.to_s
-        # An authoritative resolved language from #process wins (its nil deliberately drops
-        # plan[:language]); a direct caller (:unset) keeps the legacy per-turn provider language.
-        @plan_language = normalize_language(reply_language == :unset ? intent[:customer_language] : reply_language)
+        # An authoritative resolver Result from #process wins (its nil language deliberately drops
+        # plan[:language] while its closed reason still records that a decision was made); a direct
+        # caller (:unset) ran no resolver, so it keeps the legacy per-turn provider language and
+        # records NO resolution — the plan then reads as "no upstream decision".
+        if reply_language == :unset
+          @plan_language = normalize_language(intent[:customer_language])
+          @plan_language_resolution = nil
+        else
+          @plan_language = normalize_language(reply_language.language)
+          @plan_language_resolution = reply_language.reason
+        end
         @plan_handoff_category = normalize_unsupported_request(intent[:unsupported_request])
         @knowledge_available = knowledge_available
       end
@@ -222,16 +240,18 @@ module Marine
       # Resolve the deterministic product-flow delivery language for this turn via the shared,
       # pure resolver (no extra provider call): the current turn's provider language when it carries
       # meaningful linguistic evidence, else the nearest reliable prior CUSTOMER turn from the bounded
-      # context, else the configured assistant language, else nil (fail-closed). Canonical code only.
-      # The turn's bounded extracted entity candidates are supplied so a message that is exactly a
-      # code/entity (any shape) is treated as non-linguistic, while a candidate plus real wording is
-      # still a meaningful switch.
+      # context, else the configured assistant language, else nil (fail-closed). Returns the whole
+      # Result (canonical code — possibly nil — plus its closed reason), which #process threads
+      # authoritatively so the plan records the resolution, not just the code. The turn's bounded
+      # extracted entity candidates are supplied so a message that is exactly a code/entity (any
+      # shape) is treated as non-linguistic, while a candidate plus real wording is still a
+      # meaningful switch.
       def resolve_reply_language(text, intent, context, configured_language)
         Marine::Catalog::ConversationLanguageResolver.resolve(
           text: text, provider_language: intent[:customer_language], context: context,
           configured_language: configured_language, entity_candidates: entity_candidates(intent),
           trusted_tokens: trusted_catalog_tokens(text)
-        ).language
+        )
       end
 
       # The bounded catalog-derived tokens for THIS turn, injected into the pure resolver so a product

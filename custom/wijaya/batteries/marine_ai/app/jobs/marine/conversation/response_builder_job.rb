@@ -220,9 +220,11 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # flow.
   def finalize_product
     plan = @response['product_plan']
-    # Bounded delivery-language the extractor read from the same customer turn; the
-    # localizer prefers it over local (CLD3) detection. Never influences selection.
+    # Bounded delivery-language the shared resolver decided for this turn; the localizer prefers it
+    # over local (CLD3) detection, and @product_language_resolved tells the localizer an
+    # authoritative decision exists so it never re-runs CLD3. Never influences selection.
     @product_language = plan[:language]
+    @product_language_resolved = language_resolved?(plan)
     apply_product_state(plan[:state])
 
     # A pure stock reply whose localized coded text could not be PROVEN in the customer's language
@@ -475,6 +477,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     return if plan[:action] == :handoff
 
     @product_language = plan[:language]
+    @product_language_resolved = language_resolved?(plan)
     descriptor = plan[:reply]
     # A pure price_available reply is routed through the shared Marine::Catalog::PriceReplyComposer
     # (the SAME dynamic price boundary the source-less PlaygroundPreview consumes). It builds its own
@@ -604,6 +607,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # English.
   def prepare_catalog_wording(plan)
     @product_language = plan[:language]
+    @product_language_resolved = language_resolved?(plan)
     flow = predicted_catalog_flow(plan)
     document = catalog_selection(flow['validated_family'])
     outcome = catalog_outcome(plan, flow, document)
@@ -708,6 +712,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     return unless @response['product_plan'][:action] == :handoff
 
     @product_language = @response['product_plan'][:language]
+    @product_language_resolved = language_resolved?(@response['product_plan'])
     ack = presenter.handoff_ack_text(@response['product_plan'][:handoff_category])
     fallback = localized_product_text(ack)
     @handoff_message = handoff_wording_candidate(fallback) || fallback
@@ -751,7 +756,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       fallback_language: configured_reply_language,
       account: @conversation.account,
       action: action,
-      descriptor: descriptor
+      descriptor: descriptor,
+      language_resolved: @product_language_resolved
     ).call
   end
 
@@ -763,6 +769,16 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # normalizes/validates the value.
   def configured_reply_language
     @assistant.config.to_h['language'] if @assistant.respond_to?(:config)
+  end
+
+  # Whether the shared ConversationLanguageResolver authoritatively decided this turn's delivery
+  # language upstream (any closed reason it records on the plan, INCLUDING an authoritative
+  # :unresolved where plan[:language] is absent). When true, the localizer must not re-run CLD3:
+  # it uses the resolved/configured language, else fails closed to the deterministic English
+  # source. A plan with no :language_resolution (a direct/legacy caller that never ran the
+  # resolver) reads as false so the legacy CLD3 fallback chain is preserved.
+  def language_resolved?(plan)
+    plan[:language_resolution].present?
   end
 
   # Bounded recent customer turns, newest first — a fallback language signal only used

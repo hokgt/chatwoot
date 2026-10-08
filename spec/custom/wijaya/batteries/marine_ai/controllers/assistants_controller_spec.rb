@@ -281,6 +281,16 @@ RSpec.describe 'Api::V1::Accounts::Marine::Assistants', type: :request do
         expect(assistant.reload.guardrails).to include('No profanity')
         expect(assistant.reload.response_guidelines).to include('Be concise')
       end
+
+      # Bug 3 — the configured operating language is the resolver's last-resort fallback, so it must
+      # be editable through the Settings PUT. It is a permitted config strong param.
+      it 'persists the config language' do
+        put "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}",
+            params: { assistant: { config: { language: 'id' } } },
+            headers: admin.create_new_auth_token, as: :json
+        expect(response).to have_http_status(:success)
+        expect(assistant.reload.config['language']).to eq('id')
+      end
     end
 
     context 'when a plain agent reads the shared assistant show (must stay open)' do

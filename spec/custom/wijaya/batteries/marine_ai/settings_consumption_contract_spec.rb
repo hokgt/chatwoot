@@ -17,7 +17,7 @@ require 'rails_helper'
 #
 # Settings source shapes (verified):
 #   * Marine::Assistant#config (jsonb) — store_accessor keys incl. instructions, handoff_message,
-#     product_name, feature_memory, and the un-accessor'd 'language' key read via config.to_h.
+#     product_name, feature_memory, and 'language' (also read via config.to_h at some call sites).
 #   * Marine::Assistant#guardrails / #response_guidelines — jsonb COLUMNS (not config keys).
 #   * InstallationConfig MARINE_* keys — read through Marine::Llm::Config.installation_value.
 #   * ENV MARINE_CATALOG_PG_* — read directly by Marine::Catalog::Config.
@@ -71,8 +71,8 @@ RSpec.describe 'Marine settings consumption contract' do
 
   # --- assistant.config['language'] ------------------------------------------------------------
   # Consumer: Marine::Agent::Runner#configured_reply_language (agent/runner.rb:241-243) — last-resort
-  # fallback supplied to the orchestrator language resolver. 'language' is NOT a store_accessor key;
-  # it is read via config.to_h['language'].
+  # fallback supplied to the orchestrator language resolver. 'language' is a store_accessor key on
+  # Marine::Assistant and is also read via config.to_h['language'] at some call sites.
   describe "assistant config['language'] -> Agent::Runner#configured_reply_language" do
     let(:account) { create(:account) }
 
@@ -88,6 +88,19 @@ RSpec.describe 'Marine settings consumption contract' do
       runner = Marine::Agent::Runner.new(assistant: assistant)
 
       expect(runner.send(:configured_reply_language)).to be_nil
+    end
+
+    it 'exposes language as a config store_accessor (reads the persisted jsonb key)' do
+      assistant = create(:marine_assistant, account: account, config: { 'language' => 'id' })
+
+      expect(assistant.language).to eq('id')
+    end
+
+    it 'writes language through the store_accessor into the config jsonb' do
+      assistant = create(:marine_assistant, account: account, config: {})
+      assistant.update!(language: 'id')
+
+      expect(assistant.reload.config['language']).to eq('id')
     end
   end
 

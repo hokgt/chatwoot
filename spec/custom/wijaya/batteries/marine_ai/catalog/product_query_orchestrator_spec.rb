@@ -1237,6 +1237,88 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(plan[:language]).to eq('en')
     end
 
+    # Bug 3 — the plan carries the resolver's CLOSED reason so a later consumer can tell an
+    # authoritative "no language" decision apart from a direct caller's absence of any decision.
+    it 'records the closed resolution reason on #process plans (prior_customer here)' do
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: 'Impeller', explicit_child_code: 'QLR-2200', customer_language: 'en')
+      )
+
+      plan = orchestrator.process(text: 'QLR-2200', context: [{ role: 'user', content: 'halo berapa harganya semuanya' }], flow: nil)
+
+      expect(plan[:language]).to eq('id')
+      expect(plan[:language_resolution]).to eq(:prior_customer)
+    end
+
+    it 'resolves to the configured language with a :configured reason when no reliable customer language exists' do
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: 'Impeller', explicit_child_code: 'QLR-2200', customer_language: 'en')
+      )
+
+      plan = orchestrator.process(text: 'QLR-2200', context: [], flow: nil, configured_language: 'id')
+
+      expect(plan[:language]).to eq('id')
+      expect(plan[:language_resolution]).to eq(:configured)
+    end
+
+    # The reported shape: a product-code/entity-only turn, no reliable prior history, and NO
+    # configured language. The resolver fails closed to :unresolved (language nil). The plan DROPS
+    # :language but STILL records the authoritative :unresolved reason, so the runtime never
+    # degrades to a random CLD3 language for this turn.
+    it 'records an authoritative :unresolved (language dropped) for an entity-only turn with no configured language' do
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: 'Impeller', explicit_child_code: 'QLR-2200', customer_language: 'en')
+      )
+
+      plan = orchestrator.process(text: 'QLR-2200', context: [], flow: nil)
+
+      expect(plan).not_to have_key(:language)
+      expect(plan[:language_resolution]).to eq(:unresolved)
+    end
+
+    it 'records NO resolution on the direct #plan_for_intent path (no upstream decision)' do
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'parent_info', family_mention: 'Impeller', customer_language: 'en'), flow: nil
+      )
+
+      expect(plan).not_to have_key(:language_resolution)
+    end
+
+    # Bug 3 — the TRUSTED-CATALOG-TOKENS product-name path (not only the entity_candidates path the
+    # QLR-2200 tests exercise). The literal turn `baby doll ada` is a catalog product name plus one
+    # short non-linguistic token. The caller-injected trusted catalog tokens — the row-derived
+    # family name/code found by searching each turn token against the active families — subtract
+    # `baby doll`, so the turn carries no meaningful linguistic evidence and the volatile `en`
+    # provider guess is NOT honored. The data-driven trusted lookup is stubbed per query: `baby` and
+    # `doll` map to the active family { code: 'BD', name: 'Baby Doll' }; every other token is empty.
+    def trusted_baby_doll
+      allow(family_repository).to receive(:active_candidates).and_return([])
+      allow(family_repository).to receive(:active_candidates).with(query: 'baby', limit: anything).and_return([{ code: 'BD', name: 'Baby Doll' }])
+      allow(family_repository).to receive(:active_candidates).with(query: 'doll', limit: anything).and_return([{ code: 'BD', name: 'Baby Doll' }])
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: 'baby doll', explicit_child_code: nil, customer_language: 'en')
+      )
+    end
+
+    it 'subtracts trusted catalog tokens for "baby doll ada" and resolves to the configured id (:configured)' do
+      trusted_baby_doll
+
+      plan = orchestrator.process(text: 'baby doll ada', context: [], flow: nil, configured_language: 'id')
+
+      expect(family_repository).to have_received(:active_candidates).with(query: 'baby', limit: anything)
+      expect(plan[:language]).to eq('id')
+      expect(plan[:language_resolution]).to eq(:configured)
+    end
+
+    it 'records an authoritative :unresolved (no language) for "baby doll ada" via the trusted catalog path with no configured language' do
+      trusted_baby_doll
+
+      plan = orchestrator.process(text: 'baby doll ada', context: [], flow: nil)
+
+      expect(plan).not_to have_key(:language)
+      expect(plan[:language_resolution]).to eq(:unresolved)
+    end
+
     # The resolved language rides EVERY deterministic plan action from this one shared seam — the same
     # #process seam the Conversation Runner and the Playground both call — so both surfaces deliver a
     # code-only turn in the inherited customer language regardless of the resulting action.

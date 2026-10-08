@@ -63,12 +63,11 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       allow(Marine::Llm::AssistantChatService).to receive(:new).and_return(chat)
     end
 
-    def product_payload(action:, reply: nil, operation: :none, changes: {}, language: nil)
-      {
-        'action' => 'product', 'orchestration_path' => 'product',
-        'product_plan' => { action: action, reply: reply, language: language,
-                            state: { operation: operation, changes: changes } }
-      }
+    def product_payload(action:, reply: nil, operation: :none, changes: {}, language: nil, language_resolution: nil) # rubocop:disable Metrics/ParameterLists
+      plan = { action: action, reply: reply, language: language,
+               state: { operation: operation, changes: changes } }
+      plan[:language_resolution] = language_resolution if language_resolution
+      { 'action' => 'product', 'orchestration_path' => 'product', 'product_plan' => plan }
     end
 
     def claim_status
@@ -738,6 +737,69 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       described_class.perform_now(conversation, assistant, indo.id)
 
       expect(conversation.messages.outgoing.last.content).to eq(original)
+    end
+
+    # Bug 3 — the job threads the plan's CLOSED resolution into ReplyLocalizer as language_resolved,
+    # so once the shared resolver has authoritatively decided (or fail-closed to no language) the
+    # localizer never re-runs CLD3. A plan with no resolution (a direct/legacy caller) stays
+    # language_resolved:false, preserving the legacy CLD3 fallback chain. GroundedProductWordingService
+    # is stubbed to nil so the single localization call is the one under test (no network).
+    describe 'authoritative language resolution threaded into ReplyLocalizer (language_resolved seam)' do
+      def captured_localizer(language:, language_resolution:)
+        captured = nil
+        allow(Marine::Catalog::GroundedProductWordingService).to receive(:new).and_return(
+          instance_double(Marine::Catalog::GroundedProductWordingService, call: nil)
+        )
+        allow(Marine::Catalog::ReplyLocalizer).to receive(:new) do |**kwargs|
+          captured = kwargs
+          instance_double(Marine::Catalog::ReplyLocalizer, call: kwargs[:text])
+        end
+        msg = create(:message, conversation: conversation, message_type: :incoming, content: 'ZX-90')
+        stub_reasoning(product_payload(action: :reply, reply: { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' },
+                                       language: language, language_resolution: language_resolution))
+        described_class.perform_now(conversation, assistant, msg.id)
+        captured
+      end
+
+      it 'passes language_resolved:true and the dropped (nil) provider language for an authoritative :unresolved turn' do
+        kwargs = captured_localizer(language: nil, language_resolution: :unresolved)
+
+        expect(kwargs[:language_resolved]).to be(true)
+        expect(kwargs[:provider_language]).to be_nil
+      end
+
+      it 'passes language_resolved:true with the resolved code when the resolver settled a language' do
+        kwargs = captured_localizer(language: 'id', language_resolution: :prior_customer)
+
+        expect(kwargs[:language_resolved]).to be(true)
+        expect(kwargs[:provider_language]).to eq('id')
+      end
+
+      it 'stays language_resolved:false for a plan with no upstream resolution (legacy CLD3 preserved)' do
+        kwargs = captured_localizer(language: nil, language_resolution: nil)
+
+        expect(kwargs[:language_resolved]).to be(false)
+      end
+
+      # End-to-end: the reported shape — an authoritative :unresolved turn with NO configured
+      # language delivers the deterministic English source and NEVER consults CLD3, instead of a
+      # random misclassified language. Runs the REAL ReplyLocalizer (only the detector is watched).
+      it 'delivers the English source and never calls CLD3 for an unresolved turn with no configured language' do
+        allow(Marine::Catalog::GroundedProductWordingService).to receive(:new).and_return(
+          instance_double(Marine::Catalog::GroundedProductWordingService, call: nil)
+        )
+        expect(Marine::Llm::LanguageDetector).not_to receive(:new)
+        expect(Marine::Llm::TranslateResponseService).not_to receive(:new)
+        assistant.update!(config: assistant.config.to_h.except('language'))
+        descriptor = { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' }
+        english = Marine::Catalog::ReplyPresenter.new.reply_text(action: :reply, reply: descriptor)
+        msg = create(:message, conversation: conversation, message_type: :incoming, content: 'ZX-90')
+        stub_reasoning(product_payload(action: :reply, reply: descriptor, language: nil, language_resolution: :unresolved))
+
+        described_class.perform_now(conversation, assistant, msg.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq(english)
+      end
     end
 
     # price-display-v1 — a price reply is now generated DIRECTLY in the resolved target language by

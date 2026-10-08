@@ -17,7 +17,7 @@ class Marine::Assistant < ApplicationRecord
   has_many :messages, as: :sender, dependent: :nullify
 
   store_accessor :config, :temperature, :feature_faq, :feature_memory, :feature_contact_attributes, :product_name, :welcome_message,
-                 :handoff_message, :resolution_message, :instructions
+                 :handoff_message, :resolution_message, :instructions, :language
 
   validates :name, :description, :account_id, presence: true
 
