@@ -71,10 +71,12 @@ RSpec.describe 'Marine::Backend Phase 6 unified customer orchestration', type: :
     coord = @coordinator
     cap = @captured
     Object.new.tap do |obj|
-      obj.define_singleton_method(:call) do |candidate_plan:|
+      obj.define_singleton_method(:call) do |candidate_plan:, presentation_policy: nil|
         cap[:forwarded_plan] = candidate_plan
+        cap[:forwarded_policy] = presentation_policy
         coord.call(candidate_plan: candidate_plan, scenario_key: 'scenario_8', trigger: 'synthetic trigger',
-                   history: [], phase: :follow_up, flow_state: nil, configured_language: 'id')
+                   history: [], phase: :follow_up, flow_state: nil, configured_language: 'id',
+                   presentation_policy: presentation_policy)
       end
     end
   end
@@ -188,6 +190,9 @@ RSpec.describe 'Marine::Backend Phase 6 unified customer orchestration', type: :
       expect(result.text).to eq(@model2)
       expect(@captured[:packet][:response_goals]).to eq(%w[answer_price])
       expect(@captured[:packet][:facts].keys).to eq(%i[price])
+      # Only price_range adopts v3: the exact-price packet stays v2 and carries NO presentation_policy.
+      expect(@captured[:packet][:evidence_version]).to eq('marine_evidence_v2')
+      expect(@captured[:packet]).not_to have_key(:presentation_policy)
       # The authoritative identity came from the catalog repository, never the untrusted JEV candidate.
       expect(@captured[:packet][:validated_slots][:product][:code]).to eq('BD')
       expect(@captured[:packet][:facts][:price][:display][:amount]).to eq('12.500')
@@ -252,6 +257,11 @@ RSpec.describe 'Marine::Backend Phase 6 unified customer orchestration', type: :
       expect(range[:source]).to eq('catalog_price_range_repository')
       expect(@range_authority).to have_received(:call).with(family_code: 'BD')
       expect(@stock_repository).not_to have_received(:status_for)
+      # Checkpoint A — only the price_range packet adopts v3, carrying the projected presentation policy
+      # OUTSIDE facts; the policy was threaded from the composition root through the authority seam.
+      expect(@captured[:packet][:evidence_version]).to eq('marine_evidence_v3')
+      expect(@captured[:packet][:presentation_policy]).to eq(tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code')
+      expect(@captured[:forwarded_policy]).to eq(tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code')
     end
 
     it 'stock available: a binary-status-only reply (no quantity/location fact keys)' do

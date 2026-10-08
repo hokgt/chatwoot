@@ -219,6 +219,62 @@ RSpec.describe Marine::Backend::EvidencePacketBuilder do
     end
   end
 
+  # Checkpoint A — the staged marine_evidence_v3 opt-in: a presentation_policy is carried OUTSIDE facts
+  # and restricted to the answer_price_range packet. Absent policy => v2 (unchanged); present policy on
+  # any other goal, or a malformed policy, fails closed. v2 packets never carry a presentation_policy.
+  describe 'presentation_policy (marine_evidence_v3, answer_price_range only)' do
+    let(:policy) { { tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code' } }
+    let(:range_canonical) { { family_code: 'BD', currency: 'IDR', min: '10000', max: '12500', uom: 'Yard' } }
+    let(:range_display) { { currency: 'Rp', min: '10.000', max: '12.500', uom: 'yard' } }
+    let(:range_fact) do
+      { canonical: range_canonical, display: range_display,
+        policy_version: 'price-display-v1', source: 'catalog_price_range_repository', checked_at: '2026-09-30T12:00:00Z' }
+    end
+
+    def v3_build(policy_overrides = :unset, input_overrides = {})
+      input = {
+        scenario: { key: 'scenario_8' }, intents: %w[price_range], customer_language: 'id',
+        response_goals: %w[answer_price_range],
+        validated_slots: { product: { code: 'BD', name: 'Santorini', source: 'marine_catalog' } },
+        facts: { price_range: range_fact }, missing_slots: [], variant_candidates: []
+      }
+      input[:presentation_policy] = (policy_overrides == :unset ? policy : policy_overrides) unless policy_overrides.nil?
+      builder.build(evidence_input: input.merge(input_overrides))
+    end
+
+    it 'emits marine_evidence_v3 with the closed policy OUTSIDE facts, deeply frozen, facts unchanged' do
+      packet = v3_build
+
+      expect(packet[:evidence_version]).to eq('marine_evidence_v3')
+      expect(packet[:presentation_policy]).to eq(tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code')
+      expect(packet[:facts]).not_to have_key(:presentation_policy)
+      expect(packet[:facts][:price_range]).to eq(range_fact)
+      expect(packet[:presentation_policy]).to be_frozen
+      expect(packet[:presentation_policy].values).to all(be_frozen)
+    end
+
+    it 'stays marine_evidence_v2 with NO presentation_policy when no policy is supplied' do
+      packet = v3_build(nil)
+      expect(packet[:evidence_version]).to eq('marine_evidence_v2')
+      expect(packet).not_to have_key(:presentation_policy)
+    end
+
+    it 'rejects a presentation_policy on a non-range (answer_price) packet' do
+      expect do
+        builder.build(evidence_input: evidence_input(presentation_policy: policy))
+      end.to raise_error(invalid_error)
+    end
+
+    it 'rejects a malformed policy (unknown value, missing key, extra key, non-hash)' do
+      expect { v3_build(policy.merge(tone: 'snarky')) }.to raise_error(invalid_error)
+      expect { v3_build(policy.merge(verbosity: 'verbose')) }.to raise_error(invalid_error)
+      expect { v3_build(policy.merge(range_followup_mode: 'whatever')) }.to raise_error(invalid_error)
+      expect { v3_build(policy.except(:tone)) }.to raise_error(invalid_error)
+      expect { v3_build(policy.merge(surprise: 'x')) }.to raise_error(invalid_error)
+      expect { v3_build('professional') }.to raise_error(invalid_error)
+    end
+  end
+
   describe 'fail-closed structural rejections' do
     it 'rejects an unknown top-level input key' do
       expect { builder.build(evidence_input: evidence_input(surprise: 1)) }.to raise_error(invalid_error)

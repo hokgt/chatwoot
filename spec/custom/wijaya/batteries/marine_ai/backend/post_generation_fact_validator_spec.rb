@@ -238,4 +238,38 @@ RSpec.describe Marine::Backend::PostGenerationFactValidator do
       expect(validator.call(packet: range_packet, candidate: leak).reason).to eq(:packet_leak)
     end
   end
+
+  # Checkpoint A — the v3 presentation-policy control block is threaded in as control_texts. A verbatim
+  # copy of that dynamic control block is rejected, while ordinary words like "professional"/"concise" in
+  # a natural reply are NOT rejected (the leak check is a long-overlap check, never a wordlist).
+  describe 'v3 presentation-policy control leak (threaded control_texts)' do
+    let(:v3_packet) do
+      builder.build(evidence_input: {
+                      scenario: { key: 'scenario_8' }, intents: %w[price_range], customer_language: 'id',
+                      response_goals: %w[answer_price_range],
+                      validated_slots: { product: { code: 'BABYDOLL', source: 'marine_catalog' } },
+                      facts: { price_range: {
+                        canonical: { family_code: 'BABYDOLL', currency: 'IDR', min: '10000', max: '12500', uom: 'Yard' },
+                        display: { currency: 'Rp', min: '10.000', max: '12.500', uom: 'yard' },
+                        policy_version: 'price-display-v1', source: 'catalog_price_range_repository', checked_at: '2026-09-30T12:00:00Z'
+                      } },
+                      missing_slots: [], variant_candidates: [],
+                      presentation_policy: { tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code' }
+                    })
+    end
+
+    let(:control_texts) do
+      Marine::Backend::EvidencePromptBuilder.new.build(packet: v3_packet, customer_request: 'Berapa kisaran harga BABYDOLL?')[:control_texts]
+    end
+
+    it 'rejects a candidate that copies the presentation-policy control block verbatim' do
+      leak = "BABYDOLL Rp 10.000 sampai Rp 12.500 per yard. #{control_texts.first}"
+      expect(validator.call(packet: v3_packet, candidate: leak, control_texts: control_texts).reason).to eq(:control_leak)
+    end
+
+    it 'does NOT reject a natural reply merely using the words professional or concise' do
+      reply = 'We confirm professional, concise pricing: BABYDOLL ranges Rp 10.000 to Rp 12.500 per yard.'
+      expect(validator.call(packet: v3_packet, candidate: reply, control_texts: control_texts).ok?).to be(true)
+    end
+  end
 end

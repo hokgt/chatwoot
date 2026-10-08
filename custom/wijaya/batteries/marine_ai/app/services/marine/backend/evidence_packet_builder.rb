@@ -27,11 +27,27 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
   ExecutionPolicy = Marine::Backend::ExecutionPolicy
 
   EVIDENCE_VERSION = 'marine_evidence_v2'.freeze
+  # Checkpoint A — the staged v3 version carrying a PRESENTATION POLICY, scoped to the answer_price_range
+  # packet ONLY. A v2 packet (every other goal) NEVER carries a policy and stays byte-for-byte unchanged;
+  # a v3 packet REQUIRES the exact closed policy below. Strict version separation (no global v3 bump).
+  EVIDENCE_VERSION_V3 = 'marine_evidence_v3'.freeze
 
-  # Exhaustive top-level input keys (the ProductExecutionPlanner output contract). Anything else
-  # fails closed.
+  # The single goal set a v3 presentation_policy packet is restricted to in this checkpoint.
+  V3_GOALS = %w[answer_price_range].freeze
+
+  # The closed presentation-policy contract (mirrors Marine::Backend::PresentationPolicyProjector): the
+  # EXACT three allowlisted keys, each a closed enum value. The builder revalidates the plain data it is
+  # handed — it never projects a policy itself and never reads the assistant/DB.
+  PRESENTATION_POLICY_KEYS = %i[tone verbosity range_followup_mode].freeze
+  PRESENTATION_TONES = %w[professional casual formal].freeze
+  PRESENTATION_VERBOSITIES = %w[concise detailed].freeze
+  PRESENTATION_RANGE_FOLLOWUPS = %w[ask_variant_code standalone].freeze
+
+  # Exhaustive top-level input keys (the ProductExecutionPlanner output contract). presentation_policy
+  # is an OPTIONAL additive key; when present it opts the answer_price_range packet into v3. Anything
+  # else fails closed.
   INPUT_KEYS = %i[scenario intents customer_language response_goals validated_slots facts
-                  missing_slots variant_candidates].freeze
+                  missing_slots variant_candidates presentation_policy].freeze
 
   # Closed response-goal enum (A8-01). answer_product_listing / answer_product_information are the
   # Phase 3 bounded-catalog answers. answer_payment_terms / clarify_payment are reserved for 3B.
@@ -147,6 +163,10 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
 
     packet = assemble(scenario, goals, slots, facts, input[:missing_slots], input[:variant_candidates])
     packet[:customer_language] = language unless language.nil?
+    # The presentation policy is control metadata (not a business fact): it rides OUTSIDE facts and, when
+    # present, opts the answer_price_range packet into v3. A policy on any other goal set, or a malformed
+    # policy, fails closed. Absent policy => v2 (byte-for-byte unchanged).
+    apply_presentation_policy!(packet, presentation_policy(input[:presentation_policy], goals))
 
     enforce_ceiling!(deep_freeze(packet))
   end
@@ -603,6 +623,40 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
     return nil if value.nil?
 
     optional_bounded_string(value, MAX_STRING_BYTES)
+  end
+
+  # The closed presentation policy (v3 opt-in). Absent => nil (v2). Present => it is scoped to the
+  # answer_price_range goal ONLY and must be EXACTLY { tone, verbosity, range_followup_mode } with each
+  # value in its closed enum; anything else fails closed. Returns a fresh owned copy (deep-frozen with
+  # the packet). It carries NO raw instruction/guardrail text and NO business fact.
+  def presentation_policy(raw, goals)
+    return nil if raw.nil?
+    raise invalid unless goals == V3_GOALS
+    raise invalid unless raw.is_a?(Hash)
+
+    reject_unknown_keys!(raw, PRESENTATION_POLICY_KEYS)
+    raise invalid unless raw.keys.map(&:to_sym).sort == PRESENTATION_POLICY_KEYS.sort
+
+    {
+      tone: policy_enum!(raw[:tone], PRESENTATION_TONES),
+      verbosity: policy_enum!(raw[:verbosity], PRESENTATION_VERBOSITIES),
+      range_followup_mode: policy_enum!(raw[:range_followup_mode], PRESENTATION_RANGE_FOLLOWUPS)
+    }
+  end
+
+  def policy_enum!(value, allowed)
+    raise invalid unless value.is_a?(String) && allowed.include?(value)
+
+    value.dup
+  end
+
+  # Attach the v3 opt-in: a present policy flips the version and rides OUTSIDE facts; a nil policy leaves
+  # the assembled v2 packet untouched (byte-for-byte unchanged).
+  def apply_presentation_policy!(packet, policy)
+    return if policy.nil?
+
+    packet[:evidence_version] = EVIDENCE_VERSION_V3
+    packet[:presentation_policy] = policy
   end
 
   # A required, nonblank, control-free String within the byte bound — returns a fresh owned copy.

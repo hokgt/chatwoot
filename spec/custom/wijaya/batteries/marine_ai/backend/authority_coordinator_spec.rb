@@ -329,6 +329,31 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
       expect(result.reason).to eq(:language_unresolved)
       expect(planner).not_to have_received(:call)
     end
+
+    # Checkpoint A — the presentation policy is threaded into the planner ONLY on the price_range answer;
+    # the stock answer never receives it (so the stock packet stays v2).
+    it 'threads the presentation policy into the price_range planner input but NOT the stock one' do
+      policy = { tone: 'casual', verbosity: 'detailed', range_followup_mode: 'ask_variant_code' }
+      captured = nil
+      allow(planner).to receive(:call) do |**kwargs|
+        captured = kwargs
+        { planner: :input }
+      end
+      allow(packet_builder).to receive(:build).and_return({ response_goals: %w[answer_price_range] }.freeze)
+
+      allow(resolver).to receive(:call).and_return(resolved(status: :exact_family))
+      coordinator.call(candidate_plan: plan(intents: %w[price_range]), scenario_key: 'scenario_5',
+                       trigger: 'berapa kisaran harga FAM1', history: [], phase: :follow_up,
+                       flow_state: nil, configured_language: 'id', presentation_policy: policy)
+      expect(captured[:presentation_policy]).to eq(policy)
+
+      allow(resolver).to receive(:call).and_return(resolved(status: :exact_child, child_code: 'FAM1-CHILD'))
+      allow(packet_builder).to receive(:build).and_return({ response_goals: %w[answer_stock] }.freeze)
+      coordinator.call(candidate_plan: plan(intents: %w[stock]), scenario_key: 'scenario_5',
+                       trigger: 'apakah FAM1 tersedia', history: [], phase: :follow_up,
+                       flow_state: nil, configured_language: 'id', presentation_policy: policy)
+      expect(captured[:presentation_policy]).to be_nil
+    end
   end
 
   describe 'language resolution' do

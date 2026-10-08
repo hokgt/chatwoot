@@ -45,7 +45,7 @@ class Marine::Backend::PostGenerationFactValidator
   # identifiers and the marine_* enums are listed — never a common domain word (price, stock,
   # product, code, amount, currency, …) that a legitimate reply may contain.
   LEAK_MARKERS = %w[
-    evidence_version marine_evidence_v1 marine_evidence_v2 generated_at response_goals response_constraints
+    evidence_version marine_evidence_v1 marine_evidence_v2 marine_evidence_v3 generated_at response_goals response_constraints
     prohibited_claims validated_slots missing_slots variant_candidates customer_language
     policy_version price_list_rate checked_at resolution_status item_group max_paragraphs
     handoff_self_reference marine_sales_assistant catalog_price_repository stock_repository
@@ -66,12 +66,16 @@ class Marine::Backend::PostGenerationFactValidator
     @control_leak_inspector = control_leak_inspector || Marine::Charge::ControlLeakInspector.new
   end
 
-  # packet:    a frozen marine_evidence_v2 Evidence Packet.
-  # candidate: the untrusted generated reply text.
-  def call(packet:, candidate:) # rubocop:disable Metrics/CyclomaticComplexity -- a flat sequence of independent fail-closed gates
+  # packet:        a frozen Evidence Packet (v2, or v3 carrying a presentation_policy).
+  # candidate:     the untrusted generated reply text.
+  # control_texts: OPTIONAL extra trusted-control text(s) threaded from the prompt builder (the v3
+  #                presentation-policy control block). They are added to the static CONTROL_TEXTS for the
+  #                leak check so a verbatim copy of the dynamic control block is rejected; they NEVER
+  #                relax the existing static protection. No DB/service read.
+  def call(packet:, candidate:, control_texts: nil) # rubocop:disable Metrics/CyclomaticComplexity -- a flat sequence of independent fail-closed gates
     return reject(:malformed_candidate) unless valid_text?(candidate, max_candidate_bytes(packet))
     return reject(:packet_leak) if leaks_packet?(candidate)
-    return reject(:control_leak) if leaks_control_instruction?(candidate)
+    return reject(:control_leak) if leaks_control_instruction?(candidate, control_texts)
     return reject(:missing_required_value) unless required_values(packet).all? { |value| present_as_literal?(candidate, value) }
     return reject(:unauthorized_token) unless tokens_within_inventory?(packet, candidate)
 
@@ -113,10 +117,12 @@ class Marine::Backend::PostGenerationFactValidator
     LEAK_MARKERS.any? { |marker| candidate.include?(marker) }
   end
 
-  # A long verbatim run of the Model 2 control instruction reappearing in the reply is a control
-  # leak (delegated to the shared local ControlLeakInspector — no live provider).
-  def leaks_control_instruction?(candidate)
-    @control_leak_inspector.leak?(reply: candidate, control_texts: CONTROL_TEXTS)
+  # A long verbatim run of a control text (the static Model 2 system instruction PLUS any threaded
+  # dynamic trusted-control text, e.g. the v3 presentation-policy block) reappearing in the reply is a
+  # control leak (delegated to the shared local ControlLeakInspector — no live provider). The threaded
+  # texts only ADD to the static protection; they never relax it.
+  def leaks_control_instruction?(candidate, control_texts)
+    @control_leak_inspector.leak?(reply: candidate, control_texts: CONTROL_TEXTS + Array(control_texts))
   end
 
   # Values that MUST appear unchanged: the validated variant code, and (when a price fact

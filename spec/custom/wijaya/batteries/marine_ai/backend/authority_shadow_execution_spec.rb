@@ -30,8 +30,9 @@ RSpec.describe Marine::Backend::AuthorityShadowExecution do
     )
   end
 
-  def execution(plan: candidate_plan)
-    described_class.new(account: account, assistant: assistant, conversation: conversation, message: message, candidate_plan: plan)
+  def execution(plan: candidate_plan, presentation_policy: nil)
+    described_class.new(account: account, assistant: assistant, conversation: conversation, message: message,
+                        candidate_plan: plan, presentation_policy: presentation_policy)
   end
 
   before do
@@ -46,10 +47,20 @@ RSpec.describe Marine::Backend::AuthorityShadowExecution do
     it 'reuses the supplied plan through the coordinator and returns its bounded Result' do
       expect(coordinator).to receive(:call).with(
         candidate_plan: candidate_plan, scenario_key: 'scenario_3',
-        trigger: 'berapa harga', history: [], phase: :opening, flow_state: nil, configured_language: 'id'
+        trigger: 'berapa harga', history: [], phase: :opening, flow_state: nil, configured_language: 'id',
+        presentation_policy: nil
       ).and_return(coordinator_result)
 
       expect(execution.call).to equal(coordinator_result)
+    end
+
+    # Checkpoint A — the customer path threads a projected presentation policy; the shadow forwards it
+    # verbatim to the coordinator (nil in the default-OFF Decision shadow).
+    it 'forwards a supplied presentation policy to the coordinator' do
+      policy = { tone: 'casual', verbosity: 'detailed', range_followup_mode: 'ask_variant_code' }
+      expect(coordinator).to receive(:call).with(hash_including(presentation_policy: policy)).and_return(coordinator_result)
+
+      execution(presentation_policy: policy).call
     end
 
     it 'NEVER instantiates the Decision Runner or a second shadow execution (no second provider call)' do

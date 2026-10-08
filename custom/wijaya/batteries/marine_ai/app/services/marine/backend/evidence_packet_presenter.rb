@@ -38,6 +38,22 @@
 # or invalid packet. This is a result POLICY only; no fallback delivery is wired in 3A-1.
 class Marine::Backend::EvidencePacketPresenter
   EVIDENCE_VERSION = 'marine_evidence_v2'.freeze
+  # Checkpoint A — the staged v3 version (answer_price_range) carrying a presentation_policy. v3 is
+  # accepted here; its policy is threaded into the Model 2 prompt as trusted control + into the fact
+  # validator's leak guard. Every v2 goal (price/listing/stock/overview/clarify) is unchanged.
+  EVIDENCE_VERSION_V3 = 'marine_evidence_v3'.freeze
+  EVIDENCE_VERSIONS = [EVIDENCE_VERSION, EVIDENCE_VERSION_V3].freeze
+  # The only extra top-level key a v3 packet may carry.
+  V3_OPTIONAL_KEYS = %i[presentation_policy].freeze
+  # The single response-goal set a v3 packet is restricted to, and the closed presentation-policy
+  # contract (EXACT keys + enum values) this seam INDEPENDENTLY revalidates. Kept small and local
+  # (mirrors EvidencePacketBuilder / PresentationPolicyProjector) — defense in depth so a malformed/crossed
+  # v3 packet handed directly to the presenter returns :invalid_packet before any generator call.
+  V3_GOALS = %w[answer_price_range].freeze
+  PRESENTATION_POLICY_KEYS = %i[tone verbosity range_followup_mode].freeze
+  PRESENTATION_TONES = %w[professional casual formal].freeze
+  PRESENTATION_VERBOSITIES = %w[concise detailed].freeze
+  PRESENTATION_RANGE_FOLLOWUPS = %w[ask_variant_code standalone].freeze
 
   # The packet answer goals that warrant a generated natural reply. clarify_* / handoff are
   # deterministic zero-model paths and are never generated here. The Phase-3 bounded-catalog answers
@@ -83,18 +99,23 @@ class Marine::Backend::EvidencePacketPresenter
   #                   independent semantic proof the reply's facts equal the packet's (an interface
   #                   only in 3A-1; no provider constructed/called here). Missing/error/false fails
   #                   closed for EVERY generated answer path.
-  def call(packet:, generator:, customer_request:, message_history: [], fact_verifier: nil) # rubocop:disable Metrics/CyclomaticComplexity -- a flat sequence of independent fail-closed generation/validation gates
+  def call(packet:, generator:, customer_request:, message_history: [], fact_verifier: nil) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- a flat sequence of independent fail-closed generation/validation gates
     return failure(:invalid_packet, fallback: :handoff) unless valid_packet?(packet)
 
     fallback = fallback_for(packet)
     return failure(:not_generatable, fallback: fallback) unless generatable?(packet)
 
-    candidate = generate(generator, packet, customer_request, message_history)
+    prompt = build_prompt(packet, customer_request, message_history)
+    return price_or_failure(packet, :generation_failed, fallback) if prompt.nil?
+
+    candidate = generate(generator, prompt)
     return price_or_failure(packet, :generation_failed, fallback) if candidate.nil?
 
-    # The deterministic fact + persona gates stay fail-closed. EVERY generated answer then requires the
-    # injected semantic verifier; an accepted candidate is returned verbatim.
-    return price_or_failure(packet, :fact_rejected, fallback) unless @fact_validator.call(packet: packet, candidate: candidate).ok?
+    # The deterministic fact + persona gates stay fail-closed. The fact validator additionally receives
+    # the prompt's dynamic trusted-control text(s) (the v3 presentation-policy block; empty for v2) so a
+    # verbatim copy of the control block is rejected. EVERY generated answer then requires the injected
+    # semantic verifier; an accepted candidate is returned verbatim.
+    return price_or_failure(packet, :fact_rejected, fallback) unless fact_validated?(packet, candidate, prompt)
     return price_or_failure(packet, :persona_rejected, fallback) unless @persona_validator.call(candidate: candidate).ok?
     return accepted(candidate) if semantically_verified?(fact_verifier, packet, candidate)
 
@@ -142,7 +163,7 @@ class Marine::Backend::EvidencePacketPresenter
   # structural gate run BEFORE any generator invocation — not a permissive repair.
   def valid_packet?(packet) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- a flat sequence of independent structural packet guards
     packet.is_a?(Hash) && packet.frozen? &&
-      packet[:evidence_version] == EVIDENCE_VERSION &&
+      EVIDENCE_VERSIONS.include?(packet[:evidence_version]) &&
       closed_keys?(packet) &&
       packet[:generated_at].is_a?(String) && packet[:generated_at].match?(UTC_ISO8601) &&
       valid_goals?(packet[:response_goals]) &&
@@ -150,9 +171,34 @@ class Marine::Backend::EvidencePacketPresenter
       deeply_frozen?(packet)
   end
 
+  # A v2 packet carries exactly the required + customer_language keys and NO presentation_policy. A v3
+  # packet additionally REQUIRES the presentation_policy key (the only extra), its goal set is EXACTLY
+  # answer_price_range, and its policy is a closed { tone, verbosity, range_followup_mode } with exact enum
+  # values — INDEPENDENTLY revalidated here (the EvidencePacketBuilder remains the full semantic validator,
+  # but a direct caller must not be trusted). A malformed/missing/extra key, bad-enum/injection value, or a
+  # crossed goal/version fails closed to :invalid_packet before any generator call.
   def closed_keys?(packet)
     keys = packet.keys
-    (keys - (REQUIRED_KEYS + OPTIONAL_KEYS)).empty? && (REQUIRED_KEYS - keys).empty?
+    return false unless (REQUIRED_KEYS - keys).empty?
+
+    if packet[:evidence_version] == EVIDENCE_VERSION_V3
+      (keys - (REQUIRED_KEYS + OPTIONAL_KEYS + V3_OPTIONAL_KEYS)).empty? &&
+        packet[:response_goals] == V3_GOALS &&
+        valid_presentation_policy?(packet[:presentation_policy])
+    else
+      (keys - (REQUIRED_KEYS + OPTIONAL_KEYS)).empty?
+    end
+  end
+
+  # The closed v3 presentation-policy contract: EXACTLY { tone, verbosity, range_followup_mode }, each an
+  # allowed enum member. An enum membership check inherently rejects any control-char/newline/injection
+  # value.
+  def valid_presentation_policy?(policy)
+    policy.is_a?(Hash) &&
+      policy.keys.sort == PRESENTATION_POLICY_KEYS.sort &&
+      PRESENTATION_TONES.include?(policy[:tone]) &&
+      PRESENTATION_VERBOSITIES.include?(policy[:verbosity]) &&
+      PRESENTATION_RANGE_FOLLOWUPS.include?(policy[:range_followup_mode])
   end
 
   def valid_goals?(goals)
@@ -189,10 +235,24 @@ class Marine::Backend::EvidencePacketPresenter
     Array(packet[:response_goals]).intersect?(DETERMINISTIC_ANSWER_GOALS + CLARIFY_GOALS) ? :deterministic : :handoff
   end
 
-  def generate(generator, packet, customer_request, message_history)
+  # The packet-only bounded prompt (system + messages + the dynamic control_texts for the leak guard).
+  # Built once BEFORE generation so the exact control text(s) can be threaded to the fact validator. A
+  # malformed-input/build failure fails closed to nil (the caller folds to the deterministic fallback).
+  def build_prompt(packet, customer_request, message_history)
+    @prompt_builder.build(packet: packet, customer_request: customer_request, message_history: message_history)
+  rescue StandardError
+    nil
+  end
+
+  # The deterministic fact gate, additionally handed the prompt's dynamic trusted-control text(s) (empty
+  # for v2) so a verbatim copy of the v3 presentation-policy control block is rejected.
+  def fact_validated?(packet, candidate, prompt)
+    @fact_validator.call(packet: packet, candidate: candidate, control_texts: prompt[:control_texts]).ok?
+  end
+
+  def generate(generator, prompt)
     return nil unless generator.respond_to?(:call)
 
-    prompt = @prompt_builder.build(packet: packet, customer_request: customer_request, message_history: message_history)
     raw = generator.call(system: prompt[:system], messages: prompt[:messages])
     return nil unless raw.is_a?(String)
 

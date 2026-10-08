@@ -1308,6 +1308,12 @@ patches:
       # one policy-injected CandidatePlan, Backend Authority, marine_evidence_v2, and the existing
       # presenter/fact guards; it returns validated text or a closed fallback and never delivers.
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/exact_price_customer_execution.rb
+      # Presentation Policy checkpoint A — the SINGLE customer-composition-root projection of the
+      # assistant's loaded config (instructions + response_guidelines) into a closed, deeply-frozen
+      # tone/verbosity/range_followup policy. Read-only (no DB/service/provider), never raises; it opts
+      # the answer_price_range packet into marine_evidence_v3 (threaded authority->planner->builder),
+      # while every other goal stays marine_evidence_v2 (the v2-only renderers keep rejecting v3).
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/presentation_policy_projector.rb
       # Step 17 — deterministic product_listing Evidence renderer. On a listing SEMANTIC
       # rejection/error/missing (after the deterministic fact + persona gates pass) the presenter
       # discards the untrusted Model 2 candidate and renders a bounded listing reply from the
@@ -1905,6 +1911,9 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/backend/evidence_fact_verifier_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/model2_shadow_execution_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/exact_price_customer_execution_spec.rb
+      # Presentation Policy checkpoint A — projector spec (closed deep-frozen output, defaults, pinned
+      # conflict precedence, confidentiality, no DB/provider access).
+      - spec/custom/wijaya/batteries/marine_ai/backend/presentation_policy_projector_spec.rb
       # Step 17 — deterministic product_listing Evidence renderer spec.
       - spec/custom/wijaya/batteries/marine_ai/backend/product_listing_evidence_renderer_spec.rb
       # Step 18 — deterministic exact-price Evidence renderer spec.

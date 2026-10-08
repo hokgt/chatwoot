@@ -7,10 +7,21 @@
 # authorized product intent the plan carried. It exposes only presenter-validated text; every
 # ineligible, malformed, rejected, or exceptional outcome folds to a closed fallback Result so the
 # caller runs its unchanged legacy path. It never makes a second Model 1 call per turn.
-class Marine::Backend::ExactPriceCustomerExecution
+class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/ClassLength -- a flat composition root plus its fail-closed packet/version guards
   Coordinator = Marine::Backend::AuthorityCoordinator
   ExecutionPolicy = Marine::Backend::ExecutionPolicy
   EVIDENCE_VERSION = 'marine_evidence_v2'.freeze
+  # Checkpoint A — the staged v3 version carrying a presentation_policy, accepted ONLY for the single
+  # answer_price_range target. Every other target REMAINS v2; a crossed version fails closed.
+  EVIDENCE_VERSION_V3 = 'marine_evidence_v3'.freeze
+  RANGE_GOAL = 'answer_price_range'.freeze
+
+  # The closed presentation-policy contract the delivery seam revalidates on a v3 target packet (mirrors
+  # PresentationPolicyProjector / EvidencePacketBuilder) — a defense-in-depth structural gate.
+  PRESENTATION_POLICY_KEYS = %i[tone verbosity range_followup_mode].freeze
+  PRESENTATION_TONES = %w[professional casual formal].freeze
+  PRESENTATION_VERBOSITIES = %w[concise detailed].freeze
+  PRESENTATION_RANGE_FOLLOWUPS = %w[ask_variant_code standalone].freeze
 
   # The exact single-intent target matrix: each accepted response goal maps to the EXACT fact-key set
   # its packet must carry. A target packet carries exactly one of these goals and exactly its fact set
@@ -41,7 +52,7 @@ class Marine::Backend::ExactPriceCustomerExecution
 
   def initialize(account:, assistant:, conversation:, message:, # rubocop:disable Metrics/ParameterLists -- record boundary plus injectable side-effect-free collaborators
                  decision_runner: nil, scenario_adapter: nil, authority_execution: nil,
-                 presenter: nil, generator: nil, fact_verifier: nil, context_builder: nil)
+                 presenter: nil, generator: nil, fact_verifier: nil, context_builder: nil, policy_projector: nil)
     @account = account
     @assistant = assistant
     @conversation = conversation
@@ -53,6 +64,7 @@ class Marine::Backend::ExactPriceCustomerExecution
     @generator = generator
     @fact_verifier = fact_verifier
     @context_builder = context_builder
+    @policy_projector = policy_projector
   end
 
   def call
@@ -71,7 +83,7 @@ class Marine::Backend::ExactPriceCustomerExecution
 
   def execute(context, scenarios)
     candidate_plan = runner.call(message: context.trigger, scenarios: scenarios, context: context.history)
-    authority_result = execute_authority(candidate_plan)
+    authority_result = execute_authority(candidate_plan, presentation_policy)
     return fallback(REASON_AUTHORITY_REJECTED) unless accepted_authority_result?(authority_result)
 
     packet = authority_result.evidence_packet
@@ -141,13 +153,24 @@ class Marine::Backend::ExactPriceCustomerExecution
   # An injected authority is a narrow candidate-plan callable for isolated tests. The production
   # default is the existing AuthorityShadowExecution, preserving Backend-owned repository access and
   # passing the exact CandidatePlan object without another Decision Runner call.
-  def execute_authority(candidate_plan)
-    return @authority_execution.call(candidate_plan: candidate_plan) if @authority_execution
+  def execute_authority(candidate_plan, policy)
+    return @authority_execution.call(candidate_plan: candidate_plan, presentation_policy: policy) if @authority_execution
 
     Marine::Backend::AuthorityShadowExecution.new(
       account: @account, assistant: @assistant, conversation: @conversation,
-      message: @message, candidate_plan: candidate_plan
+      message: @message, candidate_plan: candidate_plan, presentation_policy: policy
     ).call
+  end
+
+  # The SINGLE per-turn presentation-policy projection (memoized so the projector is called exactly once
+  # and the assistant config is read once). It is threaded into the authority execution and reaches the
+  # builder on the price_range answer ONLY; every other target ignores it.
+  def presentation_policy
+    @presentation_policy ||= policy_projector.call
+  end
+
+  def policy_projector
+    @policy_projector ||= Marine::Backend::PresentationPolicyProjector.new(assistant: @assistant)
   end
 
   def accepted_authority_result?(result)
@@ -158,17 +181,38 @@ class Marine::Backend::ExactPriceCustomerExecution
       result.evidence_packet?
   end
 
-  # A deliverable target packet: deeply frozen marine_evidence_v2, carrying EXACTLY ONE accepted
-  # target goal AND exactly that goal's authorized fact-key set (per TARGET_FACTS). A multi-goal
-  # packet, an unexpected goal, or a mismatched fact set fails closed to the legacy fallback.
+  # A deliverable target packet: deeply frozen, carrying EXACTLY ONE accepted target goal AND exactly
+  # that goal's authorized fact-key set (per TARGET_FACTS). The version is goal-discriminated:
+  # answer_price_range REQUIRES marine_evidence_v3 plus a valid closed presentation_policy; every other
+  # target REMAINS marine_evidence_v2 and must NOT carry a presentation_policy. A crossed version
+  # (a v2 range packet, or a v3 non-range packet), a multi-goal packet, an unexpected goal, or a
+  # mismatched fact set fails closed to the legacy fallback.
   def target_packet?(packet) # rubocop:disable Metrics/CyclomaticComplexity -- a flat sequence of independent fail-closed packet guards
-    return false unless packet.is_a?(Hash) && deeply_frozen?(packet) && packet[:evidence_version] == EVIDENCE_VERSION
+    return false unless packet.is_a?(Hash) && deeply_frozen?(packet)
 
     goals = packet[:response_goals]
     return false unless goals.is_a?(Array) && goals.length == 1
 
     expected = TARGET_FACTS[goals.first]
-    !expected.nil? && packet[:facts].is_a?(Hash) && packet[:facts].keys == expected
+    return false if expected.nil? || !packet[:facts].is_a?(Hash) || packet[:facts].keys != expected
+
+    version_matches?(packet, goals.first)
+  end
+
+  def version_matches?(packet, goal)
+    if goal == RANGE_GOAL
+      packet[:evidence_version] == EVIDENCE_VERSION_V3 && valid_presentation_policy?(packet[:presentation_policy])
+    else
+      packet[:evidence_version] == EVIDENCE_VERSION && !packet.key?(:presentation_policy)
+    end
+  end
+
+  def valid_presentation_policy?(policy)
+    policy.is_a?(Hash) &&
+      policy.keys.sort == PRESENTATION_POLICY_KEYS.sort &&
+      PRESENTATION_TONES.include?(policy[:tone]) &&
+      PRESENTATION_VERBOSITIES.include?(policy[:verbosity]) &&
+      PRESENTATION_RANGE_FOLLOWUPS.include?(policy[:range_followup_mode])
   end
 
   def deeply_frozen?(value)

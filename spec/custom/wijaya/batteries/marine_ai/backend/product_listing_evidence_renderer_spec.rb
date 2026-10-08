@@ -125,5 +125,13 @@ RSpec.describe Marine::Backend::ProductListingEvidenceRenderer do
       expect(renderer.call(packet: listing_packet(products: [], returned_count: 0, total_count: 0, complete: true))).to be_nil
       expect(renderer.call(packet: { evidence_version: 'nope' }.freeze)).to be_nil
     end
+
+    # Checkpoint A — this v2-only renderer rejects a marine_evidence_v3 packet and never reads its policy.
+    it 'returns nil for a marine_evidence_v3 packet (v2-only, never reads presentation_policy)' do
+      v2 = listing_packet(products: two_products, returned_count: 2, total_count: 2, complete: true)
+      v3 = deep_freeze(v2.to_h.merge(evidence_version: 'marine_evidence_v3',
+                                     presentation_policy: { tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code' }))
+      expect(renderer.call(packet: v3)).to be_nil
+    end
   end
 end

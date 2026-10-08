@@ -118,7 +118,7 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
 
   # phase is part of the ContextBuilder handoff contract (§7.5) and reserved for the planner-input
   # phase semantics; it is carried through for provenance but not consumed in the price-only 2A slice.
-  def call(candidate_plan:, scenario_key:, trigger:, history:, phase:, flow_state:, configured_language:) # rubocop:disable Lint/UnusedMethodArgument,Metrics/ParameterLists -- documented §7.5 closed signature
+  def call(candidate_plan:, scenario_key:, trigger:, history:, phase:, flow_state:, configured_language:, presentation_policy: nil) # rubocop:disable Lint/UnusedMethodArgument,Metrics/ParameterLists -- documented §7.5 closed signature
     authorized = @adapter.call(plan: candidate_plan, scenario_key: scenario_key)
     return adapter_failure(authorized.reason, scenario_key) unless authorized.ok?
     return phase_not_executable(authorized) unless ExecutionPolicy.product_authorized?(authorized.intents)
@@ -128,12 +128,13 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
     return listing_dispatch(authorized, trigger: trigger, history: history, configured_language: configured_language) if listing?(authorized.intents)
 
     # Phase 5 — an explicit single price_range / stock intent is catalog-identity-grounded via the SAME
-    # resolver, then routed through the planner + packet builder to an Evidence v2 fact. The exact-price
-    # path below (and its internal exact-family range branch) is reached only for exactly ["price"].
+    # resolver, then routed through the planner + packet builder to an Evidence fact. The presentation
+    # policy is threaded ONLY into the price_range answer (v3); stock stays v2. The exact-price path
+    # below (and its internal exact-family range branch) is reached only for exactly ["price"].
     if identity?(authorized.intents)
       return identity_dispatch(authorized, identity_intent(authorized.intents),
                                trigger: trigger, history: history, flow_state: flow_state,
-                               configured_language: configured_language)
+                               configured_language: configured_language, presentation_policy: presentation_policy)
     end
 
     resolved = @resolver.call(trigger: trigger, flow_state: flow_state)
@@ -210,11 +211,12 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   # the authoritative range / binary stock and build the packet. An unavailable/ambiguous/no-match
   # resolver status fails closed exactly as the price path does; an unknown status can never fall
   # through to a fact.
-  def identity_dispatch(authorized, intent, trigger:, history:, flow_state:, configured_language:) # rubocop:disable Metrics/ParameterLists -- the closed §7.5 resolver inputs threaded verbatim
+  def identity_dispatch(authorized, intent, trigger:, history:, flow_state:, configured_language:, presentation_policy: nil) # rubocop:disable Metrics/ParameterLists -- the closed §7.5 resolver inputs threaded verbatim
     resolved = @resolver.call(trigger: trigger, flow_state: flow_state)
     case resolved.status
     when Resolver::STATUS_EXACT_FAMILY, Resolver::STATUS_EXACT_CHILD
-      identity_evidence(authorized, intent, resolved, trigger: trigger, history: history, configured_language: configured_language)
+      identity_evidence(authorized, intent, resolved, trigger: trigger, history: history,
+                                                      configured_language: configured_language, presentation_policy: presentation_policy)
     when Resolver::STATUS_UNAVAILABLE
       terminal(OUTCOME_HANDOFF, REASON_CATALOG_UNAVAILABLE, authorized, resolved)
     when Resolver::STATUS_AMBIGUOUS
@@ -229,12 +231,13 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   # Resolve the delivery language BEFORE the planner (nil fails closed factless), build the packet, and
   # classify its goals: the intent's answer goal is accepted; a planner handoff (range/stock
   # unavailable, or an insufficient identity) is a closed handoff; anything else is a clarify.
-  def identity_evidence(authorized, intent, resolved, trigger:, history:, configured_language:) # rubocop:disable Metrics/ParameterLists -- closed resolver inputs threaded verbatim
+  def identity_evidence(authorized, intent, resolved, trigger:, history:, configured_language:, presentation_policy: nil) # rubocop:disable Metrics/ParameterLists -- closed resolver inputs threaded verbatim
     language = resolve_language(resolved, trigger: trigger, history: history, configured_language: configured_language)
     return terminal(OUTCOME_HANDOFF, REASON_LANGUAGE_UNRESOLVED, authorized, resolved) if language.nil?
 
     packet = @packet_builder.build(evidence_input: @planner.call(
-      product_intent: identity_planner_input(resolved, language, intent), intents: authorized.intents, scenario: authorized.scenario
+      product_intent: identity_planner_input(resolved, language, intent), intents: authorized.intents,
+      scenario: authorized.scenario, presentation_policy: (intent == 'price_range' ? presentation_policy : nil)
     ))
     classify_identity_packet(packet, authorized, resolved, intent)
   end

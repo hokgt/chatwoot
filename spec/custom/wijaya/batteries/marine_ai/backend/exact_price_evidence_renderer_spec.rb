@@ -200,6 +200,15 @@ RSpec.describe Marine::Backend::ExactPriceEvidenceRenderer do
       expect(renderer.call(packet: price_packet(freeze: false))).to be_nil
     end
 
+    # Checkpoint A — this v2-only renderer rejects a marine_evidence_v3 packet and never reads its policy.
+    it 'returns nil for a marine_evidence_v3 packet (v2-only, never reads presentation_policy)' do
+      v3 = deep_freeze(price_packet(freeze: false).merge(
+                         evidence_version: 'marine_evidence_v3',
+                         presentation_policy: { tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code' }
+                       ))
+      expect(renderer.call(packet: v3)).to be_nil
+    end
+
     it 'does not surface the authoritative source / policy_version / checked_at in the customer text' do
       text = renderer.call(packet: price_packet)
 

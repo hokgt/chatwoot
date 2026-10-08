@@ -254,6 +254,22 @@ RSpec.describe Marine::Backend::ProductExecutionPlanner do
       # The authority provenance rides through the builder's closed validation unchanged.
       expect(packet[:facts][:price_range][:checked_at]).to eq(authority_checked_at)
     end
+
+    # Checkpoint A — a threaded presentation_policy is embedded in the price_range evidence input (and the
+    # builder emits v3 end-to-end); the planner itself neither projects nor reads the assistant/DB.
+    it 'embeds a threaded presentation_policy in the price_range evidence input and builds v3 end-to-end' do
+      policy = { tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code' }
+      allow(range_authority).to receive(:call).with(family_code: 'BD').and_return(range_result(min: '10000', max: '12500'))
+
+      product_intent = { customer_language: 'id', family_mention: 'Santorini', explicit_child_code: nil, attribute_candidates: [] }
+      input = range_planner.call(product_intent: product_intent, intents: %w[price_range],
+                                 scenario: { key: 'scenario_8' }, presentation_policy: policy)
+
+      expect(input[:presentation_policy]).to eq(policy)
+      packet = Marine::Backend::EvidencePacketBuilder.new(clock: clock).build(evidence_input: input)
+      expect(packet[:evidence_version]).to eq('marine_evidence_v3')
+      expect(packet[:presentation_policy]).to eq(policy)
+    end
   end
 
   describe 'exact-code-only variant authority (3A-1)' do

@@ -78,10 +78,13 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
     @clock = clock || -> { Time.current }
   end
 
-  # product_intent: the adapter's backend-owned product-intent input (IntentExtractor-shaped).
-  # intents:        the validated executable candidate intents (ExecutionPolicy-authorized; Phase 1 price).
-  # scenario:       { key: } provenance from the adapter.
-  def call(product_intent:, intents:, scenario:) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- a flat sequence of independent fail-closed guards
+  # product_intent:      the adapter's backend-owned product-intent input (IntentExtractor-shaped).
+  # intents:             the validated executable candidate intents (ExecutionPolicy-authorized; Phase 1 price).
+  # scenario:            { key: } provenance from the adapter.
+  # presentation_policy: OPTIONAL plain closed policy data threaded from the customer composition root.
+  #                      It is embedded in the evidence input ONLY for an answer_price_range answer (v3);
+  #                      every other goal ignores it, so those packets stay v2.
+  def call(product_intent:, intents:, scenario:, presentation_policy: nil) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- a flat sequence of independent fail-closed guards
     # Defense in depth: a non-Hash product_intent (a direct programmer call) fails closed to a
     # factless handoff rather than raising an unbounded error dereferencing it.
     return handoff(Context.new(scenario, intents, nil)) unless product_intent.is_a?(Hash)
@@ -103,7 +106,7 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
     return handoff(context) if variant == :unavailable
     return clarify(context, variant[:clarify_goal], %w[variant_input], validated_slots(family, nil)) if variant.is_a?(Hash) && variant[:clarify_goal]
 
-    build_answer(context, family, variant)
+    build_answer(context, family, variant, presentation_policy)
   end
 
   private
@@ -156,11 +159,18 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
     :unavailable
   end
 
-  def build_answer(context, family, variant)
+  def build_answer(context, family, variant, presentation_policy = nil)
     variant_code = variant.is_a?(Hash) ? variant[:code] : nil
     facts = {}
-    goals = context.intents.map { |intent| resolve_intent(intent, family, variant_code, context.language, facts) }
-    evidence_input(context, goals: goals.compact.uniq, slots: validated_slots(family, variant), facts: facts)
+    goals = context.intents.filter_map { |intent| resolve_intent(intent, family, variant_code, context.language, facts) }.uniq
+    evidence_input(context, goals: goals, slots: validated_slots(family, variant), facts: facts,
+                            presentation_policy: policy_for(goals, presentation_policy))
+  end
+
+  # The presentation policy is carried into the evidence input ONLY for a pure answer_price_range answer
+  # (the single v3 goal in this checkpoint). Every other goal drops it, so its packet stays v2.
+  def policy_for(goals, presentation_policy)
+    presentation_policy if presentation_policy && goals == %w[answer_price_range]
   end
 
   # The response goal for one intent. A fact-bearing intent (price/stock) stores its verified fact
@@ -381,8 +391,8 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
   # variant_candidates is always empty here: the VariantResolver surfaces resolved/missing/ambiguous
   # but never a candidate list in 3A-1, so the packet's variant_candidates bound is exercised by the
   # builder directly rather than fed from this planner.
-  def evidence_input(context, goals:, slots: {}, facts: {}, missing: [])
-    deep_freeze(
+  def evidence_input(context, goals:, slots: {}, facts: {}, missing: [], presentation_policy: nil) # rubocop:disable Metrics/ParameterLists -- flat evidence-input assembly from already-validated parts
+    input = {
       scenario: context.scenario,
       intents: context.intents,
       customer_language: context.language,
@@ -391,7 +401,9 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
       facts: facts,
       missing_slots: missing,
       variant_candidates: []
-    )
+    }
+    input[:presentation_policy] = presentation_policy unless presentation_policy.nil?
+    deep_freeze(input)
   end
 
   def present_string?(value)

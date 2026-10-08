@@ -10,7 +10,7 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
       account: account, assistant: assistant, conversation: conversation, message: message,
       decision_runner: decision_runner, scenario_adapter: scenario_adapter,
       authority_execution: authority_execution, presenter: presenter, generator: generator,
-      fact_verifier: fact_verifier, context_builder: context_builder
+      fact_verifier: fact_verifier, context_builder: context_builder, policy_projector: policy_projector
     )
   end
 
@@ -36,6 +36,17 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
     @fact_verifier ||= double
   end
 
+  # The projected presentation policy is a plain closed triple; the projector is injected (as a method
+  # helper, not a memoized let) so the "exactly once + threaded downstream" contract is assertable
+  # without a real assistant.
+  def presentation_policy
+    @presentation_policy ||= { tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code' }.freeze
+  end
+
+  def policy_projector
+    @policy_projector ||= double(call: presentation_policy)
+  end
+
   def deep_freeze(value)
     case value
     when Hash
@@ -49,8 +60,10 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
     value.freeze
   end
 
-  def packet(version: 'marine_evidence_v2', goals: %w[answer_price], facts: { price: { display: 'safe' } })
-    deep_freeze(evidence_version: version, response_goals: goals, facts: facts)
+  def packet(version: 'marine_evidence_v2', goals: %w[answer_price], facts: { price: { display: 'safe' } }, presentation_policy: :none)
+    attrs = { evidence_version: version, response_goals: goals, facts: facts }
+    attrs[:presentation_policy] = presentation_policy unless presentation_policy == :none
+    deep_freeze(attrs)
   end
 
   def authority_result(outcome: Coordinator::OUTCOME_EVIDENCE_PACKET,
@@ -93,7 +106,9 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
     expect(decision_runner).to receive(:call).once.with(
       message: context.trigger, scenarios: scenarios, context: context.history
     ).and_return(candidate_plan)
-    expect(authority_execution).to receive(:call).once.with(candidate_plan: candidate_plan).and_return(accepted)
+    expect(authority_execution).to(
+      receive(:call).once.with(candidate_plan: candidate_plan, presentation_policy: presentation_policy).and_return(accepted)
+    )
     expect(presenter).to receive(:call).once.with(
       packet: evidence, generator: generator, customer_request: context.trigger,
       message_history: context.history, fact_verifier: fact_verifier
@@ -108,6 +123,17 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
     expect(result.to_h.keys).to eq(%i[status reason text])
     expect(result.to_h.to_s).not_to include('facts', 'evidence_packet', 'candidate_plan')
     expect(context_builder).to have_received(:build).once
+  end
+
+  it 'projects the presentation policy exactly once and threads it only into the authority execution' do
+    accepted = authority_result
+    allow(authority_execution).to receive(:call).and_return(accepted)
+    allow(presenter).to receive(:call).and_return(Struct.new(:ok?, :text, :reason).new(true, 'ok', :accepted))
+
+    execution.call
+
+    expect(policy_projector).to have_received(:call).once
+    expect(authority_execution).to have_received(:call).with(candidate_plan: candidate_plan, presentation_policy: presentation_policy)
   end
 
   it 'fails before Model 1 when the complete enabled scenario seam overflows or is empty' do
@@ -139,7 +165,13 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
       Object.new,
       authority_result(evidence_packet: packet(version: 'marine_evidence_v1')),
       authority_result(evidence_packet: packet(goals: %w[answer_price handoff])),
-      authority_result(evidence_packet: packet(facts: { price: {}, stock: {} }))
+      authority_result(evidence_packet: packet(facts: { price: {}, stock: {} })),
+      # Crossed versions fail closed: a v2 answer_price_range (no policy) and a v3 answer_price (with policy).
+      authority_result(intents: %w[price_range],
+                       evidence_packet: packet(version: 'marine_evidence_v2', goals: %w[answer_price_range],
+                                               facts: { price_range: { display: 'r' } })),
+      authority_result(evidence_packet: packet(version: 'marine_evidence_v3', goals: %w[answer_price],
+                                               facts: { price: { display: 'x' } }, presentation_policy: presentation_policy))
     ]
 
     rejected.each do |authority_outcome|
@@ -213,9 +245,10 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
   end
 
   describe 'Phase 5 — the same single attempt delivers an exact-shape price_range / stock target' do
-    it 'delivers a price_range target only for the exact answer_price_range => [:price_range] shape' do
+    it 'delivers a price_range target only for the exact v3 answer_price_range => [:price_range] shape with a valid policy' do
       accepted = authority_result(intents: %w[price_range],
-                                  evidence_packet: packet(goals: %w[answer_price_range], facts: { price_range: { display: 'r' } }))
+                                  evidence_packet: packet(version: 'marine_evidence_v3', goals: %w[answer_price_range],
+                                                          facts: { price_range: { display: 'r' } }, presentation_policy: presentation_policy))
       allow(authority_execution).to receive(:call).and_return(accepted)
       allow(presenter).to receive(:call).and_return(Struct.new(:ok?, :text, :reason).new(true, 'Kisaran harga BD: Rp 10.000–12.500 per yard.',
                                                                                          :accepted))
@@ -239,6 +272,22 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
       allow(authority_execution).to receive(:call).and_return(mismatch)
 
       expect(execution.call).not_to be_deliverable
+      expect(presenter).not_to have_received(:call)
+    end
+
+    # Defense in depth — the delivery seam's own valid_presentation_policy? gate rejects a v3 range packet
+    # carrying a bad-enum policy value BEFORE the presenter, so a malformed policy never reaches Model 2.
+    it 'rejects (fallback, presenter untouched) a v3 range packet whose presentation_policy has a bad enum value' do
+      bad_policy = authority_result(
+        intents: %w[price_range],
+        evidence_packet: packet(version: 'marine_evidence_v3', goals: %w[answer_price_range],
+                                facts: { price_range: { display: 'r' } },
+                                presentation_policy: { tone: 'sarcastic', verbosity: 'concise', range_followup_mode: 'ask_variant_code' })
+      )
+      allow(authority_execution).to receive(:call).and_return(bad_policy)
+
+      result = execution.call
+      expect(result).to have_attributes(status: :fallback, reason: :invalid_packet)
       expect(presenter).not_to have_received(:call)
     end
   end

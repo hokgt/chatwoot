@@ -34,12 +34,16 @@ class Marine::Backend::AuthorityShadowExecution
   # The SAME confidence acceptance the controlled cutover uses — reused so the two can never drift.
   ACCEPT_CONFIDENCE = Marine::Decision::CutoverScenarioSelector::ACCEPT_CONFIDENCE
 
-  def initialize(account:, assistant:, conversation:, message:, candidate_plan:)
+  # presentation_policy: OPTIONAL plain closed policy data from the customer composition root. nil in the
+  # default-OFF Decision shadow (so shadow packets stay v2); the customer path passes the projected
+  # policy, which the coordinator threads into the price_range answer ONLY.
+  def initialize(account:, assistant:, conversation:, message:, candidate_plan:, presentation_policy: nil) # rubocop:disable Metrics/ParameterLists -- record boundary plus the reused plan and threaded policy
     @account = account
     @assistant = assistant
     @conversation = conversation
     @message = message
     @candidate_plan = candidate_plan
+    @presentation_policy = presentation_policy
   end
 
   # The bounded, deep-frozen AuthorityCoordinator::Result (§8), or nil when the records do not belong
@@ -57,7 +61,8 @@ class Marine::Backend::AuthorityShadowExecution
       candidate_plan: @candidate_plan,
       scenario_key: "scenario_#{scenario.id}",
       trigger: context.trigger, history: context.history, phase: context.phase,
-      flow_state: flow_state, configured_language: configured_language
+      flow_state: flow_state, configured_language: configured_language,
+      presentation_policy: @presentation_policy
     )
   end
 
