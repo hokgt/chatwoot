@@ -452,4 +452,100 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
       expect(result.intents).to be_frozen
     end
   end
+
+  # price_range proposed-state-transition seam. ONLY an accepted price_range answer carries a
+  # non-handoff transition (operation :start/:update + the resolver family identity); an ambiguous
+  # price_range family carries the SAME closed envelope with handoff_required:true / identity nil and
+  # no state write. Every other capability (price / stock / listing / information) carries NO
+  # transition, so an existing family state is never overwritten.
+  describe 'price_range proposed_state_transition (state_transition_v1)' do
+    before do
+      allow(packet_builder).to receive(:build).and_return(
+        { response_goals: %w[answer_price_range], evidence_version: 'marine_evidence_v3' }.freeze
+      )
+    end
+
+    def price_range_result(flow_state: nil, status: :exact_family, family_code: 'FAM1', child_code: nil)
+      allow(resolver).to receive(:call).and_return(resolved(status: status, family_code: family_code, child_code: child_code))
+      call(candidate_plan: plan(intents: %w[price_range]), flow_state: flow_state)
+    end
+
+    it 'attaches a closed, deep-frozen :start transition carrying the resolver family identity for a fresh flow' do
+      transition = price_range_result(flow_state: nil).proposed_state_transition
+
+      expect(transition).to eq(
+        schema_version: 'state_transition_v1', operation: :start, capability: 'price_range',
+        handoff_required: false, authoritative_identity: { family_code: 'FAM1', source: 'marine_catalog' }
+      )
+      expect(transition.keys).to contain_exactly(
+        :schema_version, :operation, :capability, :handoff_required, :authoritative_identity
+      )
+      expect(transition).to be_frozen
+      expect(transition[:authoritative_identity]).to be_frozen
+      expect(transition[:authoritative_identity][:family_code]).to be_frozen
+    end
+
+    it 'sources the identity from the resolver family, never the candidate-plan slot text' do
+      transition = price_range_result.proposed_state_transition
+
+      # the plan carried raw_candidate 'JEV-SUGGESTED'; the identity is the resolver family only.
+      expect(transition[:authoritative_identity][:family_code]).to eq('FAM1')
+    end
+
+    it 'uses :update when the SAME family is already active' do
+      result = price_range_result(flow_state: { 'status' => 'active', 'validated_family' => 'FAM1' })
+      expect(result.proposed_state_transition[:operation]).to eq(:update)
+    end
+
+    it 'uses :start on a family switch (active flow, DIFFERENT family)' do
+      result = price_range_result(flow_state: { 'status' => 'active', 'validated_family' => 'OTHER' })
+      expect(result.proposed_state_transition[:operation]).to eq(:start)
+    end
+
+    it 'uses :start when the active flow has expired' do
+      result = price_range_result(flow_state: { 'status' => 'expired', 'validated_family' => 'FAM1' })
+      expect(result.proposed_state_transition[:operation]).to eq(:start)
+    end
+
+    it 'attaches the SAME closed envelope with handoff_required:true and nil identity on an ambiguous family' do
+      allow(resolver).to receive(:call).and_return(resolved(status: :ambiguous, source: :none, reason: :family_ambiguous))
+
+      transition = call(candidate_plan: plan(intents: %w[price_range])).proposed_state_transition
+
+      expect(transition).to eq(
+        schema_version: 'state_transition_v1', operation: :start, capability: 'price_range',
+        handoff_required: true, authoritative_identity: nil
+      )
+      expect(transition).to be_frozen
+    end
+
+    it 'does not fabricate a family from an ambiguous match (identity stays nil)' do
+      allow(resolver).to receive(:call).and_return(resolved(status: :ambiguous, source: :none, reason: :variant_ambiguous))
+
+      expect(call(candidate_plan: plan(intents: %w[price_range])).proposed_state_transition[:authoritative_identity]).to be_nil
+    end
+
+    it 'attaches NO transition when no exact catalog family is found (legacy preserved)' do
+      allow(resolver).to receive(:call).and_return(resolved(status: :no_catalog_match, source: :none,
+                                                            family_code: nil, family_name: nil,
+                                                            reason: :candidate_context_insufficient))
+      result = call(candidate_plan: plan(intents: %w[price_range]))
+
+      expect(result.outcome_type).to eq(:legacy_preserved)
+      expect(result.proposed_state_transition).to be_nil
+    end
+
+    it 'attaches NO transition for a stock identity turn' do
+      allow(resolver).to receive(:call).and_return(resolved(status: :exact_child, child_code: 'FAM1-CHILD'))
+      allow(packet_builder).to receive(:build).and_return({ response_goals: %w[answer_stock], evidence_version: 'marine_evidence_v2' }.freeze)
+
+      expect(call(candidate_plan: plan(intents: %w[stock])).proposed_state_transition).to be_nil
+    end
+
+    it 'attaches NO transition for a product_listing turn (an existing family state stays untouched)' do
+      allow(packet_builder).to receive(:build).and_return({ response_goals: %w[answer_product_listing], evidence_version: 'v2' }.freeze)
+
+      expect(call(candidate_plan: plan(intents: %w[product_listing])).proposed_state_transition).to be_nil
+    end
+  end
 end

@@ -142,15 +142,30 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     result = Marine::Backend::ExactPriceCustomerExecution.new(
       account: @conversation.account, assistant: @assistant, conversation: @conversation, message: message
     ).call
+    # A price_range catalog ambiguity routes the existing safe handoff (no renderer, no state write);
+    # it is NOT nil, so the legacy service is NOT run for the superseded ambiguous turn.
+    return backend_handoff_response if result.handoff?
     return nil unless result.deliverable?
 
-    {
+    response = {
       'response' => result.text,
       'source_type' => 'marine_backend_evidence_v2',
       'orchestration_path' => 'backend_evidence_target'
     }
+    # An accepted price_range target carries the closed proposed_state_transition that finalize applies
+    # atomically with the reply; every other capability carries none (its state is left untouched).
+    response['proposed_state_transition'] = result.transition if result.transition
+    response
   rescue StandardError
     nil
+  end
+
+  # The safe handoff response for a Backend ambiguity envelope. It carries NO product_plan (so no
+  # product renderer/wording runs) and NO custom message, so finalize routes the existing
+  # HandoffService with its generic, fact-free message — no visible text is derived from the ambiguity.
+  def backend_handoff_response
+    { 'action' => 'handoff', 'action_reason' => 'product_family_ambiguous',
+      'orchestration_path' => 'backend_evidence_target' }
   end
 
   # No message_history is passed: the legacy trigger-bound Agent::Runner derives canonical prior
@@ -187,6 +202,9 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
         process_handoff(@response['action_reason'])
         complete_claim
       else
+        # A Backend Evidence target may carry a closed price_range state transition: apply it (family
+        # state) BEFORE the reply, inside this transaction, so a create failure rolls the write back too.
+        apply_state_transition(@response['proposed_state_transition'])
         create_marine_reply
         increment_marine_usage
         complete_claim
@@ -349,6 +367,29 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     case state[:operation]
     when :start then store.start!(state[:changes])
     when :update then store.update!(state[:changes])
+    end
+  end
+
+  # Apply a Backend Evidence price_range proposed-state-transition inside the finalize transaction. The
+  # envelope was already validated at the ExactPriceCustomerExecution consumer boundary; this re-guards
+  # the minimum it needs (a start/update operation + a nonblank authoritative family_code) and writes
+  # ONLY the authoritative family — never a price/variant/quantity. A :start clears stale
+  # variant/catalog state (fresh flow); an :update refines the same active family (version + 1). A
+  # missing/malformed envelope writes nothing (fail closed). Replay never reaches here (the claim stops
+  # a duplicate before finalize), so the state version is never bumped twice.
+  def apply_state_transition(transition)
+    return unless transition.is_a?(Hash)
+
+    identity = transition[:authoritative_identity]
+    return unless identity.is_a?(Hash)
+
+    family = identity[:family_code].to_s.strip
+    return if family.empty?
+
+    store = Marine::Catalog::ProductFlowStateStore.new(conversation: @conversation)
+    case transition[:operation]
+    when :start then store.start!('validated_family' => family)
+    when :update then store.update!('validated_family' => family)
     end
   end
 

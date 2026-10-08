@@ -174,12 +174,21 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         value.freeze
       end
 
-      def authority_result(packet)
+      def authority_result(packet, transition: price_range_state_transition)
         Marine::Backend::AuthorityCoordinator::Result.new(
           outcome_type: Marine::Backend::AuthorityCoordinator::OUTCOME_EVIDENCE_PACKET,
           reason: Marine::Backend::AuthorityCoordinator::REASON_ACCEPTED, scenario_key: 'scenario_8',
-          intents: %w[price_range].freeze, source: :catalog, evidence_packet: packet
+          intents: %w[price_range].freeze, source: :catalog, evidence_packet: packet,
+          proposed_state_transition: transition
         ).freeze
+      end
+
+      # The deep-frozen price_range proposed-state-transition the coordinator emits for an accepted
+      # family range. (frozen_string_literal makes every String literal here frozen, so the graph is
+      # deeply frozen.)
+      def price_range_state_transition(operation: :start, family_code: 'BD')
+        { schema_version: 'state_transition_v1', operation: operation, capability: 'price_range',
+          handoff_required: false, authoritative_identity: { family_code: family_code, source: 'marine_catalog' }.freeze }.freeze
       end
 
       # Construct the REAL customer execution with injected synthetic boundaries but the REAL presenter
@@ -205,7 +214,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         MarineInbox.create!(inbox: conversation.inbox, marine_assistant: assistant)
       end
 
-      it 'delivers ONE deterministic range reply, completes the claim, increments usage once, and never builds the legacy service' do
+      it 'delivers ONE range reply, persists the family state, completes the claim, increments usage once, and never builds the legacy service' do
         wire_real_checkpoint_b(synthetic_v3_range_packet, generator: ->(**) {}) # generation fails -> render from Evidence
         expect(Marine::Llm::AssistantChatService).not_to receive(:new)
 
@@ -219,6 +228,11 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         expect(conversation.messages.outgoing.count).to eq(1)
         expect(usage_count).to eq(1)
         expect(claim_status).to eq('completed')
+        # The Turn-1 authoritative family state is now persisted atomically with the reply.
+        state = product_state
+        expect(state['validated_family']).to eq('BD')
+        expect(state['status']).to eq('active')
+        expect(state['version']).to eq(1)
       end
 
       it 'is idempotent: a duplicate replay of the same incoming produces no second output and no double usage' do
@@ -230,6 +244,8 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         expect(conversation.messages.outgoing.count).to eq(1)
         expect(usage_count).to eq(1)
         expect(claim_status).to eq('completed')
+        # The replay is stopped at the claim BEFORE finalize, so the state version is never bumped.
+        expect(product_state['version']).to eq(1)
       end
 
       it 'discards a semantically-rejected candidate and still delivers the deterministic range Evidence reply' do
@@ -260,6 +276,119 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
           assistant: assistant, conversation: conversation, source: incoming
         ).once
         expect(claim_status).to eq('completed')
+      end
+    end
+
+    # --- price_range proposed-state-transition finalization (Group C) ---------------------------
+    #
+    # The accepted price_range target now carries a closed proposed_state_transition the job applies
+    # inside the finalize transaction (after the eligibility/staleness gates, before create). An
+    # ambiguity handoff envelope routes the existing safe handoff and writes no state; a missing
+    # transition declines the target so legacy runs; a create failure rolls the state write back.
+    describe 'price_range state transition at finalize' do
+      let(:range_text) { 'Kisaran harga BD mulai Rp 10.000 sampai Rp 12.500 per yard.' }
+
+      def deliverable_transition_result(transition)
+        Marine::Backend::ExactPriceCustomerExecution::Result.new(
+          status: :deliverable, reason: :accepted, text: range_text, transition: transition
+        ).freeze
+      end
+
+      def transition(operation: :start, family_code: 'BD', handoff_required: false)
+        identity = handoff_required ? nil : { family_code: family_code, source: 'marine_catalog' }.freeze
+        { schema_version: 'state_transition_v1', operation: operation, capability: 'price_range',
+          handoff_required: handoff_required, authoritative_identity: identity }.freeze
+      end
+
+      it 'applies a :start transition (fresh family state) atomically with the delivered reply' do
+        allow(exact_price_attempt).to receive(:call).and_return(deliverable_transition_result(transition(operation: :start)))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        reply = conversation.messages.outgoing.last
+        expect(reply.content).to eq(range_text)
+        expect(reply.additional_attributes['source_type']).to eq('marine_backend_evidence_v2')
+        state = product_state
+        expect(state['validated_family']).to eq('BD')
+        expect(state['status']).to eq('active')
+        expect(usage_count).to eq(1)
+        expect(claim_status).to eq('completed')
+      end
+
+      it 'applies an :update transition (bumping version) onto an existing same-family flow' do
+        Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload).start!('validated_family' => 'BD', 'current_intent' => 'price')
+        allow(exact_price_attempt).to receive(:call).and_return(deliverable_transition_result(transition(operation: :update)))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        state = product_state
+        expect(state['validated_family']).to eq('BD')
+        expect(state['version']).to eq(2)
+      end
+
+      it 'persists ONLY the transition family (a forged plan family can never influence it)' do
+        allow(exact_price_attempt).to receive(:call).and_return(deliverable_transition_result(transition(family_code: 'AUTHORITATIVE')))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(product_state['validated_family']).to eq('AUTHORITATIVE')
+      end
+
+      it 'rolls the state write back and leaves the claim retryable when the reply create fails' do
+        allow(exact_price_attempt).to receive(:call).and_return(deliverable_transition_result(transition))
+        allow_any_instance_of(described_class).to receive(:create_marine_reply).and_raise(ActiveRecord::RecordInvalid)
+
+        expect { described_class.perform_now(conversation, assistant, incoming.id) }.not_to raise_error
+        expect(conversation.messages.outgoing.count).to eq(0)
+        expect(product_state).to be_nil
+        expect(usage_count).to eq(0)
+        expect(claim_status).to eq('processing')
+      end
+
+      it 'writes NO state and produces no output when a newer relevant incoming makes the job stale' do
+        trigger = incoming
+        create(:message, conversation: conversation, message_type: :incoming, content: 'actually never mind')
+        allow(exact_price_attempt).to receive(:call).and_return(deliverable_transition_result(transition))
+
+        described_class.perform_now(conversation, assistant, trigger.id)
+
+        expect(conversation.messages.outgoing.count).to eq(0)
+        expect(product_state).to be_nil
+        expect(claim_status).to eq('completed')
+      end
+
+      it 'routes an ambiguity handoff envelope through the safe handoff, writing NO state and skipping any product renderer' do
+        handoff = Marine::Backend::ExactPriceCustomerExecution::Result.new(
+          status: :handoff, reason: :handoff_required, text: nil, transition: transition(handoff_required: true)
+        ).freeze
+        allow(exact_price_attempt).to receive(:call).and_return(handoff)
+        service = instance_double(Marine::Circuit::HandoffService, perform: nil)
+        expect(Marine::Circuit::HandoffService).to receive(:new)
+          .with(hash_including(conversation: conversation, assistant: assistant, reason: 'product_family_ambiguous', message: nil))
+          .and_return(service)
+        expect(Marine::Catalog::PriceRangeReplyComposer).not_to receive(:new)
+        expect(Marine::Llm::AssistantChatService).not_to receive(:new)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.where(private: false)).to be_empty
+        expect(product_state).to be_nil
+        expect(claim_status).to eq('completed')
+      end
+
+      it 'runs legacy (writing no state) when the target declines (missing/invalid transition fell closed to fallback)' do
+        allow(exact_price_attempt).to receive(:call).and_return(
+          Marine::Backend::ExactPriceCustomerExecution::Result.new(status: :fallback, reason: :transition_required, text: nil, transition: nil).freeze
+        )
+        stub_reasoning('response' => 'legacy range reply', 'action' => 'reply')
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq('legacy range reply')
+        expect(product_state).to be_nil
+        expect(Marine::Llm::AssistantChatService).to have_received(:new).with(
+          assistant: assistant, conversation: conversation, source: incoming
+        ).once
       end
     end
 

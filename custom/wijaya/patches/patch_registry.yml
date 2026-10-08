@@ -1276,6 +1276,15 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/candidate_plan_to_product_intent_adapter.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/product_execution_planner.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/product_state_transition.rb
+      # price_range proposed-state-transition seam — the pure StateTransitionAdapter maps the existing
+      # (previously-isolated) ProductStateTransition operation onto the closed finalize operation enum
+      # (:product_replacement -> :start, :variant_replacement -> :update, else nil fail-closed). The
+      # AuthorityCoordinator uses it to attach a closed, deep-frozen state_transition_v1 envelope to an
+      # accepted price_range answer (operation + resolver family identity) / an ambiguous price_range
+      # family (handoff_required, nil identity); ExactPriceCustomerExecution revalidates + surfaces it;
+      # ResponseBuilderJob applies it inside the finalize transaction so a Turn-1 range reply persists
+      # the authoritative family, enabling a Turn-2 bare child without the family repeated.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/state_transition_adapter.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_packet_builder.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_prompt_builder.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_packet_presenter.rb
@@ -1887,6 +1896,13 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/backend/candidate_plan_to_product_intent_adapter_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/product_execution_planner_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/product_state_transition_spec.rb
+      # price_range proposed-state-transition seam specs: the pure adapter mapping/fail-closed; the
+      # coordinator envelope (closed/deep-frozen, resolver-sourced identity, :start/:update derivation,
+      # ambiguity handoff); and a non-vacuous Turn-1 -> Turn-2 continuity proof through the REAL resolver
+      # + ProductFlowStateStore. (Consumer-boundary revalidation + finalize application live in the
+      # exact_price_customer_execution and response_builder_job specs.)
+      - spec/custom/wijaya/batteries/marine_ai/backend/state_transition_adapter_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/price_range_state_transition_continuity_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/evidence_packet_builder_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/evidence_prompt_builder_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/evidence_packet_presenter_spec.rb

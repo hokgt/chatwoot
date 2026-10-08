@@ -36,6 +36,7 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
   }.freeze
 
   STATUS_DELIVERABLE = :deliverable
+  STATUS_HANDOFF = :handoff
   STATUS_FALLBACK = :fallback
 
   REASON_ACCEPTED = :accepted
@@ -44,10 +45,25 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
   REASON_AUTHORITY_REJECTED = :authority_rejected
   REASON_INVALID_PACKET = :invalid_packet
   REASON_PRESENTATION_REJECTED = :presentation_rejected
+  REASON_TRANSITION_REQUIRED = :transition_required
+  REASON_HANDOFF_REQUIRED = :handoff_required
   REASON_INTERNAL_ERROR = :internal_error
 
-  Result = Struct.new(:status, :reason, :text, keyword_init: true) do
+  # The closed price_range proposed-state-transition contract revalidated at THIS consumer boundary
+  # (independently of the AuthorityCoordinator that produced it): a forged, shallow-frozen, or
+  # unknown-key envelope is rejected exactly like a missing one, so a tampered transition can never
+  # drive a delivery or a state write. family_code is a nonblank, bounded (<= 120 byte) catalog String.
+  STATE_TRANSITION_SCHEMA_VERSION = 'state_transition_v1'.freeze
+  STATE_TRANSITION_CAPABILITY = 'price_range'.freeze
+  STATE_TRANSITION_SOURCE = 'marine_catalog'.freeze
+  STATE_TRANSITION_KEYS = %i[schema_version operation capability handoff_required authoritative_identity].freeze
+  STATE_TRANSITION_IDENTITY_KEYS = %i[family_code source].freeze
+  STATE_TRANSITION_OPERATIONS = %i[start update].freeze
+  STATE_TRANSITION_FAMILY_CODE_MAX_BYTES = 120
+
+  Result = Struct.new(:status, :reason, :text, :transition, keyword_init: true) do
     def deliverable? = status == STATUS_DELIVERABLE
+    def handoff? = status == STATUS_HANDOFF
   end
 
   def initialize(account:, assistant:, conversation:, message:, # rubocop:disable Metrics/ParameterLists -- record boundary plus injectable side-effect-free collaborators
@@ -84,15 +100,26 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
   def execute(context, scenarios)
     candidate_plan = runner.call(message: context.trigger, scenarios: scenarios, context: context.history)
     authority_result = execute_authority(candidate_plan, presentation_policy)
+    transition = validated_transition(authority_result)
+    # A price_range catalog ambiguity surfaces a dedicated handoff Result (the presenter/renderer is
+    # never reached, so no visible text is derived from the ambiguity details).
+    return handoff(transition) if transition && transition[:handoff_required] == true
     return fallback(REASON_AUTHORITY_REJECTED) unless accepted_authority_result?(authority_result)
 
-    packet = authority_result.evidence_packet
-    return fallback(REASON_INVALID_PACKET) unless target_packet?(packet)
-
-    present(packet, context)
+    deliver_target(authority_result.evidence_packet, context, transition)
   end
 
-  def present(packet, context)
+  def deliver_target(packet, context, transition)
+    return fallback(REASON_INVALID_PACKET) unless target_packet?(packet)
+    # A price_range delivery MUST carry a valid non-handoff transition (the authoritative family state
+    # it persists); without one it fails closed so the trigger-bound job runs legacy reasoning OUTSIDE
+    # the lock rather than delivering a stateless range reply. Every other capability needs none.
+    return fallback(REASON_TRANSITION_REQUIRED) if range_goal?(packet) && !deliverable_transition?(transition)
+
+    present(packet, context, deliverable_transition?(transition) ? transition : nil)
+  end
+
+  def present(packet, context, transition)
     presentation = presenter.call(
       packet: packet,
       generator: generator,
@@ -102,7 +129,51 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
     )
     return fallback(REASON_PRESENTATION_REJECTED) unless deliverable_presentation?(presentation)
 
-    deliverable(presentation.text)
+    deliverable(presentation.text, transition)
+  end
+
+  def range_goal?(packet)
+    packet[:response_goals].first == RANGE_GOAL
+  end
+
+  def deliverable_transition?(transition)
+    !transition.nil? && transition[:handoff_required] == false
+  end
+
+  # Revalidate the AuthorityCoordinator's proposed_state_transition against the closed contract at this
+  # consumer boundary: a non-Hash, shallow-frozen, unknown/extra-key, wrong-schema/capability/operation,
+  # or malformed-identity envelope is rejected (nil), so only a well-formed transition is ever surfaced.
+  def validated_transition(authority_result)
+    raw = authority_result.respond_to?(:proposed_state_transition) ? authority_result.proposed_state_transition : nil
+    valid_transition?(raw) ? raw : nil
+  end
+
+  def valid_transition?(transition)
+    return false unless transition.is_a?(Hash) && deeply_frozen?(transition)
+    return false unless transition.keys.sort == STATE_TRANSITION_KEYS.sort
+    return false unless transition[:schema_version] == STATE_TRANSITION_SCHEMA_VERSION
+    return false unless transition[:capability] == STATE_TRANSITION_CAPABILITY
+    return false unless STATE_TRANSITION_OPERATIONS.include?(transition[:operation])
+
+    valid_transition_identity?(transition)
+  end
+
+  # authoritative_identity MAY be nil IFF handoff_required is true; when false it MUST be the exact closed
+  # { family_code:, source: } pair with a nonblank bounded family_code and the exact marine_catalog source.
+  def valid_transition_identity?(transition)
+    case transition[:handoff_required]
+    when true then transition[:authoritative_identity].nil?
+    when false then valid_identity?(transition[:authoritative_identity])
+    else false
+    end
+  end
+
+  def valid_identity?(identity)
+    identity.is_a?(Hash) && deeply_frozen?(identity) &&
+      identity.keys.sort == STATE_TRANSITION_IDENTITY_KEYS.sort &&
+      identity[:family_code].is_a?(String) && !identity[:family_code].strip.empty? &&
+      identity[:family_code].bytesize <= STATE_TRANSITION_FAMILY_CODE_MAX_BYTES &&
+      identity[:source] == STATE_TRANSITION_SOURCE
   end
 
   def valid_relationship?
@@ -242,11 +313,17 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
       result.text.is_a?(String) && !result.text.strip.empty?
   end
 
-  def deliverable(text)
-    Result.new(status: STATUS_DELIVERABLE, reason: REASON_ACCEPTED, text: text.dup.freeze).freeze
+  def deliverable(text, transition = nil)
+    Result.new(status: STATUS_DELIVERABLE, reason: REASON_ACCEPTED, text: text.dup.freeze, transition: transition).freeze
+  end
+
+  # A catalog-ambiguity handoff: carries the validated handoff envelope (so the job routes the existing
+  # safe handoff and writes no state) and NO text — the renderer/presenter was never reached.
+  def handoff(transition)
+    Result.new(status: STATUS_HANDOFF, reason: REASON_HANDOFF_REQUIRED, text: nil, transition: transition).freeze
   end
 
   def fallback(reason)
-    Result.new(status: STATUS_FALLBACK, reason: reason, text: nil).freeze
+    Result.new(status: STATUS_FALLBACK, reason: reason, text: nil, transition: nil).freeze
   end
 end

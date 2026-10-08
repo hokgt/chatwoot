@@ -67,11 +67,26 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
   end
 
   def authority_result(outcome: Coordinator::OUTCOME_EVIDENCE_PACKET,
-                       reason: Coordinator::REASON_ACCEPTED, intents: %w[price], evidence_packet: packet)
+                       reason: Coordinator::REASON_ACCEPTED, intents: %w[price], evidence_packet: packet,
+                       proposed_state_transition: nil)
     Coordinator::Result.new(
       outcome_type: outcome, reason: reason, scenario_key: 'scenario_5',
-      intents: deep_freeze(intents), source: :catalog, evidence_packet: evidence_packet
+      intents: deep_freeze(intents), source: :catalog, evidence_packet: evidence_packet,
+      proposed_state_transition: proposed_state_transition
     ).freeze
+  end
+
+  # A valid, deep-frozen price_range proposed-state-transition envelope (the shape the AuthorityCoordinator
+  # emits), used to exercise the consumer-boundary revalidation and threading.
+  def price_range_transition(operation: :start, family_code: 'BD', handoff_required: false)
+    identity = handoff_required ? nil : { family_code: family_code, source: 'marine_catalog' }
+    deep_freeze(schema_version: 'state_transition_v1', operation: operation, capability: 'price_range',
+                handoff_required: handoff_required, authoritative_identity: identity)
+  end
+
+  def v3_range_packet
+    packet(version: 'marine_evidence_v3', goals: %w[answer_price_range],
+           facts: { price_range: { display: 'r' } }, presentation_policy: presentation_policy)
   end
 
   before do
@@ -120,7 +135,7 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
     expect(result).to have_attributes(status: :deliverable, reason: :accepted, text: wording.text)
     expect(result).to be_frozen
     expect(result.text).to be_frozen
-    expect(result.to_h.keys).to eq(%i[status reason text])
+    expect(result.to_h.keys).to eq(%i[status reason text transition])
     expect(result.to_h.to_s).not_to include('facts', 'evidence_packet', 'candidate_plan')
     expect(context_builder).to have_received(:build).once
   end
@@ -192,7 +207,7 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
       result = execution.call
 
       expect(result).to have_attributes(status: :fallback, reason: :presentation_rejected, text: nil)
-      expect(result.to_h.keys).to eq(%i[status reason text])
+      expect(result.to_h.keys).to eq(%i[status reason text transition])
     end
   end
 
@@ -245,10 +260,9 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
   end
 
   describe 'Phase 5 — the same single attempt delivers an exact-shape price_range / stock target' do
-    it 'delivers a price_range target only for the exact v3 answer_price_range => [:price_range] shape with a valid policy' do
-      accepted = authority_result(intents: %w[price_range],
-                                  evidence_packet: packet(version: 'marine_evidence_v3', goals: %w[answer_price_range],
-                                                          facts: { price_range: { display: 'r' } }, presentation_policy: presentation_policy))
+    it 'delivers a price_range target (carrying its transition) for the exact v3 shape with a valid policy AND a valid transition' do
+      transition = price_range_transition(operation: :start, family_code: 'BD')
+      accepted = authority_result(intents: %w[price_range], evidence_packet: v3_range_packet, proposed_state_transition: transition)
       allow(authority_execution).to receive(:call).and_return(accepted)
       allow(presenter).to receive(:call).and_return(Struct.new(:ok?, :text, :reason).new(true, 'Kisaran harga BD: Rp 10.000–12.500 per yard.',
                                                                                          :accepted))
@@ -256,6 +270,65 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
       result = execution.call
       expect(result).to be_deliverable
       expect(result.text).to eq('Kisaran harga BD: Rp 10.000–12.500 per yard.')
+      # The validated non-handoff transition is threaded through so the job can persist family state.
+      expect(result.transition).to eq(transition)
+    end
+
+    # price_range delivery REQUIRES a valid non-handoff transition: a missing one fails closed to the
+    # fallback (the trigger-bound job then runs legacy reasoning OUTSIDE the lock), so a range reply is
+    # never delivered without the authoritative family state it must persist.
+    it 'fails closed (fallback, presenter untouched) for a price_range target with NO transition' do
+      accepted = authority_result(intents: %w[price_range], evidence_packet: v3_range_packet, proposed_state_transition: nil)
+      allow(authority_execution).to receive(:call).and_return(accepted)
+
+      result = execution.call
+      expect(result).to have_attributes(status: :fallback, reason: :transition_required, text: nil)
+      expect(presenter).not_to have_received(:call)
+    end
+
+    # Consumer-boundary revalidation: a forged/unknown-shape or shallow-frozen transition is rejected
+    # exactly like a missing one, so a tampered envelope can never drive a delivery or a state write.
+    it 'rejects a price_range target whose transition is shallow-frozen or carries unknown/forbidden keys' do
+      shallow = { schema_version: 'state_transition_v1', operation: :start, capability: 'price_range',
+                  handoff_required: false, authoritative_identity: { family_code: 'BD', source: 'marine_catalog' } }.freeze # inner hashes NOT frozen
+      forbidden_keys = deep_freeze(schema_version: 'state_transition_v1', operation: :start, capability: 'price_range',
+                                   handoff_required: false, authoritative_identity: { family_code: 'BD', source: 'marine_catalog' },
+                                   price: '12500')
+      bad_source = deep_freeze(schema_version: 'state_transition_v1', operation: :start, capability: 'price_range',
+                               handoff_required: false, authoritative_identity: { family_code: 'BD', source: 'forged' })
+      [shallow, forbidden_keys, bad_source].each do |transition|
+        accepted = authority_result(intents: %w[price_range], evidence_packet: v3_range_packet, proposed_state_transition: transition)
+        allow(authority_execution).to receive(:call).and_return(accepted)
+
+        expect(execution.call).to have_attributes(status: :fallback, reason: :transition_required)
+      end
+      expect(presenter).not_to have_received(:call)
+    end
+
+    # Catalog ambiguity: the coordinator attaches a handoff_required:true envelope (identity nil). The
+    # execution surfaces a dedicated :handoff Result carrying it and NEVER touches the presenter/renderer,
+    # so no visible text is derived from the ambiguity.
+    it 'surfaces a :handoff Result (presenter untouched) for an ambiguous-family handoff transition' do
+      transition = price_range_transition(handoff_required: true)
+      ambiguous = authority_result(outcome: Coordinator::OUTCOME_CLARIFY, reason: Coordinator::REASON_FAMILY_AMBIGUOUS,
+                                   intents: %w[price_range], evidence_packet: nil, proposed_state_transition: transition)
+      allow(authority_execution).to receive(:call).and_return(ambiguous)
+
+      result = execution.call
+      expect(result).to have_attributes(status: :handoff, text: nil)
+      expect(result.handoff?).to be(true)
+      expect(result.transition).to eq(transition)
+      expect(presenter).not_to have_received(:call)
+    end
+
+    it 'a non-price_range (stock) deliverable carries NO transition (state untouched for other capabilities)' do
+      accepted = authority_result(intents: %w[stock], evidence_packet: packet(goals: %w[answer_stock], facts: { stock: { status: 'available' } }))
+      allow(authority_execution).to receive(:call).and_return(accepted)
+      allow(presenter).to receive(:call).and_return(Struct.new(:ok?, :text, :reason).new(true, 'BD-4 tersedia.', :accepted))
+
+      result = execution.call
+      expect(result).to be_deliverable
+      expect(result.transition).to be_nil
     end
 
     it 'delivers a stock target only for the exact answer_stock => [:stock] shape' do
@@ -407,7 +480,9 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
     end
 
     def deliver_through_real_presenter(packet, generator:, fact_verifier:)
-      allow(authority_execution).to receive(:call).and_return(authority_result(intents: %w[price_range], evidence_packet: packet))
+      allow(authority_execution).to receive(:call).and_return(
+        authority_result(intents: %w[price_range], evidence_packet: packet, proposed_state_transition: price_range_transition(family_code: 'BD'))
+      )
       described_class.new(
         account: account, assistant: assistant, conversation: conversation, message: message,
         decision_runner: decision_runner, scenario_adapter: scenario_adapter,

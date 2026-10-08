@@ -70,6 +70,19 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   IDENTITY_ANSWER_GOAL = { 'price_range' => 'answer_price_range', 'stock' => 'answer_stock' }.freeze
   IDENTITY_UNAVAILABLE_REASON = { 'price_range' => REASON_RANGE_UNAVAILABLE, 'stock' => REASON_STOCK_UNAVAILABLE }.freeze
 
+  # The price_range proposed-state-transition contract (state_transition_v1). ONLY an accepted price_range
+  # answer (operation + resolver family identity) or an ambiguous price_range family (handoff_required,
+  # nil identity) carries one; every other capability carries none, so an existing family state is never
+  # overwritten. The operation is derived from the resolved family vs. the read-only active flow snapshot
+  # through the existing ProductStateTransition helper (StateTransitionAdapter maps its operation) — never
+  # from the untrusted CandidatePlan or any Model 2 / renderer text.
+  PRICE_RANGE_INTENT = 'price_range'.freeze
+  STATE_TRANSITION_SCHEMA_VERSION = 'state_transition_v1'.freeze
+  STATE_TRANSITION_SOURCE = 'marine_catalog'.freeze
+  ProductStateTransition = Marine::Backend::ProductStateTransition
+  StateTransitionAdapter = Marine::Backend::StateTransitionAdapter
+  FLOW_STATUS_ACTIVE = Marine::Catalog::ProductFlowStateStore::STATUS_ACTIVE
+
   # Adapter fail-closed reason → coordinator (outcome_type, reason). unresolved_scenario /
   # scenario_mismatch / unsupported_schema / unsupported_intent are terminal stops; a
   # supported-but-non-executable intent set (phase_not_executable) preserves legacy BEFORE any fact
@@ -92,7 +105,7 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   # Closed, deep-frozen coordinator outcome. At most one of evidence_packet/price_range is present;
   # both are already deep-frozen by their builders.
   Result = Struct.new(:outcome_type, :reason, :scenario_key, :intents, :source,
-                      :evidence_packet, :price_range, keyword_init: true) do
+                      :evidence_packet, :price_range, :proposed_state_transition, keyword_init: true) do
     def evidence_packet? = !evidence_packet.nil?
     def price_range? = !price_range.nil?
   end
@@ -215,12 +228,15 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
     resolved = @resolver.call(trigger: trigger, flow_state: flow_state)
     case resolved.status
     when Resolver::STATUS_EXACT_FAMILY, Resolver::STATUS_EXACT_CHILD
-      identity_evidence(authorized, intent, resolved, trigger: trigger, history: history,
+      identity_evidence(authorized, intent, resolved, trigger: trigger, history: history, flow_state: flow_state,
                                                       configured_language: configured_language, presentation_policy: presentation_policy)
     when Resolver::STATUS_UNAVAILABLE
       terminal(OUTCOME_HANDOFF, REASON_CATALOG_UNAVAILABLE, authorized, resolved)
     when Resolver::STATUS_AMBIGUOUS
-      terminal(OUTCOME_CLARIFY, resolved.reason, authorized, resolved)
+      # A price_range ambiguity carries the SAME closed envelope with handoff_required:true / nil identity
+      # (no family is fabricated from the ambiguous matches); the stock ambiguity keeps its plain clarify.
+      terminal(OUTCOME_CLARIFY, resolved.reason, authorized, resolved,
+               proposed_state_transition: (intent == PRICE_RANGE_INTENT ? ambiguity_transition(flow_state) : nil))
     when Resolver::STATUS_NO_CATALOG_MATCH
       terminal(OUTCOME_LEGACY_PRESERVED, REASON_CANDIDATE_CONTEXT_INSUFFICIENT, authorized, resolved)
     else
@@ -231,26 +247,82 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   # Resolve the delivery language BEFORE the planner (nil fails closed factless), build the packet, and
   # classify its goals: the intent's answer goal is accepted; a planner handoff (range/stock
   # unavailable, or an insufficient identity) is a closed handoff; anything else is a clarify.
-  def identity_evidence(authorized, intent, resolved, trigger:, history:, configured_language:, presentation_policy: nil) # rubocop:disable Metrics/ParameterLists -- closed resolver inputs threaded verbatim
+  def identity_evidence(authorized, intent, resolved, trigger:, history:, flow_state:, configured_language:, presentation_policy: nil) # rubocop:disable Metrics/ParameterLists -- closed resolver inputs threaded verbatim
     language = resolve_language(resolved, trigger: trigger, history: history, configured_language: configured_language)
     return terminal(OUTCOME_HANDOFF, REASON_LANGUAGE_UNRESOLVED, authorized, resolved) if language.nil?
 
     packet = @packet_builder.build(evidence_input: @planner.call(
       product_intent: identity_planner_input(resolved, language, intent), intents: authorized.intents,
-      scenario: authorized.scenario, presentation_policy: (intent == 'price_range' ? presentation_policy : nil)
+      scenario: authorized.scenario, presentation_policy: (intent == PRICE_RANGE_INTENT ? presentation_policy : nil)
     ))
-    classify_identity_packet(packet, authorized, resolved, intent)
+    classify_identity_packet(packet, authorized, resolved, intent, flow_state)
   end
 
-  def classify_identity_packet(packet, authorized, resolved, intent)
+  def classify_identity_packet(packet, authorized, resolved, intent, flow_state)
     goals = packet[:response_goals]
     if goals.include?(IDENTITY_ANSWER_GOAL[intent])
-      terminal(OUTCOME_EVIDENCE_PACKET, REASON_ACCEPTED, authorized, resolved, evidence_packet: packet)
+      # ONLY an accepted price_range answer carries the family state transition it must persist.
+      transition = intent == PRICE_RANGE_INTENT ? price_range_transition(resolved, flow_state) : nil
+      terminal(OUTCOME_EVIDENCE_PACKET, REASON_ACCEPTED, authorized, resolved, evidence_packet: packet, proposed_state_transition: transition)
     elsif goals.include?('handoff')
       terminal(OUTCOME_HANDOFF, IDENTITY_UNAVAILABLE_REASON[intent], authorized, resolved, evidence_packet: packet)
     else
       terminal(OUTCOME_CLARIFY, clarify_reason(goals), authorized, resolved, evidence_packet: packet)
     end
+  end
+
+  # The closed, deep-frozen non-handoff price_range transition: operation derived from the resolved
+  # family vs. the read-only active flow via ProductStateTransition + StateTransitionAdapter, identity
+  # taken ONLY from the resolver family. A derivation failure (e.g. a blank family) fails closed to nil
+  # so a range reply without a persistable identity simply carries no transition.
+  def price_range_transition(resolved, flow_state)
+    operation = price_range_operation(resolved, flow_state)
+    return nil if operation.nil?
+
+    deep_freeze(
+      schema_version: STATE_TRANSITION_SCHEMA_VERSION,
+      operation: operation,
+      capability: PRICE_RANGE_INTENT,
+      handoff_required: false,
+      authoritative_identity: { family_code: resolved.family_code.to_s.dup, source: STATE_TRANSITION_SOURCE }
+    )
+  end
+
+  # The SAME closed envelope for a price_range catalog ambiguity: no family is fabricated (identity nil),
+  # handoff_required is true, and the operation is a nominal :start that is NEVER applied (the consumer
+  # hands off and writes nothing). Kept deterministic and closed only to satisfy the fixed envelope shape.
+  def ambiguity_transition(_flow_state)
+    deep_freeze(
+      schema_version: STATE_TRANSITION_SCHEMA_VERSION,
+      operation: :start,
+      capability: PRICE_RANGE_INTENT,
+      handoff_required: true,
+      authoritative_identity: nil
+    )
+  end
+
+  # Derive :start / :update from the authoritative resolver family vs. the read-only active flow snapshot
+  # (never Model 1 / plan text): the same active family is a variant_replacement (:update); a fresh,
+  # switched, or expired flow is a product_replacement (:start), which clears stale variant/catalog state.
+  # Routed through the existing ProductStateTransition helper so the operation enum can never drift.
+  def price_range_operation(resolved, flow_state)
+    kind = if same_active_family?(flow_state, resolved.family_code)
+             ProductStateTransition::VARIANT_REPLACEMENT
+           else
+             ProductStateTransition::PRODUCT_REPLACEMENT
+           end
+    transition = ProductStateTransition.new.call(existing: flow_state, kind: kind, set: { 'validated_family' => resolved.family_code })
+    StateTransitionAdapter.new.call(transition)
+  rescue StandardError
+    nil
+  end
+
+  def same_active_family?(flow_state, family_code)
+    return false unless flow_state.is_a?(Hash)
+
+    flow = flow_state.transform_keys(&:to_s)
+    family = family_code.to_s.strip
+    flow['status'] == FLOW_STATUS_ACTIVE && !family.empty? && flow['validated_family'].to_s.strip == family
   end
 
   # A FRESH planner input for a price_range / stock turn, sourced ONLY from the resolver / language
@@ -378,25 +450,36 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
           scenario_key: authorized.scenario[:key], intents: authorized.intents, source: SOURCE_NONE)
   end
 
-  def terminal(outcome_type, reason, authorized, resolved, evidence_packet: nil, price_range: nil) # rubocop:disable Metrics/ParameterLists -- flat outcome assembly from already-validated parts
+  def terminal(outcome_type, reason, authorized, resolved, evidence_packet: nil, price_range: nil, proposed_state_transition: nil) # rubocop:disable Metrics/ParameterLists -- flat outcome assembly from already-validated parts
     build(outcome_type: outcome_type, reason: reason, scenario_key: authorized.scenario[:key],
           intents: authorized.intents, source: resolved.source,
-          evidence_packet: evidence_packet, price_range: price_range)
+          evidence_packet: evidence_packet, price_range: price_range, proposed_state_transition: proposed_state_transition)
   end
 
   # Build a deep-frozen Result; the scenario key is a frozen copy and the intents array AND every
   # intent String are frozen copies (a frozen array of mutable strings is NOT deep-frozen), while the
-  # evidence packet and price range are already deep-frozen by their builders.
-  def build(outcome_type:, reason:, scenario_key:, intents:, source:, evidence_packet: nil, price_range: nil) # rubocop:disable Metrics/ParameterLists -- closed Result assembly
+  # evidence packet, price range, and proposed state transition are already deep-frozen by their builders.
+  def build(outcome_type:, reason:, scenario_key:, intents:, source:, evidence_packet: nil, price_range: nil, proposed_state_transition: nil) # rubocop:disable Metrics/ParameterLists -- closed Result assembly
     Result.new(
       outcome_type: outcome_type, reason: reason,
       scenario_key: freeze_string(scenario_key),
       intents: Array(intents).map { |intent| freeze_string(intent) }.freeze,
-      source: source, evidence_packet: evidence_packet, price_range: price_range
+      source: source, evidence_packet: evidence_packet, price_range: price_range,
+      proposed_state_transition: proposed_state_transition
     ).freeze
   end
 
   def freeze_string(value)
     value.is_a?(String) ? value.dup.freeze : value
+  end
+
+  # Recursively freeze a closed transition graph (Hash keys, values, and nested Hashes) so the envelope
+  # is DEEPLY frozen — a frozen outer Hash holding a mutable identity Hash would fail the consumer gate.
+  def deep_freeze(value)
+    case value
+    when Hash then value.each { |key, child| deep_freeze(key) && deep_freeze(child) }
+    when Array then value.each { |child| deep_freeze(child) }
+    end
+    value.freeze
   end
 end
