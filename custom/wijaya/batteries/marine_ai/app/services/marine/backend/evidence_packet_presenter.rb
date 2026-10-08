@@ -82,12 +82,14 @@ class Marine::Backend::EvidencePacketPresenter
     def ok? = ok == true
   end
 
-  def initialize(prompt_builder: nil, fact_validator: nil, persona_validator: nil, listing_renderer: nil, price_renderer: nil)
+  def initialize(prompt_builder: nil, fact_validator: nil, persona_validator: nil, listing_renderer: nil, # rubocop:disable Metrics/ParameterLists -- injectable collaborators, each defaulting to its production instance
+                 price_renderer: nil, price_range_renderer: nil)
     @prompt_builder = prompt_builder || Marine::Backend::EvidencePromptBuilder.new
     @fact_validator = fact_validator || Marine::Backend::PostGenerationFactValidator.new
     @persona_validator = persona_validator || Marine::Backend::PersonaValidator.new
     @listing_renderer = listing_renderer || Marine::Backend::ProductListingEvidenceRenderer.new
     @price_renderer = price_renderer || Marine::Backend::ExactPriceEvidenceRenderer.new
+    @price_range_renderer = price_range_renderer || Marine::Backend::PriceRangeEvidenceRenderer.new
   end
 
   # packet:           a frozen marine_evidence_v2 Evidence Packet.
@@ -140,21 +142,30 @@ class Marine::Backend::EvidencePacketPresenter
     Result.new(ok: true, text: text, reason: 'listing_evidence_fallback', detail: nil, fallback: nil).freeze
   end
 
-  # Step 18 — for a renderable exact-price (answer_price) packet, EVERY candidate failure
-  # (generation / fact / persona / semantic) DISCARDS the untrusted candidate and renders a
-  # deterministic reply from the packet's price Evidence ALONE (returned ok=true), so the customer
-  # execution never invokes the legacy path for this condition. The renderer is scoped to answer_price
-  # only; a non-price packet (listing / price_range / stock / product_information / overview / clarify)
-  # yields nil, so that path keeps its existing closed fallback byte-for-byte.
+  # Step 18 / Checkpoint B — for a renderable deterministic-price packet, EVERY candidate failure
+  # (generation / fact / persona / semantic) DISCARDS the untrusted candidate and renders a deterministic
+  # reply from the packet's price Evidence ALONE (returned ok=true), so the customer execution never
+  # invokes the legacy path for this condition. The exact-price renderer (answer_price / marine_evidence_v2
+  # price fact) is tried FIRST; then the family price-RANGE renderer (answer_price_range / marine_evidence_v3
+  # price_range fact). Each is scoped to exactly its own goal+fact and yields nil otherwise, so a
+  # non-renderable packet (stock / product_information / overview / clarify) keeps its existing closed
+  # fallback byte-for-byte and reaches the caller's legacy path.
   def price_or_failure(packet, reason, fallback)
     price_text = @price_renderer.call(packet: packet)
     return price_fallback(price_text, reason) if price_text
+
+    range_text = @price_range_renderer.call(packet: packet)
+    return price_range_fallback(range_text, reason) if range_text
 
     failure(reason, fallback: fallback)
   end
 
   def price_fallback(text, origin)
     Result.new(ok: true, text: text, reason: 'price_evidence_fallback', detail: origin, fallback: nil).freeze
+  end
+
+  def price_range_fallback(text, origin)
+    Result.new(ok: true, text: text, reason: 'price_range_evidence_fallback', detail: origin, fallback: nil).freeze
   end
 
   # A valid packet is a DEEPLY FROZEN, closed top-level Evidence Packet: exact required keys (only

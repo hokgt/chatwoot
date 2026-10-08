@@ -120,6 +120,149 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       end
     end
 
+    # Checkpoint B — a stateful end-to-end proof that the family price-RANGE deterministic fallback is
+    # delivered through the REAL ExactPriceCustomerExecution + EvidencePacketPresenter + the new
+    # PriceRangeEvidenceRenderer. Only the backend boundaries (authority execution, Model 1 runner,
+    # scenario adapter, context builder, policy projector, Model 2 generator, semantic verifier) are
+    # injected synthetically — no live provider, catalog DB, or RAG is touched. The generator fails so the
+    # presenter discards the (absent) candidate and renders from the synthetic frozen v3 price_range
+    # Evidence alone. It proves ONE outgoing deterministic range reply, a completed claim, exactly one
+    # usage increment, idempotent duplicate replay, and that the legacy AssistantChatService is NEVER
+    # constructed.
+    describe 'real Checkpoint-B presenter/renderer range path (stateful, no live provider/catalog)' do
+      let(:range_reply) { 'Untuk produk BD, harganya mulai dari Rp 10.000 sampai Rp 12.500 per yard. Mau varian yang mana?' }
+
+      def synthetic_v3_range_packet(min: '10000', max: '12500', display_min: '10.000', display_max: '12.500')
+        Marine::Backend::EvidencePacketBuilder.new(clock: -> { Time.utc(2026, 9, 30, 12, 0, 0) }).build(
+          evidence_input: {
+            scenario: { key: 'scenario_8' }, intents: %w[price_range], customer_language: 'id', response_goals: %w[answer_price_range],
+            validated_slots: { product: { code: 'BD', name: 'Santorini', source: 'marine_catalog' } },
+            facts: { price_range: { canonical: { family_code: 'BD', currency: 'IDR', min: min, max: max, uom: 'Yard' },
+                                    display: { currency: 'Rp', min: display_min, max: display_max, uom: 'yard' },
+                                    policy_version: 'price-display-v1', source: 'catalog_price_range_repository',
+                                    checked_at: '2026-09-30T12:00:00Z' } },
+            missing_slots: [], variant_candidates: [],
+            presentation_policy: { tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code' }
+          }
+        )
+      end
+
+      # A deeply-frozen v3 packet that passes the delivery seam's target gate but whose canonical min is a
+      # Float, so the renderer fails closed — exercising the real Checkpoint-B path to a non-deliverable.
+      def unrenderable_v3_range_packet
+        packet = {
+          evidence_version: 'marine_evidence_v3', generated_at: '2026-09-30T12:00:00Z', response_goals: %w[answer_price_range],
+          scenario: { key: 'scenario_8', intents: %w[price_range] },
+          validated_slots: { product: { code: 'BD', name: 'Santorini', attributes: {}, source: 'marine_catalog' } },
+          facts: { price_range: { canonical: { family_code: 'BD', currency: 'IDR', min: 10_000.5, max: '12500', uom: 'Yard' },
+                                  display: { currency: 'Rp', min: '10.000', max: '12.500', uom: 'yard' },
+                                  policy_version: 'price-display-v1', source: 'catalog_price_range_repository',
+                                  checked_at: '2026-09-30T12:00:00Z' } },
+          missing_slots: [], variant_candidates: [],
+          prohibited_claims: %w[exact_stock_quantity warehouse_location delivery_date unverified_discount],
+          response_constraints: { max_paragraphs: 2, role: 'marine_sales_assistant', handoff_self_reference: true },
+          customer_language: 'id', presentation_policy: { tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code' }
+        }
+        deep_freeze_packet(packet)
+      end
+
+      def deep_freeze_packet(value)
+        case value
+        when Hash then value.each { |key, child| deep_freeze_packet(key.freeze) && deep_freeze_packet(child) }
+        when Array then value.each { |child| deep_freeze_packet(child) }
+        end
+        value.freeze
+      end
+
+      def authority_result(packet)
+        Marine::Backend::AuthorityCoordinator::Result.new(
+          outcome_type: Marine::Backend::AuthorityCoordinator::OUTCOME_EVIDENCE_PACKET,
+          reason: Marine::Backend::AuthorityCoordinator::REASON_ACCEPTED, scenario_key: 'scenario_8',
+          intents: %w[price_range].freeze, source: :catalog, evidence_packet: packet
+        ).freeze
+      end
+
+      # Construct the REAL customer execution with injected synthetic boundaries but the REAL presenter
+      # (and thus the REAL PriceRangeEvidenceRenderer), so the job runs the genuine Checkpoint-B path.
+      def wire_real_checkpoint_b(packet, generator:, fact_verifier: ->(**) { true })
+        context = Struct.new(:trigger, :history).new('berapa kisaran harga BD', [])
+        policy = { tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code' }
+        scenario_adapter = instance_double(Marine::Decision::ScenarioAdapter, overflow?: false, scenarios: [{ 'key' => 'scenario_8' }])
+        allow(Marine::Backend::ExactPriceCustomerExecution).to receive(:new).and_wrap_original do |orig, **kwargs|
+          orig.call(**kwargs,
+                    decision_runner: ->(**) { { marker: :plan }.freeze },
+                    scenario_adapter: scenario_adapter,
+                    authority_execution: ->(**) { authority_result(packet) },
+                    context_builder: instance_double(Marine::Conversation::ContextBuilder, build: context),
+                    policy_projector: instance_double(Marine::Backend::PresentationPolicyProjector, call: policy),
+                    generator: generator, fact_verifier: fact_verifier)
+        end
+      end
+
+      before do
+        # Link the conversation's inbox to the Marine assistant so the customer execution's relationship
+        # gate passes against the real records.
+        MarineInbox.create!(inbox: conversation.inbox, marine_assistant: assistant)
+      end
+
+      it 'delivers ONE deterministic range reply, completes the claim, increments usage once, and never builds the legacy service' do
+        wire_real_checkpoint_b(synthetic_v3_range_packet, generator: ->(**) {}) # generation fails -> render from Evidence
+        expect(Marine::Llm::AssistantChatService).not_to receive(:new)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        reply = conversation.messages.outgoing.last
+        expect(reply.content).to eq(range_reply)
+        expect(reply.additional_attributes).to include(
+          'source_type' => 'marine_backend_evidence_v2', 'orchestration_path' => 'backend_evidence_target'
+        )
+        expect(conversation.messages.outgoing.count).to eq(1)
+        expect(usage_count).to eq(1)
+        expect(claim_status).to eq('completed')
+      end
+
+      it 'is idempotent: a duplicate replay of the same incoming produces no second output and no double usage' do
+        wire_real_checkpoint_b(synthetic_v3_range_packet, generator: ->(**) {})
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.count).to eq(1)
+        expect(usage_count).to eq(1)
+        expect(claim_status).to eq('completed')
+      end
+
+      it 'discards a semantically-rejected candidate and still delivers the deterministic range Evidence reply' do
+        wire_real_checkpoint_b(
+          synthetic_v3_range_packet,
+          generator: ->(**) { 'Untuk BD, kisaran harga Rp 10.000 sampai Rp 12.500 per yard.' },
+          fact_verifier: ->(**) { false }
+        )
+        expect(Marine::Llm::AssistantChatService).not_to receive(:new)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        reply = conversation.messages.outgoing.last
+        expect(reply.content).to eq(range_reply)
+        expect(reply.content).not_to include('kisaran harga')
+        expect(conversation.messages.outgoing.count).to eq(1)
+      end
+
+      it 'runs the legacy service EXACTLY ONCE for an unrenderable v3 range packet (fail-closed to legacy)' do
+        wire_real_checkpoint_b(unrenderable_v3_range_packet, generator: ->(**) {})
+        chat = instance_double(Marine::Llm::AssistantChatService, generate_response: { 'response' => 'legacy range fallback', 'action' => 'reply' })
+        allow(Marine::Llm::AssistantChatService).to receive(:new).and_return(chat)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq('legacy range fallback')
+        expect(Marine::Llm::AssistantChatService).to have_received(:new).with(
+          assistant: assistant, conversation: conversation, source: incoming
+        ).once
+        expect(claim_status).to eq('completed')
+      end
+    end
+
     it 'runs the unchanged legacy path when the exact-price target declines the turn' do
       stub_reasoning('response' => 'legacy fallback', 'action' => 'reply')
 

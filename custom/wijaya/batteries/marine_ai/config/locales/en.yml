@@ -9,3 +9,12 @@ en:
       # from the approved display facts; never embeds an illustrative amount.
       price:
         price_available: 'The price for %{product} is %{currency} %{amount} per %{uom}.'
+      # Checkpoint B — deterministic family price-RANGE fallback. Rendered by
+      # PriceRangeEvidenceRenderer from the frozen marine_evidence_v3 price_range Evidence alone
+      # (authoritative family code + already-formatted display currency/endpoints/unit only). The
+      # optional %{followup} carries the generic variant-selection question for the ask_variant_code
+      # presentation policy (empty for standalone); it never claims a catalog was shown.
+      price_range:
+        range_available: 'For %{product}, the price ranges from %{currency} %{min} to %{currency} %{max} per %{uom}.%{followup}'
+        single_available: 'For %{product}, the price is %{currency} %{amount} per %{uom}.%{followup}'
+        variant_followup: ' Which variant would you like?'

@@ -295,6 +295,118 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
     end
   end
 
+  # Checkpoint B — a renderable v3 answer_price_range packet never fails closed on a candidate failure:
+  # EVERY failure (generation / fact / persona / semantic) DISCARDS the untrusted candidate and renders a
+  # deterministic reply from the packet's price_range Evidence ALONE, returned ok=true with reason
+  # 'price_range_evidence_fallback' and detail = the original failure reason, so the customer execution
+  # never invokes the legacy path. The exact-price renderer is tried FIRST and yields nil for a range
+  # packet, so the range renderer renders. A semantic accept returns the candidate unchanged, calling
+  # neither deterministic renderer.
+  describe 'family price-range deterministic Evidence fallback (Checkpoint B)' do
+    def range_packet(language: 'id', policy_mode: 'ask_variant_code', min: '10000', max: '12500', # rubocop:disable Metrics/ParameterLists -- a flexible builder fixture for the v3 range cases
+                     display_min: '10.000', display_max: '12.500', display_currency: 'Rp')
+      builder.build(evidence_input: {
+                      scenario: { key: 'scenario_8' }, intents: %w[price_range], customer_language: language,
+                      response_goals: %w[answer_price_range],
+                      validated_slots: { product: { code: 'BD', name: 'Santorini', source: 'marine_catalog' } },
+                      facts: { price_range: {
+                        canonical: { family_code: 'BD', currency: 'IDR', min: min, max: max, uom: 'Yard' },
+                        display: { currency: display_currency, min: display_min, max: display_max, uom: 'yard' },
+                        policy_version: 'price-display-v1', source: 'catalog_price_range_repository', checked_at: '2026-09-30T12:00:00Z'
+                      } },
+                      missing_slots: [], variant_candidates: [],
+                      presentation_policy: { tone: 'professional', verbosity: 'concise', range_followup_mode: policy_mode }
+                    })
+    end
+
+    let(:deterministic_range) { 'Untuk produk BD, harganya mulai dari Rp 10.000 sampai Rp 12.500 per yard. Mau varian yang mana?' }
+    # A candidate that PASSES the deterministic fact + persona gates (exact display facts, in persona).
+    let(:clean_candidate) { 'Untuk BD, kisaran harga Rp 10.000 sampai Rp 12.500 per yard.' }
+
+    it 'renders range Evidence text when the generator fails' do
+      result = presenter.call(packet: range_packet, generator: generator(nil), customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: deterministic_range, reason: 'price_range_evidence_fallback', detail: :generation_failed)
+    end
+
+    it 'discards a fact-violating candidate and renders range Evidence text' do
+      result = presenter.call(packet: range_packet, generator: generator('Untuk BD, kisaran Rp 10.000 sampai Rp 99.999 per yard.'),
+                              customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: deterministic_range, reason: 'price_range_evidence_fallback', detail: :fact_rejected)
+      expect(result.text).not_to include('99.999')
+    end
+
+    it 'discards a persona self-deflection candidate and renders range Evidence text' do
+      result = presenter.call(packet: range_packet, generator: generator("#{clean_candidate} Silakan hubungi tim sales kami."),
+                              customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: deterministic_range, reason: 'price_range_evidence_fallback', detail: :persona_rejected)
+      expect(result.text).not_to match(/hubungi tim sales/i)
+    end
+
+    it 'discards a semantically-unverified candidate (false / raise / missing / non-callable / non-true) and renders range Evidence text' do
+      [->(**) { false }, ->(**) { raise 'boom' }, nil, Object.new, ->(**) { 'yes' }].each do |verifier|
+        result = presenter.call(packet: range_packet, generator: generator(clean_candidate), customer_request: 'x', fact_verifier: verifier)
+        expect(result).to have_attributes(ok: true, text: deterministic_range, reason: 'price_range_evidence_fallback', detail: :fact_unverified)
+        expect(result.text).not_to include('kisaran harga')
+      end
+    end
+
+    it 'renders the en range Evidence text (both languages) via the real renderer' do
+      result = presenter.call(packet: range_packet(language: 'en', display_currency: 'IDR', display_min: '10,000', display_max: '12,500'),
+                              generator: generator(nil), customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, reason: 'price_range_evidence_fallback')
+      expect(result.text).to eq('For BD, the price ranges from IDR 10,000 to IDR 12,500 per yard. Which variant would you like?')
+    end
+
+    it 'renders the standalone follow-up mode (no variant question) via the real renderer' do
+      result = presenter.call(packet: range_packet(policy_mode: 'standalone'), generator: generator(nil),
+                              customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result.text).to eq('Untuk produk BD, harganya mulai dari Rp 10.000 sampai Rp 12.500 per yard.')
+    end
+
+    it 'tries the exact-price renderer BEFORE the range renderer (exact success short-circuits)' do
+      exact_first = double('exact_renderer', call: 'EXACT-FIRST')
+      range_spy = instance_spy(Marine::Backend::PriceRangeEvidenceRenderer)
+      presenter_with_spies = described_class.new(price_renderer: exact_first, price_range_renderer: range_spy)
+
+      result = presenter_with_spies.call(packet: range_packet, generator: generator(nil), customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: 'EXACT-FIRST', reason: 'price_evidence_fallback')
+      expect(range_spy).not_to have_received(:call)
+    end
+
+    it 'returns the accepted candidate verbatim and calls NEITHER deterministic renderer when the verifier confirms' do
+      exact_spy = instance_spy(Marine::Backend::ExactPriceEvidenceRenderer)
+      range_spy = instance_spy(Marine::Backend::PriceRangeEvidenceRenderer)
+      presenter_with_spies = described_class.new(price_renderer: exact_spy, price_range_renderer: range_spy)
+
+      result = presenter_with_spies.call(packet: range_packet, generator: generator(clean_candidate),
+                                         customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: clean_candidate, reason: 'accepted')
+      expect(exact_spy).not_to have_received(:call)
+      expect(range_spy).not_to have_received(:call)
+    end
+
+    # An unrenderable v3 range packet (structurally valid to the presenter's gate but with a malformed
+    # price_range fact the renderer rejects) falls through to the ORIGINAL closed failure + handoff
+    # fallback, so a malformed packet still reaches the caller's legacy path (no direct legacy call here).
+    it 'falls through to the original closed failure when the range packet is unrenderable' do
+      unrenderable = deep_freeze(
+        evidence_version: 'marine_evidence_v3', generated_at: '2026-09-30T12:00:00Z',
+        response_goals: %w[answer_price_range], scenario: { key: 'scenario_8', intents: %w[price_range] },
+        validated_slots: { product: { code: 'BD', name: 'Santorini', source: 'marine_catalog' } },
+        facts: { price_range: { canonical: { family_code: 'BD', currency: 'IDR', min: 10_000.5, max: '12500', uom: 'Yard' },
+                                display: { currency: 'Rp', min: '10.000', max: '12.500', uom: 'yard' },
+                                policy_version: 'price-display-v1', source: 'catalog_price_range_repository', checked_at: '2026-09-30T12:00:00Z' } },
+        missing_slots: [], variant_candidates: [],
+        prohibited_claims: %w[exact_stock_quantity warehouse_location delivery_date unverified_discount],
+        response_constraints: { max_paragraphs: 2, role: 'marine_sales_assistant', handoff_self_reference: true },
+        customer_language: 'id',
+        presentation_policy: { tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code' }
+      )
+      result = presenter.call(packet: unrenderable, generator: generator(nil), customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: false, reason: :generation_failed, fallback: :handoff)
+    end
+  end
+
   describe 'handoff reserved for explicit handoff / invalid packets' do
     it 'reserves :handoff for an explicit handoff/factless packet' do
       result = presenter.call(packet: handoff_packet, generator: generator('anything'), customer_request: 'x')

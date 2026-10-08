@@ -384,6 +384,78 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
     end
   end
 
+  # Checkpoint B — the customer execution seam itself returns a DELIVERABLE for an answer_price_range
+  # candidate failure (real presenter + real PriceRangeEvidenceRenderer): the Model 2 candidate fails a
+  # gate, is discarded, and a deterministic reply is rendered from the packet's price_range Evidence. A
+  # deliverable means the trigger-bound job never reaches its legacy fallback for this turn. An
+  # unrenderable v3 range packet (malformed fact the renderer rejects) stays NON-deliverable, so the job
+  # still reaches the legacy path.
+  describe 'family price-range candidate failure yields a deliverable Evidence reply (no legacy fallback)' do
+    def real_range_packet
+      Marine::Backend::EvidencePacketBuilder.new(clock: -> { Time.utc(2026, 9, 30, 12, 0, 0) }).build(
+        evidence_input: {
+          scenario: { key: 'scenario_8' }, intents: %w[price_range], customer_language: 'id', response_goals: %w[answer_price_range],
+          validated_slots: { product: { code: 'BD', name: 'Santorini', source: 'marine_catalog' } },
+          facts: { price_range: { canonical: { family_code: 'BD', currency: 'IDR', min: '10000', max: '12500', uom: 'Yard' },
+                                  display: { currency: 'Rp', min: '10.000', max: '12.500', uom: 'yard' },
+                                  policy_version: 'price-display-v1', source: 'catalog_price_range_repository',
+                                  checked_at: '2026-09-30T12:00:00Z' } },
+          missing_slots: [], variant_candidates: [],
+          presentation_policy: { tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code' }
+        }
+      )
+    end
+
+    def deliver_through_real_presenter(packet, generator:, fact_verifier:)
+      allow(authority_execution).to receive(:call).and_return(authority_result(intents: %w[price_range], evidence_packet: packet))
+      described_class.new(
+        account: account, assistant: assistant, conversation: conversation, message: message,
+        decision_runner: decision_runner, scenario_adapter: scenario_adapter,
+        authority_execution: authority_execution, presenter: Marine::Backend::EvidencePacketPresenter.new,
+        generator: generator, fact_verifier: fact_verifier, context_builder: context_builder, policy_projector: policy_projector
+      ).call
+    end
+
+    it 'delivers deterministic range Evidence text on a generation failure (no candidate)' do
+      result = deliver_through_real_presenter(real_range_packet, generator: ->(**) {}, fact_verifier: ->(**) { true })
+
+      expect(result).to be_deliverable
+      expect(result.text).to eq('Untuk produk BD, harganya mulai dari Rp 10.000 sampai Rp 12.500 per yard. Mau varian yang mana?')
+    end
+
+    it 'delivers deterministic range Evidence text on a semantic rejection (candidate discarded)' do
+      result = deliver_through_real_presenter(
+        real_range_packet,
+        generator: ->(**) { 'Untuk BD, kisaran harga Rp 10.000 sampai Rp 12.500 per yard.' },
+        fact_verifier: ->(**) { false }
+      )
+
+      expect(result).to be_deliverable
+      expect(result.text).to eq('Untuk produk BD, harganya mulai dari Rp 10.000 sampai Rp 12.500 per yard. Mau varian yang mana?')
+      expect(result.text).not_to include('kisaran harga')
+    end
+
+    it 'stays NON-deliverable for an unrenderable v3 range packet (malformed fact the renderer rejects)' do
+      unrenderable = deep_freeze(
+        evidence_version: 'marine_evidence_v3', generated_at: '2026-09-30T12:00:00Z', response_goals: %w[answer_price_range],
+        scenario: { key: 'scenario_8', intents: %w[price_range] },
+        validated_slots: { product: { code: 'BD', name: 'Santorini', attributes: {}, source: 'marine_catalog' } },
+        facts: { price_range: { canonical: { family_code: 'BD', currency: 'IDR', min: 10_000.5, max: '12500', uom: 'Yard' },
+                                display: { currency: 'Rp', min: '10.000', max: '12.500', uom: 'yard' },
+                                policy_version: 'price-display-v1', source: 'catalog_price_range_repository', checked_at: '2026-09-30T12:00:00Z' } },
+        missing_slots: [], variant_candidates: [],
+        prohibited_claims: %w[exact_stock_quantity warehouse_location delivery_date unverified_discount],
+        response_constraints: { max_paragraphs: 2, role: 'marine_sales_assistant', handoff_self_reference: true },
+        customer_language: 'id', presentation_policy: { tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code' }
+      )
+
+      result = deliver_through_real_presenter(unrenderable, generator: ->(**) {}, fact_verifier: ->(**) { true })
+
+      expect(result).not_to be_deliverable
+      expect(result).to have_attributes(status: :fallback, reason: :presentation_rejected)
+    end
+  end
+
   it 'folds collaborator exceptions and malformed successful presentation to closed fallback results' do
     allow(decision_runner).to receive(:call).and_raise('private provider detail')
     result = execution.call

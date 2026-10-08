@@ -1328,6 +1328,15 @@ patches:
       # amount/uom only), returned ok=true so the customer execution never invokes the legacy path.
       # answer_price goal only; price_range / stock / product_information keep their closed fallback.
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/exact_price_evidence_renderer.rb
+      # Checkpoint B — deterministic family price-RANGE Evidence renderer. For a renderable v3
+      # answer_price_range packet EVERY Model 2 candidate failure (generation / fact / persona / semantic)
+      # discards the untrusted candidate and renders the range from the marine_evidence_v3 price_range
+      # Evidence alone, through backend-owned price-display-v1 id/en templates (authoritative family code +
+      # already-formatted display currency/endpoints/uom only; equal endpoints => single amount;
+      # range_followup_mode controls a generic variant follow-up), returned ok=true so the customer
+      # execution never invokes the legacy path. answer_price_range goal only; every other goal keeps its
+      # existing closed fallback.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/price_range_evidence_renderer.rb
       # Marine Phase 3 — approved-only, assistant-scoped product-description evidence source for the
       # product_information listing path. One bounded approved knowledge-base query, exact normalized
       # code/name binding, closed per-authorized-product evidence only (never adds/invents a product).
@@ -1918,6 +1927,8 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/backend/product_listing_evidence_renderer_spec.rb
       # Step 18 — deterministic exact-price Evidence renderer spec.
       - spec/custom/wijaya/batteries/marine_ai/backend/exact_price_evidence_renderer_spec.rb
+      # Checkpoint B — deterministic family price-RANGE Evidence renderer spec (19-gate contract).
+      - spec/custom/wijaya/batteries/marine_ai/backend/price_range_evidence_renderer_spec.rb
       # Marine Phase 3 — approved product-description evidence source spec.
       - spec/custom/wijaya/batteries/marine_ai/backend/approved_product_description_source_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/resolve_any_spec.rb
