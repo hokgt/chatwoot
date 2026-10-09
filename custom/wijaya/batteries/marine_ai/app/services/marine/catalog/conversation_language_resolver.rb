@@ -123,11 +123,13 @@ module Marine
       # detection of the bare entity is trusted — both are unreliable for a code — so the caller falls
       # through to the configured language rather than fixing the opener language off a bare entity. A
       # turn with real wording (even alongside an entity candidate) keeps its provider language, else a
-      # locally reliable reading of it.
+      # locally reliable reading of its linguistic RESIDUE — the turn minus its own extracted entity
+      # candidates AND the current trusted catalog tokens — so a product name in the turn never reaches
+      # the detector and never fixes the opener language off a product mention.
       def current_turn_language
         return nil if entity_only?
 
-        @provider_language || detected_reliable(@text)
+        @provider_language || detected_reliable(residue_text(@text, @entity_candidates + @trusted_tokens))
       end
 
       # An entity/code/slot-only turn: once the turn's own extracted entity candidates AND the
@@ -162,6 +164,21 @@ module Marine
         Array(values).each_with_object(Set.new) { |value, set| set.merge(token_set(value)) }
       end
 
+      # The linguistic RESIDUE of `content` fed to the detector: the content with every 3+ char
+      # alphanumeric token that belongs to `removal` (the entity/catalog tokens) stripped out, the rest
+      # of the wording, punctuation and short words left intact. This keeps a product name out of CLD3's
+      # input while preserving the genuine language signal, so detection reads the residue rather than the
+      # unfiltered product-bearing turn. With nothing to remove the content is returned verbatim, so a
+      # turn carrying no catalog tokens is detected exactly as before.
+      def residue_text(content, removal)
+        removal_tokens = token_union(removal)
+        text = content.to_s
+        return text if removal_tokens.empty?
+
+        text.gsub(MEANINGFUL_TOKEN) { |token| removal_tokens.include?(token.downcase) ? ' ' : token }
+            .squeeze(' ').strip
+      end
+
       def token_set(value)
         value.to_s.downcase.scan(MEANINGFUL_TOKEN).to_set
       end
@@ -171,12 +188,14 @@ module Marine
       # the customer's. Bug 2: a prior turn that is only a Catalog product name carries no meaningful
       # linguistic residue once ITS OWN caller-computed trusted catalog tokens are subtracted — it is
       # skipped WITHOUT a CLD3 detection (so it can never poison the sticky language), and the next
-      # older customer turn is tried; the first reliable eligible prior still wins.
+      # older customer turn is tried; the first reliable eligible prior still wins. A turn that IS kept
+      # is detected from that same linguistic RESIDUE, never its full product-bearing content, so a
+      # product name surviving alongside real wording can never poison the sticky reading either.
       def prior_customer_language
         customer_turns_newest_first.each do |turn|
           next if prior_entity_only?(turn)
 
-          language = detected_reliable(turn[:content])
+          language = detected_reliable(residue_text(turn[:content], turn[:trusted_tokens]))
           return language if language
         end
         nil

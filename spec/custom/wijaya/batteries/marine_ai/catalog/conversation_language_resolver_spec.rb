@@ -387,16 +387,18 @@ RSpec.describe Marine::Catalog::ConversationLanguageResolver do
       expect(Marine::Llm::LanguageDetector).not_to have_received(:new).with('baby doll ada')
     end
 
-    # F. A prior turn with >= 2 residue tokens after subtraction is NOT skipped and CLD3 is used.
-    it 'does not skip a prior that retains two residue tokens after subtraction (F)' do
-      detections['linen flow fully available'] = reliable('en')
+    # F. A prior turn that retains >= 2 residue tokens after subtraction is NOT skipped; CLD3 reads its
+    # linguistic RESIDUE (the product tokens removed), never the full product-bearing text.
+    it 'detects a prior from its residue when two residue tokens remain after subtraction (F)' do
+      detections['fully available'] = reliable('en')
 
       context = [user_trusted('linen flow fully available', %w[linen flow])]
       result = resolve(text: 'lf-3', provider_language: nil, context: context, configured_language: 'id')
 
       expect(result.language).to eq('en')
       expect(result.reason).to eq(:prior_customer)
-      expect(Marine::Llm::LanguageDetector).to have_received(:new).with('linen flow fully available')
+      expect(Marine::Llm::LanguageDetector).to have_received(:new).with('fully available')
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new).with('linen flow fully available')
     end
 
     # The per-turn tokens are read from the context turn itself — never from the current @trusted_tokens.
@@ -433,6 +435,79 @@ RSpec.describe Marine::Catalog::ConversationLanguageResolver do
 
       expect(result.language).to be_nil
       expect(result.reason).to eq(:unresolved)
+    end
+  end
+
+  # Bug: the resolver must DETECT language from the linguistic residue that remains after authoritative
+  # entity/catalog-token subtraction — not merely use the residue as a boolean skip gate and then detect
+  # the unfiltered full turn. Passing the full product-bearing text to CLD3 let a product name poison the
+  # strict-sticky language (the reported linen-flow conversation answered in Dutch). These examples prove
+  # the detector receives the RESIDUE for both prior turns and the current turn.
+  describe 'Bug: language detection runs on the linguistic residue, not the full product-bearing text' do
+    # The reported session, synthesized: three product turns. The nearest prior "kalo linen flow ada"
+    # reads Dutch RELIABLY on its FULL text (the poison), but its residue "kalo ada" is unreliable; the
+    # older "baby doll ada" leaves one residue token and is skipped. With no reliable prior, the current
+    # Indonesian provider language wins — never the sticky Dutch the full-text reading would have forced.
+    it 'does not let a product-bearing prior poison sticky history; current provider id wins (repro)' do
+      detections['kalo linen flow ada'] = reliable('nl') # the poison if the FULL prior text reaches CLD3
+
+      context = [user_trusted('baby doll ada', %w[baby doll]),
+                 user_trusted('kalo linen flow ada', %w[linen flow])]
+      result = resolve(text: 'Berapa harganya', provider_language: 'id', context: context)
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:current_turn)
+      # The detector saw the RESIDUE of the nearest prior, never its full product-bearing text.
+      expect(Marine::Llm::LanguageDetector).to have_received(:new).with('kalo ada')
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new).with('kalo linen flow ada')
+      # The older product-only prior is skipped entirely (one residue token), no detection at all.
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new).with('baby doll ada')
+    end
+
+    it 'keeps a prior whose RESIDUE reads reliably English sticky over a current Indonesian turn' do
+      detections['is available today'] = reliable('en') # residue of the product-bearing prior
+
+      context = [user_trusted('linen flow is available today', %w[linen flow])]
+      result = resolve(text: 'berapa harganya produk ini', provider_language: 'id', context: context)
+
+      expect(result.language).to eq('en')
+      expect(result.reason).to eq(:prior_customer)
+      expect(Marine::Llm::LanguageDetector).to have_received(:new).with('is available today')
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new).with('linen flow is available today')
+    end
+
+    it 'falls through to an older reliable prior residue when the nearest residue is unreliable' do
+      detections['halo mau tanya produk'] = reliable('id') # older prior, reliable
+      # nearest residue "kain warna" is unlisted -> unreliable, so it is not sticky
+
+      context = [user_trusted('halo mau tanya produk', []),
+                 user_trusted('satin velvet kain warna', %w[satin velvet])]
+      result = resolve(text: 'bd-1', provider_language: nil, context: context)
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:prior_customer)
+      expect(Marine::Llm::LanguageDetector).to have_received(:new).with('kain warna')
+    end
+
+    it 'lets the current provider language win when no prior is reliable and the current residue is meaningful' do
+      context = [user_trusted('baby doll', %w[baby doll])] # product-only prior, skipped
+      result = resolve(text: 'satin velvet apakah masih tersedia', provider_language: 'id',
+                       trusted_tokens: %w[satin velvet], context: context)
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:current_turn)
+    end
+
+    it 'detects the current turn from its RESIDUE when the provider is silent (not the full product text)' do
+      detections['apakah masih tersedia warna'] = reliable('id')
+
+      result = resolve(text: 'satin velvet apakah masih tersedia warna', provider_language: nil,
+                       trusted_tokens: %w[satin velvet])
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:current_turn)
+      expect(Marine::Llm::LanguageDetector).to have_received(:new).with('apakah masih tersedia warna')
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new).with('satin velvet apakah masih tersedia warna')
     end
   end
 
