@@ -14,6 +14,7 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
   # Checkpoint A — the staged v3 version carrying a presentation_policy, accepted ONLY for the single
   # answer_price_range target. Every other target REMAINS v2; a crossed version fails closed.
   EVIDENCE_VERSION_V3 = 'marine_evidence_v3'.freeze
+  PRICE_GOAL = 'answer_price'.freeze
   RANGE_GOAL = 'answer_price_range'.freeze
 
   # The closed presentation-policy contract the delivery seam revalidates on a v3 target packet (mirrors
@@ -49,17 +50,22 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
   REASON_HANDOFF_REQUIRED = :handoff_required
   REASON_INTERNAL_ERROR = :internal_error
 
-  # The closed price_range proposed-state-transition contract revalidated at THIS consumer boundary
-  # (independently of the AuthorityCoordinator that produced it): a forged, shallow-frozen, or
-  # unknown-key envelope is rejected exactly like a missing one, so a tampered transition can never
-  # drive a delivery or a state write. family_code is a nonblank, bounded (<= 120 byte) catalog String.
+  # Closed state-transition contracts revalidated at THIS consumer boundary. price_range carries only
+  # authoritative family identity; exact price additionally requires the authoritative variant. Unknown
+  # keys, mutable graphs, crossed capabilities, forged provenance, and unbounded/blank codes fail closed.
   STATE_TRANSITION_SCHEMA_VERSION = 'state_transition_v1'.freeze
-  STATE_TRANSITION_CAPABILITY = 'price_range'.freeze
   STATE_TRANSITION_SOURCE = 'marine_catalog'.freeze
   STATE_TRANSITION_KEYS = %i[schema_version operation capability handoff_required authoritative_identity].freeze
-  STATE_TRANSITION_IDENTITY_KEYS = %i[family_code source].freeze
+  STATE_TRANSITION_IDENTITY_KEYS = {
+    'price_range' => %i[family_code source].freeze,
+    'price' => %i[family_code variant_code source].freeze
+  }.freeze
+  STATE_TRANSITION_GOALS = {
+    RANGE_GOAL => 'price_range',
+    PRICE_GOAL => 'price'
+  }.freeze
   STATE_TRANSITION_OPERATIONS = %i[start update].freeze
-  STATE_TRANSITION_FAMILY_CODE_MAX_BYTES = 120
+  STATE_TRANSITION_CODE_MAX_BYTES = 120
 
   Result = Struct.new(:status, :reason, :text, :transition, keyword_init: true) do
     def deliverable? = status == STATUS_DELIVERABLE
@@ -111,12 +117,14 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
 
   def deliver_target(packet, context, transition)
     return fallback(REASON_INVALID_PACKET) unless target_packet?(packet)
-    # A price_range delivery MUST carry a valid non-handoff transition (the authoritative family state
-    # it persists); without one it fails closed so the trigger-bound job runs legacy reasoning OUTSIDE
-    # the lock rather than delivering a stateless range reply. Every other capability needs none.
-    return fallback(REASON_TRANSITION_REQUIRED) if range_goal?(packet) && !deliverable_transition?(transition)
 
-    present(packet, context, deliverable_transition?(transition) ? transition : nil)
+    # Exact price and price_range MUST carry their matching valid non-handoff transitions. Without one,
+    # fail closed before presentation so a successful target can never outrun its authoritative context.
+    goal = packet[:response_goals].first
+    required_capability = STATE_TRANSITION_GOALS[goal]
+    return fallback(REASON_TRANSITION_REQUIRED) if transition_rejected?(transition, packet, required_capability)
+
+    present(packet, context, required_capability ? transition : nil)
   end
 
   def present(packet, context, transition)
@@ -132,12 +140,29 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
     deliverable(presentation.text, transition)
   end
 
-  def range_goal?(packet)
-    packet[:response_goals].first == RANGE_GOAL
+  def transition_rejected?(transition, packet, capability)
+    capability && (!deliverable_transition?(transition, capability) || !transition_bound_to_packet?(transition, packet, capability))
   end
 
-  def deliverable_transition?(transition)
-    !transition.nil? && transition[:handoff_required] == false
+  def deliverable_transition?(transition, capability)
+    !transition.nil? && transition[:handoff_required] == false && transition[:capability] == capability
+  end
+
+  # Bind exact-price state identity to the accepted Evidence Packet itself. Shape/provenance alone is
+  # insufficient: family and variant must exactly match both validated slots and the canonical price fact.
+  # price_range retains its existing structural/provenance contract and is deliberately not broadened here.
+  def transition_bound_to_packet?(transition, packet, capability)
+    return true unless capability == 'price'
+
+    identity = transition[:authoritative_identity]
+    family_codes = [identity[:family_code], packet.dig(:validated_slots, :product, :code)]
+    variant_codes = [identity[:variant_code], packet.dig(:validated_slots, :variant, :code),
+                     packet.dig(:facts, :price, :canonical, :variant_code)]
+    matching_codes?(family_codes) && matching_codes?(variant_codes)
+  end
+
+  def matching_codes?(codes)
+    codes.all? { |code| valid_code?(code) } && codes.uniq.one?
   end
 
   # Revalidate the AuthorityCoordinator's proposed_state_transition against the closed contract at this
@@ -152,7 +177,7 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
     return false unless transition.is_a?(Hash) && deeply_frozen?(transition)
     return false unless transition.keys.sort == STATE_TRANSITION_KEYS.sort
     return false unless transition[:schema_version] == STATE_TRANSITION_SCHEMA_VERSION
-    return false unless transition[:capability] == STATE_TRANSITION_CAPABILITY
+    return false unless STATE_TRANSITION_IDENTITY_KEYS.key?(transition[:capability])
     return false unless STATE_TRANSITION_OPERATIONS.include?(transition[:operation])
 
     valid_transition_identity?(transition)
@@ -162,18 +187,25 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
   # { family_code:, source: } pair with a nonblank bounded family_code and the exact marine_catalog source.
   def valid_transition_identity?(transition)
     case transition[:handoff_required]
-    when true then transition[:authoritative_identity].nil?
-    when false then valid_identity?(transition[:authoritative_identity])
+    when true
+      transition[:capability] == 'price_range' && transition[:authoritative_identity].nil?
+    when false
+      valid_identity?(transition[:authoritative_identity], transition[:capability])
     else false
     end
   end
 
-  def valid_identity?(identity)
-    identity.is_a?(Hash) && deeply_frozen?(identity) &&
-      identity.keys.sort == STATE_TRANSITION_IDENTITY_KEYS.sort &&
-      identity[:family_code].is_a?(String) && !identity[:family_code].strip.empty? &&
-      identity[:family_code].bytesize <= STATE_TRANSITION_FAMILY_CODE_MAX_BYTES &&
-      identity[:source] == STATE_TRANSITION_SOURCE
+  def valid_identity?(identity, capability)
+    expected_keys = STATE_TRANSITION_IDENTITY_KEYS[capability]
+    return false unless identity.is_a?(Hash) && deeply_frozen?(identity)
+    return false unless identity.keys.sort == expected_keys.sort
+    return false unless valid_code?(identity[:family_code]) && identity[:source] == STATE_TRANSITION_SOURCE
+
+    capability != 'price' || valid_code?(identity[:variant_code])
+  end
+
+  def valid_code?(value)
+    value.is_a?(String) && !value.strip.empty? && value.bytesize <= STATE_TRANSITION_CODE_MAX_BYTES
   end
 
   def valid_relationship?

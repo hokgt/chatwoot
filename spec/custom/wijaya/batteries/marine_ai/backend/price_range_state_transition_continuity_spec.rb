@@ -56,6 +56,64 @@ RSpec.describe 'Marine price_range state-transition continuity', type: :model do
     expect(result.reason).to eq(:candidate_context_insufficient)
   end
 
+  it 'an exact-price identity lets a later stock turn reuse and revalidate the existing child without repeating its code' do
+    stock_repository = instance_double(Marine::Catalog::StockRepository, status_for: :available)
+    price_repository = instance_double(Marine::Catalog::PriceRepository)
+    range_repository = instance_double(Marine::Catalog::PriceRangeRepository)
+    variant_resolver = instance_double(Marine::Catalog::VariantResolver)
+    allow(variant_resolver).to receive(:resolve)
+    orchestrator = Marine::Catalog::ProductQueryOrchestrator.new(
+      repositories: { family: family_repo, variant: variant_repo, price: price_repository,
+                      price_range: range_repository, stock: stock_repository },
+      variant_resolver: variant_resolver
+    )
+    allow(family_repo).to receive(:resolve_exact).with('BD').and_return(code: 'BD', name: 'Santorini')
+    allow(variant_repo).to receive(:resolve_child).with('BD', 'BD-01').and_return(code: 'BD-01')
+    allow(variant_repo).to receive(:attribute_names).with('BD').and_return(%w[size])
+    store.start!('validated_family' => 'BD', 'validated_variant' => 'BD-01', 'current_intent' => 'price')
+
+    plan = orchestrator.plan_for_intent(
+      intent: { product_related: true, intent: 'stock', family_mention: nil, explicit_child_code: nil,
+                attribute_candidates: [], requires_exact_variant: true, family_changed: false,
+                intent_changed: true, quantity_inquiry: false },
+      flow: store.current_for_planning
+    )
+
+    expect(plan[:action]).to eq(:reply)
+    expect(plan[:reply]).to eq(kind: :stock_available, variant_code: 'BD-01')
+    expect(variant_repo).to have_received(:resolve_child).with('BD', 'BD-01')
+    expect(variant_resolver).not_to have_received(:resolve)
+  end
+
+  it 'keeps family-only stock behavior fail-closed by clarifying the variant' do
+    stock_repository = instance_double(Marine::Catalog::StockRepository)
+    allow(stock_repository).to receive(:status_for)
+    range_repository = instance_double(Marine::Catalog::PriceRangeRepository, range_for: { status: :unavailable })
+    orchestrator = Marine::Catalog::ProductQueryOrchestrator.new(
+      repositories: { family: family_repo, variant: variant_repo,
+                      price: instance_double(Marine::Catalog::PriceRepository),
+                      price_range: range_repository, stock: stock_repository },
+      variant_resolver: instance_double(Marine::Catalog::VariantResolver)
+    )
+    allow(family_repo).to receive(:resolve_exact).with('BD').and_return(code: 'BD', name: 'Santorini')
+    allow(variant_repo).to receive(:attribute_names).with('BD').and_return(%w[size])
+    store.start!('validated_family' => 'BD', 'current_intent' => 'price')
+
+    plan = orchestrator.plan_for_intent(
+      intent: { product_related: true, intent: 'stock', family_mention: nil, explicit_child_code: nil,
+                attribute_candidates: [], requires_exact_variant: true, family_changed: false,
+                intent_changed: true, quantity_inquiry: false },
+      flow: store.current_for_planning
+    )
+
+    # First family-only occurrence keeps the existing catalog-assisted variant clarification;
+    # later occurrences may collapse to :clarify_variant, but neither can answer binary stock.
+    expect(plan[:action]).to eq(:send_catalog)
+    expect(plan.dig(:state, :changes)).to include('clarification_kind' => 'variant')
+    expect(plan.dig(:state, :changes)).not_to have_key('validated_variant')
+    expect(stock_repository).not_to have_received(:status_for)
+  end
+
   it 'a Turn-2 forged/unknown family mention is rejected and the Turn-1 family state is retained' do
     store.start!('validated_family' => 'BD')
 

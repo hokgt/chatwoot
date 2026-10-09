@@ -391,6 +391,100 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       end
     end
 
+    describe 'exact-price family+variant transition at finalize' do
+      let(:exact_text) { 'Harga BD-4 adalah Rp 12.500 per yard.' }
+
+      def exact_transition(operation: :start, family_code: 'BD', variant_code: 'BD-4', source: 'marine_catalog')
+        identity = { family_code: family_code, variant_code: variant_code, source: source }.freeze
+        { schema_version: 'state_transition_v1', operation: operation, capability: 'price',
+          handoff_required: false, authoritative_identity: identity }.freeze
+      end
+
+      def exact_transition_result(value = exact_transition)
+        Marine::Backend::ExactPriceCustomerExecution::Result.new(
+          status: :deliverable, reason: :accepted, text: exact_text, transition: value
+        ).freeze
+      end
+
+      it 'persists authoritative family+variant and bounded intent atomically with the exact-price reply' do
+        allow(exact_price_attempt).to receive(:call).and_return(exact_transition_result)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq(exact_text)
+        expect(product_state).to include('validated_family' => 'BD', 'validated_variant' => 'BD-4',
+                                         'current_intent' => 'price', 'version' => 1)
+        expect(product_state.to_s).not_to match(/12\.500|yard|quantity|stock|location|Harga/)
+      end
+
+      it 'updates the same family while preserving catalog markers and clearing clarification metadata' do
+        store = Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload)
+        store.start!('validated_family' => 'BD', 'current_intent' => 'price', 'validated_variant' => 'BD-OLD',
+                     'expected_attributes' => %w[size], 'clarification_kind' => 'variant', 'clarification_count' => 2,
+                     'requested_intents' => %w[price stock])
+        store.update!('catalog_sent' => true, 'catalog_document_id' => 44, 'catalog_message_id' => 55)
+        allow(exact_price_attempt).to receive(:call).and_return(exact_transition_result(exact_transition(operation: :update)))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(product_state).to include('validated_family' => 'BD', 'validated_variant' => 'BD-4',
+                                         'catalog_sent' => true, 'catalog_document_id' => 44, 'catalog_message_id' => 55)
+        expect(product_state['expected_attributes']).to eq([])
+        expect(product_state).not_to have_key('clarification_kind')
+        expect(product_state).not_to have_key('clarification_count')
+        expect(product_state).not_to have_key('requested_intents')
+      end
+
+      it 'recomputes a stale proposed start as a same-family update under the final lock' do
+        store = Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload)
+        store.start!('validated_family' => 'BD', 'current_intent' => 'price', 'validated_variant' => 'BD-OLD')
+        store.update!('catalog_sent' => true, 'catalog_document_id' => 44, 'catalog_message_id' => 55)
+        allow(exact_price_attempt).to receive(:call).and_return(exact_transition_result(exact_transition(operation: :start)))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(product_state).to include('validated_family' => 'BD', 'validated_variant' => 'BD-4',
+                                         'catalog_sent' => true, 'catalog_document_id' => 44,
+                                         'catalog_message_id' => 55, 'version' => 3)
+      end
+
+      it 'starts fresh on a family switch, clearing stale variant, catalog, and clarification context' do
+        store = Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload)
+        store.start!('validated_family' => 'OLD', 'validated_variant' => 'OLD-1', 'current_intent' => 'stock',
+                     'clarification_kind' => 'variant', 'clarification_count' => 2)
+        store.update!('catalog_sent' => true, 'catalog_document_id' => 44, 'catalog_message_id' => 55)
+        allow(exact_price_attempt).to receive(:call).and_return(exact_transition_result(exact_transition(operation: :start)))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(product_state).to include('validated_family' => 'BD', 'validated_variant' => 'BD-4',
+                                         'current_intent' => 'price', 'version' => 1)
+        expect(product_state).not_to have_key('catalog_sent')
+        expect(product_state).not_to have_key('clarification_kind')
+        expect(product_state).not_to have_key('requested_intents')
+      end
+
+      it 'writes no state for a malformed or forged transition' do
+        malformed = exact_transition(source: 'forged')
+        allow(exact_price_attempt).to receive(:call).and_return(exact_transition_result(malformed))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq(exact_text)
+        expect(product_state).to be_nil
+      end
+
+      it 'rolls back the exact identity when reply creation fails' do
+        allow(exact_price_attempt).to receive(:call).and_return(exact_transition_result)
+        allow_any_instance_of(described_class).to receive(:create_marine_reply).and_raise(ActiveRecord::RecordInvalid)
+
+        expect { described_class.perform_now(conversation, assistant, incoming.id) }.not_to raise_error
+        expect(product_state).to be_nil
+        expect(conversation.messages.outgoing).to be_empty
+        expect(claim_status).to eq('processing')
+      end
+    end
+
     it 'runs the unchanged legacy path when the exact-price target declines the turn' do
       stub_reasoning('response' => 'legacy fallback', 'action' => 'reply')
 

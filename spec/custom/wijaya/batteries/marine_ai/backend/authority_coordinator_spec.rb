@@ -140,7 +140,33 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
       expect(result.evidence_packet).to equal(packet)
       expect(result.price_range).to be_nil
       expect(result.source).to eq(:current_turn)
+      expect(result.proposed_state_transition).to eq(
+        schema_version: 'state_transition_v1', operation: :start, capability: 'price',
+        handoff_required: false,
+        authoritative_identity: { family_code: 'FAM1', variant_code: 'FAM1-CHILD', source: 'marine_catalog' }
+      )
+      expect(result.proposed_state_transition).to be_frozen
+      expect(result.proposed_state_transition[:authoritative_identity]).to be_frozen
       expect(result).to be_frozen
+    end
+
+    it 'uses :update only for the same active family and :start for expired or different-family flow state' do
+      same = call(flow_state: { 'status' => 'active', 'validated_family' => 'FAM1' })
+      expired = call(flow_state: { 'status' => 'expired', 'validated_family' => 'FAM1' })
+      switched = call(flow_state: { 'status' => 'active', 'validated_family' => 'OTHER' })
+
+      expect(same.proposed_state_transition[:operation]).to eq(:update)
+      expect(expired.proposed_state_transition[:operation]).to eq(:start)
+      expect(switched.proposed_state_transition[:operation]).to eq(:start)
+    end
+
+    it 'attaches no transition to rejected handoff or clarification outcomes' do
+      allow(planner).to receive(:call).and_return({ planner: :input })
+      allow(packet_builder).to receive(:build).and_return({ response_goals: %w[handoff] }.freeze)
+      expect(call.proposed_state_transition).to be_nil
+
+      allow(packet_builder).to receive(:build).and_return({ response_goals: %w[clarify_ambiguous_variant] }.freeze)
+      expect(call.proposed_state_transition).to be_nil
     end
 
     it 'maps a planner handoff goal to handoff/price_unavailable (may carry the packet)' do
@@ -453,11 +479,9 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
     end
   end
 
-  # price_range proposed-state-transition seam. ONLY an accepted price_range answer carries a
-  # non-handoff transition (operation :start/:update + the resolver family identity); an ambiguous
-  # price_range family carries the SAME closed envelope with handoff_required:true / identity nil and
-  # no state write. Every other capability (price / stock / listing / information) carries NO
-  # transition, so an existing family state is never overwritten.
+  # price_range proposed-state-transition seam. Accepted exact price is covered above and carries
+  # authoritative family+variant identity; accepted price_range carries family identity only. Ambiguous
+  # price_range retains its handoff envelope. Stock/listing/information remain state no-ops.
   describe 'price_range proposed_state_transition (state_transition_v1)' do
     before do
       allow(packet_builder).to receive(:build).and_return(

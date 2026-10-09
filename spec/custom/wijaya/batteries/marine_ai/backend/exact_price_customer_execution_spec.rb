@@ -66,14 +66,48 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
     deep_freeze(attrs)
   end
 
+  # Production-shaped exact-price Evidence fixture: identity is independently present in the product
+  # slot, variant slot, and canonical price fact. Display values are deliberately irrelevant to binding.
+  def exact_price_packet(family_code: 'BD', variant_code: 'BD-4', canonical_variant_code: variant_code)
+    deep_freeze(
+      evidence_version: 'marine_evidence_v2', generated_at: '2026-09-30T12:00:00Z',
+      response_goals: %w[answer_price], scenario: { key: 'scenario_5', intents: %w[price] },
+      validated_slots: {
+        product: { code: family_code, name: 'Synthetic family', attributes: {}, source: 'marine_catalog' },
+        variant: { code: variant_code, display_name: 'Synthetic variant', attributes: {},
+                   resolution_status: 'resolved', source: 'marine_catalog' }
+      },
+      facts: { price: exact_price_fact(canonical_variant_code) }, missing_slots: [], variant_candidates: [],
+      prohibited_claims: %w[exact_stock_quantity warehouse_location delivery_date unverified_discount stock],
+      response_constraints: { max_paragraphs: 2, role: 'marine_sales_assistant', handoff_self_reference: true },
+      customer_language: 'id'
+    )
+  end
+
+  def exact_price_fact(variant_code)
+    {
+      canonical: { variant_code: variant_code, currency: 'IDR', price_list_rate: '12500', uom: 'Yard' },
+      display: { product: 'display-is-not-authority', currency: 'Rp', amount: '12.500', uom: 'yard' },
+      policy_version: 'price-display-v1', source: 'catalog_price_repository', checked_at: '2026-09-30T12:00:00Z'
+    }
+  end
+
   def authority_result(outcome: Coordinator::OUTCOME_EVIDENCE_PACKET,
-                       reason: Coordinator::REASON_ACCEPTED, intents: %w[price], evidence_packet: packet,
-                       proposed_state_transition: nil)
+                       reason: Coordinator::REASON_ACCEPTED, intents: %w[price], evidence_packet: exact_price_packet,
+                       proposed_state_transition: :auto)
+    proposed_state_transition = exact_price_transition if proposed_state_transition == :auto && intents == %w[price]
+    proposed_state_transition = nil if proposed_state_transition == :auto
     Coordinator::Result.new(
       outcome_type: outcome, reason: reason, scenario_key: 'scenario_5',
       intents: deep_freeze(intents), source: :catalog, evidence_packet: evidence_packet,
       proposed_state_transition: proposed_state_transition
     ).freeze
+  end
+
+  def exact_price_transition(operation: :start, family_code: 'BD', variant_code: 'BD-4')
+    deep_freeze(schema_version: 'state_transition_v1', operation: operation, capability: 'price',
+                handoff_required: false,
+                authoritative_identity: { family_code: family_code, variant_code: variant_code, source: 'marine_catalog' })
   end
 
   # A valid, deep-frozen price_range proposed-state-transition envelope (the shape the AuthorityCoordinator
@@ -113,7 +147,7 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
   end
 
   it 'uses one Model 1 plan through authority and returns only deeply frozen deliverable text' do
-    evidence = packet
+    evidence = exact_price_packet
     accepted = authority_result(evidence_packet: evidence)
     wording = Struct.new(:ok?, :text, :reason).new(true, 'BD-4 Rp 12.500 per yard', :accepted)
     allow(authority_execution).to receive(:call).and_return(accepted)
@@ -255,6 +289,68 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
                                   evidence_packet: packet(goals: %w[answer_product_listing], facts: { price: { display: 'x' } }))
       allow(authority_execution).to receive(:call).and_return(mismatch)
       expect(execution.call).not_to be_deliverable
+      expect(presenter).not_to have_received(:call)
+    end
+  end
+
+  describe 'exact-price authoritative state transition' do
+    it 'requires and threads identity exactly bound to every authoritative field in a production-shaped packet' do
+      transition = exact_price_transition
+      evidence = exact_price_packet
+      allow(authority_execution).to receive(:call).and_return(
+        authority_result(evidence_packet: evidence, proposed_state_transition: transition)
+      )
+      allow(presenter).to receive(:call).and_return(Struct.new(:ok?, :text, :reason).new(true, 'Harga aman.', :accepted))
+
+      result = execution.call
+
+      expect(result).to be_deliverable
+      expect(result.transition).to equal(transition)
+      expect(presenter).to have_received(:call).with(hash_including(packet: evidence))
+    end
+
+    it 'fails closed before presentation for family, variant-slot, or canonical-price identity forgery' do
+      mismatches = [
+        [exact_price_transition(family_code: 'FORGED-FAMILY'), exact_price_packet],
+        [exact_price_transition(variant_code: 'FORGED-VARIANT'), exact_price_packet],
+        [exact_price_transition, exact_price_packet(variant_code: 'OTHER-VARIANT')],
+        [exact_price_transition, exact_price_packet(canonical_variant_code: 'OTHER-CANONICAL')],
+        [exact_price_transition, exact_price_packet(family_code: nil)]
+      ]
+
+      mismatches.each do |transition, evidence|
+        allow(authority_execution).to receive(:call).and_return(
+          authority_result(evidence_packet: evidence, proposed_state_transition: transition)
+        )
+        expect(execution.call).to have_attributes(status: :fallback, reason: :transition_required, transition: nil)
+      end
+      expect(presenter).not_to have_received(:call)
+    end
+
+    it 'fails closed before presentation when an accepted exact-price result has no transition' do
+      allow(authority_execution).to receive(:call).and_return(authority_result(proposed_state_transition: nil))
+
+      expect(execution.call).to have_attributes(status: :fallback, reason: :transition_required, transition: nil)
+      expect(presenter).not_to have_received(:call)
+    end
+
+    it 'rejects malformed or forged exact-price identities and crossed capability envelopes' do
+      malformed = [
+        deep_freeze(schema_version: 'state_transition_v1', operation: :start, capability: 'price',
+                    handoff_required: false, authoritative_identity: { family_code: 'BD', source: 'marine_catalog' }),
+        deep_freeze(schema_version: 'state_transition_v1', operation: :start, capability: 'price',
+                    handoff_required: false,
+                    authoritative_identity: { family_code: 'BD', variant_code: 'BD-4', source: 'forged' }),
+        deep_freeze(schema_version: 'state_transition_v1', operation: :start, capability: 'price',
+                    handoff_required: false,
+                    authoritative_identity: { family_code: 'BD', variant_code: 'BD-4', source: 'marine_catalog', price: '12500' }),
+        price_range_transition
+      ]
+
+      malformed.each do |transition|
+        allow(authority_execution).to receive(:call).and_return(authority_result(proposed_state_transition: transition))
+        expect(execution.call).to have_attributes(status: :fallback, reason: :transition_required, transition: nil)
+      end
       expect(presenter).not_to have_received(:call)
     end
   end
@@ -412,7 +508,10 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
       Marine::Backend::EvidencePacketBuilder.new(clock: -> { Time.utc(2026, 9, 30, 12, 0, 0) }).build(
         evidence_input: {
           scenario: { key: 'scenario_5' }, intents: %w[price], customer_language: 'id', response_goals: %w[answer_price],
-          validated_slots: { variant: { code: 'BD-4', resolution_status: 'resolved', source: 'marine_catalog', attributes: {} } },
+          validated_slots: {
+            product: { code: 'BD', name: 'Synthetic family', source: 'marine_catalog' },
+            variant: { code: 'BD-4', resolution_status: 'resolved', source: 'marine_catalog', attributes: {} }
+          },
           facts: { price: { canonical: { variant_code: 'BD-4', currency: 'IDR', price_list_rate: '12500', uom: 'Yard' },
                             display: { product: 'BD-4', currency: 'Rp', amount: '12.500', uom: 'yard' },
                             policy_version: 'price-display-v1', source: 'catalog_price_repository', checked_at: '2026-09-30T12:00:00Z' } },

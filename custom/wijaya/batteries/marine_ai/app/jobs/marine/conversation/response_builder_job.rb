@@ -152,7 +152,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       'source_type' => 'marine_backend_evidence_v2',
       'orchestration_path' => 'backend_evidence_target'
     }
-    # An accepted price_range target carries the closed proposed_state_transition that finalize applies
+    # Accepted exact-price and price_range targets carry closed proposed transitions that finalize applies
     # atomically with the reply; every other capability carries none (its state is left untouched).
     response['proposed_state_transition'] = result.transition if result.transition
     response
@@ -372,27 +372,86 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     end
   end
 
-  # Apply a Backend Evidence price_range proposed-state-transition inside the finalize transaction. The
-  # envelope was already validated at the ExactPriceCustomerExecution consumer boundary; this re-guards
-  # the minimum it needs (a start/update operation + a nonblank authoritative family_code) and writes
-  # ONLY the authoritative family — never a price/variant/quantity. A :start clears stale
-  # variant/catalog state (fresh flow); an :update refines the same active family (version + 1). A
-  # missing/malformed envelope writes nothing (fail closed). Replay never reaches here (the claim stops
-  # a duplicate before finalize), so the state version is never bumped twice.
+  # Apply only a closed, consumer-validated Backend Evidence transition inside the finalization lock.
+  # price_range stores family only; exact price stores Catalog-derived family+variant plus the bounded
+  # current intent and clears stale clarification metadata. Same-family updates preserve catalog markers;
+  # starts clear all prior variant/catalog/clarification context. No fact/prose enters state.
   def apply_state_transition(transition)
-    return unless transition.is_a?(Hash)
-
-    identity = transition[:authoritative_identity]
-    return unless identity.is_a?(Hash)
-
-    family = identity[:family_code].to_s.strip
-    return if family.empty?
+    attrs = state_transition_attributes(transition)
+    return if attrs.nil?
 
     store = Marine::Catalog::ProductFlowStateStore.new(conversation: @conversation)
-    case transition[:operation]
-    when :start then store.start!('validated_family' => family)
-    when :update then store.update!('validated_family' => family)
-    end
+    operation = effective_state_transition_operation(transition, store)
+    operation == :start ? store.start!(attrs) : store.update!(attrs)
+  end
+
+  def state_transition_attributes(transition)
+    return nil unless valid_state_transition_envelope?(transition)
+
+    identity = transition[:authoritative_identity]
+    family = bounded_transition_code(identity[:family_code])
+    return nil if family.nil?
+    return { 'validated_family' => family } if transition[:capability] == 'price_range'
+
+    variant = bounded_transition_code(identity[:variant_code])
+    return nil if variant.nil?
+
+    {
+      'validated_family' => family,
+      'validated_variant' => variant,
+      'current_intent' => 'price',
+      'expected_attributes' => [],
+      'clarification_kind' => nil,
+      'clarification_count' => nil,
+      'clarification_family_codes' => nil,
+      'requested_intents' => nil
+    }
+  end
+
+  def valid_state_transition_envelope?(transition)
+    return false unless transition.is_a?(Hash) && transition.frozen?
+    return false unless valid_state_transition_header?(transition)
+
+    valid_state_transition_identity?(transition[:authoritative_identity], transition[:capability])
+  end
+
+  def valid_state_transition_header?(transition)
+    transition.keys.sort == %i[authoritative_identity capability handoff_required operation schema_version] &&
+      transition[:schema_version] == 'state_transition_v1' &&
+      transition[:handoff_required] == false &&
+      %i[start update].include?(transition[:operation]) &&
+      %w[price price_range].include?(transition[:capability])
+  end
+
+  def valid_state_transition_identity?(identity, capability)
+    identity.is_a?(Hash) && identity.frozen? &&
+      identity[:source] == 'marine_catalog' && identity.keys.sort == state_transition_identity_keys(capability)
+  end
+
+  def state_transition_identity_keys(capability)
+    return %i[family_code source variant_code] if capability == 'price'
+
+    %i[family_code source]
+  end
+
+  def bounded_transition_code(value)
+    return nil unless value.is_a?(String)
+
+    code = value.strip
+    code.empty? || code.bytesize > 120 ? nil : code
+  end
+
+  # Recompute operation symmetrically under the final Conversation lock. An active same-family flow is
+  # always refined in place (preserving its catalog marker); missing, expired, malformed, or switched-family
+  # state always starts clean. The proposal's operation is validated as contract data but never trusted here.
+  def effective_state_transition_operation(transition, store)
+    flow = store.current_for_planning
+    family = transition.dig(:authoritative_identity, :family_code).to_s.strip
+    return :update if flow.is_a?(Hash) &&
+                      flow['status'] == Marine::Catalog::ProductFlowStateStore::STATUS_ACTIVE &&
+                      flow['validated_family'].to_s.strip == family
+
+    :start
   end
 
   # --- Message builders ------------------------------------------------------

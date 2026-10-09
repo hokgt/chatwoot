@@ -70,10 +70,10 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   IDENTITY_ANSWER_GOAL = { 'price_range' => 'answer_price_range', 'stock' => 'answer_stock' }.freeze
   IDENTITY_UNAVAILABLE_REASON = { 'price_range' => REASON_RANGE_UNAVAILABLE, 'stock' => REASON_STOCK_UNAVAILABLE }.freeze
 
-  # The price_range proposed-state-transition contract (state_transition_v1). ONLY an accepted price_range
-  # answer (operation + resolver family identity) or an ambiguous price_range family (handoff_required,
-  # nil identity) carries one; every other capability carries none, so an existing family state is never
-  # overwritten. The operation is derived from the resolved family vs. the read-only active flow snapshot
+  # The proposed-state-transition contract (state_transition_v1). Accepted exact price carries resolver
+  # family+variant identity; accepted price_range carries family identity, while an ambiguous price_range
+  # family carries a handoff-required nil identity. Other capabilities carry none. The operation is derived
+  # from the resolved family vs. the read-only active flow snapshot
   # through the existing ProductStateTransition helper (StateTransitionAdapter maps its operation) — never
   # from the untrusted CandidatePlan or any Model 2 / renderer text.
   PRICE_RANGE_INTENT = 'price_range'.freeze
@@ -156,8 +156,8 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
     end
 
     resolved = @resolver.call(trigger: trigger, flow_state: flow_state)
-    dispatch(authorized, resolved, trigger: trigger, history: history,
-                                   configured_language: configured_language)
+    context = { trigger: trigger, history: history, flow_state: flow_state, configured_language: configured_language }
+    dispatch(authorized, resolved, context)
   rescue StandardError
     self.class.stop(reason: REASON_INTERNAL_ERROR)
   end
@@ -167,11 +167,10 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   # Route an exact catalog identity into the price branch, or fail closed per the resolver status.
   # Every closed resolver status is handled EXPLICITLY; an unknown/malformed status fails closed to
   # stop/internal_error (it must NEVER fall through to the family range).
-  def dispatch(authorized, resolved, trigger:, history:, configured_language:)
+  def dispatch(authorized, resolved, context)
     case resolved.status
     when Resolver::STATUS_EXACT_FAMILY, Resolver::STATUS_EXACT_CHILD
-      with_language(authorized, resolved, trigger: trigger, history: history,
-                                          configured_language: configured_language)
+      with_language(authorized, resolved, context)
     when Resolver::STATUS_UNAVAILABLE
       terminal(OUTCOME_HANDOFF, REASON_CATALOG_UNAVAILABLE, authorized, resolved)
     when Resolver::STATUS_AMBIGUOUS
@@ -184,12 +183,13 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   end
 
   # Resolve the delivery language BEFORE the planner; a nil language fails closed factless.
-  def with_language(authorized, resolved, trigger:, history:, configured_language:)
-    language = resolve_language(resolved, trigger: trigger, history: history, configured_language: configured_language)
+  def with_language(authorized, resolved, context)
+    language = resolve_language(resolved, trigger: context[:trigger], history: context[:history],
+                                          configured_language: context[:configured_language])
     return terminal(OUTCOME_HANDOFF, REASON_LANGUAGE_UNRESOLVED, authorized, resolved) if language.nil?
 
     if resolved.status == Resolver::STATUS_EXACT_CHILD
-      evidence_dispatch(authorized, resolved, language)
+      evidence_dispatch(authorized, resolved, language, context[:flow_state])
     else
       range_dispatch(authorized, resolved)
     end
@@ -197,14 +197,16 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
 
   # Exact family + child → planner → evidence packet. A planner-produced handoff (price unavailable)
   # or clarify (exact-identity revalidation conflict) still carries its packet, with a closed reason.
-  def evidence_dispatch(authorized, resolved, language)
+  def evidence_dispatch(authorized, resolved, language, flow_state)
     input = @planner.call(product_intent: planner_input(resolved, language),
                           intents: authorized.intents, scenario: authorized.scenario)
     packet = @packet_builder.build(evidence_input: input)
     goals = packet[:response_goals]
 
     if goals.include?('answer_price')
-      terminal(OUTCOME_EVIDENCE_PACKET, REASON_ACCEPTED, authorized, resolved, evidence_packet: packet)
+      transition = exact_price_transition(resolved, flow_state)
+      terminal(OUTCOME_EVIDENCE_PACKET, REASON_ACCEPTED, authorized, resolved,
+               evidence_packet: packet, proposed_state_transition: transition)
     elsif goals.include?('handoff')
       terminal(OUTCOME_HANDOFF, REASON_PRICE_UNAVAILABLE, authorized, resolved, evidence_packet: packet)
     else
@@ -266,7 +268,8 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   def classify_identity_packet(packet, authorized, resolved, intent, flow_state)
     goals = packet[:response_goals]
     if goals.include?(IDENTITY_ANSWER_GOAL[intent])
-      # ONLY an accepted price_range answer carries the family state transition it must persist.
+      # In this price_range/stock branch, only accepted price_range carries a family transition;
+      # accepted exact price is handled separately by #evidence_dispatch with family+variant identity.
       transition = intent == PRICE_RANGE_INTENT ? price_range_transition(resolved, flow_state) : nil
       terminal(OUTCOME_EVIDENCE_PACKET, REASON_ACCEPTED, authorized, resolved, evidence_packet: packet, proposed_state_transition: transition)
     elsif goals.include?('handoff')
@@ -274,6 +277,28 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
     else
       terminal(OUTCOME_CLARIFY, clarify_reason(goals), authorized, resolved, evidence_packet: packet)
     end
+  end
+
+  # Accepted exact price establishes the resolver's Catalog-derived family+variant identity. The
+  # operation is :update only for the same active family; fresh, expired, and switched-family flows
+  # start clean. Blank/malformed identity fails closed to nil, which the customer consumer rejects.
+  def exact_price_transition(resolved, flow_state)
+    operation = price_range_operation(resolved, flow_state)
+    family = resolved.family_code.to_s.strip
+    variant = resolved.child_code.to_s.strip
+    return nil if operation.nil? || family.empty? || variant.empty?
+
+    deep_freeze(
+      schema_version: STATE_TRANSITION_SCHEMA_VERSION,
+      operation: operation,
+      capability: 'price',
+      handoff_required: false,
+      authoritative_identity: {
+        family_code: family.dup,
+        variant_code: variant.dup,
+        source: STATE_TRANSITION_SOURCE
+      }
+    )
   end
 
   # The closed, deep-frozen non-handoff price_range transition: operation derived from the resolved
