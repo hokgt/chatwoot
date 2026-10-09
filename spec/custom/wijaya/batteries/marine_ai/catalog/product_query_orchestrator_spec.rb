@@ -1285,12 +1285,14 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
     end
 
     # Bug 3 — the TRUSTED-CATALOG-TOKENS product-name path (not only the entity_candidates path the
-    # QLR-2200 tests exercise). The literal turn `baby doll ada` is a catalog product name plus one
-    # short non-linguistic token. The caller-injected trusted catalog tokens — the row-derived
-    # family name/code found by searching each turn token against the active families — subtract
-    # `baby doll`, so the turn carries no meaningful linguistic evidence and the volatile `en`
-    # provider guess is NOT honored. The data-driven trusted lookup is stubbed per query: `baby` and
-    # `doll` map to the active family { code: 'BD', name: 'Baby Doll' }; every other token is empty.
+    # QLR-2200 tests exercise). The caller-injected trusted catalog tokens — the row-derived family
+    # name/code found by searching each turn token against the active families — subtract `baby doll`
+    # from the current turn. For the opener `baby doll ada` that leaves ONE genuine non-product residue
+    # token (`ada`), which IS real linguistic content the provider read, so the current-turn provider
+    # language is now honored (:current_turn); only a ZERO-residue pure product name (`baby doll`)
+    # leaves nothing and still rejects the volatile provider guess. The data-driven trusted lookup is
+    # stubbed per query: `baby` and `doll` map to the active family { code: 'BD', name: 'Baby Doll' };
+    # every other token is empty.
     def trusted_baby_doll
       allow(family_repository).to receive(:active_candidates).and_return([])
       allow(family_repository).to receive(:active_candidates).with(query: 'baby', limit: anything).and_return([{ code: 'BD', name: 'Baby Doll' }])
@@ -1300,20 +1302,20 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       )
     end
 
-    it 'subtracts trusted catalog tokens for "baby doll ada" and resolves to the configured id (:configured)' do
+    it 'subtracts trusted catalog tokens for "baby doll ada" yet honors the one-residue provider language (:current_turn)' do
       trusted_baby_doll
 
       plan = orchestrator.process(text: 'baby doll ada', context: [], flow: nil, configured_language: 'id')
 
       expect(family_repository).to have_received(:active_candidates).with(query: 'baby', limit: anything)
-      expect(plan[:language]).to eq('id')
-      expect(plan[:language_resolution]).to eq(:configured)
+      expect(plan[:language]).to eq('en')
+      expect(plan[:language_resolution]).to eq(:current_turn)
     end
 
-    it 'records an authoritative :unresolved (no language) for "baby doll ada" via the trusted catalog path with no configured language' do
+    it 'records an authoritative :unresolved (no language) for a ZERO-residue pure product name with no configured language' do
       trusted_baby_doll
 
-      plan = orchestrator.process(text: 'baby doll ada', context: [], flow: nil)
+      plan = orchestrator.process(text: 'baby doll', context: [], flow: nil)
 
       expect(plan).not_to have_key(:language)
       expect(plan[:language_resolution]).to eq(:unresolved)

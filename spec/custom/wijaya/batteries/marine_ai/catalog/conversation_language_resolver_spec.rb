@@ -134,11 +134,74 @@ RSpec.describe Marine::Catalog::ConversationLanguageResolver do
       expect(result.reason).to eq(:current_turn)
     end
 
-    it 'an entity-only product-name turn with NO history fails closed to nil' do
-      result = resolve(text: 'satin velvet kakak', provider_language: 'no', trusted_tokens: %w[satin velvet])
+    it 'a ZERO-residue pure product-name turn with NO history fails closed to nil' do
+      # Every word token is a trusted catalog token, so the residue is EMPTY — a pure product name
+      # carries no linguistic content for either the provider or CLD3 and the provider guess is ignored.
+      result = resolve(text: 'satin velvet', provider_language: 'no', trusted_tokens: %w[satin velvet])
 
       expect(result.language).to be_nil
       expect(result.reason).to eq(:unresolved)
+    end
+  end
+
+  # The reported opener gap: a current product-bearing opener ("Baby doll ada?") whose authoritative
+  # Catalog subtraction leaves exactly ONE genuine non-product residue token ("ada"). That single
+  # residue token IS real linguistic content the upstream provider read, so when there is no reliable
+  # prior customer language to be sticky to the normalized provider language is honored. This is
+  # GENERIC — one residue token is enough for the provider regardless of which language it named — but
+  # the LOCAL detector still needs the stricter >= 2 residue tokens before its reading is trusted, and
+  # a ZERO-residue bare product/code still rejects the provider entirely.
+  describe 'opener provider language is honored on one meaningful residue token (reported gap)' do
+    it 'honors an Indonesian provider guess for a one-residue product opener (reason current_turn)' do
+      # "baby doll ada" minus trusted baby/doll leaves the single residue token "ada".
+      result = resolve(text: 'baby doll ada', provider_language: 'id', trusted_tokens: %w[baby doll])
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:current_turn)
+    end
+
+    it 'honors an English provider guess for the same one-residue shape (generic, not id-specific)' do
+      result = resolve(text: 'baby doll ada', provider_language: 'en', trusted_tokens: %w[baby doll])
+
+      expect(result.language).to eq('en')
+      expect(result.reason).to eq(:current_turn)
+    end
+
+    it 'still ignores the provider for a ZERO-residue bare product and falls to configured' do
+      # "baby doll" minus trusted baby/doll leaves NO residue token: provider still rejected.
+      result = resolve(text: 'baby doll', provider_language: 'id', trusted_tokens: %w[baby doll],
+                       configured_language: 'en')
+
+      expect(result.language).to eq('en')
+      expect(result.reason).to eq(:configured)
+    end
+
+    it 'still ignores the provider for a ZERO-residue bare code with no fallback (unresolved)' do
+      result = resolve(text: 'ZX-90', provider_language: 'en')
+
+      expect(result.language).to be_nil
+      expect(result.reason).to eq(:unresolved)
+    end
+
+    it 'does NOT invoke the local detector for a one-residue turn when the provider is silent' do
+      # Provider nil + a single residue token is below the detector's >= 2 bar: CLD3 is never consulted
+      # for the lone residue token and the turn falls through to the configured language unchanged.
+      result = resolve(text: 'baby doll ada', provider_language: nil, trusted_tokens: %w[baby doll],
+                       configured_language: 'id')
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:configured)
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new).with('ada')
+    end
+
+    it 'keeps a reliable prior customer language sticky over a one-residue current provider language' do
+      detections['halo berapa harganya kak'] = reliable('id')
+
+      result = resolve(text: 'baby doll ada', provider_language: 'en', trusted_tokens: %w[baby doll],
+                       context: [user('halo berapa harganya kak')])
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:prior_customer)
     end
   end
 
@@ -431,7 +494,10 @@ RSpec.describe Marine::Catalog::ConversationLanguageResolver do
   # entity_candidates + current trusted_tokens from @text only (regression guard for Bug 2).
   describe 'Bug 2: current-turn filtering is unchanged (regression)' do
     it 'still subtracts current trusted_tokens from the current turn on the opener path' do
-      result = resolve(text: 'satin velvet kakak', provider_language: 'no', trusted_tokens: %w[satin velvet])
+      # Without subtraction the two product tokens would be residue and the provider guess would be
+      # honored; subtracting them leaves ZERO residue, so the provider is rejected and the turn fails
+      # closed — proving the current trusted_tokens are still subtracted from @text.
+      result = resolve(text: 'satin velvet', provider_language: 'no', trusted_tokens: %w[satin velvet])
 
       expect(result.language).to be_nil
       expect(result.reason).to eq(:unresolved)

@@ -19,13 +19,15 @@
 #      one exists — the sticky history language wins over the current turn, so an intentional switch is
 #      not honored (assistant/history and role-less turns never determine customer language).
 #   2. ONLY when no reliable prior customer language exists (an opener / unreadable history) does the
-#      current turn decide: the provider language read from that turn wins, else a reliable local
-#      detection of it. A turn with no meaningful linguistic evidence (an entity/code/slot-only
-#      continuation) still yields nothing here — so a bare code / product-name opener never fixes the
-#      opener language off non-linguistic tokens. "Meaningful evidence" is generic — enough word tokens
-#      to be language-bearing AFTER the turn's own extracted entity/code/attribute candidates AND the
-#      caller-supplied trusted catalog tokens (row-derived family codes/names) are removed — never a
-#      language/phrase/product list; the trusted tokens are injected by the caller, so the resolver
+#      current turn decide: the provider language read from that turn wins once the turn has at least
+#      one meaningful residue token, else a reliable local detection of it once at least two remain. A
+#      turn with no meaningful linguistic evidence (an entity/code/slot-only continuation) still yields
+#      nothing here — so a bare code / product-name opener never fixes the opener language off
+#      non-linguistic tokens. "Meaningful evidence" is generic — word tokens that remain AFTER the
+#      turn's own extracted entity/code/attribute candidates AND the caller-supplied trusted catalog
+#      tokens (row-derived family codes/names) are removed — never a language/phrase/product list. The
+#      provider (an upstream reading of the turn) is trusted on a single such token; the local detector
+#      keeps the stricter two-token bar. The trusted tokens are injected by the caller, so the resolver
 #      still reads no catalog.
 #   3. Otherwise the assistant's configured operating language.
 #   4. Otherwise nil — the caller preserves its existing fail-closed unresolved/unsupported handling
@@ -51,6 +53,12 @@ module Marine
       # including multi-segment codes with several 3+ char runs — is never mistaken for real words.
       MEANINGFUL_TOKEN = /[[:alnum:]]{3,}/
       MIN_MEANINGFUL_TOKENS = 2
+
+      # The lower bar for TRUSTING the current turn's provider language: a single meaningful residue
+      # token is real linguistic content the upstream provider read, so one is enough to honor the
+      # provider guess (the local CLD3 fallback keeps the stricter MIN_MEANINGFUL_TOKENS bar). A
+      # ZERO-residue bare entity/code/product-name still clears neither bar.
+      MIN_PROVIDER_TOKENS = 1
 
       # Bug 2 — a defensive bound on the per-turn trusted-token array read off a (untrusted) context
       # entry, so a malformed/oversized metadata value can never create unbounded token work. The
@@ -118,29 +126,33 @@ module Marine
 
       # The current-turn language, consulted ONLY when no reliable prior customer language exists (an
       # opener or unreadable history) — mid-conversation the sticky prior history has already won, so the
-      # current turn never switches it. It is nil when the turn carries no meaningful linguistic evidence
-      # (an entity/code/slot-only continuation): for such a turn NEITHER the provider guess NOR a local
-      # detection of the bare entity is trusted — both are unreliable for a code — so the caller falls
-      # through to the configured language rather than fixing the opener language off a bare entity. A
-      # turn with real wording (even alongside an entity candidate) keeps its provider language, else a
-      # locally reliable reading of its linguistic RESIDUE — the turn minus its own extracted entity
-      # candidates AND the current trusted catalog tokens — so a product name in the turn never reaches
-      # the detector and never fixes the opener language off a product mention.
+      # current turn never switches it. Two evidence bars are read over the SAME residue token set (the
+      # turn minus its own extracted entity candidates AND the current trusted catalog tokens):
+      #   - the PROVIDER language, an upstream reading of the turn's real linguistic content, is honored
+      #     once at least MIN_PROVIDER_TOKENS residue token remains — one genuine non-entity word is
+      #     enough to give the provider something to read;
+      #   - otherwise a local CLD3 detection of that same linguistic RESIDUE, but only once the stricter
+      #     MIN_MEANINGFUL_TOKENS distinct residue tokens remain (mirroring the detector's own bound).
+      # A ZERO-residue entity/code/slot-only continuation clears NEITHER bar: NEITHER the provider guess
+      # NOR a local detection of the bare entity is trusted, so the caller falls through to the configured
+      # language rather than fixing the opener language off a bare entity. Subtracting the entity
+      # candidates AND trusted catalog tokens keeps a product name out of both the residue count and the
+      # detector input, so a product mention never fixes the opener language.
       def current_turn_language
-        return nil if entity_only?
+        residue_count = residue_tokens.length
+        return @provider_language if @provider_language && residue_count >= MIN_PROVIDER_TOKENS
+        return detected_reliable(residue_text(@text, @entity_candidates + @trusted_tokens)) if residue_count >= MIN_MEANINGFUL_TOKENS
 
-        @provider_language || detected_reliable(residue_text(@text, @entity_candidates + @trusted_tokens))
+        nil
       end
 
-      # An entity/code/slot-only turn: once the turn's own extracted entity candidates AND the
-      # caller-supplied trusted catalog tokens are removed, too few word tokens remain to be
-      # language-bearing. On the opener path (the only path that consults the current turn) this stops a
-      # bare code / product name from fixing the reply language off non-linguistic tokens — a scope label
-      # alone never erases the evidence of a genuinely meaningful current sentence. Trusting the injected
-      # catalog tokens closes the gap where the extractor's entity fields were incomplete yet a product
-      # name still sits in the turn.
-      def entity_only?
-        (text_tokens - candidate_tokens - trusted_token_set).length < MIN_MEANINGFUL_TOKENS
+      # The current turn's meaningful residue tokens: its distinct 3+ char alphanumeric tokens once its
+      # own extracted entity candidates AND the caller-supplied trusted catalog tokens are removed. The
+      # two current-turn evidence bars both measure their count, so a bare code / product name — of ANY
+      # shape — is never mistaken for real words and a scope label alone never erases a genuinely
+      # meaningful current sentence.
+      def residue_tokens
+        text_tokens - candidate_tokens - trusted_token_set
       end
 
       # Distinct 3+ char alphanumeric tokens in the current turn.
