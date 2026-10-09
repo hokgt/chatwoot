@@ -18,3 +18,9 @@ en:
         range_available: 'For %{product}, the price ranges from %{currency} %{min} to %{currency} %{max} per %{uom}.%{followup}'
         single_available: 'For %{product}, the price is %{currency} %{amount} per %{uom}.%{followup}'
         variant_followup: ' Which variant would you like?'
+      # Deterministic binary-stock fallback. Rendered by BinaryStockEvidenceRenderer from the frozen
+      # marine_evidence_v2 stock Evidence alone (validated variant code + binary status only); never
+      # surfaces a quantity, location, delivery time, or price.
+      stock:
+        available: '%{product} is currently in stock.'
+        unavailable: "I'm sorry, %{product} is currently out of stock."

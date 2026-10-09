@@ -51,9 +51,9 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
   let(:price_packet) { builder.build(evidence_input: price_input) }
   let(:clarify_packet) { builder.build(evidence_input: clarify_input) }
 
-  # Phase 1 (Opsi B): the EvidencePacketBuilder is price-only, so stock / product_overview packets
-  # are no longer builder-producible. The presenter still handles those answer goals as defense in
-  # depth, so they are hand-built as deeply-frozen v2 packets (scenario carries provenance only).
+  # Deeply-frozen v2 answer_stock / answer_product_overview packets (scenario carries provenance only).
+  # answer_stock now has a deterministic Evidence renderer (BinaryStockEvidenceRenderer); product_overview
+  # still has none and keeps the closed fallback.
   let(:stock_packet) do
     deep_freeze(
       evidence_version: 'marine_evidence_v2', generated_at: '2026-09-30T12:00:00Z',
@@ -85,6 +85,20 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
     when Array then value.each { |child| deep_freeze(child) }
     end
     value.freeze
+  end
+
+  # A v2 answer_stock packet (mutable; the caller deep-freezes) in a chosen language / binary status.
+  def stock_packet_for(language: 'id', status: 'available')
+    {
+      evidence_version: 'marine_evidence_v2', generated_at: '2026-09-30T12:00:00Z',
+      response_goals: %w[answer_stock], scenario: { key: 'scenario_8', intents: %w[stock] },
+      validated_slots: { variant: variant_slot },
+      facts: { stock: { status: status, source: 'stock_repository', checked_at: '2026-09-30T12:00:00Z' } },
+      missing_slots: [], variant_candidates: [],
+      prohibited_claims: %w[exact_stock_quantity warehouse_location delivery_date unverified_discount price],
+      response_constraints: { max_paragraphs: 2, role: 'marine_sales_assistant', handoff_self_reference: true },
+      customer_language: language
+    }
   end
 
   # A generator that returns a fixed text regardless of the (packet-only) prompt it is handed.
@@ -213,29 +227,25 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
   end
 
   describe 'semantic verifier is required for EVERY generated answer path' do
-    # stock / product_overview keep the closed :fact_unverified fallback (no deterministic Evidence
-    # renderer). Only answer_price (Step 18) and answer_product_listing (Step 17) render deterministic
-    # Evidence instead of failing closed — proven in their own blocks below.
-    it 'fails closed (no verifier) for stock and product_overview alike' do
-      {
-        stock_packet => 'BD-4 saat ini tersedia.',
-        overview_packet => 'BD mencakup berbagai kain berkualitas untuk kebutuhan Anda.'
-      }.each do |packet, text|
-        result = presenter.call(packet: packet, generator: generator(text), customer_request: 'x')
-        expect(result).to have_attributes(ok: false, reason: :fact_unverified, fallback: :deterministic)
-      end
+    # Without the required verifier the untrusted candidate is never accepted. product_overview has no
+    # deterministic Evidence renderer, so it keeps the closed :fact_unverified / :deterministic fallback.
+    # stock (answer_stock) now renders deterministic Evidence instead — proven in its own block below.
+    it 'fails closed (no verifier) for product_overview (no deterministic renderer)' do
+      result = presenter.call(packet: overview_packet,
+                              generator: generator('BD mencakup berbagai kain berkualitas untuk kebutuhan Anda.'), customer_request: 'x')
+      expect(result).to have_attributes(ok: false, reason: :fact_unverified, fallback: :deterministic)
     end
 
-    it 'fails closed when the injected verifier rejects (outcome flip)' do
-      result = presenter.call(packet: stock_packet, generator: generator('BD-4 saat ini tersedia.'),
+    it 'fails closed for product_overview when the injected verifier rejects (outcome flip)' do
+      result = presenter.call(packet: overview_packet, generator: generator('BD mencakup berbagai kain.'),
                               customer_request: 'x', fact_verifier: ->(**) { false })
       expect(result).to have_attributes(ok: false, reason: :fact_unverified, fallback: :deterministic)
     end
 
-    it 'delivers when the injected verifier confirms the binary outcome' do
+    it 'delivers the accepted candidate when the injected verifier confirms the binary stock outcome' do
       result = presenter.call(packet: stock_packet, generator: generator('BD-4 saat ini tersedia.'),
                               customer_request: 'x', fact_verifier: verifier_ok)
-      expect(result.ok?).to be(true)
+      expect(result).to have_attributes(ok: true, text: 'BD-4 saat ini tersedia.', reason: 'accepted')
     end
   end
 
@@ -404,6 +414,99 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
       )
       result = presenter.call(packet: unrenderable, generator: generator(nil), customer_request: 'x', fact_verifier: verifier_ok)
       expect(result).to have_attributes(ok: false, reason: :generation_failed, fallback: :handoff)
+    end
+  end
+
+  # BD-4 — a renderable answer_stock packet never fails closed on a candidate failure: EVERY failure
+  # (generation / fact / persona / semantic) DISCARDS the untrusted candidate and renders a deterministic
+  # reply from the packet's binary stock Evidence ALONE, returned ok=true with reason
+  # 'stock_evidence_fallback' and detail = the original failure reason, so the customer execution never
+  # invokes the legacy path. The exact-price and range renderers are tried FIRST and yield nil for a stock
+  # packet, so the stock renderer renders. A semantic accept returns the candidate unchanged, calling no
+  # deterministic renderer.
+  describe 'binary stock deterministic Evidence fallback' do
+    let(:deterministic_stock) { 'BD-4 saat ini tersedia.' }
+
+    it 'renders stock Evidence text when the generator fails' do
+      result = presenter.call(packet: stock_packet, generator: generator(nil), customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: deterministic_stock, reason: 'stock_evidence_fallback', detail: :generation_failed)
+    end
+
+    it 'discards a fact-violating candidate (unauthorized price claim) and renders stock Evidence text' do
+      result = presenter.call(packet: stock_packet, generator: generator('BD-4 saat ini tersedia dengan harga Rp 99.999 per yard.'),
+                              customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: deterministic_stock, reason: 'stock_evidence_fallback', detail: :fact_rejected)
+      expect(result.text).not_to include('99.999')
+    end
+
+    it 'discards a persona self-deflection candidate and renders stock Evidence text' do
+      result = presenter.call(packet: stock_packet, generator: generator('BD-4 tersedia. Silakan hubungi tim sales kami.'),
+                              customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: deterministic_stock, reason: 'stock_evidence_fallback', detail: :persona_rejected)
+      expect(result.text).not_to match(/hubungi tim sales/i)
+    end
+
+    it 'discards a semantically-unverified candidate (false / raise / missing / non-callable / non-true) and renders stock Evidence text' do
+      candidate = 'Untuk BD-4, stoknya tersedia ya.'
+      [->(**) { false }, ->(**) { raise 'boom' }, nil, Object.new, ->(**) { 'yes' }].each do |verifier|
+        result = presenter.call(packet: stock_packet, generator: generator(candidate), customer_request: 'x', fact_verifier: verifier)
+        expect(result).to have_attributes(ok: true, text: deterministic_stock, reason: 'stock_evidence_fallback', detail: :fact_unverified)
+        expect(result.text).not_to include('Untuk BD-4', 'stoknya')
+      end
+    end
+
+    it 'renders the en / unavailable stock Evidence text via the real renderer' do
+      en_available = deep_freeze(stock_packet_for(language: 'en', status: 'available'))
+      id_unavailable = deep_freeze(stock_packet_for(language: 'id', status: 'unavailable'))
+
+      en = presenter.call(packet: en_available, generator: generator(nil), customer_request: 'x', fact_verifier: verifier_ok)
+      expect(en).to have_attributes(ok: true, text: 'BD-4 is currently in stock.', reason: 'stock_evidence_fallback')
+
+      id = presenter.call(packet: id_unavailable, generator: generator(nil), customer_request: 'x', fact_verifier: verifier_ok)
+      expect(id).to have_attributes(ok: true, text: 'Mohon maaf, BD-4 saat ini sedang habis.', reason: 'stock_evidence_fallback')
+    end
+
+    it 'tries the exact-price and range renderers (both nil for a stock packet) BEFORE the stock renderer' do
+      exact_nil = instance_double(Marine::Backend::ExactPriceEvidenceRenderer, call: nil)
+      range_nil = instance_double(Marine::Backend::PriceRangeEvidenceRenderer, call: nil)
+      presenter_with_spies = described_class.new(price_renderer: exact_nil, price_range_renderer: range_nil)
+
+      result = presenter_with_spies.call(packet: stock_packet, generator: generator(nil), customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: deterministic_stock, reason: 'stock_evidence_fallback')
+      expect(exact_nil).to have_received(:call)
+      expect(range_nil).to have_received(:call)
+    end
+
+    it 'uses the INJECTED stock renderer (verifying double) for the deterministic text' do
+      stock_double = instance_double(Marine::Backend::BinaryStockEvidenceRenderer, call: 'STOCK-DET')
+      presenter_with_stock = described_class.new(stock_renderer: stock_double)
+
+      result = presenter_with_stock.call(packet: stock_packet, generator: generator(nil), customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: 'STOCK-DET', reason: 'stock_evidence_fallback', detail: :generation_failed)
+    end
+
+    it 'returns the accepted candidate verbatim and calls the stock renderer NOT at all when the verifier confirms' do
+      stock_spy = instance_spy(Marine::Backend::BinaryStockEvidenceRenderer)
+      presenter_with_spy = described_class.new(stock_renderer: stock_spy)
+
+      result = presenter_with_spy.call(packet: stock_packet, generator: generator(deterministic_stock),
+                                       customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: deterministic_stock, reason: 'accepted')
+      expect(stock_spy).not_to have_received(:call)
+    end
+
+    it 'preserves the closed :fact_unverified failure byte-for-byte when the stock renderer returns nil' do
+      stock_nil = double('stock_renderer', call: nil)
+      presenter_with_nil = described_class.new(stock_renderer: stock_nil)
+
+      result = presenter_with_nil.call(packet: stock_packet, generator: generator('Untuk BD-4, stoknya tersedia ya.'), customer_request: 'x')
+      expect(result).to have_attributes(ok: false, text: nil, reason: :fact_unverified, fallback: :deterministic)
+    end
+
+    it 'leaves a non-stock (product_overview) packet closed byte-for-byte (stock renderer yields nil)' do
+      result = presenter.call(packet: overview_packet,
+                              generator: generator('BD mencakup berbagai kain berkualitas.'), customer_request: 'x')
+      expect(result).to have_attributes(ok: false, reason: :fact_unverified, fallback: :deterministic)
     end
   end
 

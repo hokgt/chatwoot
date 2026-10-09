@@ -15,3 +15,9 @@ id:
         range_available: 'Untuk produk %{product}, harganya mulai dari %{currency} %{min} sampai %{currency} %{max} per %{uom}.%{followup}'
         single_available: 'Untuk produk %{product}, harganya %{currency} %{amount} per %{uom}.%{followup}'
         variant_followup: ' Mau varian yang mana?'
+      # Deterministic binary-stock fallback. Rendered by BinaryStockEvidenceRenderer from the frozen
+      # marine_evidence_v2 stock Evidence alone (validated variant code + binary status only); never
+      # surfaces a quantity, location, delivery time, or price.
+      stock:
+        available: '%{product} saat ini tersedia.'
+        unavailable: 'Mohon maaf, %{product} saat ini sedang habis.'

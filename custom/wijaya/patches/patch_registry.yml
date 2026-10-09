@@ -1346,6 +1346,14 @@ patches:
       # execution never invokes the legacy path. answer_price_range goal only; every other goal keeps its
       # existing closed fallback.
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/price_range_evidence_renderer.rb
+      # Binary stock — deterministic answer_stock Evidence renderer. For a renderable answer_stock packet
+      # EVERY Model 2 candidate failure (generation / fact / persona / semantic) discards the untrusted
+      # candidate and renders the binary availability from the marine_evidence_v2 stock Evidence alone,
+      # through backend-owned stock id/en templates (validated variant code + available/unavailable status
+      # only; never a quantity, location, delivery time, or price), returned ok=true so the customer
+      # execution never invokes the legacy path. answer_stock goal only; every other goal keeps its
+      # existing closed fallback.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/binary_stock_evidence_renderer.rb
       # Marine Phase 3 — approved-only, assistant-scoped product-description evidence source for the
       # product_information listing path. One bounded approved knowledge-base query, exact normalized
       # code/name binding, closed per-authorized-product evidence only (never adds/invents a product).
@@ -1951,6 +1959,8 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/backend/exact_price_evidence_renderer_spec.rb
       # Checkpoint B — deterministic family price-RANGE Evidence renderer spec (19-gate contract).
       - spec/custom/wijaya/batteries/marine_ai/backend/price_range_evidence_renderer_spec.rb
+      # Binary stock — deterministic answer_stock Evidence renderer spec (real builder packet + fail-closed gates).
+      - spec/custom/wijaya/batteries/marine_ai/backend/binary_stock_evidence_renderer_spec.rb
       # Marine Phase 3 — approved product-description evidence source spec.
       - spec/custom/wijaya/batteries/marine_ai/backend/approved_product_description_source_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/resolve_any_spec.rb

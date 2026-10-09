@@ -413,15 +413,17 @@ RSpec.describe 'Marine::Backend Phase 6 unified customer orchestration', type: :
       expect(@fact_verifier).to have_received(:call).once
     end
 
-    it 'rejects a stock candidate that smuggles a quantity — it is never deliverable' do
+    it 'discards a stock candidate that smuggles a quantity and renders deterministic binary-stock Evidence' do
       allow(@catalog_resolver).to receive(:call).and_return(resolver_result(status: :exact_child, child_code: 'BD-4'))
       stub_decision(normalized_plan(intents: %w[stock]))
       @model2 = 'Ya, Santorini BD varian BD-4 tersedia, ada 25 unit di gudang.'
 
       result = execution.call
 
-      expect(result).not_to be_deliverable
-      expect(result.status).to eq(:fallback)
+      expect(result).to be_deliverable
+      expect(result.text).to eq('BD-4 saat ini tersedia.')
+      # The smuggled quantity / warehouse claim never reaches the customer.
+      expect(result.text).not_to match(/25|unit|gudang/)
       expect(@fact_verifier).not_to have_received(:call)
     end
   end
