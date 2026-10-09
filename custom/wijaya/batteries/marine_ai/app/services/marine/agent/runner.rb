@@ -58,7 +58,7 @@ class Marine::Agent::Runner
   # and RAG paths ground on the SAME prior turns and receive the trigger exactly once. A legacy
   # (source-less) or direct-unit run has no trigger and falls back to the caller-supplied
   # additional_message / message_history unchanged.
-  def run(additional_message: nil, message_history: []) # rubocop:disable Metrics/MethodLength
+  def run(additional_message: nil, message_history: [], advisory_memory: nil)
     # Reset the per-run Gate-G signal before routing so a prior turn's EXACT approved-FAQ hit can
     # never silently bypass the domain-boundary classifier for a later unrelated turn if this Runner
     # instance is ever reused (a fresh instance is created per call today; this keeps that invariant
@@ -80,9 +80,7 @@ class Marine::Agent::Runner
     scenario = select_scenario(query, history)
     tool_slugs = resolved_tool_slugs(scenario)
 
-    payload = response_generator.generate(additional_message: trigger, message_history: history,
-                                          opening: interaction_opening?(context, history),
-                                          exact_knowledge_result: @faq_precedence_result)
+    payload = generated_response(context, history, trigger, advisory_memory)
     enriched = preserve_playground_state(enrich(payload, scenario, tool_slugs))
 
     log_result(enriched)
@@ -103,6 +101,27 @@ class Marine::Agent::Runner
     return nil unless message && conversation
 
     Marine::Conversation::ContextBuilder.new(conversation: conversation, trigger_message: message).build
+  end
+
+  # Advisory memory is allowed only at the non-authoritative response-generation
+  # boundary. Canonical history used by product/security/scenario paths stays public-only.
+  def generated_response(context, history, trigger, fallback_memory)
+    response_generator.generate(
+      additional_message: trigger,
+      message_history: personalization_history(history, advisory_memory_for(context, fallback_memory)),
+      opening: interaction_opening?(context, history),
+      exact_knowledge_result: @faq_precedence_result
+    )
+  end
+
+  def advisory_memory_for(context, fallback)
+    context ? context.advisory_memory : fallback
+  end
+
+  def personalization_history(history, advisory_memory)
+    return history if advisory_memory.blank?
+
+    [{ role: 'assistant', content: advisory_memory }] + history
   end
 
   # Canonical interaction phase for the greeting gate. A trigger-bound run uses the

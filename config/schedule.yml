@@ -90,3 +90,13 @@ wijaya_deferred_assignment_recovery_drainer_job:
   class: 'Wijaya::Batteries::DeferredAutoAssignment::RecoveryDrainerJob'
   queue: scheduled_jobs
 # WIJAYA_CUSTOM_END deferred_auto_assignment
+
+# WIJAYA_CUSTOM_START marine_ai
+# Daily 02:00 Asia/Jakarta checkpoint for unresolved, idle Marine conversations.
+# The battery job is self-gating: it skips disabled assistants, resolved conversations,
+# active conversations, and ranges without a new public incoming customer message.
+wijaya_marine_memory_checkpoint_job:
+  cron: '0 2 * * * Asia/Jakarta'
+  class: 'Marine::Memory::CheckpointJob'
+  queue: low
+# WIJAYA_CUSTOM_END marine_ai

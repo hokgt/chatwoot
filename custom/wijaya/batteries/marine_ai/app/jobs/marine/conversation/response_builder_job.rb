@@ -76,7 +76,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     return chat.generate_response(message_history: collect_previous_messages) if trigger.nil?
 
     context = Marine::Conversation::ContextBuilder.new(conversation: @conversation, trigger_message: trigger).build
-    chat.generate_response(additional_message: context.trigger, message_history: context.history)
+    chat.generate_response(additional_message: context.trigger, message_history: context.history,
+                           advisory_memory: context.advisory_memory)
   end
 
   # The latest public incoming turn, chosen deterministically by (created_at, id) — the same

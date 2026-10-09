@@ -372,6 +372,21 @@ RSpec.describe Marine::Agent::Runner do
       )
     end
 
+    it 'keeps advisory stale-product memory out of product authority while allowing response personalization' do
+      memory = '[ADVISORY HISTORICAL MEMORY] Previously selected valid variant ABC.'
+      reader = instance_double(Marine::Memory::Reader, advisory_envelope: memory)
+      allow(Marine::Memory::Reader).to receive(:new).with(conversation: conversation).and_return(reader)
+
+      runner.run
+
+      expect(orchestrator).to have_received(:process).with(
+        hash_including(text: 'current customer turn', context: canonical_history, suppressed: false)
+      )
+      expect(generator).to have_received(:generate).with(
+        hash_including(message_history: [{ role: 'assistant', content: memory }] + canonical_history)
+      )
+    end
+
     it 'gives the RAG ResponseGenerator the same canonical history and the separate trigger' do
       runner.run
 

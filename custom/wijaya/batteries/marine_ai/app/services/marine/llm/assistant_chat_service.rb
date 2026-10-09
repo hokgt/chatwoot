@@ -11,12 +11,12 @@ class Marine::Llm::AssistantChatService
 
   # `role:` is accepted for signature parity with Captain::Llm::AssistantChatService#generate_response;
   # the Marine agent runner derives role from message_history, so it is not forwarded here.
-  def generate_response(additional_message: nil, message_history: [], role: 'user') # rubocop:disable Lint/UnusedMethodArgument
+  def generate_response(additional_message: nil, message_history: [], advisory_memory: nil, role: 'user') # rubocop:disable Lint/UnusedMethodArgument
     Marine::Agent::Runner.new(
       assistant: @assistant,
       conversation: @conversation,
       source: @source,
       state_token: @state_token
-    ).run(additional_message: additional_message, message_history: message_history)
+    ).run(additional_message: additional_message, message_history: message_history, advisory_memory: advisory_memory)
   end
 end

@@ -567,7 +567,21 @@ require_file custom/wijaya/batteries/marine_ai/app/services/marine/copilot/rewri
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/copilot/translate_service.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/copilot/follow_up_service.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/memory/contact_notes_service.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/memory/marker.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/memory/lifecycle_policy.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/memory/reader.rb
 require_file custom/wijaya/batteries/marine_ai/app/jobs/marine/memory/generate_contact_notes_job.rb
+require_file custom/wijaya/batteries/marine_ai/app/jobs/marine/memory/checkpoint_job.rb
+require_file custom/wijaya/batteries/marine_ai/patch/apply_patches.py
+require_file spec/custom/wijaya/batteries/marine_ai/memory/checkpoint_job_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/memory/reader_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/memory/schedule_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/conversation/memory_context_spec.rb
+require_marker config/schedule.yml "WIJAYA_CUSTOM_START marine_ai"
+require_marker config/schedule.yml "WIJAYA_CUSTOM_END marine_ai"
+require_marker config/schedule.yml "wijaya_marine_memory_checkpoint_job:"
+require_marker config/schedule.yml "Asia/Jakarta"
+require_marker config/schedule.yml "class: 'Marine::Memory::CheckpointJob'"
 require_file custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/tasks_controller.rb
 require_file custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/assistants_controller.rb
 require_file custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/documents_controller.rb
