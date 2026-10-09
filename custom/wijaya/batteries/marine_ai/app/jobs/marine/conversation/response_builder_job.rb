@@ -620,6 +620,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # The localized (and, for a DIRECT catalog caption, naturalized) text for the predicted outcome.
   def prepared_catalog_text(outcome, plan, flow, document)
     return price_range_prepared_text(plan, outcome) if price_range_reply?(plan)
+    return catalog_offer_prepared_text(plan, outcome) if catalog_offer_reply?(plan)
 
     english = deterministic_catalog_text(outcome, plan, flow, document)
     return catalog_caption_text(plan, english) if outcome == CATALOG_DELIVER
@@ -629,6 +630,20 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
   def price_range_reply?(plan)
     plan.dig(:reply, :kind) == :price_range
+  end
+
+  def catalog_offer_reply?(plan)
+    plan.dig(:reply, :kind) == :catalog_offer
+  end
+
+  # The proactive nonnumeric catalog-offer caption, OUTCOME-TRUTHFUL: it claims the catalog is shared
+  # only when a native attachment is actually delivered this turn (CATALOG_DELIVER); otherwise it asks
+  # for the exact code without claiming attachment. Localized with the descriptor so the row-derived
+  # family label stays literal in any translation. No provider/network call and no partial/raw value.
+  def catalog_offer_prepared_text(plan, outcome)
+    descriptor = plan[:reply]
+    english = presenter.catalog_offer_text(descriptor, catalog_attached: outcome == CATALOG_DELIVER)
+    localized_product_text(english, action: plan[:action], descriptor: descriptor)
   end
 
   # The locale-safe, outcome-truthful family price RANGE caption via the shared composer (reusing the

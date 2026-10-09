@@ -105,6 +105,7 @@ RSpec.describe 'Marine product flow cross-component regression' do
       case kind
       when :parent_info then renderer.parent_info(code: 'FAM-1', name: 'Impeller')
       when :catalog then renderer.catalog(code: 'FAM-1', name: 'Impeller')
+      when :catalog_offer then renderer.catalog_offer(code: 'FAM-1', name: 'Impeller')
       when :variant_info then renderer.variant_info({ code: 'FAM-1' }, 'C-1')
       when :price_available then renderer.price_available({ price_list_rate: '10.00', currency: 'USD', uom: 'ea' }, 'C-1')
       # A digit-free validated code so the "stock text never contains a digit" quantity invariant below

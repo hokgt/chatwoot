@@ -109,9 +109,62 @@ RSpec.describe Marine::Catalog::ReplyPresenter do
       expect(text.downcase).not_to include('colour')
     end
 
+    it 'renders a catalog_offer descriptor conservatively (no attachment claim) by default' do
+      # reply_text is the conservative/no-attachment default: it introduces the family, says the
+      # exact price depends on the chosen variant, and asks for the exact code WITHOUT claiming a
+      # catalog was attached/shown (the outcome-aware attached wording comes via #catalog_offer_text).
+      descriptor = renderer.catalog_offer(code: 'BD', name: 'Baby Doll')
+      text = presenter.reply_text(plan(action: :send_catalog, reply: descriptor, changes: { 'expected_attributes' => %w[Shade] }))
+
+      expect(text).to eq(
+        'We carry Baby Doll in several variants, and the exact price depends on the variant you choose. ' \
+        "Which variant would you like? Please reply with the exact variant code and I'll confirm the exact price for you."
+      )
+      expect(text).not_to include('shown in the catalog')
+      expect(text.downcase).not_to include('shade')
+    end
+
     it 'falls back to the generic product prompt for an unknown descriptor' do
       expect(presenter.reply_text(plan(action: :reply, reply: { kind: :something_new })))
         .to eq('Could you share a little more detail about the product you need?')
+    end
+  end
+
+  describe '#catalog_offer_text (proactive nonnumeric catalog offer, outcome-aware)' do
+    let(:descriptor) { renderer.catalog_offer(code: 'BD', name: 'Baby Doll') }
+
+    it 'claims the catalog is shared and points at the code shown there when a native catalog is delivered' do
+      text = presenter.catalog_offer_text(descriptor, catalog_attached: true)
+
+      expect(text).to eq(
+        'We carry Baby Doll in several variants, and the exact price depends on the variant you choose. ' \
+        "I've shared our Baby Doll catalog above. " \
+        "Which variant would you like? Please reply with the exact variant code shown in the catalog and I'll confirm the exact price for you."
+      )
+    end
+
+    it 'never claims a catalog is shown when none is attached, but stays active and asks for the exact code' do
+      text = presenter.catalog_offer_text(descriptor, catalog_attached: false)
+
+      expect(text).to eq(
+        'We carry Baby Doll in several variants, and the exact price depends on the variant you choose. ' \
+        "Which variant would you like? Please reply with the exact variant code and I'll confirm the exact price for you."
+      )
+      expect(text).not_to include('shown in the catalog')
+      expect(text.downcase).not_to include('shared')
+    end
+
+    it 'names only the row-derived family and never a price, quantity, conflict, or attribute label' do
+      text = presenter.catalog_offer_text(renderer.catalog_offer(code: 'BD', name: 'Baby Doll'), catalog_attached: false)
+
+      expect(text).to include('Baby Doll')
+      expect(text).not_to match(/\d/)
+      %w[colour warna shade size out of stock unavailable conflict].each { |term| expect(text.downcase).not_to include(term) }
+    end
+
+    it 'falls back to a generic family label when no name/code is present' do
+      expect(presenter.catalog_offer_text({ kind: :catalog_offer }, catalog_attached: false))
+        .to start_with('We carry that product in several variants')
     end
   end
 
@@ -121,24 +174,25 @@ RSpec.describe Marine::Catalog::ReplyPresenter do
                            { code: 'BD', name: 'Baby Doll' })
     end
 
-    it 'points at the attached catalog when a native catalog is actually delivered' do
+    it 'introduces the family, grounds the range, then points at the attached catalog when one is delivered' do
       expect(presenter.price_range_text(descriptor, catalog_attached: true))
-        .to eq('Prices for Baby Doll range from IDR 12,500 to IDR 45,000 per yard. ' \
+        .to eq('We carry Baby Doll. Prices range from IDR 12,500 to IDR 45,000 per yard. ' \
                "Please reply with the exact variant code shown in the catalog and I'll confirm the exact price for you.")
     end
 
-    it 'never claims a catalog is shown when no attachment is delivered' do
+    it 'leads with the family introduction and never claims a catalog is shown when no attachment is delivered' do
       text = presenter.price_range_text(descriptor, catalog_attached: false)
-      expect(text).to eq('Prices for Baby Doll range from IDR 12,500 to IDR 45,000 per yard. ' \
+      expect(text).to eq('We carry Baby Doll. Prices range from IDR 12,500 to IDR 45,000 per yard. ' \
                          "Please reply with the exact variant code and I'll confirm the exact price for you.")
+      expect(text).to start_with('We carry Baby Doll.')
       expect(text).not_to include('shown in the catalog')
     end
 
-    it 'renders a single amount when the endpoints are equal' do
+    it 'renders a single amount when the endpoints are equal, still leading with the family introduction' do
       equal = renderer.price_range({ status: :available, min: '12,500', max: '12,500', currency: 'IDR', uom: 'yard' },
                                    { code: 'BD', name: 'Baby Doll' })
       expect(presenter.price_range_text(equal, catalog_attached: true))
-        .to start_with('The price for Baby Doll is IDR 12,500 per yard.')
+        .to start_with('We carry Baby Doll. The price is IDR 12,500 per yard.')
     end
   end
 

@@ -27,7 +27,7 @@ module Marine
         price_available price_unavailable price_conflict price_range
         stock_available stock_empty stock_unavailable
         clarify_family clarify_variant
-        catalog catalog_unavailable unsupported
+        catalog catalog_offer catalog_unavailable unsupported
         composite
       ].freeze
 
@@ -53,6 +53,18 @@ module Marine
       # fallback instead of asking for a variant.
       def catalog(family)
         descriptor(:catalog, family_code: family[:code], family_name: family[:name])
+      end
+
+      # A PROACTIVE, nonnumeric catalog OFFER for a validated family whose native catalog will be sent
+      # but for which no complete authoritative price range can be safely offered. Carries ONLY the
+      # bounded/control-char-cleaned validated family identity so a natural reply can introduce the
+      # family — never a price, stock quantity, row, attribute label, repository state, or arbitrary
+      # text. A blank/non-scalar family scalar is dropped to nil at the same trust boundary as the
+      # other descriptors.
+      def catalog_offer(family)
+        descriptor(:catalog_offer,
+                   family_code: safe_scalar(family[:code], MAX_CODE_NAME_LENGTH),
+                   family_name: safe_scalar(family[:name], MAX_CODE_NAME_LENGTH))
       end
 
       # Supported info for a validated, row-derived child within a validated family.

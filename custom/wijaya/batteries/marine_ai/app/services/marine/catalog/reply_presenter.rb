@@ -168,6 +168,31 @@ module Marine
       PRICE_RANGE_ASK_WITH_CATALOG = "Please reply with the exact variant code shown in the catalog and I'll confirm the exact price for you.".freeze
       PRICE_RANGE_ASK_WITHOUT_CATALOG = "Please reply with the exact variant code and I'll confirm the exact price for you.".freeze
 
+      # The proactive nonnumeric catalog-OFFER ask, outcome-aware like the price-range ask: it asks
+      # WHICH variant the customer wants and for the exact variant code, pointing at the code shown in
+      # the attached catalog ONLY when a native catalog is actually delivered this turn; otherwise it
+      # makes no claim that a catalog is visible.
+      CATALOG_OFFER_ASK_WITH_CATALOG = "Which variant would you like? #{PRICE_RANGE_ASK_WITH_CATALOG}".freeze
+      CATALOG_OFFER_ASK_WITHOUT_CATALOG = "Which variant would you like? #{PRICE_RANGE_ASK_WITHOUT_CATALOG}".freeze
+
+      # The deterministic caption for a PROACTIVE nonnumeric catalog OFFER (:catalog_offer): it
+      # introduces the validated family, states it is carried in several variants whose exact price
+      # depends on the chosen variant, and asks for the exact variant code. It names ONLY the
+      # row-derived family — never a price, stock quantity, missing price, conflict, coverage count,
+      # repository state, or any internal attribute label. OUTCOME-AWARE: when a native catalog is
+      # actually attached this turn (`catalog_attached: true`) it says the catalog is shared and points
+      # at the code shown there; otherwise it claims no attachment and simply asks for the exact code.
+      # #reply_text renders the conservative no-attachment form by default.
+      def catalog_offer_text(descriptor, catalog_attached:)
+        family = catalog_family_name(descriptor)
+        intro = "We carry #{family} in several variants, and the exact price depends on the variant you choose."
+        if catalog_attached
+          "#{intro} I've shared our #{family} catalog above. #{CATALOG_OFFER_ASK_WITH_CATALOG}"
+        else
+          "#{intro} #{CATALOG_OFFER_ASK_WITHOUT_CATALOG}"
+        end
+      end
+
       private
 
       def dynamic_product_text(descriptor) # rubocop:disable Metrics/CyclomaticComplexity -- a flat per-kind dispatch
@@ -179,6 +204,7 @@ module Marine
         when :clarify_family then clarify_family_text(descriptor[:candidates])
         when :clarify_variant then clarify_variant_text
         when :catalog then catalog_ready_text(descriptor)
+        when :catalog_offer then catalog_offer_text(descriptor, catalog_attached: false)
         end
       end
 
@@ -233,18 +259,21 @@ module Marine
         "Here is the product catalog for #{catalog_family_name(descriptor)}."
       end
 
-      # The GROUNDED range clause only (no ask): "Prices for <family> range from <A> to <B> per <uom>"
-      # (or a single amount when min == max). Currency and both amounts are the display facts the
-      # PriceRangeReplyComposer already formatted; the family name is a translatable display label.
+      # The GROUNDED range clause only (no ask): it LEADS naturally with the family availability
+      # ("We carry <family>.") and then states the formatted range — "We carry <family>. Prices range
+      # from <A> to <B> per <uom>" (or a single amount when min == max). Currency and both amounts are
+      # the display facts the PriceRangeReplyComposer already formatted (kept byte-exact through the
+      # mask/localizer); the family name is a translatable display label.
       def price_range_grounded(descriptor)
         family = catalog_family_name(descriptor)
         min = descriptor[:price_min]
         max = descriptor[:price_max]
-        if min == max
-          "The price for #{family} is #{range_amount(descriptor, min)}#{range_per(descriptor)}"
-        else
-          "Prices for #{family} range from #{range_amount(descriptor, min)} to #{range_amount(descriptor, max)}#{range_per(descriptor)}"
-        end
+        amounts = if min == max
+                    "The price is #{range_amount(descriptor, min)}#{range_per(descriptor)}"
+                  else
+                    "Prices range from #{range_amount(descriptor, min)} to #{range_amount(descriptor, max)}#{range_per(descriptor)}"
+                  end
+        "We carry #{family}. #{amounts}"
       end
 
       def range_amount(descriptor, value)

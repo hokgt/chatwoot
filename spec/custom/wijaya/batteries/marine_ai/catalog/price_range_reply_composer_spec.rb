@@ -50,7 +50,7 @@ RSpec.describe Marine::Catalog::PriceRangeReplyComposer, type: :model do
 
       expect(decision).to be_deliver
       expect(decision.text).to eq(
-        'Prices for Baby Doll range from IDR 12,500 to IDR 45,000 per yard. ' \
+        'We carry Baby Doll. Prices range from IDR 12,500 to IDR 45,000 per yard. ' \
         "Please reply with the exact variant code shown in the catalog and I'll confirm the exact price for you."
       )
     end
@@ -61,17 +61,17 @@ RSpec.describe Marine::Catalog::PriceRangeReplyComposer, type: :model do
 
       expect(decision).to be_deliver
       expect(decision.text).to eq(
-        'Prices for Baby Doll range from IDR 12,500 to IDR 45,000 per yard. ' \
+        'We carry Baby Doll. Prices range from IDR 12,500 to IDR 45,000 per yard. ' \
         "Please reply with the exact variant code and I'll confirm the exact price for you."
       )
       expect(decision.text).not_to include('shown in the catalog')
     end
 
-    it 'renders a single amount for equal endpoints' do
+    it 'renders a single amount for equal endpoints, leading with the family introduction' do
       decision = composer.compose(descriptor: descriptor(min: '12500', max: '12500'), reply_language: 'en',
                                   customer_request: 'price?', catalog_attached: true)
 
-      expect(decision.text).to start_with('The price for Baby Doll is IDR 12,500 per yard.')
+      expect(decision.text).to start_with('We carry Baby Doll. The price is IDR 12,500 per yard.')
     end
 
     it 'falls back (no raw or wrong-language range) when the resolved reply language is unsupported' do

@@ -627,7 +627,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
 
       reply = conversation.messages.outgoing.last
       expect(reply.content).to eq(
-        'Prices for Impeller range from IDR 12,500 to IDR 45,000 per yard. ' \
+        'We carry Impeller. Prices range from IDR 12,500 to IDR 45,000 per yard. ' \
         "Please reply with the exact variant code shown in the catalog and I'll confirm the exact price for you."
       )
       expect(reply.attachments.count).to eq(1)
@@ -650,7 +650,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
 
       reply = conversation.messages.outgoing.last
       expect(reply.content).to eq(
-        'Prices for Impeller range from IDR 12,500 to IDR 45,000 per yard. ' \
+        'We carry Impeller. Prices range from IDR 12,500 to IDR 45,000 per yard. ' \
         "Please reply with the exact variant code and I'll confirm the exact price for you."
       )
       expect(reply.content).not_to include('shown in the catalog')
@@ -668,11 +668,61 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
 
       reply = conversation.messages.outgoing.last
       expect(reply.content).to eq(
-        'Prices for Impeller range from IDR 12,500 to IDR 45,000 per yard. ' \
+        'We carry Impeller. Prices range from IDR 12,500 to IDR 45,000 per yard. ' \
         "Please reply with the exact variant code and I'll confirm the exact price for you."
       )
       expect(reply.attachments).to be_empty
       expect(product_state['catalog_message_id']).to eq(987)
+    end
+
+    # --- Proactive nonnumeric catalog OFFER caption (no complete range available) ---------------
+    #
+    # When a family inquiry offers a native catalog but no complete authoritative range can be safely
+    # offered, the plan carries the :catalog_offer descriptor. The caption introduces the family, says
+    # the exact price depends on the chosen variant, and asks for the exact code. It is attachment-
+    # outcome truthful: it claims the catalog is shared ONLY when a native attachment is delivered.
+
+    def catalog_offer_payload(operation: :start)
+      product_payload(
+        action: :send_catalog,
+        reply: { kind: :catalog_offer, family_code: 'IMP', family_name: 'Impeller' },
+        operation: operation, language: 'en',
+        changes: { 'validated_family' => 'IMP', 'current_intent' => 'price', 'expected_attributes' => %w[Shade] }
+      )
+    end
+
+    it 'delivers one native attachment with a catalog-offer caption that says it is shared and asks for the code shown in the catalog' do
+      document = usable_catalog
+      stub_reasoning(catalog_offer_payload)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq(
+        'We carry Impeller in several variants, and the exact price depends on the variant you choose. ' \
+        "I've shared our Impeller catalog above. " \
+        "Which variant would you like? Please reply with the exact variant code shown in the catalog and I'll confirm the exact price for you."
+      )
+      expect(reply.content.downcase).not_to include('shade')
+      expect(reply.attachments.count).to eq(1)
+      expect(reply.attachments.first.file.blob.id).to eq(document.source_file.blob.id)
+      expect(product_state['catalog_sent']).to be(true)
+      expect(product_state['expected_attributes']).to eq(%w[Shade]) # internal, persisted unchanged, never in text
+    end
+
+    it 'never claims a catalog was shared and attaches nothing when no usable catalog exists, but stays active and asks for the exact code' do
+      stub_reasoning(catalog_offer_payload)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq(
+        'We carry Impeller in several variants, and the exact price depends on the variant you choose. ' \
+        "Which variant would you like? Please reply with the exact variant code and I'll confirm the exact price for you."
+      )
+      expect(reply.content).not_to include('shown in the catalog')
+      expect(reply.content.downcase).not_to include('shared')
+      expect(reply.attachments).to be_empty
     end
 
     # --- Customer-language localization of the product path (generic mechanism) ---

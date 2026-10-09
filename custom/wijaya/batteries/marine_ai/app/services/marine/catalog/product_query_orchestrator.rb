@@ -627,32 +627,71 @@ module Marine
         end
       end
 
-      # ONLY the family-only PRICE branch of the catalog-assisted variant clarification is specialized:
-      # before sending the family catalog it computes a deterministic price RANGE over every active
-      # variant (fixed User Price policy). A clean AVAILABLE range rides the SAME send_catalog action/
-      # selector/attachment as a range-grounded caption that asks for the exact variant code; an
-      # :unavailable / :conflict aggregate range does NOT hand off and never guesses a partial range —
-      # it CONTINUES the plain catalog-assisted clarification (reply nil) so the customer can reply with
-      # an exact variant code (the exact-child follow-up then stays authoritative: available answers,
-      # unavailable keeps its safe unavailable reply, an exact per-variant conflict still hands off).
-      # Only an available range whose required facts fail the renderer trust boundary still fails CLOSED
-      # to the safe price handoff, and a repository outage raises CatalogError (caught by
-      # plan_for_intent). Every OTHER awaiting-variant intent (variant_info, stock) keeps the unchanged
-      # plain catalog-assisted clarification (reply nil).
+      # The catalog-assisted variant clarification is now PROACTIVE on every awaiting-variant intent:
+      # it always offers the native catalog with a descriptor (never a bare reply nil), and leads the
+      # customer to an exact variant code. The family-only PRICE branch keeps its STRICTER matrix; every
+      # OTHER awaiting-variant intent (family-level stock/availability, variant_info) makes a BEST-EFFORT
+      # supplemental range read that can only ENRICH the catalog, never block it.
       def price_range_catalog(intent, family, state_op, changes)
-        return build(:send_catalog, operation: state_op, changes: changes) unless intent[:intent] == 'price'
+        if intent[:intent] == 'price'
+          price_family_catalog(family, state_op, changes)
+        else
+          enriched_family_catalog(family, state_op, changes)
+        end
+      end
 
+      # Stricter family-only PRICE matrix. Before sending the family catalog it computes a deterministic
+      # price RANGE over every active variant (fixed User Price policy):
+      #   * a clean AVAILABLE range rides the SAME send_catalog action/selector/attachment with a
+      #     range-grounded caption that introduces the family and asks for the exact variant code;
+      #   * an :unavailable / :conflict aggregate range does NOT hand off and never guesses a partial
+      #     range — it CONTINUES the SAME send_catalog flow with the PROACTIVE nonnumeric catalog-offer
+      #     descriptor so the customer can reply with an exact variant code (the exact-child follow-up
+      #     then stays authoritative);
+      #   * an available range whose required facts fail the renderer trust boundary still fails CLOSED
+      #     to the safe price handoff — never an invalid fact turned into customer text;
+      #   * a repository outage raises CatalogError (caught by plan_for_intent -> catalog_unavailable).
+      def price_family_catalog(family, state_op, changes)
         range = price_range_repository.range_for(family[:code])
-        # A non-available aggregate range continues the variant-selection flow with NO price descriptor
-        # (same send_catalog action/state as every other awaiting-variant intent) rather than handing off.
-        return build(:send_catalog, operation: state_op, changes: changes) unless range[:status] == :available
+        return catalog_offer_plan(family, state_op, changes) unless range[:status] == :available
 
         descriptor = reply_renderer.price_range(range, family)
-        # An available range whose required facts failed the renderer trust boundary (descriptor nil)
-        # still fails CLOSED to the safe price handoff — never an invalid fact turned into customer text.
         return build(:handoff, reply: reply_renderer.price_conflict, operation: state_op, changes: changes) if descriptor.nil?
 
         build(:send_catalog, reply: descriptor, operation: state_op, changes: changes)
+      end
+
+      # Every NON-PRICE awaiting-variant family inquiry (family-level stock/availability, variant_info)
+      # still offers the native catalog, now PROACTIVELY: a BEST-EFFORT range read enriches it with the
+      # formatted range caption when a COMPLETE authoritative range exists, and ANY other outcome
+      # (unavailable/conflict, a malformed available range, or a repository outage) falls back LOCALLY to
+      # the proactive nonnumeric catalog-offer descriptor and STILL sends the catalog. This OPTIONAL
+      # price enrichment can never turn a viable catalog reply into a handoff, divert it to RAG, or
+      # expose a partial/raw value.
+      def enriched_family_catalog(family, state_op, changes)
+        descriptor = best_effort_range_descriptor(family)
+        return build(:send_catalog, reply: descriptor, operation: state_op, changes: changes) if descriptor
+
+        catalog_offer_plan(family, state_op, changes)
+      end
+
+      # The proactive nonnumeric catalog-offer send_catalog plan shared by the price and non-price
+      # catalog-assisted branches — the SAME action/state as every other awaiting-variant offer.
+      def catalog_offer_plan(family, state_op, changes)
+        build(:send_catalog, reply: reply_renderer.catalog_offer(family), operation: state_op, changes: changes)
+      end
+
+      # The valid :price_range descriptor for a COMPLETE available family range, or nil when the range
+      # is unavailable/conflict, an available range is malformed (renderer trust boundary drops it), or
+      # the repository is briefly unavailable — optional non-price enrichment fails SOFT to the
+      # nonnumeric catalog offer, never a handoff and never a raw value.
+      def best_effort_range_descriptor(family)
+        range = price_range_repository.range_for(family[:code])
+        return nil unless range[:status] == :available
+
+        reply_renderer.price_range(range, family)
+      rescue Marine::Catalog::Errors::CatalogError
+        nil
       end
 
       # Structured FAMILY clarification occurrence. Occurrences 1 and 2 record bounded

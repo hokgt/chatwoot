@@ -484,7 +484,7 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
 
       reply = conversation.messages.reload.outgoing.last
       expect(reply.content).to eq(
-        'Prices for Coastal Alpha Series range from IDR 12,500 to IDR 45,000 per yard. ' \
+        'We carry Coastal Alpha Series. Prices range from IDR 12,500 to IDR 45,000 per yard. ' \
         "Please reply with the exact variant code shown in the catalog and I'll confirm the exact price for you."
       )
       expect(reply.attachments.count).to eq(1)

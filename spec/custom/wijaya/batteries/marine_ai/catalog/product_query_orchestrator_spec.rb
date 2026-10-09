@@ -277,11 +277,11 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
   describe 'context-dependent catalog need' do
     let(:variant_intent) { intent(intent: 'variant_info', requires_exact_variant: true, family_mention: 'Impeller') }
 
-    it 'offers send_catalog only when nothing concrete was given and no catalog was sent' do
+    it 'offers send_catalog with the proactive nonnumeric catalog offer only when nothing concrete was given and no catalog was sent' do
       plan = orchestrator.plan_for_intent(intent: variant_intent, flow: nil)
 
       expect(plan[:action]).to eq(:send_catalog)
-      expect(plan[:reply]).to be_nil
+      expect(plan[:reply]).to eq(kind: :catalog_offer, family_code: 'FAM-1', family_name: 'Impeller')
       expect(plan[:state][:changes]).to include('expected_attributes' => %w[Size])
       expect(variant_resolver).not_to have_received(:resolve)
     end
@@ -340,29 +340,30 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(plan[:reply]).to include(kind: :price_range, price_min: '12500', price_max: '12500')
     end
 
-    it 'continues the catalog-assisted variant selection (no handoff, no range) when the family range is unavailable' do
+    it 'continues with a PROACTIVE nonnumeric catalog offer (no handoff, no range) when the family range is unavailable' do
       # Proven gap (Dev conv 482, family-only "berapa harga baby doll?"): an aggregate :unavailable
-      # range must NOT immediately hand off. Continue the SAME send_catalog variant-selection flow with
-      # NO price descriptor so the customer can reply with an exact variant code.
+      # range must NOT immediately hand off. Continue the SAME send_catalog variant-selection flow
+      # with the proactive nonnumeric catalog-offer descriptor (never a numeric range) so the customer
+      # can reply with an exact variant code.
       allow(price_range_repository).to receive(:range_for).and_return(status: :unavailable)
 
       plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
 
       expect(plan[:action]).to eq(:send_catalog)
-      expect(plan[:reply]).to be_nil
+      expect(plan[:reply]).to eq(kind: :catalog_offer, family_code: 'FAM-1', family_name: 'Impeller')
       expect(plan[:state][:operation]).to eq(:start)
       expect(plan[:state][:changes]).to include('validated_family' => 'FAM-1', 'current_intent' => 'price',
                                                 'expected_attributes' => %w[Size])
       expect(deep_values(plan)).not_to include(:price_range, :price_conflict)
     end
 
-    it 'continues the catalog-assisted variant selection (no handoff, no range) on an aggregate range conflict' do
+    it 'continues the catalog-assisted selection with the proactive catalog offer (no handoff, no range) on an aggregate range conflict' do
       allow(price_range_repository).to receive(:range_for).and_return(status: :conflict)
 
       plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
 
       expect(plan[:action]).to eq(:send_catalog)
-      expect(plan[:reply]).to be_nil
+      expect(plan[:reply]).to eq(kind: :catalog_offer, family_code: 'FAM-1', family_name: 'Impeller')
       expect(plan[:state][:changes]).to include('validated_family' => 'FAM-1', 'current_intent' => 'price',
                                                 'expected_attributes' => %w[Size])
       expect(deep_values(plan)).not_to include(:price_range, :price_conflict)
@@ -389,14 +390,66 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(plan[:reply]).to eq(kind: :catalog_unavailable)
     end
 
-    it 'does not compute a range for a non-price awaiting-variant turn (variant_info keeps the plain catalog)' do
+    it 'makes a best-effort range read for a non-price awaiting-variant turn and offers the proactive catalog when the range is unavailable' do
+      # A non-price family inquiry (variant_info/stock) where a native catalog will be offered now
+      # makes a BEST-EFFORT range read; an unavailable range falls back to the proactive nonnumeric
+      # catalog offer (never nil, never a numeric range, never a handoff).
+      allow(price_range_repository).to receive(:range_for).with('FAM-1').and_return(status: :unavailable)
+
       plan = orchestrator.plan_for_intent(
         intent: intent(intent: 'variant_info', requires_exact_variant: true, family_mention: 'Impeller'), flow: nil
       )
 
       expect(plan[:action]).to eq(:send_catalog)
-      expect(plan[:reply]).to be_nil
-      expect(price_range_repository).not_to have_received(:range_for)
+      expect(plan[:reply]).to eq(kind: :catalog_offer, family_code: 'FAM-1', family_name: 'Impeller')
+      expect(price_range_repository).to have_received(:range_for).with('FAM-1')
+      expect(deep_values(plan)).not_to include(:price_range, :price_conflict)
+    end
+
+    it 'enriches a non-price (stock/availability) family inquiry with the complete range when one is available' do
+      # Matrix A: a family-level stock/availability inquiry with a COMPLETE authoritative range rides
+      # the SAME send_catalog action with the existing :price_range descriptor (formatted downstream),
+      # so the caption introduces the family, states the range, and asks for the exact code.
+      allow(price_range_repository).to receive(:range_for).with('FAM-1').and_return(available_range)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'stock', requires_exact_variant: true, family_mention: 'Impeller'), flow: nil
+      )
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :price_range, family_code: 'FAM-1', family_name: 'Impeller',
+                                 price_min: '12500', price_max: '45000', currency: 'IDR', uom: 'yard')
+      expect(plan[:state][:changes]).to include('validated_family' => 'FAM-1', 'current_intent' => 'stock')
+    end
+
+    it 'never lets optional non-price enrichment hand off or block the catalog when the range repository RAISES' do
+      # Matrix C: a CatalogError during the OPTIONAL supplemental range read for a non-price inquiry
+      # must be caught locally — the catalog is still offered via the proactive nonnumeric descriptor,
+      # never a handoff and never a fall-through to RAG.
+      allow(price_range_repository).to receive(:range_for).and_raise(Marine::Catalog::Errors::CatalogUnavailableError)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'stock', requires_exact_variant: true, family_mention: 'Impeller'), flow: nil
+      )
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog_offer, family_code: 'FAM-1', family_name: 'Impeller')
+      expect(deep_values(plan)).not_to include(:price_range, :price_conflict, :catalog_unavailable)
+    end
+
+    it 'falls back to the proactive catalog offer when an available non-price range carries an invalid required fact (never a handoff)' do
+      # For OPTIONAL non-price enrichment a malformed available range must NOT fail closed to a price
+      # handoff (that is the stricter PRICE path only): it degrades softly to the catalog offer.
+      allow(price_range_repository).to receive(:range_for)
+        .and_return(status: :available, min: '12500', max: '45000', currency: '  ', uom: 'yard')
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'stock', requires_exact_variant: true, family_mention: 'Impeller'), flow: nil
+      )
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog_offer, family_code: 'FAM-1', family_name: 'Impeller')
+      expect(deep_values(plan)).not_to include(:price_conflict)
     end
 
     it 'keeps the exact family+child precedence direct to the exact price, with no range prerequisite' do
@@ -1009,11 +1062,11 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       intent(intent: 'variant_info', requires_exact_variant: true, family_mention: 'Impeller')
     end
 
-    it 'offers the native catalog on occurrence 1 (send_catalog, count 1)' do
+    it 'offers the native catalog with the proactive catalog offer on occurrence 1 (send_catalog, count 1)' do
       plan = orchestrator.plan_for_intent(intent: variant_intent, flow: nil)
 
       expect(plan[:action]).to eq(:send_catalog)
-      expect(plan[:reply]).to be_nil
+      expect(plan[:reply]).to eq(kind: :catalog_offer, family_code: 'FAM-1', family_name: 'Impeller')
       expect(plan[:state][:changes]).to include('clarification_kind' => 'variant', 'clarification_count' => 1)
     end
 
