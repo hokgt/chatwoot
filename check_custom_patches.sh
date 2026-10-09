@@ -599,6 +599,8 @@ require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/catal
 # Marine Phase 3 — bounded catalog listing repository (active top-level products + completeness).
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_listing_repository.rb
 require_file spec/custom/wijaya/batteries/marine_ai/catalog/product_listing_repository_spec.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/backend/listing_scope_resolver.rb
+require_file spec/custom/wijaya/batteries/marine_ai/backend/listing_scope_resolver_spec.rb
 # Marine Option B Phase 1 — backend-owned execution/classification policy leaf.
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/backend/execution_policy.rb
 require_file spec/custom/wijaya/batteries/marine_ai/backend/execution_policy_spec.rb
@@ -611,6 +613,8 @@ require_file spec/custom/wijaya/batteries/marine_ai/backend/presentation_policy_
 # Step 17 — deterministic product_listing Evidence renderer (listing semantic-rejection fallback).
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/backend/product_listing_evidence_renderer.rb
 require_file spec/custom/wijaya/batteries/marine_ai/backend/product_listing_evidence_renderer_spec.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/backend/company_offerings_evidence_renderer.rb
+require_file spec/custom/wijaya/batteries/marine_ai/backend/company_offerings_evidence_renderer_spec.rb
 # Step 18 — deterministic exact-price Evidence renderer (exact-price candidate-failure fallback).
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/backend/exact_price_evidence_renderer.rb
 require_file spec/custom/wijaya/batteries/marine_ai/backend/exact_price_evidence_renderer_spec.rb

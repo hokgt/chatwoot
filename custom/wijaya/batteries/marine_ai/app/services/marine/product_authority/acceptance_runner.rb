@@ -181,6 +181,7 @@ class Marine::ProductAuthority::AcceptanceRunner
       variant_resolver: Fakes::FakeVariantResolver.new(repos[:variant] || {}, probe),
       price_repository: Fakes::FakePriceRepository.new(repos[:price] || {}, probe),
       stock_repository: Fakes::FakeStockRepository.new(repos[:stock] || {}, probe),
+      listing_repository: Fakes::FakeProductListingRepository.new(repos[:listing] || {}, probe),
       price_formatter: formatter,
       clock: FIXED_CLOCK
     }

@@ -92,6 +92,33 @@ RSpec.describe Marine::Backend::PostGenerationFactValidator do
     end
   end
 
+  describe 'company_offerings' do
+    let(:offerings_packet) do
+      builder.build(evidence_input: {
+                      scenario: { key: 'scenario_9' }, intents: %w[product_overview], customer_language: 'id',
+                      response_goals: %w[answer_product_overview], validated_slots: {},
+                      facts: { company_offerings: {
+                        item_groups: %w[Fabric Yarn], returned_count: 2, total_count: 9, complete: false,
+                        source: 'catalog_item_group_repository', checked_at: '2026-09-30T12:00:00Z'
+                      } }, missing_slots: [], variant_candidates: []
+                    })
+    end
+
+    it 'requires every category and exact incomplete-page counts' do
+      candidate = 'Berikut 2 dari 9 kategori produk: Fabric dan Yarn.'
+      expect(validator.call(packet: offerings_packet, candidate: candidate).ok?).to be(true)
+      expect(validator.call(packet: offerings_packet, candidate: 'Berikut 2 dari 9 kategori: Fabric.').reason)
+        .to eq(:missing_required_value)
+      expect(validator.call(packet: offerings_packet, candidate: 'Berikut 2 dari 50 kategori: Fabric dan Yarn.').reason)
+        .to eq(:missing_required_value)
+    end
+
+    it 'rejects an added code-like category token outside the Evidence inventory' do
+      candidate = 'Berikut 2 dari 9 kategori: Fabric, Yarn, dan EXTRA9.'
+      expect(validator.call(packet: offerings_packet, candidate: candidate).reason).to eq(:unauthorized_token)
+    end
+  end
+
   describe 'structure / leak' do
     it 'rejects a whole-JSON payload' do
       expect(validator.call(packet: price_packet, candidate: '{"reply":"BABYDOLL BD-4 Rp 12.500 per yard"}').reason).to eq(:malformed_candidate)

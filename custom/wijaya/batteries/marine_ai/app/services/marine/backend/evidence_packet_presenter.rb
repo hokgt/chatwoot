@@ -84,8 +84,8 @@ class Marine::Backend::EvidencePacketPresenter
     def ok? = ok == true
   end
 
-  def initialize(prompt_builder: nil, fact_validator: nil, persona_validator: nil, listing_renderer: nil, # rubocop:disable Metrics/ParameterLists, Metrics/CyclomaticComplexity -- injectable collaborators, each defaulting to its production instance
-                 price_renderer: nil, price_range_renderer: nil, stock_renderer: nil)
+  def initialize(prompt_builder: nil, fact_validator: nil, persona_validator: nil, listing_renderer: nil, # rubocop:disable Metrics/ParameterLists, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- injectable closed-path collaborators, each defaulting to its production instance
+                 price_renderer: nil, price_range_renderer: nil, stock_renderer: nil, offerings_renderer: nil)
     @prompt_builder = prompt_builder || Marine::Backend::EvidencePromptBuilder.new
     @fact_validator = fact_validator || Marine::Backend::PostGenerationFactValidator.new
     @persona_validator = persona_validator || Marine::Backend::PersonaValidator.new
@@ -93,6 +93,7 @@ class Marine::Backend::EvidencePacketPresenter
     @price_renderer = price_renderer || Marine::Backend::ExactPriceEvidenceRenderer.new
     @price_range_renderer = price_range_renderer || Marine::Backend::PriceRangeEvidenceRenderer.new
     @stock_renderer = stock_renderer || Marine::Backend::BinaryStockEvidenceRenderer.new
+    @offerings_renderer = offerings_renderer || Marine::Backend::CompanyOfferingsEvidenceRenderer.new
   end
 
   # packet:           a frozen marine_evidence_v2 Evidence Packet.
@@ -164,7 +165,14 @@ class Marine::Backend::EvidencePacketPresenter
     stock_text = @stock_renderer.call(packet: packet)
     return stock_fallback(stock_text, reason) if stock_text
 
+    offerings_text = @offerings_renderer.call(packet: packet)
+    return offerings_fallback(offerings_text, reason) if offerings_text
+
     failure(reason, fallback: fallback)
+  end
+
+  def offerings_fallback(text, origin)
+    Result.new(ok: true, text: text, reason: 'company_offerings_evidence_fallback', detail: origin, fallback: nil).freeze
   end
 
   def price_fallback(text, origin)

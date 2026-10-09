@@ -18,14 +18,15 @@ RSpec.describe Marine::Backend::ExecutionPolicy do
 
   describe 'PRODUCT_INTENTS (the Phase-3/5 packet-path executable intents)' do
     it 'is exactly the five single-intent product reads and frozen' do
-      expect(described_class::PRODUCT_INTENTS).to eq(%w[price price_range stock product_listing product_information])
+      expect(described_class::PRODUCT_INTENTS).to eq(%w[price price_range stock product_overview product_listing product_information])
       expect(described_class::PRODUCT_INTENTS).to be_frozen
     end
   end
 
   describe 'CLASSIFICATION_INTENTS' do
     it 'is the product intents plus the unsupported fallback, frozen' do
-      expect(described_class::CLASSIFICATION_INTENTS).to eq(%w[price price_range stock product_listing product_information unsupported])
+      expect(described_class::CLASSIFICATION_INTENTS)
+        .to eq(%w[price price_range stock product_overview product_listing product_information unsupported])
       expect(described_class::CLASSIFICATION_INTENTS).to be_frozen
     end
   end
@@ -63,6 +64,7 @@ RSpec.describe Marine::Backend::ExecutionPolicy do
       expect(described_class.product_authorized?(%w[price])).to be(true)
       expect(described_class.product_authorized?(%w[price_range])).to be(true)
       expect(described_class.product_authorized?(%w[stock])).to be(true)
+      expect(described_class.product_authorized?(%w[product_overview])).to be(true)
       expect(described_class.product_authorized?(%w[product_listing])).to be(true)
       expect(described_class.product_authorized?(%w[product_information])).to be(true)
       # A fresh (non-identical) array equal to a canonical single-intent set still passes.
@@ -97,6 +99,7 @@ RSpec.describe Marine::Backend::ExecutionPolicy do
       expect(described_class.product_executable?('price')).to be(true)
       expect(described_class.product_executable?('price_range')).to be(true)
       expect(described_class.product_executable?('stock')).to be(true)
+      expect(described_class.product_executable?('product_overview')).to be(true)
       expect(described_class.product_executable?('product_listing')).to be(true)
       expect(described_class.product_executable?('product_information')).to be(true)
       expect(described_class.product_executable?('catalog')).to be(false)

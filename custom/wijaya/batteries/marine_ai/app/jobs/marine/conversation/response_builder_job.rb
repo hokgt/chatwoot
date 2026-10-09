@@ -146,6 +146,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     # A price_range catalog ambiguity routes the existing safe handoff (no renderer, no state write);
     # it is NOT nil, so the legacy service is NOT run for the superseded ambiguous turn.
     return backend_handoff_response if result.handoff?
+    return backend_terminal_no_output_response if result.terminal_no_output?
     return nil unless result.deliverable?
 
     response = {
@@ -169,8 +170,17 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       'orchestration_path' => 'backend_evidence_target' }
   end
 
+  def backend_terminal_no_output_response
+    { 'action' => 'terminal_no_output', 'orchestration_path' => 'backend_evidence_target' }
+  end
+
   # No message_history is passed: the legacy trigger-bound Agent::Runner derives canonical prior
   # history and the separately bounded trigger from this exact source message.
+  def backend_terminal_no_output?
+    @response.is_a?(Hash) && @response['action'] == 'terminal_no_output' &&
+      @response['orchestration_path'] == 'backend_evidence_target'
+  end
+
   def generate_trigger_bound_legacy_response(message)
     Marine::Llm::AssistantChatService.new(
       assistant: @assistant, conversation: @conversation, source: message
@@ -197,7 +207,9 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       next complete_no_output unless eligible?
       next complete_no_output if newer_relevant_incoming?
 
-      if product_response?
+      if backend_terminal_no_output?
+        complete_claim
+      elsif product_response?
         finalize_product
       elsif handoff_response?
         process_handoff(@response['action_reason'])

@@ -57,11 +57,31 @@ module Marine::Decision::RequestBuilder # rubocop:disable Metrics/ModuleLength -
       'true' => 'The customer asks the GENERAL selling-price range/span of a whole product family, with NO ' \
                 'specific item or variant singled out.'
     }.freeze,
+    'product_overview' => {
+      'false' => 'The customer does NOT ask for a broad, company-wide overview of high-level business lines or ' \
+                 'product categories, OR they ask for names/types/items inside one concrete product kind or ' \
+                 'subcategory (that is product_listing, not product_overview).',
+      'true' => 'The customer asks broadly what the company offers across the business: its high-level product ' \
+                'lines or categories, without narrowing the request to one concrete product kind/subcategory. ' \
+                'An umbrella industry or business domain used as the SUBJECT whose offerings are requested is ' \
+                'still company-wide overview scope; it is not itself a narrowing category.'
+    }.freeze,
     'product_listing' => {
-      'false' => 'The customer does NOT ask which products exist or are available, OR they explicitly ask ' \
-                 'for a description / explanation / details of products (that is product_information, not a listing).',
-      'true' => 'The customer asks WHICH products exist or are available — a names / catalog availability listing — ' \
-                'WITHOUT requesting any description, explanation, specification, or details.'
+      'false' => 'The customer does NOT ask which names, types, or items exist within one concrete product category; ' \
+                 'OR they ask only for company-wide high-level business lines/categories (that is product_overview); ' \
+                 'OR they ask for descriptions/details (that is product_information); OR they ask only whether one ' \
+                 'specific product/variant is in stock (that is stock).',
+      'true' => 'The customer asks WHICH names, types, or items exist or are offered within a product domain or ' \
+                'concrete category, WITHOUT requesting descriptions/details. The concrete category is the OBJECT or ' \
+                'scope being listed, not merely an umbrella industry/business subject, and is not itself a specific ' \
+                'product identity or a binary stock-status question.'
+    }.freeze,
+    'stock' => {
+      'false' => 'The customer does NOT ask for the binary availability status of one specific product/variant; ' \
+                 'in particular, asking which types/items are available within a domain/category is product_listing, ' \
+                 'not stock.',
+      'true' => 'The customer asks whether one specific, singled-out product or variant is available or unavailable ' \
+                'as a binary stock status, not which types/items the company offers.'
     }.freeze,
     'product_information' => {
       'false' => 'The customer does NOT ask for any product description/explanation — e.g. they only ask which ' \
@@ -94,7 +114,19 @@ module Marine::Decision::RequestBuilder # rubocop:disable Metrics/ModuleLength -
     price_range are subsuming alternatives of the SAME pricing request and are mutually exclusive:
     use price when the customer asks the price of a specific item/variant they have singled out, and
     price_range ONLY when they ask the general selling-price range of a whole product family with no
-    specific item singled out — never both for the same turn. Return EXACTLY ONE JSON object matching
+    specific item singled out — never both for the same turn.
+
+    Keep product_overview, product_listing, and stock semantically distinct. product_overview means a
+    broad company-wide request for high-level business lines or product categories. product_listing
+    means a request for names, types, or items within a concrete product category. An umbrella industry
+    or business domain used as the subject whose offerings are requested remains product_overview; a
+    concrete category used as the object/scope of requested names or types is product_listing. Category
+    scope must not become a product slot. stock means only the binary
+    available/unavailable status of one specific singled-out product/variant. A request asking which
+    types/items are available within a category is product_listing, not stock. Choose only the applicable
+    member when these are alternatives of one request, while preserving genuinely independent intents.
+
+    Return EXACTLY ONE JSON object matching
     the provided schema and nothing else — no prose, no code fences.
   PROMPT
 

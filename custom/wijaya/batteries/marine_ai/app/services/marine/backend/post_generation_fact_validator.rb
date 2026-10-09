@@ -51,6 +51,7 @@ class Marine::Backend::PostGenerationFactValidator
     handoff_self_reference marine_sales_assistant catalog_price_repository stock_repository
     price-display-v1 capabilities canonical
     product_listing returned_count total_count catalog_listing_repository
+    company_offerings item_groups catalog_item_group_repository
     price_range family_code catalog_price_range_repository
   ].freeze
 
@@ -89,7 +90,9 @@ class Marine::Backend::PostGenerationFactValidator
   # The byte ceiling depends on the packet: a bounded product listing may enumerate a full page, so it
   # is allowed MAX_LISTING_CANDIDATE_BYTES; every other reply stays at the short MAX_CANDIDATE_BYTES.
   def max_candidate_bytes(packet)
-    dig(packet, :facts, :product_listing).is_a?(Hash) ? MAX_LISTING_CANDIDATE_BYTES : MAX_CANDIDATE_BYTES
+    bounded_catalog_fact = dig(packet, :facts, :product_listing).is_a?(Hash) ||
+                           dig(packet, :facts, :company_offerings).is_a?(Hash)
+    bounded_catalog_fact ? MAX_LISTING_CANDIDATE_BYTES : MAX_CANDIDATE_BYTES
   end
 
   def valid_text?(text, max_bytes)
@@ -127,7 +130,7 @@ class Marine::Backend::PostGenerationFactValidator
 
   # Values that MUST appear unchanged: the validated variant code, and (when a price fact
   # exists) the immutable display amount / currency / UOM. Blank/absent values are skipped.
-  def required_values(packet)
+  def required_values(packet) # rubocop:disable Metrics/AbcSize -- flat extraction from mutually exclusive closed fact envelopes
     values = []
     values << dig(packet, :validated_slots, :product, :code)
     values << dig(packet, :validated_slots, :variant, :code)
@@ -142,7 +145,19 @@ class Marine::Backend::PostGenerationFactValidator
       values.push(display[:min], display[:max], display[:currency], display[:uom])
     end
     values.concat(listing_required_values(dig(packet, :facts, :product_listing)))
+    values.concat(offerings_required_values(dig(packet, :facts, :company_offerings)))
     values.compact.uniq
+  end
+
+  def offerings_required_values(offerings)
+    return [] unless offerings.is_a?(Hash)
+
+    values = Array(offerings[:item_groups]).dup
+    unless offerings[:complete] == true
+      values << offerings[:returned_count]&.to_s
+      values << offerings[:total_count]&.to_s
+    end
+    values
   end
 
   # For a product listing, EVERY authorized product's code AND its display name (when present) MUST
@@ -178,7 +193,7 @@ class Marine::Backend::PostGenerationFactValidator
 
   # The concatenation of every packet value the reply may legitimately echo: the validated
   # slot codes and, when present, the price canonical + display facts.
-  def inventory_source(packet) # rubocop:disable Metrics/AbcSize -- a flat concatenation of the packet's echoable slot/price/listing values
+  def inventory_source(packet) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength -- flat concatenation of closed echoable fact values
     parts = []
     parts << dig(packet, :validated_slots, :product, :code)
     parts << dig(packet, :validated_slots, :variant, :code)
@@ -194,6 +209,11 @@ class Marine::Backend::PostGenerationFactValidator
     if listing.is_a?(Hash)
       Array(listing[:products]).each { |product| parts.push(product[:code], product[:name], product[:description]) }
       parts.push(listing[:returned_count], listing[:total_count])
+    end
+    offerings = dig(packet, :facts, :company_offerings)
+    if offerings.is_a?(Hash)
+      parts.concat(Array(offerings[:item_groups]))
+      parts.push(offerings[:returned_count], offerings[:total_count])
     end
     parts.compact.map(&:to_s).join(' ')
   end

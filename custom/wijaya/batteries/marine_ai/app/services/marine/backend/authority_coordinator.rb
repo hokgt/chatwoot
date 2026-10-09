@@ -31,12 +31,13 @@
 class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLength -- a flat sequence of independent, fail-closed dispatch branches (price + listing)
   Adapter = Marine::Backend::CandidatePlanToProductIntentAdapter
   Resolver = Marine::Backend::CatalogCandidateResolver
+  ListingScopeResolver = Marine::Backend::ListingScopeResolver
   ExecutionPolicy = Marine::Backend::ExecutionPolicy
 
   # The Phase-3 catalog-wide listing intents and the goals their packets carry. A single listing
   # intent routes the dedicated listing path (no price family/variant catalog-identity resolution).
-  LISTING_INTENTS = %w[product_listing product_information].freeze
-  LISTING_GOALS = %w[answer_product_listing answer_product_information].freeze
+  LISTING_INTENTS = %w[product_overview product_listing product_information].freeze
+  LISTING_GOALS = %w[answer_product_overview answer_product_listing answer_product_information].freeze
 
   OUTCOME_EVIDENCE_PACKET = :evidence_packet
   OUTCOME_FAMILY_PRICE_RANGE = :family_price_range
@@ -117,10 +118,11 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
                intents: [].freeze, source: SOURCE_NONE).freeze
   end
 
-  def initialize(adapter: nil, resolver: nil, planner: nil, packet_builder: nil, # rubocop:disable Metrics/ParameterLists,Metrics/CyclomaticComplexity -- a flat list of injected read-only collaborator defaults (all optional)
+  def initialize(adapter: nil, resolver: nil, listing_scope_resolver: nil, planner: nil, packet_builder: nil, # rubocop:disable Metrics/ParameterLists,Metrics/CyclomaticComplexity,Metrics/PerceivedComplexity -- flat injected read-only collaborator defaults
                  range_authority: nil, language_resolver: nil, description_source: nil, catalog_trusted_tokens: nil)
     @adapter = adapter || Adapter.new
     @resolver = resolver || Resolver.new
+    @listing_scope_resolver = listing_scope_resolver || ListingScopeResolver.new
     # The product_information RAG description source is threaded into the default planner so a listing
     # fact can be annotated; an explicitly injected planner (tests) keeps its own source.
     @planner = planner || Marine::Backend::ProductExecutionPlanner.new(description_source: description_source)
@@ -388,8 +390,12 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
     language = resolve_listing_language(authorized, trigger: trigger, history: history, configured_language: configured_language)
     return listing_terminal(OUTCOME_HANDOFF, REASON_LANGUAGE_UNRESOLVED, authorized) if language.nil?
 
+    scope = listing_scope(authorized, trigger)
+    return listing_terminal(OUTCOME_HANDOFF, REASON_CATALOG_UNAVAILABLE, authorized) if scope == :handoff
+
     packet = @packet_builder.build(evidence_input: @planner.call(
-      product_intent: listing_planner_input(authorized, language), intents: authorized.intents, scenario: authorized.scenario
+      product_intent: listing_planner_input(authorized, language, scope),
+      intents: authorized.intents, scenario: authorized.scenario
     ))
     if packet[:response_goals].intersect?(LISTING_GOALS)
       transition = listing_transition(packet, flow_state)
@@ -398,15 +404,29 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
     else
       listing_terminal(OUTCOME_HANDOFF, REASON_CATALOG_UNAVAILABLE, authorized, evidence_packet: packet)
     end
+  rescue StandardError
+    listing_terminal(OUTCOME_HANDOFF, REASON_CATALOG_UNAVAILABLE, authorized)
   end
 
-  # A FRESH planner input for the listing path. It carries the plan's UNTRUSTED product candidate as
-  # family_mention — the planner is the catalog authority that exact-resolves it (or lists the bounded
-  # page when blank); no price variant is ever requested.
-  def listing_planner_input(authorized, language)
+  def listing_scope(authorized, trigger)
+    return nil if authorized.intents == ['product_overview']
+
+    resolved = @listing_scope_resolver.call(trigger: trigger)
+    case resolved.status
+    when ListingScopeResolver::STATUS_BROAD then nil
+    when ListingScopeResolver::STATUS_PRODUCT then { product: resolved.product }
+    when ListingScopeResolver::STATUS_ITEM_GROUP then { item_group: resolved.item_group }
+    else :handoff
+    end
+  end
+
+  # Product identity and Item Group scope are distinct planner fields. Only the bounded Backend resolver
+  # may populate item_group_scope; it never enters product/variant slots or family-context state.
+  def listing_planner_input(authorized, language, scope)
     {
       product_related: true,
-      family_mention: authorized.product_intent[:family_mention],
+      family_mention: scope&.dig(:product, :code),
+      item_group_scope: scope&.dig(:item_group),
       explicit_child_code: nil,
       attribute_candidates: [],
       customer_language: language,

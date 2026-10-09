@@ -119,6 +119,52 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       end
     end
 
+    {
+      repository_outage: :authority_rejected, packet_build_or_invalid: :invalid_packet,
+      presenter_exception: :presentation_rejected, renderer_rejection: :presentation_rejected
+    }.each do |stage, reason|
+      it "terminates a product_overview #{stage} without legacy/RAG or customer output" do
+        terminal = Marine::Backend::ExactPriceCustomerExecution::Result.new(
+          status: :terminal_no_output, reason: reason, text: nil, transition: nil
+        ).freeze
+        allow(exact_price_attempt).to receive(:call).and_return(terminal)
+        expect(Marine::Llm::AssistantChatService).not_to receive(:new)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.where(private: false)).to be_empty
+        expect(usage_count).to eq(0)
+        expect(claim_status).to eq('completed')
+      end
+    end
+
+    it 'keeps an authority exception terminal after a real normalized product_overview plan' do
+      MarineInbox.create!(inbox: conversation.inbox, marine_assistant: assistant)
+      overview_plan = Marine::Decision::CandidatePlan.normalize(
+        'schema_version' => Marine::Decision::Schema::SCHEMA_VERSION,
+        'scenario_candidate' => { 'key' => 'scenario_5', 'confidence' => 'high' },
+        'intents' => ['product_overview'], 'slot_operations' => [],
+        'customer_language' => 'id', 'confidence' => 'high'
+      )
+      context = Struct.new(:trigger, :history).new('company offerings', [])
+      scenario_adapter = double(overflow?: false, scenarios: [{ 'key' => 'scenario_5' }])
+      allow(Marine::Backend::ExactPriceCustomerExecution).to receive(:new).and_wrap_original do |original, **kwargs|
+        original.call(
+          **kwargs,
+          decision_runner: ->(**) { overview_plan }, scenario_adapter: scenario_adapter,
+          authority_execution: ->(**) { raise 'private authority detail' },
+          context_builder: double(build: context), policy_projector: double(call: {})
+        )
+      end
+      expect(Marine::Llm::AssistantChatService).not_to receive(:new)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      expect(conversation.messages.outgoing.where(private: false)).to be_empty
+      expect(usage_count).to eq(0)
+      expect(claim_status).to eq('completed')
+    end
+
     # Checkpoint B — a stateful end-to-end proof that the family price-RANGE deterministic fallback is
     # delivered through the REAL ExactPriceCustomerExecution + EvidencePacketPresenter + the new
     # PriceRangeEvidenceRenderer. Only the backend boundaries (authority execution, Model 1 runner,

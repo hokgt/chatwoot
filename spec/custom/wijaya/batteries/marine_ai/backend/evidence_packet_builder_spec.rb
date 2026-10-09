@@ -438,6 +438,41 @@ RSpec.describe Marine::Backend::EvidencePacketBuilder do
     end
   end
 
+  describe 'authoritative company offerings from item groups' do
+    let(:offerings_fact) do
+      { item_groups: %w[Fabric Yarn], returned_count: 2, total_count: 2, complete: true,
+        source: 'catalog_item_group_repository', checked_at: '2026-09-30T12:00:00Z' }
+    end
+
+    def offerings_input(fact = offerings_fact)
+      { scenario: { key: 'scenario_9' }, intents: %w[product_overview], customer_language: 'id',
+        response_goals: %w[answer_product_overview], validated_slots: {}, facts: { company_offerings: fact },
+        missing_slots: [], variant_candidates: [] }
+    end
+
+    it 'builds a closed bounded category fact without product rows' do
+      packet = builder.build(evidence_input: offerings_input)
+      expect(packet[:facts]).to eq(company_offerings: offerings_fact)
+      expect(packet[:validated_slots]).to eq({})
+      expect(packet[:facts].to_s).not_to include('item_code', 'products')
+    end
+
+    it 'rejects duplicates, bad counts, forged provenance, and fact/goal mismatch' do
+      expect { builder.build(evidence_input: offerings_input(offerings_fact.merge(item_groups: %w[Fabric Fabric]))) }
+        .to raise_error(invalid_error)
+      expect { builder.build(evidence_input: offerings_input(offerings_fact.merge(returned_count: 9))) }
+        .to raise_error(invalid_error)
+      expect { builder.build(evidence_input: offerings_input(offerings_fact.merge(source: 'forged'))) }
+        .to raise_error(invalid_error)
+      expect { builder.build(evidence_input: offerings_input.merge(response_goals: %w[handoff])) }
+        .to raise_error(invalid_error)
+      expect { builder.build(evidence_input: offerings_input.merge(response_goals: %w[answer_product_overview handoff])) }
+        .to raise_error(invalid_error)
+      expect { builder.build(evidence_input: offerings_input.merge(validated_slots: { variant: variant_slot })) }
+        .to raise_error(invalid_error)
+    end
+  end
+
   describe 'a bounded product_listing packet (Phase 3)' do
     let(:listing_fact) do
       {

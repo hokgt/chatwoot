@@ -88,7 +88,7 @@ class Marine::ProductAuthority::Evaluator
   MAX_STRING = 128
   MAX_COLLECTION = 64
   SURFACES_ALLOWED = %w[conversation playground both].freeze
-  REPOSITORY_KEYS = %i[family variant price stock].freeze
+  REPOSITORY_KEYS = %i[family variant price stock listing].freeze
 
   # The single controlled acceptance surface the Evaluator serves when folding a case through the
   # coordinator for per-case evidence. The corpus `surface` ("both") is a parity-harness selector, NOT
@@ -332,6 +332,7 @@ class Marine::ProductAuthority::Evaluator
       variant_resolver: FakeVariantResolver.new(repos[:variant] || {}, probe),
       price_repository: FakePriceRepository.new(repos[:price] || {}, probe),
       stock_repository: FakeStockRepository.new(repos[:stock] || {}, probe),
+      listing_repository: FakeProductListingRepository.new(repos[:listing] || {}, probe),
       price_formatter: price_formatter,
       clock: FIXED_CLOCK
     }
@@ -475,7 +476,8 @@ class Marine::ProductAuthority::Evaluator
   # Structural mutation capability of the injected repository fakes: :none when no fake exposes any
   # write-shaped method, :present otherwise. This is a truthful structural property, not a claim.
   def structural_mutation_capability
-    writable = [FakeFamilyRepository, FakeVariantResolver, FakePriceRepository, FakeStockRepository, FakePriceFormatter]
+    writable = [FakeFamilyRepository, FakeVariantResolver, FakePriceRepository, FakeStockRepository,
+                FakeProductListingRepository, FakePriceFormatter]
                .any? { |klass| klass.public_instance_methods(false).intersect?(WRITE_METHOD_DENYLIST) }
     writable ? :present : :none
   end
@@ -646,6 +648,68 @@ class Marine::ProductAuthority::Evaluator
       raise CatalogUnavailable if value.nil? || value == :unavailable
 
       value
+    end
+  end
+
+  # Read-only bounded listing authority for product-overview/listing corpus cases. The synthetic
+  # fixture currently exercises Item Groups; the remaining methods keep the injected interface closed
+  # and return empty/missing evidence rather than consulting a live catalog.
+  class FakeProductListingRepository
+    def initialize(mapping, probe = nil)
+      @mapping = mapping
+      @probe = probe
+    end
+
+    def active_item_groups(limit: 20)
+      @probe&.note_read
+      value = @mapping[:item_groups]
+      raise CatalogUnavailable if value == :unavailable
+
+      groups = Array(value)
+      page = groups.first(limit)
+      { item_groups: page, returned_count: page.length, total_count: groups.length,
+        complete: page.length == groups.length, has_more: page.length < groups.length }
+    end
+
+    def active_top_level(item_group: nil, limit: 20) # rubocop:disable Lint/UnusedMethodArgument -- real repository interface
+      @probe&.note_read
+      { products: [], returned_count: 0, total_count: 0, complete: true, has_more: false }
+    end
+
+    def exact_top_level(_candidate)
+      @probe&.note_read
+      nil
+    end
+
+    def exact_item_group(candidate)
+      @probe&.note_read
+      groups = Array(@mapping[:item_groups])
+      matches = groups.select { |group| group.to_s.strip.casecmp?(candidate.to_s.strip) }.uniq
+      matches.one? ? matches.first.to_s.strip : nil
+    end
+
+    def resolve_top_level_any(_candidates)
+      @probe&.note_read
+      { status: :missing }
+    end
+
+    def resolve_item_group_any(candidates) # rubocop:disable Metrics/AbcSize,Metrics/CyclomaticComplexity,Metrics/PerceivedComplexity -- fake mirrors fail-closed normalized identity behavior
+      @probe&.note_read
+      groups = Array(@mapping[:item_groups])
+      matching_groups = groups.select do |group|
+        Array(candidates).any? { |candidate| group.to_s.strip.casecmp?(candidate.to_s.strip) }
+      end
+      matches = matching_groups.map { |group| group.to_s.strip.downcase }.uniq
+      return { status: :missing } if matches.empty?
+      return { status: :ambiguous } if matches.length > 1
+
+      display = groups.select { |group| group.to_s.strip.casecmp?(matches.first) }.map { |group| group.to_s.strip }.min
+      { status: :resolved, item_group: display }
+    end
+
+    def infer_item_group_from_top_level_any(_candidates)
+      @probe&.note_read
+      { status: :missing }
     end
   end
 

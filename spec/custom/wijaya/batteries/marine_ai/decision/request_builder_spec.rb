@@ -114,7 +114,7 @@ RSpec.describe Marine::Decision::RequestBuilder do
 
       # Each member's criteria name the OTHER member as out-of-scope, so an overlapping turn no
       # longer scores both high; generic intents keep the generic wording.
-      expect(listing['criteria']['true']).to include('WITHOUT requesting any description')
+      expect(listing['criteria']['true']).to include('WITHOUT requesting descriptions/details')
       expect(listing['criteria']['false']).to include('product_information')
       expect(information['criteria']['true']).to include('EXPLICITLY asks for a description')
       expect(information['criteria']['false']).to include('product_listing')
@@ -138,7 +138,7 @@ RSpec.describe Marine::Decision::RequestBuilder do
       expect(price_range['criteria']['false']).to include('price')
       # generic intents keep the generic wording.
       expect(questions['mdq_intent__stock']['criteria']['true'])
-        .to eq("The 'stock' intent IS explicitly present in the latest customer turn or context.")
+        .to include('binary stock status')
     end
 
     it 'covers broad catalog/list product-information requests without requiring a specific or named product' do
@@ -156,6 +156,26 @@ RSpec.describe Marine::Decision::RequestBuilder do
       expect(true_criterion).to include('named product OR')
       # And it must NOT bias the provider back toward demanding a pre-identified/specific product.
       expect(true_criterion).not_to match(/specific products?/i)
+    end
+
+    it 'defines overview, category listing, and stock as distinct semantic contracts' do
+      semantic_input = Marine::Decision::InputContract.build(
+        message: 'synthetic catalog request', context: [], state: {},
+        scenarios: [{ 'key' => 'product_scenario', 'description' => 'catalog', 'instruction' => 'read' }],
+        classification_intents: %w[product_overview product_listing stock unsupported]
+      )
+      questions = described_class.build(mode: 'openrouter_decisions', input: semantic_input)[:questions]
+      overview = questions['mdq_intent__product_overview']['criteria']
+      listing = questions['mdq_intent__product_listing']['criteria']
+      stock = questions['mdq_intent__stock']['criteria']
+
+      expect(overview['true']).to match(/company.*high-level|business.*categories/i)
+      expect(overview['false']).to include('product_listing')
+      expect(listing['true']).to match(/names, types, or items.*domain.*category/i)
+      expect(listing['true']).to match(/not itself a specific product identity/i)
+      expect(listing['false']).to include('product_overview').and include('stock')
+      expect(stock['true']).to match(/one specific.*product or variant.*binary stock status/i)
+      expect(stock['false']).to include('which types/items').and include('product_listing')
     end
 
     it 'never asks Jev to extract free text (no non-choice/noul question types)' do
@@ -203,6 +223,27 @@ RSpec.describe Marine::Decision::RequestBuilder do
       expect(prompt).to match(/distinct/i)
       expect(prompt).to match(/independent/i)
       expect(prompt).not_to match(/nominate the SINGLE most-specific primary intent rather than overlapping ones/)
+    end
+  end
+
+  describe 'overview vs category listing vs stock classification contract (SYSTEM_PROMPT, chat mode)' do
+    it 'keeps broad company categories, category-scoped item lists, and one-item binary stock distinct' do
+      prompt = described_class::SYSTEM_PROMPT
+
+      expect(prompt).to match(/product_overview.*company-wide.*high-level.*categories/im)
+      expect(prompt).to match(/product_listing.*names, types, or items.*concrete product category/im)
+      expect(prompt).to match(/category.*scope.*must not become a product slot/im)
+      expect(prompt).to match(%r{stock.*binary.*one specific.*product/variant}im)
+      expect(prompt).to match(%r{which.*types/items.*category is product_listing, not stock}im)
+    end
+
+    it 'keeps independent multi-intent requests nominable while collapsing semantic alternatives' do
+      prompt = described_class::SYSTEM_PROMPT
+
+      expect(prompt).to include('Choose only the applicable')
+      expect(prompt).to include('preserving genuinely independent intents')
+      expect(prompt).to include('umbrella industry')
+      expect(prompt).to include('concrete category used as the object/scope')
     end
   end
 

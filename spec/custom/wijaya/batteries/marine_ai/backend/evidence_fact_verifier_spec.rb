@@ -123,6 +123,22 @@ RSpec.describe Marine::Backend::EvidenceFactVerifier do
     expect(verifier.call(packet: 'nope', candidate: candidate)).to be(false)
   end
 
+  describe 'company-offerings semantic rubric (prompt content)' do
+    let(:prompt) { described_class::SYSTEM_PROMPT }
+
+    it 'requires exactly the authoritative high-level categories and forbids item products' do
+      expect(prompt).to include('facts.company_offerings')
+      expect(prompt).to match(/EXACTLY the high-level Item Group category names/)
+      expect(prompt).to match(/no item-level product identities/)
+      expect(prompt).to match(/preserve every category unchanged and add no category or product/)
+    end
+
+    it 'enforces honest completeness and count claims' do
+      expect(prompt).to match(/company_offerings\.complete, returned_count, and total_count are authoritative/)
+      expect(prompt).to match(/must not claim the categories are exhaustive/)
+    end
+  end
+
   # Section E — the semantic rubric must explicitly judge the bounded-listing properties (exactly the
   # authorized products, no introduced product, no swapped/ungrounded description, no false
   # completeness or count), WITHOUT adding any field beyond the frozen six-field verdict contract.

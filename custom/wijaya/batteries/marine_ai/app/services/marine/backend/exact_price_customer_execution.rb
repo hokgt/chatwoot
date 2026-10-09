@@ -32,12 +32,14 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
     'answer_price' => %i[price],
     'answer_price_range' => %i[price_range],
     'answer_stock' => %i[stock],
+    'answer_product_overview' => %i[company_offerings],
     'answer_product_listing' => %i[product_listing],
     'answer_product_information' => %i[product_listing]
   }.freeze
 
   STATUS_DELIVERABLE = :deliverable
   STATUS_HANDOFF = :handoff
+  STATUS_TERMINAL_NO_OUTPUT = :terminal_no_output
   STATUS_FALLBACK = :fallback
 
   REASON_ACCEPTED = :accepted
@@ -66,12 +68,16 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
     PRICE_GOAL => 'price'
   }.freeze
   FAMILY_CONTEXT_GOALS = %w[answer_product_listing answer_product_information].freeze
+  CANDIDATE_PLAN_KEYS = %i[
+    schema_version scenario_candidate intents slot_operations customer_language confidence reason
+  ].freeze
   STATE_TRANSITION_OPERATIONS = %i[start update].freeze
   STATE_TRANSITION_CODE_MAX_BYTES = 120
 
   Result = Struct.new(:status, :reason, :text, :transition, keyword_init: true) do
     def deliverable? = status == STATUS_DELIVERABLE
     def handoff? = status == STATUS_HANDOFF
+    def terminal_no_output? = status == STATUS_TERMINAL_NO_OUTPUT
   end
 
   def initialize(account:, assistant:, conversation:, message:, # rubocop:disable Metrics/ParameterLists -- record boundary plus injectable side-effect-free collaborators
@@ -107,18 +113,32 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
 
   def execute(context, scenarios)
     candidate_plan = runner.call(message: context.trigger, scenarios: scenarios, context: context.history)
+    overview = overview_candidate_plan?(candidate_plan)
     authority_result = execute_authority(candidate_plan, presentation_policy)
     transition = validated_transition(authority_result)
     # A price_range catalog ambiguity surfaces a dedicated handoff Result (the presenter/renderer is
     # never reached, so no visible text is derived from the ambiguity details).
     return handoff(transition) if transition && transition[:handoff_required] == true
-    return fallback(REASON_AUTHORITY_REJECTED) unless accepted_authority_result?(authority_result)
 
-    deliver_target(authority_result.evidence_packet, context, transition)
+    unless accepted_authority_result?(authority_result)
+      return terminal_no_output(REASON_AUTHORITY_REJECTED) if overview
+
+      return fallback(REASON_AUTHORITY_REJECTED)
+    end
+
+    deliver_target(authority_result.evidence_packet, context, transition, overview: overview)
+  rescue StandardError
+    return terminal_no_output(REASON_INTERNAL_ERROR) if overview_candidate_plan?(candidate_plan)
+
+    raise
   end
 
-  def deliver_target(packet, context, transition)
-    return fallback(REASON_INVALID_PACKET) unless target_packet?(packet)
+  def deliver_target(packet, context, transition, overview:)
+    unless target_packet?(packet)
+      return terminal_no_output(REASON_INVALID_PACKET) if overview
+
+      return fallback(REASON_INVALID_PACKET)
+    end
 
     # Exact price and price_range MUST carry their matching valid non-handoff transitions. Without one,
     # fail closed before presentation so a successful target can never outrun its authoritative context.
@@ -126,10 +146,10 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
     required_capability = transition_capability(packet, goal)
     return fallback(REASON_TRANSITION_REQUIRED) if transition_rejected?(transition, packet, required_capability)
 
-    present(packet, context, required_capability ? transition : nil)
+    present(packet, context, required_capability ? transition : nil, overview: overview)
   end
 
-  def present(packet, context, transition)
+  def present(packet, context, transition, overview: false)
     presentation = presenter.call(
       packet: packet,
       generator: generator,
@@ -137,9 +157,15 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
       message_history: context.history,
       fact_verifier: fact_verifier
     )
-    return fallback(REASON_PRESENTATION_REJECTED) unless deliverable_presentation?(presentation)
+    unless deliverable_presentation?(presentation)
+      return terminal_no_output(REASON_PRESENTATION_REJECTED) if overview
+
+      return fallback(REASON_PRESENTATION_REJECTED)
+    end
 
     deliverable(presentation.text, transition)
+  rescue StandardError
+    overview ? terminal_no_output(REASON_PRESENTATION_REJECTED) : fallback(REASON_PRESENTATION_REJECTED)
   end
 
   def transition_capability(packet, goal)
@@ -294,6 +320,14 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
     @policy_projector ||= Marine::Backend::PresentationPolicyProjector.new(assistant: @assistant)
   end
 
+  def overview_candidate_plan?(candidate_plan)
+    candidate_plan.is_a?(Hash) && deeply_frozen?(candidate_plan) &&
+      candidate_plan.keys.sort == CANDIDATE_PLAN_KEYS.sort &&
+      candidate_plan[:schema_version] == Marine::Decision::Schema::SCHEMA_VERSION &&
+      candidate_plan[:intents] == ['product_overview'] &&
+      candidate_plan[:reason] == Marine::Decision::Schema::REASON_NORMALIZED
+  end
+
   def accepted_authority_result?(result)
     result.is_a?(Coordinator::Result) &&
       result.outcome_type == Coordinator::OUTCOME_EVIDENCE_PACKET &&
@@ -371,6 +405,10 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
   # safe handoff and writes no state) and NO text — the renderer/presenter was never reached.
   def handoff(transition)
     Result.new(status: STATUS_HANDOFF, reason: REASON_HANDOFF_REQUIRED, text: nil, transition: transition).freeze
+  end
+
+  def terminal_no_output(reason)
+    Result.new(status: STATUS_TERMINAL_NO_OUTPUT, reason: reason, text: nil, transition: nil).freeze
   end
 
   def fallback(reason)

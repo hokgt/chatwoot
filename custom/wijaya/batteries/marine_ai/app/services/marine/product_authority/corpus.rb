@@ -121,24 +121,22 @@ module Marine::ProductAuthority::Corpus
       label: { status: 'blocked', intents: [], slot_ops: [], response_goals: nil, block_reason: 'phase_not_executable' }
     },
     {
-      # Phase 1: product_overview is an informational product intent but not executable; the plan
-      # fails closed at the adapter's policy gate before the planner.
+      # Company-wide product_overview is executable through the authoritative Item Group listing
+      # repository. It carries no product identity slot and returns the closed overview goal.
       id: 'product_overview', category: 'overview', critical: false, surface: 'both',
       scenario_key: 'scenario_2',
       plan: {
         'schema_version' => 'marine_decision_v1',
         'scenario_candidate' => { 'key' => 'scenario_2', 'confidence' => 'medium' },
         'intents' => ['product_overview'],
-        'slot_operations' => [
-          { 'operation' => 'set', 'slot' => 'product', 'value' => { 'raw_candidate' => 'SYN-FAM-BETA', 'candidate_type' => 'display_name' } }
-        ],
+        'slot_operations' => [],
         'customer_language' => 'en', 'confidence' => 'medium'
       },
       repositories: {
-        family: { 'SYN-FAM-BETA' => { code: 'SYN-FAM-BETA', name: 'Synthetic Beta' } },
-        variant: {}, price: {}, stock: {}
+        family: {}, variant: {}, price: {}, stock: {},
+        listing: { item_groups: ['Synthetic Fabric', 'Synthetic Yarn'] }
       },
-      label: { status: 'blocked', intents: [], slot_ops: [], response_goals: nil, block_reason: 'phase_not_executable' }
+      label: { status: 'overview', intents: ['product_overview'], slot_ops: [], response_goals: ['answer_product_overview'] }
     },
     {
       # Phase 1: catalog is a supported product intent but not executable; the plan fails closed at

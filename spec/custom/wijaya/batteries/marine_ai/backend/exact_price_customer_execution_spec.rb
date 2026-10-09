@@ -672,6 +672,92 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
     end
   end
 
+  describe 'product_overview terminal no-output contract' do
+    let(:overview_packet) do
+      packet(goals: %w[answer_product_overview], facts: { company_offerings: { item_groups: ['Fabric'] } })
+    end
+
+    def overview_plan
+      Marine::Decision::CandidatePlan.normalize(
+        'schema_version' => Marine::Decision::Schema::SCHEMA_VERSION,
+        'scenario_candidate' => { 'key' => 'scenario_5', 'confidence' => 'high' },
+        'intents' => ['product_overview'], 'slot_operations' => [],
+        'customer_language' => 'id', 'confidence' => 'high'
+      )
+    end
+
+    before { allow(decision_runner).to receive(:call).and_return(overview_plan) }
+
+    it 'preserves terminal no-output when authority raises after an exact normalized overview plan' do
+      allow(authority_execution).to receive(:call).and_raise('private authority detail')
+
+      result = execution.call
+      expect(result).to have_attributes(status: :terminal_no_output, reason: :internal_error, text: nil)
+      expect(result.to_s).not_to include('private authority detail')
+      expect(presenter).not_to have_received(:call)
+    end
+
+    it 'keeps legacy fallback for a malformed pseudo-overview plan when authority raises' do
+      malformed_plan = deep_freeze(
+        schema_version: Marine::Decision::Schema::SCHEMA_VERSION,
+        intents: ['product_overview']
+      )
+      allow(decision_runner).to receive(:call).and_return(malformed_plan)
+      allow(authority_execution).to receive(:call).and_raise('private authority detail')
+
+      result = execution.call
+      expect(result).to have_attributes(status: :fallback, reason: :internal_error, text: nil)
+      expect(result.to_s).not_to include('private authority detail')
+    end
+
+    it 'keeps legacy fallback when a malformed pseudo-plan returns an overview authority failure' do
+      malformed_plan = deep_freeze(
+        schema_version: Marine::Decision::Schema::SCHEMA_VERSION,
+        intents: ['product_overview']
+      )
+      allow(decision_runner).to receive(:call).and_return(malformed_plan)
+      allow(authority_execution).to receive(:call).and_return(
+        authority_result(outcome: Coordinator::OUTCOME_HANDOFF, reason: Coordinator::REASON_CATALOG_UNAVAILABLE,
+                         intents: %w[product_overview], evidence_packet: nil)
+      )
+
+      expect(execution.call).to have_attributes(status: :fallback, reason: :authority_rejected, text: nil)
+    end
+
+    it 'is terminal on repository/packet-build authority failure' do
+      allow(authority_execution).to receive(:call).and_return(
+        authority_result(outcome: Coordinator::OUTCOME_HANDOFF, reason: Coordinator::REASON_CATALOG_UNAVAILABLE,
+                         intents: %w[product_overview], evidence_packet: nil)
+      )
+      expect(execution.call).to have_attributes(status: :terminal_no_output, reason: :authority_rejected, text: nil)
+    end
+
+    it 'is terminal on an invalid overview packet before presentation' do
+      allow(authority_execution).to receive(:call).and_return(
+        authority_result(intents: %w[product_overview], evidence_packet: deep_freeze(response_goals: ['broken']))
+      )
+      result = execution.call
+      expect(result).to have_attributes(status: :terminal_no_output, reason: :invalid_packet)
+      expect(presenter).not_to have_received(:call)
+    end
+
+    it 'is terminal when the presenter raises' do
+      allow(authority_execution).to receive(:call).and_return(
+        authority_result(intents: %w[product_overview], evidence_packet: overview_packet)
+      )
+      allow(presenter).to receive(:call).and_raise('private presenter detail')
+      expect(execution.call).to have_attributes(status: :terminal_no_output, reason: :presentation_rejected, text: nil)
+    end
+
+    it 'is terminal when the deterministic renderer/presenter rejects the packet' do
+      allow(authority_execution).to receive(:call).and_return(
+        authority_result(intents: %w[product_overview], evidence_packet: overview_packet)
+      )
+      allow(presenter).to receive(:call).and_return(double(ok?: false, text: nil))
+      expect(execution.call).to have_attributes(status: :terminal_no_output, reason: :presentation_rejected, text: nil)
+    end
+  end
+
   it 'folds collaborator exceptions and malformed successful presentation to closed fallback results' do
     allow(decision_runner).to receive(:call).and_raise('private provider detail')
     result = execution.call

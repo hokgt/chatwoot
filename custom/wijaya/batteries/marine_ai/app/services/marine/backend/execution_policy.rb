@@ -18,7 +18,7 @@ module Marine::Backend::ExecutionPolicy
   # are the bounded-catalog reads; price_range (Phase 5) is the family-level selling-price range and
   # stock (Phase 5) is the binary availability read. These are NOT wired into the live price bridge
   # (the EXECUTABLE_INTENTS == ["price"] contract above is unchanged).
-  PRODUCT_INTENTS = %w[price price_range stock product_listing product_information].freeze
+  PRODUCT_INTENTS = %w[price price_range stock product_overview product_listing product_information].freeze
 
   # The classification vocabulary offered to Model 1: every executable product intent plus the
   # non-executable fallback. unsupported is classification-only and NEVER authorizes execution.

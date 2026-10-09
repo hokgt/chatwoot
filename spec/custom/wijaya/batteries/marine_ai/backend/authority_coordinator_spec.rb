@@ -15,11 +15,12 @@ require 'rails_helper'
 # the deep-frozen closed Result.
 RSpec.describe Marine::Backend::AuthorityCoordinator do
   subject(:coordinator) do
-    described_class.new(resolver: resolver, planner: planner, packet_builder: packet_builder,
-                        range_authority: range_authority, language_resolver: language_resolver)
+    described_class.new(resolver: resolver, listing_scope_resolver: listing_scope_resolver,
+                        planner: planner, packet_builder: packet_builder, range_authority: range_authority, language_resolver: language_resolver)
   end
 
   let(:resolver) { instance_double(Marine::Backend::CatalogCandidateResolver) }
+  let(:listing_scope_resolver) { instance_double(Marine::Backend::ListingScopeResolver) }
   let(:planner) { instance_double(Marine::Backend::ProductExecutionPlanner) }
   let(:packet_builder) { instance_double(Marine::Backend::EvidencePacketBuilder) }
   let(:range_authority) { instance_double(Marine::Backend::FamilyPriceRangeAuthority) }
@@ -60,6 +61,9 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
     # Stub the dispatch collaborators as spies so `(not_)to have_received` is reliable; individual
     # examples override the return values they care about.
     allow(resolver).to receive(:call)
+    allow(listing_scope_resolver).to receive(:call).and_return(
+      Marine::Backend::ListingScopeResolver::Result.new(status: :broad).freeze
+    )
     allow(planner).to receive(:call)
   end
 
@@ -208,13 +212,41 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
       expect(captured[:intents]).to eq(%w[product_listing])
       expect(captured[:product_intent]).to include(
         intent: 'product_listing', requested_intents: [], requires_exact_variant: false,
-        explicit_child_code: nil, customer_language: 'id', family_mention: 'JEV-SUGGESTED'
+        explicit_child_code: nil, customer_language: 'id', family_mention: nil, item_group_scope: nil
       )
       expect(result.outcome_type).to eq(:evidence_packet)
       expect(result.reason).to eq(:accepted)
       expect(result.evidence_packet).to equal(listing_packet)
       expect(result.source).to eq(:none)
       expect(result).to be_frozen
+    end
+
+    it 'scopes a no-slot category query by the Backend-resolved Item Group and proposes no state' do
+      group = Marine::Backend::ListingScopeResolver::Result.new(status: :item_group, item_group: 'Kain').freeze
+      allow(listing_scope_resolver).to receive(:call).with(trigger: 'Kain yang tersedia apa saja?').and_return(group)
+      captured = nil
+      allow(planner).to receive(:call) { |**kwargs|
+        captured = kwargs
+        { planner: :input }
+      }
+
+      no_slots = raw_plan(intents: %w[product_listing])
+      no_slots['slot_operations'] = []
+      result = call(candidate_plan: Marine::Decision::CandidatePlan.normalize(no_slots),
+                    trigger: 'Kain yang tersedia apa saja?')
+
+      expect(captured[:product_intent]).to include(family_mention: nil, item_group_scope: 'Kain')
+      expect(result.proposed_state_transition).to be_nil
+    end
+
+    it 'fails closed on a product-versus-Item-Group collision before planning' do
+      collision = Marine::Backend::ListingScopeResolver::Result.new(status: :ambiguous).freeze
+      allow(listing_scope_resolver).to receive(:call).and_return(collision)
+      result = call(candidate_plan: plan(intents: %w[product_listing]), trigger: 'Kain tersedia?')
+
+      expect(result.outcome_type).to eq(:handoff)
+      expect(planner).not_to have_received(:call)
+      expect(result.proposed_state_transition).to be_nil
     end
 
     it 'accepts a product_information listing packet too' do

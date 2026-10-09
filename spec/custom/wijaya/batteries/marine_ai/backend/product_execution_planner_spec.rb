@@ -365,6 +365,55 @@ RSpec.describe Marine::Backend::ProductExecutionPlanner do
       listing_planner.call(product_intent: { customer_language: 'id' }, intents: intents, scenario: { key: 'scenario_9' })
     end
 
+    it 'answers a general company offering question from bounded authoritative item groups, not item rows' do
+      allow(listing_repository).to receive(:active_item_groups).and_return(
+        item_groups: %w[Fabric Yarn], returned_count: 2, total_count: 2, complete: true, has_more: false
+      )
+      expect(listing_repository).not_to receive(:active_top_level)
+      expect(listing_repository).not_to receive(:exact_top_level)
+
+      result = listing_call(intents: %w[product_overview])
+
+      expect(result[:response_goals]).to eq(%w[answer_product_overview])
+      expect(result[:validated_slots]).to eq({})
+      expect(result[:facts][:company_offerings]).to eq(
+        item_groups: %w[Fabric Yarn], returned_count: 2, total_count: 2, complete: true,
+        source: 'catalog_item_group_repository', checked_at: checked_at
+      )
+    end
+
+    it 'fails closed for a general offering question when item groups are unavailable or malformed' do
+      allow(listing_repository).to receive(:active_item_groups).and_raise(catalog_error)
+      expect(listing_call(intents: %w[product_overview])[:response_goals]).to eq(%w[handoff])
+      allow(listing_repository).to receive(:active_item_groups).and_return(
+        item_groups: [], returned_count: 0, total_count: 0, complete: true, has_more: false
+      )
+      expect(listing_call(intents: %w[product_overview])[:response_goals]).to eq(%w[handoff])
+    end
+
+    it 'resolves a category candidate and lists only its top-level sellable items, never child variants' do
+      allow(listing_repository).to receive(:exact_top_level).with('Fabric').and_return(nil)
+      allow(listing_repository).to receive(:exact_item_group).with('Fabric').and_return('Fabric')
+      expect(listing_repository).to receive(:active_top_level).with(item_group: 'Fabric').and_return(listing_result)
+
+      result = listing_planner.call(product_intent: { customer_language: 'id', item_group_scope: 'Fabric' },
+                                    intents: %w[product_listing], scenario: { key: 'scenario_9' })
+
+      expect(result[:response_goals]).to eq(%w[answer_product_listing])
+      expect(result[:validated_slots]).to eq({})
+      expect(result[:facts][:product_listing][:products].map { |product| product[:code] }).to eq(%w[AAA BBB])
+    end
+
+    it 'hands off when a listing candidate matches neither a top-level product nor an item group' do
+      allow(listing_repository).to receive(:exact_top_level).with('Ghost').and_return(nil)
+      allow(listing_repository).to receive(:exact_item_group).with('Ghost').and_return(nil)
+
+      result = listing_planner.call(product_intent: { customer_language: 'id', family_mention: 'Ghost' },
+                                    intents: %w[product_listing], scenario: { key: 'scenario_9' })
+      expect(result[:response_goals]).to eq(%w[handoff])
+      expect(result[:facts]).to eq({})
+    end
+
     it 'builds a names-only listing input without resolving any family/variant' do
       expect(family_repository).not_to receive(:resolve_exact)
       expect(variant_resolver).not_to receive(:resolve)
@@ -468,6 +517,7 @@ RSpec.describe Marine::Backend::ProductExecutionPlanner do
 
       it 'hands off (never shows the product as available) when the candidate has no exact top-level match' do
         allow(listing_repository).to receive(:exact_top_level).with('Ghost').and_return(nil)
+        allow(listing_repository).to receive(:exact_item_group).with('Ghost').and_return(nil)
         result = mention_call(intents: %w[product_information], mention: 'Ghost')
         expect(result[:response_goals]).to eq(%w[handoff])
         expect(result[:facts]).to eq({})

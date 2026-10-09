@@ -43,6 +43,7 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
   # page of active top-level products (product_listing = names only; product_information = the same
   # bounded set, with RAG descriptions attached ONLY to those authorized entries).
   LISTING_INTENTS = %w[product_listing product_information].freeze
+  OFFERING_INTENT = 'product_overview'.freeze
 
   # The only intents this planner may execute (transactional + informational product_overview) —
   # exactly the keys it can map to a response goal. Defense in depth: the planner rejects anything
@@ -84,7 +85,7 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
   # presentation_policy: OPTIONAL plain closed policy data threaded from the customer composition root.
   #                      It is embedded in the evidence input ONLY for an answer_price_range answer (v3);
   #                      every other goal ignores it, so those packets stay v2.
-  def call(product_intent:, intents:, scenario:, presentation_policy: nil) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- a flat sequence of independent fail-closed guards
+  def call(product_intent:, intents:, scenario:, presentation_policy: nil) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- flat sequence of independent fail-closed guards
     # Defense in depth: a non-Hash product_intent (a direct programmer call) fails closed to a
     # factless handoff rather than raising an unbounded error dereferencing it.
     return handoff(Context.new(scenario, intents, nil)) unless product_intent.is_a?(Hash)
@@ -94,8 +95,9 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
     # non-ExecutionPolicy-authorized intent set fails closed to a factless handoff rather than executing.
     return handoff(context) unless executable?(intents)
 
-    # The catalog-wide listing intents need NO price family/variant resolution: a bounded top-level
-    # page (optionally narrowed to one exact-resolved product), with descriptions only for info.
+    # Company-wide offerings are authoritative item groups, never an item-row dump. Category/product
+    # listings use a separate bounded top-level item path.
+    return offering_answer(context) if intents == [OFFERING_INTENT]
     return listing_answer(context, product_intent) if listing_only?(intents)
 
     family = resolve_family(product_intent[:family_mention])
@@ -198,26 +200,53 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
   # restricted to that one product. A supplied-but-unresolved candidate (:unknown) or a catalog
   # outage (:unavailable) fails closed to a factless handoff — an unknown product is NEVER shown as
   # available. product_information attaches approved RAG descriptions to the authorized entries only.
+  def offering_answer(context)
+    page = listing_repository.active_item_groups
+    groups = page[:item_groups]
+    return handoff(context) unless groups.is_a?(Array) && groups.any?
+    return handoff(context) unless page[:returned_count] == groups.length
+
+    fact = {
+      item_groups: groups,
+      returned_count: groups.length,
+      total_count: page[:total_count],
+      complete: page[:has_more] == false,
+      source: 'catalog_item_group_repository',
+      checked_at: now_iso8601
+    }
+    evidence_input(context, goals: %w[answer_product_overview], slots: {}, facts: { company_offerings: fact })
+  rescue Marine::Catalog::Errors::CatalogUnavailableError
+    handoff(context)
+  end
+
   def listing_answer(context, product_intent)
     descriptions = context.intents.first == 'product_information'
-    product = resolve_listing_product(product_intent[:family_mention])
-    return handoff(context) if %i[unavailable unknown].include?(product)
+    scope = resolve_listing_scope(product_intent)
+    return handoff(context) if %i[unavailable unknown].include?(scope)
 
-    fact = listing_fact(descriptions: descriptions, product: product)
+    fact = listing_fact(descriptions: descriptions, product: scope&.dig(:product), item_group: scope&.dig(:item_group))
     return handoff(context) if fact.nil?
 
     goal = descriptions ? 'answer_product_information' : 'answer_product_listing'
-    evidence_input(context, goals: [goal], slots: validated_slots(product, nil), facts: { product_listing: fact })
+    evidence_input(context, goals: [goal], slots: validated_slots(scope&.dig(:product), nil),
+                            facts: { product_listing: fact })
   end
 
-  # nil (no candidate → broad page) | { code:, name: } (exact unique top-level match) | :unknown
-  # (a candidate was supplied but is not an exact unique active top-level product) | :unavailable
-  # (catalog outage). A blank candidate never touches the repository.
-  def resolve_listing_product(mention)
-    return nil if mention.to_s.strip.empty?
+  # The coordinator transports independently resolved authority identities: family_mention is product
+  # identity only; item_group_scope is category identity only. A direct caller supplying both fails closed.
+  def resolve_listing_scope(product_intent) # rubocop:disable Metrics/CyclomaticComplexity,Metrics/PerceivedComplexity -- two independent authority namespaces with explicit collision/outage gates
+    mention = product_intent[:family_mention].to_s.strip.presence
+    group_scope = product_intent[:item_group_scope].to_s.strip.presence
+    return :unknown if mention && group_scope
+    return nil unless mention || group_scope
 
-    match = listing_repository.exact_top_level(mention)
-    match.nil? ? :unknown : match
+    if mention
+      product = listing_repository.exact_top_level(mention)
+      product ? { product: product } : :unknown
+    else
+      item_group = listing_repository.exact_item_group(group_scope)
+      item_group ? { item_group: item_group } : :unknown
+    end
   rescue Marine::Catalog::Errors::CatalogUnavailableError
     :unavailable
   end
@@ -316,8 +345,14 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
   # explicit has_more (the authoritative completeness signal, complete == !has_more), and complete is true
   # only when the original page had no more AND nothing was filtered out — so a filtered page is never
   # claimed as the whole catalogue.
-  def listing_fact(descriptions:, product:)
-    page = product ? single_product_page(product) : listing_repository.active_top_level
+  def listing_fact(descriptions:, product:, item_group: nil) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity -- three bounded authority branches plus fail-closed metadata gates
+    page = if product
+             single_product_page(product)
+           elsif item_group
+             listing_repository.active_top_level(item_group: item_group)
+           else
+             listing_repository.active_top_level
+           end
     return nil if page[:products].empty?
 
     products = listing_products(page[:products], descriptions)

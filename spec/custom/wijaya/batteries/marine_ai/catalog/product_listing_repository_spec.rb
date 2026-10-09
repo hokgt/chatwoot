@@ -35,8 +35,9 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
   # The one canonical top-level predicate every query must carry VERBATIM: active, and NOT a child
   # (a NULL or blank/whitespace variant_of is kept; only a row naming a parent family is dropped).
   describe 'the canonical top-level predicate' do
-    it 'keeps disabled=false AND the empty-variant_of test, never a plain variant_of IS NULL, and no has_variants' do
-      expect(described_class::TOP_LEVEL_PREDICATE).to eq("disabled = false AND COALESCE(BTRIM(variant_of), '') = ''")
+    it 'keeps only active sellable non-child rows, without using has_variants as the top-level discriminator' do
+      expect(described_class::TOP_LEVEL_PREDICATE)
+        .to eq("disabled = false AND is_sales_item = true AND COALESCE(BTRIM(variant_of), '') = ''")
     end
 
     it 'shares that exact predicate across page, count, and exact lookup' do
@@ -99,7 +100,7 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
 
         call = captured.first
         expect(call[:params]).to eq([21])
-        expect(call[:sql]).to include("disabled = false AND COALESCE(BTRIM(variant_of), '') = ''")
+        expect(call[:sql]).to include(described_class::TOP_LEVEL_PREDICATE)
         expect(call[:sql]).to include('ORDER BY item_code ASC')
         expect(call[:sql]).to include('LIMIT $1')
         expect(result[:products]).to eq([{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }])
@@ -133,7 +134,7 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
         expect(result[:has_more]).to be(true)
         expect(result[:total_count]).to eq(42)
         expect(captured.last[:sql]).to include('COUNT(DISTINCT item_code)')
-        expect(captured.last[:sql]).to include("disabled = false AND COALESCE(BTRIM(variant_of), '') = ''")
+        expect(captured.last[:sql]).to include(described_class::TOP_LEVEL_PREDICATE)
       end
 
       it 'reports a nil total_count when the COUNT query fails (honest bounded selection)' do
@@ -176,6 +177,177 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
     end
   end
 
+  describe '#active_item_groups' do
+    it 'returns a bounded authoritative category page without enumerating item rows' do
+      allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
+        captured << { sql: sql, params: params }
+        [{ 'item_group' => 'Fabric' }, { 'item_group' => 'Yarn' }]
+      end
+
+      result = repository.active_item_groups(limit: 20)
+
+      expect(captured.first[:sql]).to include('GROUP BY LOWER(BTRIM(item_group))')
+      expect(captured.first[:sql]).to include('is_sales_item = true')
+      expect(captured.first[:sql]).to include("COALESCE(BTRIM(item_code), '') <> ''")
+      expect(captured.first[:sql]).not_to include('item_code AS code')
+      expect(captured.first[:params]).to eq([21])
+      expect(result).to eq(item_groups: %w[Fabric Yarn], returned_count: 2, total_count: 2,
+                           complete: true, has_more: false)
+    end
+
+    it 'normalizes case/whitespace identity before page, count, and exact lookup' do
+      calls = []
+      allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
+        calls << { sql: sql, params: params }
+        if sql.include?('COUNT(DISTINCT LOWER(BTRIM(item_group)))')
+          [{ 'total' => 2 }]
+        elsif sql.include?('LOWER(BTRIM(item_group)) = $1')
+          [{ 'item_group' => 'Fabric' }]
+        else
+          [{ 'item_group' => 'Fabric' }, { 'item_group' => 'Yarn' }]
+        end
+      end
+
+      page = repository.active_item_groups(limit: 1)
+      exact = repository.exact_item_group(' fabric ')
+
+      expect(page).to include(item_groups: ['Fabric'], returned_count: 1, total_count: 2, complete: false)
+      expect(exact).to eq('Fabric')
+      expect(calls[0][:sql]).to include('MIN(BTRIM(item_group))', 'GROUP BY LOWER(BTRIM(item_group))')
+      expect(calls[1][:sql]).to include('COUNT(DISTINCT LOWER(BTRIM(item_group)))')
+      expect(calls[2][:sql]).to include('GROUP BY LOWER(BTRIM(item_group))')
+    end
+
+    it 'uses deterministic normalized Item Group display and ordering before LIMIT' do
+      repository.active_item_groups(limit: 1)
+      sql = captured.first[:sql]
+      expect(sql).to include('MIN(BTRIM(item_group)) AS item_group')
+      expect(sql).to include('ORDER BY normalized_group ASC')
+      expect(sql.index('GROUP BY')).to be < sql.index('LIMIT')
+    end
+
+    it 'fails closed on malformed category rows' do
+      allow(Marine::Catalog::Connection).to receive(:select).and_return([{ 'item_group' => nil }])
+      expect { repository.active_item_groups }.to raise_error(Marine::Catalog::Errors::CatalogUnavailableError)
+    end
+  end
+
+  describe 'category-specific top-level listing' do
+    it 'resolves an exact category and applies it to page and count queries with the sellable non-child predicate' do
+      calls = []
+      allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
+        calls << { sql: sql, params: params }
+        if sql.include?('GROUP BY LOWER(BTRIM(item_group))')
+          [{ 'item_group' => 'Fabric' }]
+        elsif sql.include?('COUNT(DISTINCT item_code)')
+          [{ 'total' => 3 }]
+        else
+          [{ 'code' => 'AAA', 'name' => 'Alpha' }, { 'code' => 'BBB', 'name' => 'Bravo' }]
+        end
+      end
+
+      category = repository.exact_item_group(' fabric ')
+      result = repository.active_top_level(item_group: category, limit: 1)
+
+      expect(category).to eq('Fabric')
+      expect(calls[0][:params]).to eq(['fabric'])
+      expect(calls[1][:params]).to eq([2, 'Fabric'])
+      expect(calls[2][:params]).to eq(['Fabric'])
+      expect(calls.drop(1).map { |call| call[:sql] }).to all(include('LOWER(BTRIM(item_group)) = LOWER(BTRIM('))
+      expect(calls.drop(1).map { |call| call[:sql] }).to all(include(described_class::TOP_LEVEL_PREDICATE))
+      expect(result[:products]).to eq([{ code: 'AAA', name: 'Alpha' }])
+      expect(result).to include(returned_count: 1, total_count: 3, complete: false, has_more: true)
+    end
+
+    it 'fails closed rather than broadening an explicitly blank category scope' do
+      expect(Marine::Catalog::Connection).not_to receive(:select)
+      expect { repository.active_top_level(item_group: '   ') }
+        .to raise_error(Marine::Catalog::Errors::CatalogUnavailableError)
+    end
+
+    it 'returns nil for an absent or ambiguous exact category and fails closed on outage' do
+      allow(Marine::Catalog::Connection).to receive(:select).and_return([])
+      expect(repository.exact_item_group('Ghost')).to be_nil
+      allow(Marine::Catalog::Connection).to receive(:select).and_return([{ 'item_group' => 'A' }, { 'item_group' => 'B' }])
+      expect(repository.exact_item_group('group')).to be_nil
+      allow(Marine::Catalog::Connection).to receive(:select).and_raise(StandardError)
+      expect { repository.exact_item_group('Fabric') }.to raise_error(Marine::Catalog::Errors::CatalogUnavailableError)
+    end
+  end
+
+  describe 'bounded cross-namespace resolution' do
+    it 'binds every candidate and retains normalized Item Group ambiguity' do
+      allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
+        captured << { sql: sql, params: params }
+        sql.include?('normalized_group') ? [{ 'item_group' => 'Fabric' }] : []
+      end
+
+      result = repository.resolve_item_group_any(%w[Fabric Yarn])
+      expect(result).to eq(status: :resolved, item_group: 'Fabric')
+      expect(captured.first[:params]).to eq(%w[Fabric Yarn])
+      expect(captured.first[:sql]).to include('LOWER(BTRIM(item_group)) IN (LOWER($1), LOWER($2))')
+    end
+
+    it 'returns ambiguous when two normalized product identities match' do
+      allow(Marine::Catalog::Connection).to receive(:select).and_return(
+        [{ 'code' => 'A', 'name' => 'Alpha' }, { 'code' => 'B', 'name' => 'Beta' }]
+      )
+      expect(repository.resolve_top_level_any(%w[Alpha Beta])).to eq(status: :ambiguous)
+    end
+
+    it 'normalizes exact product code and name identities before matching' do
+      allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
+        captured << { sql: sql, params: params }
+        [{ 'code' => 'KAIN-1', 'name' => 'Kain Premium' }]
+      end
+
+      expect(repository.resolve_top_level_any([' kain-1 '])).to eq(
+        status: :resolved, code: 'KAIN-1', name: 'Kain Premium'
+      )
+      expect(captured.first[:params]).to eq(['kain-1'])
+      expect(captured.first[:sql]).to include('LOWER(BTRIM(item_code)) IN (LOWER($1))')
+      expect(captured.first[:sql]).to include('LOWER(BTRIM(item_name)) IN (LOWER($1))')
+    end
+
+    it 'infers one Item Group when all exact token-boundary product matches converge' do
+      allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
+        captured << { sql: sql, params: params }
+        [{ 'item_code' => 'KAIN-1', 'normalized_group' => 'fabric', 'item_group' => 'Fabric', 'display_count' => '1' },
+         { 'item_code' => 'KAIN-2', 'normalized_group' => 'fabric', 'item_group' => 'Fabric', 'display_count' => '1' }]
+      end
+
+      result = repository.infer_item_group_from_top_level_any(['kain'])
+      expect(result).to eq(status: :resolved, item_group: 'Fabric')
+      expect(captured.first[:params]).to eq(['kain'])
+      expect(captured.first[:sql]).to include(described_class::AUTHORITATIVE_PREDICATE)
+      expect(captured.first[:sql]).to include("regexp_split_to_array(LOWER(CONCAT_WS(' ', item_code, item_name))")
+      expect(captured.first[:sql]).to include("LIMIT #{described_class::MAX_INFERENCE_MATCHES + 1}")
+    end
+
+    it 'fails closed when matching products span normalized Item Groups' do
+      allow(Marine::Catalog::Connection).to receive(:select).and_return(
+        [{ 'item_code' => 'KAIN-1', 'normalized_group' => 'fabric', 'item_group' => 'Fabric', 'display_count' => '1' },
+         { 'item_code' => 'KAIN-2', 'normalized_group' => 'apparel', 'item_group' => 'Apparel', 'display_count' => '1' }]
+      )
+      expect(repository.infer_item_group_from_top_level_any(['kain'])).to eq(status: :ambiguous)
+    end
+
+    it 'fails closed on display conflicts, overflow, and outage' do
+      conflict = [{ 'item_code' => 'KAIN-1', 'normalized_group' => 'fabric', 'item_group' => 'Fabric', 'display_count' => '2' }]
+      allow(Marine::Catalog::Connection).to receive(:select).and_return(conflict)
+      expect(repository.infer_item_group_from_top_level_any(['kain'])).to eq(status: :ambiguous)
+
+      overflow = (1..(described_class::MAX_INFERENCE_MATCHES + 1)).map do |index|
+        { 'item_code' => "KAIN-#{index}", 'normalized_group' => 'fabric', 'item_group' => 'Fabric', 'display_count' => '1' }
+      end
+      allow(Marine::Catalog::Connection).to receive(:select).and_return(overflow)
+      expect(repository.infer_item_group_from_top_level_any(['kain'])).to eq(status: :ambiguous)
+
+      allow(Marine::Catalog::Connection).to receive(:select).and_raise(StandardError)
+      expect(repository.infer_item_group_from_top_level_any(['kain'])).to eq(status: :unavailable)
+    end
+  end
+
   describe '#exact_top_level' do
     context 'with a single unique match' do
       let(:exact_rows) { [{ 'code' => 'AAA', 'name' => 'Alpha' }] }
@@ -184,7 +356,7 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
         result = repository.exact_top_level(' Alpha ')
         call = captured.first
         expect(call[:params]).to eq(%w[Alpha alpha])
-        expect(call[:sql]).to include("disabled = false AND COALESCE(BTRIM(variant_of), '') = ''")
+        expect(call[:sql]).to include(described_class::TOP_LEVEL_PREDICATE)
         expect(call[:sql]).to include('item_code = $1 OR LOWER(item_name) = $2')
         # DISTINCT ON (item_code) collapses duplicate physical rows for one item_code to a single
         # identity; LIMIT 2 still surfaces a genuine ambiguity across DISTINCT item_codes.

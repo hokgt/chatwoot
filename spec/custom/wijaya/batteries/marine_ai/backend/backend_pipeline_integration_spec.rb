@@ -40,6 +40,7 @@ RSpec.describe 'Marine::Backend Phase 6 unified customer orchestration', type: :
     @listing_repository = instance_double(Marine::Catalog::ProductListingRepository)
     @range_authority = instance_double(Marine::Backend::FamilyPriceRangeAuthority)
     @catalog_resolver = instance_double(Marine::Backend::CatalogCandidateResolver)
+    @listing_scope_resolver = instance_double(Marine::Backend::ListingScopeResolver)
     @description_source = double('rag_description_source')
     language_resolver = class_double(Marine::Catalog::ConversationLanguageResolver)
     allow(language_resolver).to receive(:resolve).and_return(double('lang', language: 'id'))
@@ -54,7 +55,8 @@ RSpec.describe 'Marine::Backend Phase 6 unified customer orchestration', type: :
       clock: clock
     )
     @coordinator = Marine::Backend::AuthorityCoordinator.new(
-      resolver: @catalog_resolver, planner: planner, packet_builder: Marine::Backend::EvidencePacketBuilder.new(clock: clock),
+      resolver: @catalog_resolver, listing_scope_resolver: @listing_scope_resolver,
+      planner: planner, packet_builder: Marine::Backend::EvidencePacketBuilder.new(clock: clock),
       range_authority: @range_authority, language_resolver: language_resolver
     )
 
@@ -137,6 +139,9 @@ RSpec.describe 'Marine::Backend Phase 6 unified customer orchestration', type: :
       'BD' => 'A premium marine fabric.', 'ZZZ' => 'Off-page item that must never appear.'
     )
     allow(@catalog_resolver).to receive(:call)
+    allow(@listing_scope_resolver).to receive(:call).and_return(
+      Marine::Backend::ListingScopeResolver::Result.new(status: :broad, product: nil, item_group: nil).freeze
+    )
   end
 
   # --- Helpers -------------------------------------------------------------------------------------
@@ -242,7 +247,12 @@ RSpec.describe 'Marine::Backend Phase 6 unified customer orchestration', type: :
     end
 
     it 'product_information: an exact repository-authorized family carries a packet-bound clean-switch transition' do
-      allow(@listing_repository).to receive(:exact_top_level).with('Baby Doll').and_return(code: 'BD', name: 'Baby Doll')
+      allow(@listing_scope_resolver).to receive(:call).and_return(
+        Marine::Backend::ListingScopeResolver::Result.new(
+          status: :product, product: { code: 'BD', name: 'Baby Doll' }.freeze, item_group: nil
+        ).freeze
+      )
+      allow(@listing_repository).to receive(:exact_top_level).with('BD').and_return(code: 'BD', name: 'Baby Doll')
       stub_decision(normalized_plan(intents: %w[product_information], ops: [product_op('Baby Doll')]))
       @model2 = 'BD (Baby Doll): A premium marine fabric.'
 

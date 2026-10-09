@@ -97,6 +97,12 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
   # The Phase-3 listing candidate intents; a product_listing fact requires one of these in intents.
   LISTING_INTENTS = %w[product_listing product_information].freeze
 
+  # Company-wide offerings are category names projected from Item.item_group, never item rows.
+  OFFERINGS_FACT_KEYS = %i[item_groups returned_count total_count complete source checked_at].freeze
+  OFFERINGS_SOURCE = 'catalog_item_group_repository'.freeze
+  OFFERINGS_GOAL = 'answer_product_overview'.freeze
+  OFFERINGS_INTENT = 'product_overview'.freeze
+
   # An exact, non-negative decimal string (mirrors PriceDisplayFormatter::AMOUNT_STRING) — a
   # string rate must be losslessly representable; an Integer / finite BigDecimal is also accepted.
   RATE_STRING = /\A\d+(?:\.\d+)?\z/
@@ -313,13 +319,14 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
     return {} if facts.nil? || facts == {}
     raise invalid unless facts.is_a?(Hash)
 
-    reject_unknown_keys!(facts, %i[price price_range stock product_listing])
+    reject_unknown_keys!(facts, %i[price price_range stock product_listing company_offerings])
     variant_code = slots.dig(:variant, :code)
     result = {}
     result[:price] = price_fact(facts[:price], variant_code, language) if facts.key?(:price)
     result[:price_range] = price_range_fact(facts[:price_range], slots, language) if facts.key?(:price_range)
     result[:stock] = stock_fact(facts[:stock], variant_code) if facts.key?(:stock)
     result[:product_listing] = product_listing_fact(facts[:product_listing], goals) if facts.key?(:product_listing)
+    result[:company_offerings] = company_offerings_fact(facts[:company_offerings]) if facts.key?(:company_offerings)
     raise invalid if result.length > MAX_FACTS
 
     result
@@ -478,6 +485,28 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
     { status: fact[:status].dup, source: exact!(fact[:source], STOCK_SOURCE), checked_at: utc_timestamp!(fact[:checked_at]) }
   end
 
+  def company_offerings_fact(fact) # rubocop:disable Metrics/AbcSize -- flat closed-contract validation over one bounded fact
+    raise invalid unless fact.is_a?(Hash)
+
+    reject_unknown_keys!(fact, OFFERINGS_FACT_KEYS)
+    groups = fact[:item_groups]
+    raise invalid unless groups.is_a?(Array) && groups.any? && groups.length <= MAX_LISTING_PRODUCTS
+
+    normalized = groups.map { |group| required_string!(group, MAX_STRING_BYTES) }
+    raise invalid unless normalized.uniq.length == normalized.length
+
+    returned = listing_count!(fact[:returned_count], normalized.length)
+    complete = boolean!(fact[:complete])
+    {
+      item_groups: normalized,
+      returned_count: returned,
+      total_count: listing_total!(fact[:total_count], returned, complete),
+      complete: complete,
+      source: exact!(fact[:source], OFFERINGS_SOURCE),
+      checked_at: utc_timestamp!(fact[:checked_at])
+    }.compact
+  end
+
   # A bounded product-listing fact: the authorized returned page plus EXACT completeness metadata.
   # Each product carries a validated code + optional display name; a per-product description is
   # permitted ONLY under the answer_product_information goal. returned_count must equal the page size;
@@ -585,7 +614,14 @@ class Marine::Backend::EvidencePacketBuilder # rubocop:disable Metrics/ClassLeng
     raise invalid if facts.key?(:price_range) && !slots.key?(:product)
     raise invalid if facts.key?(:stock) != goals.include?('answer_stock')
     raise invalid if facts.key?(:stock) && intents.exclude?('stock')
-    raise invalid if goals.include?('answer_product_overview') && !slots.key?(:product)
+
+    # A company-wide overview is backed only by the authoritative item-group fact; no product slot or
+    # item-row listing may substitute for it.
+    overview = goals.include?(OFFERINGS_GOAL)
+    raise invalid if facts.key?(:company_offerings) != overview
+    raise invalid if overview && goals != [OFFERINGS_GOAL]
+    raise invalid if overview && intents != [OFFERINGS_INTENT]
+    raise invalid if overview && !slots.empty?
     # A product_listing fact exists iff a listing goal is present AND a listing intent was asked.
     raise invalid if facts.key?(:product_listing) != goals.intersect?(LISTING_GOALS)
     raise invalid if facts.key?(:product_listing) && !intents.intersect?(LISTING_INTENTS)

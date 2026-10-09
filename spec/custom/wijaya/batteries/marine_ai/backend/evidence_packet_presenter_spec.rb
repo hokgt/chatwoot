@@ -68,15 +68,15 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
   end
 
   let(:overview_packet) do
-    deep_freeze(
-      evidence_version: 'marine_evidence_v2', generated_at: '2026-09-30T12:00:00Z',
-      response_goals: %w[answer_product_overview], scenario: { key: 'scenario_8', intents: %w[product_overview] },
-      validated_slots: { product: { code: 'BD', name: 'Santorini', source: 'marine_catalog' } },
-      facts: {}, missing_slots: [], variant_candidates: [],
-      prohibited_claims: %w[exact_stock_quantity warehouse_location delivery_date unverified_discount price stock],
-      response_constraints: { max_paragraphs: 2, role: 'marine_sales_assistant', handoff_self_reference: true },
-      customer_language: 'id'
-    )
+    builder.build(evidence_input: {
+                    scenario: { key: 'scenario_8' }, intents: %w[product_overview], customer_language: 'id',
+                    response_goals: %w[answer_product_overview], validated_slots: {},
+                    facts: { company_offerings: {
+                      item_groups: %w[Fabric Yarn], returned_count: 2, total_count: 2, complete: true,
+                      source: 'catalog_item_group_repository', checked_at: '2026-09-30T12:00:00Z'
+                    } },
+                    missing_slots: [], variant_candidates: []
+                  })
   end
 
   def deep_freeze(value)
@@ -227,19 +227,20 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
   end
 
   describe 'semantic verifier is required for EVERY generated answer path' do
-    # Without the required verifier the untrusted candidate is never accepted. product_overview has no
-    # deterministic Evidence renderer, so it keeps the closed :fact_unverified / :deterministic fallback.
-    # stock (answer_stock) now renders deterministic Evidence instead — proven in its own block below.
-    it 'fails closed (no verifier) for product_overview (no deterministic renderer)' do
+    # Without the required verifier the untrusted candidate is never accepted. A valid product_overview
+    # packet renders deterministic authoritative category Evidence instead of exposing Model 2 prose.
+    it 'renders deterministic company offerings when no verifier is supplied for product_overview' do
       result = presenter.call(packet: overview_packet,
                               generator: generator('BD mencakup berbagai kain berkualitas untuk kebutuhan Anda.'), customer_request: 'x')
-      expect(result).to have_attributes(ok: false, reason: :fact_unverified, fallback: :deterministic)
+      expect(result).to have_attributes(ok: true, text: 'Kategori produk yang kami tawarkan: Fabric, Yarn.',
+                                        reason: 'company_offerings_evidence_fallback', detail: :fact_rejected)
     end
 
-    it 'fails closed for product_overview when the injected verifier rejects (outcome flip)' do
+    it 'renders deterministic company offerings when the injected verifier rejects' do
       result = presenter.call(packet: overview_packet, generator: generator('BD mencakup berbagai kain.'),
                               customer_request: 'x', fact_verifier: ->(**) { false })
-      expect(result).to have_attributes(ok: false, reason: :fact_unverified, fallback: :deterministic)
+      expect(result).to have_attributes(ok: true, text: 'Kategori produk yang kami tawarkan: Fabric, Yarn.',
+                                        reason: 'company_offerings_evidence_fallback', detail: :fact_rejected)
     end
 
     it 'delivers the accepted candidate when the injected verifier confirms the binary stock outcome' do
@@ -503,10 +504,42 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
       expect(result).to have_attributes(ok: false, text: nil, reason: :fact_unverified, fallback: :deterministic)
     end
 
-    it 'leaves a non-stock (product_overview) packet closed byte-for-byte (stock renderer yields nil)' do
+    it 'renders company-offerings Evidence rather than returning unverified Model 2 prose' do
       result = presenter.call(packet: overview_packet,
-                              generator: generator('BD mencakup berbagai kain berkualitas.'), customer_request: 'x')
-      expect(result).to have_attributes(ok: false, reason: :fact_unverified, fallback: :deterministic)
+                              generator: generator('Fabric, Yarn, dan FORGED.'), customer_request: 'x')
+      expect(result).to have_attributes(ok: true, text: 'Kategori produk yang kami tawarkan: Fabric, Yarn.',
+                                        reason: 'company_offerings_evidence_fallback', detail: :fact_unverified)
+      expect(result.text).not_to include('FORGED')
+    end
+  end
+
+  describe 'company offerings deterministic Evidence fallback' do
+    let(:deterministic_offerings) { 'Kategori produk yang kami tawarkan: Fabric, Yarn.' }
+    let(:valid_candidate) { 'Kategori produk yang kami tawarkan adalah Fabric dan Yarn.' }
+
+    it 'renders authoritative categories for generation, fact, persona, and semantic failures' do
+      cases = [
+        [generator(nil), verifier_ok, :generation_failed],
+        [generator('Fabric saja.'), verifier_ok, :fact_rejected],
+        [generator('Fabric dan Yarn. Silakan hubungi tim sales kami.'), verifier_ok, :persona_rejected],
+        [generator(valid_candidate), ->(**) { false }, :fact_unverified]
+      ]
+
+      cases.each do |gen, verifier, detail|
+        result = presenter.call(packet: overview_packet, generator: gen, customer_request: 'x', fact_verifier: verifier)
+        expect(result).to have_attributes(ok: true, text: deterministic_offerings,
+                                          reason: 'company_offerings_evidence_fallback', detail: detail)
+      end
+    end
+
+    it 'returns a semantically accepted candidate verbatim without invoking the offerings renderer' do
+      offerings_spy = instance_spy(Marine::Backend::CompanyOfferingsEvidenceRenderer)
+      presenter_with_spy = described_class.new(offerings_renderer: offerings_spy)
+
+      result = presenter_with_spy.call(packet: overview_packet, generator: generator(valid_candidate),
+                                       customer_request: 'x', fact_verifier: verifier_ok)
+      expect(result).to have_attributes(ok: true, text: valid_candidate, reason: 'accepted')
+      expect(offerings_spy).not_to have_received(:call)
     end
   end
 

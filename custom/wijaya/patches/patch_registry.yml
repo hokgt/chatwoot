@@ -1294,6 +1294,7 @@ patches:
       # the already-computed Decision CandidatePlan inside the existing default-OFF Decision shadow;
       # no customer output, no Model 2, no state write, no second provider/Runner call.
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/catalog_candidate_resolver.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/listing_scope_resolver.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/family_price_range_authority.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/authority_coordinator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/authority_shadow_execution.rb
@@ -1330,6 +1331,7 @@ patches:
       # only), returned ok=true so the customer execution never invokes the legacy RAG path. Listing
       # goal only; product_information keeps the closed fallback.
       - custom/wijaya/batteries/marine_ai/app/services/marine/backend/product_listing_evidence_renderer.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/company_offerings_evidence_renderer.rb
       # Step 18 — deterministic exact-price Evidence renderer. For a renderable answer_price packet
       # EVERY Model 2 candidate failure (generation / fact / persona / semantic) discards the untrusted
       # candidate and renders the exact price from the marine_evidence_v2 price Evidence alone, through
@@ -1949,6 +1951,7 @@ patches:
       # execution (plan reuse, no second Runner/provider), and the batched repository resolve_any
       # lookups (single parameterized SELECT, byte-bounded binds, ambiguity detection).
       - spec/custom/wijaya/batteries/marine_ai/backend/catalog_candidate_resolver_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/listing_scope_resolver_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/family_price_range_authority_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/authority_coordinator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/authority_shadow_execution_spec.rb
@@ -1968,6 +1971,7 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/backend/presentation_policy_projector_spec.rb
       # Step 17 — deterministic product_listing Evidence renderer spec.
       - spec/custom/wijaya/batteries/marine_ai/backend/product_listing_evidence_renderer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/company_offerings_evidence_renderer_spec.rb
       # Step 18 — deterministic exact-price Evidence renderer spec.
       - spec/custom/wijaya/batteries/marine_ai/backend/exact_price_evidence_renderer_spec.rb
       # Checkpoint B — deterministic family price-RANGE Evidence renderer spec (19-gate contract).
