@@ -391,7 +391,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     identity = transition[:authoritative_identity]
     family = bounded_transition_code(identity[:family_code])
     return nil if family.nil?
-    return { 'validated_family' => family } if transition[:capability] == 'price_range'
+    return { 'validated_family' => family } if %w[family_context price_range].include?(transition[:capability])
 
     variant = bounded_transition_code(identity[:variant_code])
     return nil if variant.nil?
@@ -420,7 +420,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       transition[:schema_version] == 'state_transition_v1' &&
       transition[:handoff_required] == false &&
       %i[start update].include?(transition[:operation]) &&
-      %w[price price_range].include?(transition[:capability])
+      %w[family_context price price_range].include?(transition[:capability])
   end
 
   def valid_state_transition_identity?(identity, capability)

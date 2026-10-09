@@ -238,6 +238,26 @@ RSpec.describe 'Marine::Backend Phase 6 unified customer orchestration', type: :
       expect(result.text).not_to include('AMZ')
       expect(@description_source).to have_received(:call).once
       expect(@catalog_resolver).not_to have_received(:call)
+      expect(result.transition).to be_nil
+    end
+
+    it 'product_information: an exact repository-authorized family carries a packet-bound clean-switch transition' do
+      allow(@listing_repository).to receive(:exact_top_level).with('Baby Doll').and_return(code: 'BD', name: 'Baby Doll')
+      stub_decision(normalized_plan(intents: %w[product_information], ops: [product_op('Baby Doll')]))
+      @model2 = 'BD (Baby Doll): A premium marine fabric.'
+
+      result = execution.call
+
+      expect(result).to be_deliverable
+      expect(@captured[:packet].dig(:validated_slots, :product)).to include(code: 'BD', source: 'marine_catalog')
+      expect(@captured[:packet].dig(:facts, :product_listing, :products).map { |product| product[:code] }).to eq(%w[BD])
+      expect(result.transition).to eq(
+        schema_version: 'state_transition_v1', operation: :start, capability: 'family_context',
+        handoff_required: false,
+        authoritative_identity: { family_code: 'BD', source: 'marine_catalog' }
+      )
+      expect(result.transition).to be_frozen
+      expect(result.transition[:authoritative_identity]).to be_frozen
     end
 
     it 'price_range: FamilyPriceRangeAuthority values and provenance reach a reply (family-level, no variant)' do

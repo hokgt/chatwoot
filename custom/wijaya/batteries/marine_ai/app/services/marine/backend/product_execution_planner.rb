@@ -207,7 +207,7 @@ class Marine::Backend::ProductExecutionPlanner # rubocop:disable Metrics/ClassLe
     return handoff(context) if fact.nil?
 
     goal = descriptions ? 'answer_product_information' : 'answer_product_listing'
-    evidence_input(context, goals: [goal], facts: { product_listing: fact })
+    evidence_input(context, goals: [goal], slots: validated_slots(product, nil), facts: { product_listing: fact })
   end
 
   # nil (no candidate → broad page) | { code:, name: } (exact unique top-level match) | :unknown

@@ -57,6 +57,7 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
   STATE_TRANSITION_SOURCE = 'marine_catalog'.freeze
   STATE_TRANSITION_KEYS = %i[schema_version operation capability handoff_required authoritative_identity].freeze
   STATE_TRANSITION_IDENTITY_KEYS = {
+    'family_context' => %i[family_code source].freeze,
     'price_range' => %i[family_code source].freeze,
     'price' => %i[family_code variant_code source].freeze
   }.freeze
@@ -64,6 +65,7 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
     RANGE_GOAL => 'price_range',
     PRICE_GOAL => 'price'
   }.freeze
+  FAMILY_CONTEXT_GOALS = %w[answer_product_listing answer_product_information].freeze
   STATE_TRANSITION_OPERATIONS = %i[start update].freeze
   STATE_TRANSITION_CODE_MAX_BYTES = 120
 
@@ -121,7 +123,7 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
     # Exact price and price_range MUST carry their matching valid non-handoff transitions. Without one,
     # fail closed before presentation so a successful target can never outrun its authoritative context.
     goal = packet[:response_goals].first
-    required_capability = STATE_TRANSITION_GOALS[goal]
+    required_capability = transition_capability(packet, goal)
     return fallback(REASON_TRANSITION_REQUIRED) if transition_rejected?(transition, packet, required_capability)
 
     present(packet, context, required_capability ? transition : nil)
@@ -140,6 +142,13 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
     deliverable(presentation.text, transition)
   end
 
+  def transition_capability(packet, goal)
+    return STATE_TRANSITION_GOALS[goal] if STATE_TRANSITION_GOALS.key?(goal)
+    return 'family_context' if FAMILY_CONTEXT_GOALS.include?(goal) && packet.dig(:validated_slots, :product, :code)
+
+    nil
+  end
+
   def transition_rejected?(transition, packet, capability)
     capability && (!deliverable_transition?(transition, capability) || !transition_bound_to_packet?(transition, packet, capability))
   end
@@ -148,17 +157,26 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
     !transition.nil? && transition[:handoff_required] == false && transition[:capability] == capability
   end
 
-  # Bind exact-price state identity to the accepted Evidence Packet itself. Shape/provenance alone is
-  # insufficient: family and variant must exactly match both validated slots and the canonical price fact.
-  # price_range retains its existing structural/provenance contract and is deliberately not broadened here.
+  # Bind state identity to the accepted Evidence Packet itself. Shape/provenance alone is
+  # insufficient: exact price must match every family/variant field; a family-context switch must
+  # match the repository-validated product slot and the sole listed product.
   def transition_bound_to_packet?(transition, packet, capability)
-    return true unless capability == 'price'
-
     identity = transition[:authoritative_identity]
-    family_codes = [identity[:family_code], packet.dig(:validated_slots, :product, :code)]
-    variant_codes = [identity[:variant_code], packet.dig(:validated_slots, :variant, :code),
-                     packet.dig(:facts, :price, :canonical, :variant_code)]
-    matching_codes?(family_codes) && matching_codes?(variant_codes)
+    if capability == 'price'
+      family_codes = [identity[:family_code], packet.dig(:validated_slots, :product, :code)]
+      variant_codes = [identity[:variant_code], packet.dig(:validated_slots, :variant, :code),
+                       packet.dig(:facts, :price, :canonical, :variant_code)]
+      return matching_codes?(family_codes) && matching_codes?(variant_codes)
+    end
+    return family_context_bound?(identity, packet) if capability == 'family_context'
+
+    true
+  end
+
+  def family_context_bound?(identity, packet)
+    products = packet.dig(:facts, :product_listing, :products)
+    products.is_a?(Array) && products.length == 1 &&
+      matching_codes?([identity[:family_code], packet.dig(:validated_slots, :product, :code), products.first[:code]])
   end
 
   def matching_codes?(codes)

@@ -143,7 +143,10 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
 
     # A single listing/information intent is catalog-wide: it needs NO exact price-identity grounding,
     # so it routes the dedicated listing path instead of the CatalogCandidateResolver family/child flow.
-    return listing_dispatch(authorized, trigger: trigger, history: history, configured_language: configured_language) if listing?(authorized.intents)
+    if listing?(authorized.intents)
+      return listing_dispatch(authorized, trigger: trigger, history: history, flow_state: flow_state,
+                                          configured_language: configured_language)
+    end
 
     # Phase 5 — an explicit single price_range / stock intent is catalog-identity-grounded via the SAME
     # resolver, then routed through the planner + packet builder to an Evidence fact. The presentation
@@ -336,12 +339,16 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   # switched, or expired flow is a product_replacement (:start), which clears stale variant/catalog state.
   # Routed through the existing ProductStateTransition helper so the operation enum can never drift.
   def price_range_operation(resolved, flow_state)
-    kind = if same_active_family?(flow_state, resolved.family_code)
+    family_transition_operation(resolved.family_code, flow_state)
+  end
+
+  def family_transition_operation(family_code, flow_state)
+    kind = if same_active_family?(flow_state, family_code)
              ProductStateTransition::VARIANT_REPLACEMENT
            else
              ProductStateTransition::PRODUCT_REPLACEMENT
            end
-    transition = ProductStateTransition.new.call(existing: flow_state, kind: kind, set: { 'validated_family' => resolved.family_code })
+    transition = ProductStateTransition.new.call(existing: flow_state, kind: kind, set: { 'validated_family' => family_code })
     StateTransitionAdapter.new.call(transition)
   rescue StandardError
     nil
@@ -377,7 +384,7 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   # the catalog authority when present). An accepted listing packet is terminal; a planner handoff
   # (empty catalog / outage / unresolved candidate) is a closed handoff. No resolver identity is used,
   # so the Result carries SOURCE_NONE.
-  def listing_dispatch(authorized, trigger:, history:, configured_language:)
+  def listing_dispatch(authorized, trigger:, history:, flow_state:, configured_language:)
     language = resolve_listing_language(authorized, trigger: trigger, history: history, configured_language: configured_language)
     return listing_terminal(OUTCOME_HANDOFF, REASON_LANGUAGE_UNRESOLVED, authorized) if language.nil?
 
@@ -385,7 +392,9 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
       product_intent: listing_planner_input(authorized, language), intents: authorized.intents, scenario: authorized.scenario
     ))
     if packet[:response_goals].intersect?(LISTING_GOALS)
-      listing_terminal(OUTCOME_EVIDENCE_PACKET, REASON_ACCEPTED, authorized, evidence_packet: packet)
+      transition = listing_transition(packet, flow_state)
+      listing_terminal(OUTCOME_EVIDENCE_PACKET, REASON_ACCEPTED, authorized, evidence_packet: packet,
+                                                                             proposed_state_transition: transition)
     else
       listing_terminal(OUTCOME_HANDOFF, REASON_CATALOG_UNAVAILABLE, authorized, evidence_packet: packet)
     end
@@ -420,9 +429,34 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
     ).language
   end
 
-  def listing_terminal(outcome_type, reason, authorized, evidence_packet: nil)
+  def listing_terminal(outcome_type, reason, authorized, evidence_packet: nil, proposed_state_transition: nil)
     build(outcome_type: outcome_type, reason: reason, scenario_key: authorized.scenario[:key],
-          intents: authorized.intents, source: SOURCE_NONE, evidence_packet: evidence_packet)
+          intents: authorized.intents, source: SOURCE_NONE, evidence_packet: evidence_packet,
+          proposed_state_transition: proposed_state_transition)
+  end
+
+  # A narrowed listing/information answer establishes family context only when the accepted Evidence
+  # packet carries one repository-validated product slot bound to the same sole catalog-listed code.
+  # Broad pages and malformed/mismatched packets remain state no-ops.
+  def listing_transition(packet, flow_state)
+    family = packet.dig(:validated_slots, :product, :code).to_s.strip
+    products = packet.dig(:facts, :product_listing, :products)
+    return nil if family.empty? || !products.is_a?(Array) || products.length != 1 || products.first[:code] != family
+
+    family_context_transition(family, flow_state)
+  end
+
+  def family_context_transition(family, flow_state)
+    operation = family_transition_operation(family, flow_state)
+    return nil if operation.nil?
+
+    deep_freeze(
+      schema_version: STATE_TRANSITION_SCHEMA_VERSION,
+      operation: operation,
+      capability: 'family_context',
+      handoff_required: false,
+      authoritative_identity: { family_code: family.dup, source: STATE_TRANSITION_SOURCE }
+    )
   end
 
   # Exact family without a child → family price RANGE (internal canonical structure, never customer-facing).

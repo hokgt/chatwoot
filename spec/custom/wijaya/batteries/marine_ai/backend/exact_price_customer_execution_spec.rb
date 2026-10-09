@@ -118,6 +118,19 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
                 handoff_required: handoff_required, authoritative_identity: identity)
   end
 
+  def family_context_packet(family_code: 'BD', listed_code: family_code)
+    deep_freeze(
+      evidence_version: 'marine_evidence_v2', response_goals: %w[answer_product_information],
+      validated_slots: { product: { code: family_code, source: 'marine_catalog' } },
+      facts: { product_listing: { products: [{ code: listed_code, name: 'Synthetic family' }] } }
+    )
+  end
+
+  def family_context_transition(family_code: 'BD')
+    deep_freeze(schema_version: 'state_transition_v1', operation: :start, capability: 'family_context',
+                handoff_required: false, authoritative_identity: { family_code: family_code, source: 'marine_catalog' })
+  end
+
   def v3_range_packet
     packet(version: 'marine_evidence_v3', goals: %w[answer_price_range],
            facts: { price_range: { display: 'r' } }, presentation_policy: presentation_policy)
@@ -282,6 +295,35 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
 
       expect(decision_runner).to receive(:call).once.and_return(candidate_plan)
       expect(execution.call).to be_deliverable
+    end
+
+    it 'threads a family-context transition only when it is bound to the validated slot and sole listed product' do
+      evidence = family_context_packet
+      transition = family_context_transition
+      accepted = authority_result(intents: %w[product_information], evidence_packet: evidence,
+                                  proposed_state_transition: transition)
+      allow(authority_execution).to receive(:call).and_return(accepted)
+      allow(presenter).to receive(:call).and_return(Struct.new(:ok?, :text, :reason).new(true, 'BD info.', :accepted))
+
+      result = execution.call
+
+      expect(result).to be_deliverable
+      expect(result.transition).to equal(transition)
+    end
+
+    it 'rejects a forged or packet-mismatched family-context transition before presentation' do
+      [
+        [family_context_transition(family_code: 'FORGED'), family_context_packet],
+        [family_context_transition, family_context_packet(family_code: 'OTHER')],
+        [family_context_transition, family_context_packet(listed_code: 'OTHER')]
+      ].each do |transition, evidence|
+        allow(authority_execution).to receive(:call).and_return(
+          authority_result(intents: %w[product_information], evidence_packet: evidence,
+                           proposed_state_transition: transition)
+        )
+        expect(execution.call).to have_attributes(status: :fallback, reason: :transition_required, transition: nil)
+      end
+      expect(presenter).not_to have_received(:call)
     end
 
     it 'still rejects a listing packet whose facts do not match the listing goal' do

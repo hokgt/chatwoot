@@ -464,6 +464,86 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         expect(product_state).not_to have_key('requested_intents')
       end
 
+      it 'preserves the validated variant and catalog markers for an accepted same-family information turn' do
+        store = Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload)
+        store.start!('validated_family' => 'BD', 'validated_variant' => 'BD-4', 'current_intent' => 'price')
+        store.update!('catalog_sent' => true, 'catalog_document_id' => 44, 'catalog_message_id' => 55)
+        transition = {
+          schema_version: 'state_transition_v1', operation: :start, capability: 'family_context',
+          handoff_required: false,
+          authoritative_identity: { family_code: 'BD', source: 'marine_catalog' }.freeze
+        }.freeze
+        information = Marine::Backend::ExactPriceCustomerExecution::Result.new(
+          status: :deliverable, reason: :accepted, text: 'BD information.', transition: transition
+        ).freeze
+        allow(exact_price_attempt).to receive(:call).and_return(information)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(product_state).to include(
+          'validated_family' => 'BD', 'validated_variant' => 'BD-4',
+          'catalog_sent' => true, 'catalog_document_id' => 44, 'catalog_message_id' => 55,
+          'version' => 3
+        )
+      end
+
+      it 'switches an accepted authoritative family-information turn cleanly before a context-only price follow-up' do
+        store = Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload)
+        store.start!('validated_family' => 'LF', 'validated_variant' => 'LF-3', 'current_intent' => 'stock',
+                     'expected_attributes' => %w[colour], 'clarification_kind' => 'variant',
+                     'clarification_count' => 2, 'requested_intents' => %w[price stock])
+        store.update!('catalog_sent' => true, 'catalog_document_id' => 44, 'catalog_message_id' => 55)
+        incoming.update!(content: 'Apakah Baby Doll tersedia?')
+        family_transition = {
+          schema_version: 'state_transition_v1', operation: :start, capability: 'family_context',
+          handoff_required: false,
+          authoritative_identity: { family_code: 'BD', source: 'marine_catalog' }.freeze
+        }.freeze
+        information = Marine::Backend::ExactPriceCustomerExecution::Result.new(
+          status: :deliverable, reason: :accepted, text: 'Baby Doll tersedia.', transition: family_transition
+        ).freeze
+        allow(exact_price_attempt).to receive(:call).and_return(information)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        switched = product_state
+        expect(switched).to include('validated_family' => 'BD', 'version' => 1)
+        expect(switched.keys).not_to include('validated_variant', 'catalog_sent', 'clarification_kind', 'requested_intents')
+
+        family_repository = instance_double(Marine::Catalog::ProductFamilyRepository)
+        variant_repository = instance_double(Marine::Catalog::VariantRepository)
+        price_repository = instance_double(Marine::Catalog::PriceRepository)
+        range_repository = instance_double(Marine::Catalog::PriceRangeRepository)
+        stock_repository = instance_double(Marine::Catalog::StockRepository)
+        variant_resolver = instance_double(Marine::Catalog::VariantResolver)
+        allow(family_repository).to receive(:resolve_exact).with('BD').and_return(code: 'BD', name: 'Baby Doll')
+        allow(family_repository).to receive(:active_candidates).and_return([])
+        allow(variant_repository).to receive(:attribute_names).with('BD').and_return([])
+        allow(variant_repository).to receive(:resolve_child)
+        allow(variant_resolver).to receive(:resolve)
+        allow(price_repository).to receive(:price_for)
+        allow(range_repository).to receive(:range_for).with('BD').and_return(status: :unavailable)
+        allow(stock_repository).to receive(:status_for)
+        orchestrator = Marine::Catalog::ProductQueryOrchestrator.new(
+          repositories: { family: family_repository, variant: variant_repository, price: price_repository,
+                          price_range: range_repository, stock: stock_repository },
+          variant_resolver: variant_resolver
+        )
+
+        follow_up = orchestrator.plan_for_intent(
+          intent: { product_related: true, intent: 'price', requested_intents: %w[price],
+                    family_mention: nil, explicit_child_code: nil, attribute_candidates: [],
+                    requires_exact_variant: true, family_changed: false, intent_changed: true,
+                    quantity_inquiry: false },
+          flow: Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload).current_for_planning
+        )
+
+        expect(follow_up.dig(:state, :changes)).to include('validated_family' => 'BD')
+        expect(follow_up.dig(:state, :changes)).not_to include('validated_variant' => 'LF-3')
+        expect(range_repository).to have_received(:range_for).with('BD')
+        expect(price_repository).not_to have_received(:price_for)
+      end
+
       it 'writes no state for a malformed or forged transition' do
         malformed = exact_transition(source: 'forged')
         allow(exact_price_attempt).to receive(:call).and_return(exact_transition_result(malformed))
