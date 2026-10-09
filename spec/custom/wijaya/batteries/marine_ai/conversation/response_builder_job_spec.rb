@@ -519,7 +519,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       described_class.perform_now(conversation, assistant, incoming.id)
 
       reply = conversation.messages.outgoing.last
-      expect(reply.content).to eq('Could you specify the size, material you need?')
+      expect(reply.content).to eq('Could you specify the exact variant code you need?')
       expect(reply.attachments).to be_empty
     end
 
@@ -541,7 +541,9 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       described_class.perform_now(conversation, assistant, incoming.id)
 
       reply = conversation.messages.outgoing.last
-      expect(reply.content).to eq('Could you specify the size, material you need?')
+      # Catalog-assisted caption asks for the exact variant code and never a repository attribute label,
+      # delivered truthfully ALONGSIDE the real native catalog attachment (integration seam).
+      expect(reply.content).to eq('Could you specify the exact variant code you need?')
       expect(reply.additional_attributes['source_type']).to eq('marine_product')
       expect(reply.attachments.count).to eq(1)
       expect(reply.attachments.first.file.blob.id).to eq(document.source_file.blob.id)
@@ -564,7 +566,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       described_class.perform_now(conversation, assistant, incoming.id)
 
       reply = conversation.messages.outgoing.last
-      expect(reply.content).to eq('Could you specify the size, material you need?')
+      expect(reply.content).to eq('Could you specify the exact variant code you need?')
       expect(reply.attachments).to be_empty
       expect(product_state['catalog_message_id']).to eq(987)
     end
@@ -729,7 +731,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
                      ))
       stub_language('id')
       # Simulate the translator degrading (unconfigured / error): it returns the original text.
-      original = 'Could you specify the size, material you need?'
+      original = 'Could you specify the exact variant code you need?'
       allow(Marine::Llm::TranslateResponseService).to receive(:new).and_return(
         instance_double(Marine::Llm::TranslateResponseService, call: { ok: false, text: original, translated: false, error: 'x' })
       )
@@ -885,7 +887,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       state = product_state
       expect(state['clarification_kind']).to eq('variant')
       expect(state['clarification_count']).to eq(1)
-      expect(conversation.messages.outgoing.last.content).to eq('Could you specify the size you need?')
+      expect(conversation.messages.outgoing.last.content).to eq('Could you specify the exact variant code you need?')
       expect(claim_status).to eq('completed')
     end
 
@@ -1445,7 +1447,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
 
         described_class.perform_now(conversation, assistant, incoming.id)
 
-        expect(conversation.messages.outgoing.last.content).to eq('Could you specify the size, material you need?')
+        expect(conversation.messages.outgoing.last.content).to eq('Could you specify the exact variant code you need?')
       end
 
       it 'never invokes product wording on a product handoff turn' do

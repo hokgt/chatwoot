@@ -627,21 +627,29 @@ module Marine
         end
       end
 
-      # ONLY the family-only PRICE branch of the catalog-assisted variant clarification is changed:
+      # ONLY the family-only PRICE branch of the catalog-assisted variant clarification is specialized:
       # before sending the family catalog it computes a deterministic price RANGE over every active
-      # variant (fixed User Price policy). A clean range rides the SAME send_catalog action/selector/
-      # attachment as a range-grounded caption that asks for the exact variant code shown in the
-      # catalog; a missing / conflicting / heterogeneous range fails CLOSED to the existing safe price
-      # handoff (never a silently dropped variant, never a guessed range). Every OTHER awaiting-variant
-      # intent (variant_info, stock) keeps the unchanged plain catalog-assisted clarification (reply nil).
+      # variant (fixed User Price policy). A clean AVAILABLE range rides the SAME send_catalog action/
+      # selector/attachment as a range-grounded caption that asks for the exact variant code; an
+      # :unavailable / :conflict aggregate range does NOT hand off and never guesses a partial range —
+      # it CONTINUES the plain catalog-assisted clarification (reply nil) so the customer can reply with
+      # an exact variant code (the exact-child follow-up then stays authoritative: available answers,
+      # unavailable keeps its safe unavailable reply, an exact per-variant conflict still hands off).
+      # Only an available range whose required facts fail the renderer trust boundary still fails CLOSED
+      # to the safe price handoff, and a repository outage raises CatalogError (caught by
+      # plan_for_intent). Every OTHER awaiting-variant intent (variant_info, stock) keeps the unchanged
+      # plain catalog-assisted clarification (reply nil).
       def price_range_catalog(intent, family, state_op, changes)
         return build(:send_catalog, operation: state_op, changes: changes) unless intent[:intent] == 'price'
 
         range = price_range_repository.range_for(family[:code])
-        descriptor = range[:status] == :available ? reply_renderer.price_range(range, family) : nil
-        # An unavailable/conflicting range OR a range whose required facts failed the renderer trust
-        # boundary (descriptor nil) both fail CLOSED to the existing safe price handoff — never a
-        # guessed range and never an invalid fact turned into customer text.
+        # A non-available aggregate range continues the variant-selection flow with NO price descriptor
+        # (same send_catalog action/state as every other awaiting-variant intent) rather than handing off.
+        return build(:send_catalog, operation: state_op, changes: changes) unless range[:status] == :available
+
+        descriptor = reply_renderer.price_range(range, family)
+        # An available range whose required facts failed the renderer trust boundary (descriptor nil)
+        # still fails CLOSED to the safe price handoff — never an invalid fact turned into customer text.
         return build(:handoff, reply: reply_renderer.price_conflict, operation: state_op, changes: changes) if descriptor.nil?
 
         build(:send_catalog, reply: descriptor, operation: state_op, changes: changes)

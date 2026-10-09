@@ -340,22 +340,32 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(plan[:reply]).to include(kind: :price_range, price_min: '12500', price_max: '12500')
     end
 
-    it 'fails closed to the existing safe price handoff when the range is unavailable (a missing variant)' do
+    it 'continues the catalog-assisted variant selection (no handoff, no range) when the family range is unavailable' do
+      # Proven gap (Dev conv 482, family-only "berapa harga baby doll?"): an aggregate :unavailable
+      # range must NOT immediately hand off. Continue the SAME send_catalog variant-selection flow with
+      # NO price descriptor so the customer can reply with an exact variant code.
       allow(price_range_repository).to receive(:range_for).and_return(status: :unavailable)
 
       plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
 
-      expect(plan[:action]).to eq(:handoff)
-      expect(plan[:reply]).to eq(kind: :price_conflict)
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to be_nil
+      expect(plan[:state][:operation]).to eq(:start)
+      expect(plan[:state][:changes]).to include('validated_family' => 'FAM-1', 'current_intent' => 'price',
+                                                'expected_attributes' => %w[Size])
+      expect(deep_values(plan)).not_to include(:price_range, :price_conflict)
     end
 
-    it 'fails closed to the existing safe price handoff on a per-variant / mixed conflict' do
+    it 'continues the catalog-assisted variant selection (no handoff, no range) on an aggregate range conflict' do
       allow(price_range_repository).to receive(:range_for).and_return(status: :conflict)
 
       plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
 
-      expect(plan[:action]).to eq(:handoff)
-      expect(plan[:reply]).to eq(kind: :price_conflict)
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to be_nil
+      expect(plan[:state][:changes]).to include('validated_family' => 'FAM-1', 'current_intent' => 'price',
+                                                'expected_attributes' => %w[Size])
+      expect(deep_values(plan)).not_to include(:price_range, :price_conflict)
     end
 
     it 'fails closed to the safe price handoff when an available range carries an invalid required fact' do

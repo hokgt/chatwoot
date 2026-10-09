@@ -30,7 +30,7 @@ RSpec.describe Marine::Catalog::ReplyPresenter do
         .to eq('Here are the details for BD-RED. Would you like the price or availability?')
     end
 
-    it 'falls back to the safe catalog-assisted variant clarification for a price_range send_catalog plan' do
+    it 'falls back to the exact-variant-code clarification for a price_range send_catalog plan (no attribute-label leak)' do
       # The range caption is produced OUTSIDE this locale-agnostic presenter (via the shared
       # PriceRangeReplyComposer); a bare price_range plan through #reply_text degrades to the existing
       # deterministic catalog-assisted variant clarification, never a raw or untruthful range caption.
@@ -38,8 +38,9 @@ RSpec.describe Marine::Catalog::ReplyPresenter do
         { status: :available, min: '12500', max: '45000', currency: 'IDR', uom: 'yard' },
         { code: 'BD', name: 'Baby Doll' }
       )
-      expect(presenter.reply_text(plan(action: :send_catalog, reply: descriptor, changes: { 'expected_attributes' => %w[Size] })))
-        .to eq('Could you specify the Size you need?')
+      text = presenter.reply_text(plan(action: :send_catalog, reply: descriptor, changes: { 'expected_attributes' => %w[Size] }))
+      expect(text).to eq('Could you specify the exact variant code you need?')
+      expect(text.downcase).not_to include('size')
     end
 
     it 'fails closed for a standalone price reply instead of emitting a hardcoded English price sentence' do
@@ -82,18 +83,30 @@ RSpec.describe Marine::Catalog::ReplyPresenter do
         .to eq('Could you tell me which product you are interested in?')
     end
 
-    it 'renders variant clarification with attribute names and an empty fallback' do
+    it 'asks for the exact variant code on a variant clarification, never interpolating the internal attribute labels' do
       descriptor = renderer.clarify_variant(%w[size material])
       expect(presenter.reply_text(plan(action: :clarify_variant, reply: descriptor)))
-        .to eq('Could you specify the size, material you need?')
+        .to eq('Could you specify the exact variant code you need?')
 
       expect(presenter.reply_text(plan(action: :clarify_variant, reply: renderer.clarify_variant([]))))
-        .to eq('Could you specify which variant you are interested in?')
+        .to eq('Could you specify the exact variant code you need?')
     end
 
-    it 'renders a catalog-ASSISTED send_catalog (reply nil) as the variant clarification from expected_attributes' do
+    it 'renders a catalog-ASSISTED send_catalog (reply nil) as the exact-variant-code clarification, never the attribute labels' do
       built = plan(action: :send_catalog, reply: nil, changes: { 'expected_attributes' => %w[size color] })
-      expect(presenter.reply_text(built)).to eq('Could you specify the size, color you need?')
+      text = presenter.reply_text(built)
+      expect(text).to eq('Could you specify the exact variant code you need?')
+      expect(text.downcase).not_to include('color')
+    end
+
+    it 'asks for the exact variant code and never leaks the internal Colour attribute label (Dev conv 482 contract)' do
+      # Proven runtime shape: a family-only turn produced a catalog with expected_attributes=["Colour"].
+      # The customer-facing clarification must ask for the exact VARIANT CODE, never the repository
+      # attribute label; expected_attributes stays internal/unchanged in flow state.
+      built = plan(action: :send_catalog, reply: nil, changes: { 'expected_attributes' => %w[Colour] })
+      text = presenter.reply_text(built)
+      expect(text).to eq('Could you specify the exact variant code you need?')
+      expect(text.downcase).not_to include('colour')
     end
 
     it 'falls back to the generic product prompt for an unknown descriptor' do

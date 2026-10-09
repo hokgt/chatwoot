@@ -24,6 +24,13 @@ module Marine
 
       GENERIC_PRODUCT_TEXT = 'Could you share a little more detail about the product you need?'.freeze
 
+      # The customer-facing catalog-assisted variant clarification. It ALWAYS asks for the exact
+      # variant code and NEVER interpolates an internal expected-attribute label (e.g. Colour/Warna)
+      # into visible text — those repository labels stay internal to flow state. Truthful on BOTH
+      # delivery paths (with or without a native catalog attachment): it claims no attached catalog,
+      # and stays downstream-localizable.
+      CLARIFY_VARIANT_TEXT = 'Could you specify the exact variant code you need?'.freeze
+
       # Deterministic, factless, unbranded acknowledgement for a product-flow handoff — the safe
       # localized fallback the natural-wording layer rephrases in context. It asserts nothing and
       # names no company, so it never turns a customer-supplied destination or quantity into a claim.
@@ -64,7 +71,7 @@ module Marine
 
         dynamic = dynamic_product_text(descriptor)
         return dynamic if dynamic
-        return clarify_variant_text(Array(plan.dig(:state, :changes, 'expected_attributes'))) if plan[:action] == :send_catalog
+        return clarify_variant_text if plan[:action] == :send_catalog
 
         STATIC_PRODUCT_TEXT[descriptor[:kind]] || GENERIC_PRODUCT_TEXT
       end
@@ -170,7 +177,7 @@ module Marine
         when :price_available then raise PriceReplyNotPresentable, 'price_available must be resolved via PriceReplyComposer, not presented here'
         when :stock_available, :stock_empty then stock_text(descriptor)
         when :clarify_family then clarify_family_text(descriptor[:candidates])
-        when :clarify_variant then clarify_variant_text(descriptor[:attribute_names])
+        when :clarify_variant then clarify_variant_text
         when :catalog then catalog_ready_text(descriptor)
         end
       end
@@ -272,11 +279,11 @@ module Marine
         "Could you let me know which product you mean? For example: #{names.join(', ')}."
       end
 
-      def clarify_variant_text(attribute_names)
-        names = Array(attribute_names).reject(&:blank?)
-        return 'Could you specify which variant you are interested in?' if names.empty?
-
-        "Could you specify the #{names.join(', ')} you need?"
+      # Catalog-assisted variant clarification: always ask for the exact variant code and never the
+      # internal expected-attribute labels (see CLARIFY_VARIANT_TEXT). Deterministic and fact-free, so
+      # it is identical whether or not a native catalog is attached this turn.
+      def clarify_variant_text
+        CLARIFY_VARIANT_TEXT
       end
     end
   end
