@@ -320,6 +320,9 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
       expect(result).to eq(status: :resolved, item_group: 'Fabric')
       expect(captured.first[:params]).to eq(['kain'])
       expect(captured.first[:sql]).to include(described_class::AUTHORITATIVE_PREDICATE)
+      expect(captured.first[:sql]).to match(/\ASELECT\b/i)
+      expect(captured.first[:sql]).to include('FROM (VALUES ($1)) AS candidates(value)')
+      expect(Marine::Catalog::Connection.single_select?(captured.first[:sql])).to be(true)
       expect(captured.first[:sql]).to include("regexp_split_to_array(LOWER(CONCAT_WS(' ', item_code, item_name))")
       expect(captured.first[:sql]).to include("LIMIT #{described_class::MAX_INFERENCE_MATCHES + 1}")
     end

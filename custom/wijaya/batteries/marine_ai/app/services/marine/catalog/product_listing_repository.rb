@@ -349,28 +349,24 @@ module Marine
         SQL
       end
 
-      def inferred_item_group_sql(count) # rubocop:disable Metrics/MethodLength -- readable CTE keeps product dedup, conflicts, and bound in one query
+      def inferred_item_group_sql(count) # rubocop:disable Metrics/MethodLength -- readable derived VALUES query keeps product conflicts and bound in one SELECT
         values = (1..count).map { |index| "($#{index})" }.join(', ')
         <<~SQL.squish
-          WITH candidates(value) AS (VALUES #{values}), matches AS (
-            SELECT item_code,
-                   LOWER(BTRIM(item_group)) AS normalized_group,
-                   MIN(BTRIM(item_group)) AS item_group,
-                   COUNT(DISTINCT BTRIM(item_group)) AS display_count
-            FROM #{Marine::Catalog::Config.qualified_table}
-            WHERE #{AUTHORITATIVE_PREDICATE}
-              AND COALESCE(BTRIM(item_group), '') <> ''
-              AND EXISTS (
-                SELECT 1
-                FROM candidates
-                WHERE candidates.value = ANY(
-                  regexp_split_to_array(LOWER(CONCAT_WS(' ', item_code, item_name)), '[^[:alnum:]]+')
-                )
+          SELECT item_code,
+                 LOWER(BTRIM(item_group)) AS normalized_group,
+                 MIN(BTRIM(item_group)) AS item_group,
+                 COUNT(DISTINCT BTRIM(item_group)) AS display_count
+          FROM #{Marine::Catalog::Config.qualified_table}
+          WHERE #{AUTHORITATIVE_PREDICATE}
+            AND COALESCE(BTRIM(item_group), '') <> ''
+            AND EXISTS (
+              SELECT 1
+              FROM (VALUES #{values}) AS candidates(value)
+              WHERE candidates.value = ANY(
+                regexp_split_to_array(LOWER(CONCAT_WS(' ', item_code, item_name)), '[^[:alnum:]]+')
               )
-            GROUP BY item_code, LOWER(BTRIM(item_group))
-          )
-          SELECT item_code, normalized_group, item_group, display_count
-          FROM matches
+            )
+          GROUP BY item_code, LOWER(BTRIM(item_group))
           ORDER BY item_code ASC, normalized_group ASC
           LIMIT #{MAX_INFERENCE_MATCHES + 1}
         SQL
