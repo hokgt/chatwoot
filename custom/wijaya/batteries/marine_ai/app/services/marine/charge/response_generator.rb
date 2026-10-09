@@ -68,6 +68,8 @@ class Marine::Charge::ResponseGenerator
     query_translation = translate_query(customer_query)
     retrieval_query = query_translation[:text].presence || customer_query.to_s
 
+    @customer_query = customer_query
+    @message_history = message_history
     @retrieval_query = retrieval_query
     result = exact_knowledge_result || knowledge_base.retrieve(retrieval_query, limit: 1)
 
@@ -349,14 +351,56 @@ class Marine::Charge::ResponseGenerator
     (grounding_matches + default_knowledge_base_entries).uniq(&:id).first(RAG_MAX_ENTRIES)
   end
 
-  # The bounded set of top query-matched approved records that seed the RAG grounding block, led by
-  # the top RAG_GROUNDING_MATCHES matches (not just the single best match that drives metadata) so a
-  # fact the customer asked about that lives in a lower-ranked approved record still reaches the
-  # prompt in full. Fetched only when a RAG branch actually builds the grounding context, and never
-  # widens the cited/scored provenance set (response_ids/document_ids/confidence stay derived from
-  # the single top match). Bounded, approved-only, assistant-scoped; deduped and capped downstream.
+  # The bounded set of top query-matched approved records that seed the RAG grounding block in FULL.
+  # Checkpoint B widens WHICH bounded queries feed grounding — the single top match still drives
+  # confidence/answer/provenance metadata unchanged: retrieve the top matches for the ORIGINAL current
+  # customer query first, then the translated retrieval query when it is nonblank and distinct, deduped
+  # by stable response id with order preserved. A translated-only grounding could miss a lower-ranked
+  # approved record that only the customer's own-language wording selects (e.g. a use-case fact), so the
+  # original current query is always consulted. Only when BOTH current-query forms retrieve zero records
+  # — an elliptical/anaphoric follow-up whose own text matches nothing — is exactly ONE prior-turn query
+  # added (the nearest earlier user message). Fetched only when a RAG branch builds the grounding context;
+  # bounded (at most three retrievals, no extra provider call), approved-only, assistant-scoped; deduped
+  # and capped downstream, and never widening the cited/scored provenance set.
   def grounding_matches
-    @grounding_matches ||= knowledge_base.retrieve(@retrieval_query, limit: RAG_GROUNDING_MATCHES).responses
+    @grounding_matches ||= build_grounding_matches
+  end
+
+  def build_grounding_matches
+    original = @customer_query.to_s
+    translated = @retrieval_query.to_s
+
+    matches = retrieve_grounding(original)
+    matches += retrieve_grounding(translated) if translated.present? && translated != original
+    matches = matches.uniq(&:id)
+    return matches if matches.any?
+
+    # Both current-query forms retrieved nothing: ground on the nearest earlier user turn so an
+    # elliptical follow-up (e.g. "when is it open?" after naming a place) still grounds on the topic
+    # it refers to. Never reached once any current match exists, so a stale topic cannot pollute.
+    prior = nearest_earlier_user_message
+    prior.present? ? retrieve_grounding(prior).uniq(&:id) : matches
+  end
+
+  def retrieve_grounding(query)
+    return [] if query.blank?
+
+    knowledge_base.retrieve(query, limit: RAG_GROUNDING_MATCHES).responses
+  end
+
+  # Nearest earlier user-role message within the already-bounded message_history, excluding the current
+  # query. The single elliptical-follow-up grounding fallback above; it never scans beyond the bounded
+  # history and never emits the current turn.
+  def nearest_earlier_user_message
+    Array(@message_history).reverse_each do |item|
+      next unless (item[:role] || item['role']).to_s == 'user'
+
+      content = (item[:content] || item['content']).to_s
+      next if content.blank? || content == @customer_query.to_s
+
+      return content
+    end
+    nil
   end
 
   def default_knowledge_base_entries

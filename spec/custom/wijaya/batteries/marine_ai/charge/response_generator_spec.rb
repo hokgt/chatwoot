@@ -930,4 +930,139 @@ RSpec.describe Marine::Charge::ResponseGenerator do
       expect(payload['response']).to eq('MOQ is the minimum order quantity.')
     end
   end
+
+  # Checkpoint B — multilingual/current-query grounding plus a narrowly bounded prior-turn fallback
+  # for elliptical RAG follow-ups. This changes WHICH bounded queries feed the grounding context
+  # (breadth/order) only: the primary result, confidence, provenance and translation metadata still
+  # derive from the translated retrieval exactly as before.
+  describe 'current-query + bounded prior-turn RAG grounding (Checkpoint B)' do
+    before do
+      stub_no_translation
+      allow(assistant).to receive(:config).and_return({ 'instructions' => 'You are Marine.' })
+    end
+
+    def capture_llm_system(message: 'Here is some helpful information for you.')
+      llm = instance_double(Marine::Llm::BaseService, configured?: true)
+      captured = { system: nil }
+      allow(llm).to receive(:chat) do |args|
+        captured[:system] = args[:system]
+        { ok: true, message: message, error: nil }
+      end
+      allow(Marine::Llm::BaseService).to receive(:new).and_return(llm)
+      captured
+    end
+
+    def grounding_result(responses:, confidence: 0.5)
+      Marine::Cell::RetrievalResult.new(responses: responses, confidence: confidence)
+    end
+
+    # A — translated current query returns a decoy; the ORIGINAL current query returns a different
+    # approved fact-bearing record. The ORIGINAL match must be grounded in FULL and precede the
+    # translated/supplemental match, while the outward metadata still comes from the translated result.
+    it 'grounds the ORIGINAL current query in full ahead of the translated match while metadata stays from the translated result' do
+      allow(Marine::Llm::TranslateQueryService).to receive(:new).and_return(
+        double(call: { text: 'translated-current', source_language: 'id', translated: true, error: nil })
+      )
+      allow(Marine::Llm::TranslateResponseService).to receive(:new).and_return(
+        double(call: { text: nil, source_language: 'en', target_language: 'id', translated: false, error: nil })
+      )
+
+      orig_answer = "#{'detail ' * 90}ORIG_TAIL_FACT"
+      orig = Marine::AssistantResponse.new(id: 101, question: 'ORIG_Q', answer: orig_answer)
+      decoy = Marine::AssistantResponse.new(id: 202, question: 'DECOY_Q', answer: 'DECOY_ANSWER')
+
+      allow(knowledge_base).to receive(:retrieve).with('translated-current', limit: 1)
+                                                 .and_return(grounding_result(responses: [decoy]))
+      allow(knowledge_base).to receive(:retrieve).with('original-current', limit: described_class::RAG_GROUNDING_MATCHES)
+                                                 .and_return(grounding_result(responses: [orig], confidence: 0.9))
+      allow(knowledge_base).to receive(:retrieve).with('translated-current', limit: described_class::RAG_GROUNDING_MATCHES)
+                                                 .and_return(grounding_result(responses: [decoy]))
+
+      captured = capture_llm_system
+      payload = generator.generate(additional_message: 'original-current')
+
+      sys = captured[:system]
+      expect(sys).to include('ORIG_TAIL_FACT') # untruncated => the original match is grounded in full
+      expect(sys.index('ORIG_Q')).to be < sys.index('DECOY_ANSWER') # original precedes translated
+      expect(payload).to include('source_type' => 'llm_rag', 'confidence' => 0.5, 'response_ids' => [202])
+    end
+
+    # B — both current-query forms return zero records; the nearest earlier user message retrieves a
+    # fact-bearing approved record that must reach the grounding prompt in full.
+    it 'adds exactly one prior-turn grounding query when both current forms retrieve nothing' do
+      allow(Marine::Llm::TranslateQueryService).to receive(:new).and_return(
+        double(call: { text: 'translated-elliptical', source_language: 'id', translated: true, error: nil })
+      )
+      allow(Marine::Llm::TranslateResponseService).to receive(:new).and_return(
+        double(call: { text: nil, source_language: 'en', target_language: 'id', translated: false, error: nil })
+      )
+      empty = Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match')
+      prior_answer = "#{'line ' * 120}PRIOR_TAIL_FACT"
+      prior = Marine::AssistantResponse.new(id: 303, question: 'PRIOR_Q', answer: prior_answer)
+
+      allow(knowledge_base).to receive(:retrieve).with('translated-elliptical', limit: 1).and_return(empty)
+      allow(knowledge_base).to receive(:retrieve).with('original-elliptical', limit: described_class::RAG_GROUNDING_MATCHES).and_return(empty)
+      allow(knowledge_base).to receive(:retrieve).with('translated-elliptical', limit: described_class::RAG_GROUNDING_MATCHES).and_return(empty)
+      allow(knowledge_base).to receive(:retrieve).with('earlier-user-turn', limit: described_class::RAG_GROUNDING_MATCHES)
+                                                 .and_return(grounding_result(responses: [prior], confidence: 0.4))
+
+      history = [
+        { role: 'user', content: 'earlier-user-turn' },
+        { role: 'assistant', content: 'earlier marine answer' }
+      ]
+      captured = capture_llm_system
+      generator.generate(additional_message: 'original-elliptical', message_history: history)
+
+      expect(captured[:system]).to include('PRIOR_TAIL_FACT')
+    end
+
+    # C — the current query has at least one record (even low confidence): unrelated prior-turn
+    # retrieval must not be invoked or included.
+    it 'does not invoke prior-turn grounding when the current query has any match (even low confidence)' do
+      current = Marine::AssistantResponse.new(id: 404, question: 'CURRENT_Q', answer: 'CURRENT_FACT')
+      allow(knowledge_base).to receive(:retrieve).with('current-q', limit: 1)
+                                                 .and_return(grounding_result(responses: [current]))
+      allow(knowledge_base).to receive(:retrieve).with('current-q', limit: described_class::RAG_GROUNDING_MATCHES)
+                                                 .and_return(grounding_result(responses: [current], confidence: 0.2))
+
+      history = [
+        { role: 'user', content: 'earlier-unrelated-turn' },
+        { role: 'assistant', content: 'earlier marine answer' }
+      ]
+      captured = capture_llm_system
+      generator.generate(additional_message: 'current-q', message_history: history)
+
+      expect(knowledge_base).not_to have_received(:retrieve).with('earlier-unrelated-turn', limit: described_class::RAG_GROUNDING_MATCHES)
+      expect(captured[:system]).to include('CURRENT_FACT')
+    end
+
+    # D — no earlier user message and no current matches: bounded default-context/fail-closed behavior
+    # is preserved with no prior-turn N+1.
+    it 'keeps bounded default grounding and attempts no prior query when there is no earlier user message' do
+      empty = Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match')
+      allow(knowledge_base).to receive(:retrieve).with('lonely-q', limit: 1).and_return(empty)
+      allow(knowledge_base).to receive(:retrieve).with('lonely-q', limit: described_class::RAG_GROUNDING_MATCHES).and_return(empty)
+
+      history = [{ role: 'assistant', content: 'earlier marine answer' }]
+      capture_llm_system
+      payload = generator.generate(additional_message: 'lonely-q', message_history: history)
+
+      expect(knowledge_base).to have_received(:retrieve).with('lonely-q', limit: described_class::RAG_GROUNDING_MATCHES).once
+      expect(payload['source_type']).to eq('llm_rag')
+    end
+
+    # E — original == translated query: the grounding retrieval is deduped to a single call.
+    it 'dedupes into a single grounding retrieval when the original and translated queries are identical' do
+      current = Marine::AssistantResponse.new(id: 505, question: 'Q', answer: 'FACT')
+      allow(knowledge_base).to receive(:retrieve).with('same-q', limit: 1)
+                                                 .and_return(grounding_result(responses: [current]))
+      allow(knowledge_base).to receive(:retrieve).with('same-q', limit: described_class::RAG_GROUNDING_MATCHES)
+                                                 .and_return(grounding_result(responses: [current], confidence: 0.3))
+
+      capture_llm_system
+      generator.generate(additional_message: 'same-q')
+
+      expect(knowledge_base).to have_received(:retrieve).with('same-q', limit: described_class::RAG_GROUNDING_MATCHES).once
+    end
+  end
 end
