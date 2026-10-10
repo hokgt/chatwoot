@@ -14,10 +14,20 @@ module Marine
       # limit — just a defensive ceiling.
       MAX_ATTRIBUTE_NAMES = 50
 
-      # Exact child lookup within a family: variant_of = family AND item_code = child, on
-      # an active (disabled = false) row. LIMIT 2 distinguishes a unique child from an
-      # ambiguous one. Returns { code: } (row-derived) only when exactly one child matches;
-      # returns nil for zero OR multiple matches — fails closed, never picks a first row.
+      # Defensive bounds on the batched exact child-code candidate set for #resolve_child_any. The
+      # caller already bounds candidates to 32 (Schema::MAX_RAW_ARRAY) and 120 bytes
+      # (Schema::MAX_RAW_CANDIDATE_LENGTH); these are repository backstops so a hostile oversized list
+      # can never build a pathological IN-list. An over-120-byte candidate is DROPPED (never sliced
+      # into a prefix that could match a DIFFERENT, shorter child code).
+      MAX_ANY_CANDIDATES = 32
+      MAX_ANY_CANDIDATE_BYTES = 120
+
+      # Case-insensitive child lookup within a family: variant_of = family (exact) AND
+      # LOWER(item_code) = LOWER(child), on an active (disabled = false) row. LIMIT 2
+      # distinguishes a unique child from an ambiguous one — two active rows differing only by
+      # case (e.g. LF-3 and lf-3) stay two rows and fail closed; they are never collapsed.
+      # Returns { code: } (row-derived) only when exactly one child matches; returns nil for
+      # zero OR multiple matches — fails closed, never picks a first row.
       def resolve_child(family_code, child_code)
         family = family_code.to_s.strip
         child = child_code.to_s.strip
@@ -60,10 +70,67 @@ module Marine
         { code: rows.first['code'] }
       end
 
+      # Batched exact child resolution within a family over a BOUNDED candidate set, in a SINGLE
+      # parameterized SELECT (never an N-query loop). Matches an active child item_code
+      # case-insensitively (variant_of = family AND disabled = false) against the candidates — NEVER a
+      # display label or attribute value. LIMIT 2 tells a unique child apart from an ambiguous one.
+      # Two active rows differing only by case stay distinct (never deduped by LOWER). Returns a
+      # typed outcome:
+      #   { status: :resolved, code: } — exactly one distinct active child matched
+      #   { status: :missing }         — no active child matched (or a blank family/candidate set)
+      #   { status: :ambiguous }       — two or more distinct active children matched
+      #   { status: :unavailable }     — catalog DB unconfigured/unreachable (fail closed)
+      # Child item codes are always row-derived; the family and every candidate are bind params.
+      def resolve_child_any(family_code, candidates)
+        family = family_code.to_s.strip
+        values = normalize_candidates(candidates)
+        return { status: :missing } if family.empty? || values.empty?
+
+        ensure_configured!
+        rows = Marine::Catalog::Connection.select(resolve_child_any_sql(values.length), [family, *values])
+        classify_resolution(rows) { |row| { code: row['code'] } }
+      rescue Marine::Catalog::Errors::CatalogUnavailableError
+        { status: :unavailable }
+      end
+
       private
 
       def ensure_configured!
         raise Marine::Catalog::Errors::CatalogUnavailableError unless Marine::Catalog::Config.configured?
+      end
+
+      # Bounded, deduped, blank-rejected candidate strings for the batched child lookup. An
+      # over-MAX_ANY_CANDIDATE_BYTES candidate is DROPPED (never sliced into a prefix), then the set is
+      # deduped and capped at MAX_ANY_CANDIDATES. The byte bound keeps multibyte candidates safe.
+      def normalize_candidates(candidates)
+        Array(candidates).map { |candidate| candidate.to_s.strip }
+                         .reject(&:empty?)
+                         .select { |value| value.bytesize <= MAX_ANY_CANDIDATE_BYTES }
+                         .uniq.first(MAX_ANY_CANDIDATES)
+      end
+
+      # Map the (0, 1, 2) bounded rows to the typed outcome; the block builds the :resolved payload.
+      def classify_resolution(rows)
+        return { status: :missing } if rows.empty?
+        return { status: :ambiguous } if rows.length > 1
+
+        { status: :resolved }.merge(yield(rows.first))
+      end
+
+      # Case-insensitive active child match within the family over the candidate binds:
+      # LOWER(item_code) IN (LOWER($2), ...). $1 is the family (matched exactly); $2..$(n+1) are the
+      # candidate child codes. The placeholder list is generated from the validated candidate COUNT —
+      # never a client value — so the statement stays parameterized. Result rows are NOT deduped by
+      # LOWER(item_code): two active rows differing only by case stay distinct and fail closed to :ambiguous.
+      def resolve_child_any_sql(count)
+        placeholders = (2..(count + 1)).map { |i| "LOWER($#{i})" }.join(', ')
+        <<~SQL.squish
+          SELECT item_code AS code
+          FROM #{item_table}
+          WHERE variant_of = $1 AND disabled = false AND LOWER(item_code) IN (#{placeholders})
+          ORDER BY item_code ASC
+          LIMIT 2
+        SQL
       end
 
       # The item table honors the operator-configured table name; the variant-attribute
@@ -75,7 +142,7 @@ module Marine
         <<~SQL.squish
           SELECT item_code AS code
           FROM #{item_table}
-          WHERE variant_of = $1 AND item_code = $2 AND disabled = false
+          WHERE variant_of = $1 AND LOWER(item_code) = LOWER($2) AND disabled = false
           ORDER BY item_code ASC
           LIMIT 2
         SQL

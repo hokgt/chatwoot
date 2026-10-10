@@ -76,7 +76,8 @@ class Api::V1::Accounts::Marine::AssistantsController < Api::V1::Accounts::BaseC
     params.require(:assistant).permit(:name, :description, guardrails: [], response_guidelines: [],
                                                            config: [:product_name, :welcome_message, :handoff_message,
                                                                     :resolution_message, :instructions, :temperature,
-                                                                    :feature_faq, :feature_memory, :feature_contact_attributes])
+                                                                    :feature_faq, :feature_memory, :feature_contact_attributes,
+                                                                    :language])
   end
 
   def playground_params

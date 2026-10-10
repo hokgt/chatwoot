@@ -1,0 +1,72 @@
+{
+  "WHATSAPP_WEB_INBOX": {
+    "CHANNEL": {
+      "TITLE": "WhatsApp Web (Unofficial)",
+      "DESCRIPTION": "Link a WhatsApp number by scanning a QR code. Unofficial — use at your own risk."
+    },
+    "CREATE": {
+      "TITLE": "WhatsApp Web (Unofficial)",
+      "DESCRIPTION": "Connect a WhatsApp number by scanning a QR code from your phone.",
+      "INBOX_NAME_LABEL": "Inbox name",
+      "INBOX_NAME_PLACEHOLDER": "e.g. Sales WhatsApp",
+      "SUBMIT": "Create WhatsApp Web inbox",
+      "CREATING": "Creating…",
+      "WARNING": {
+        "TITLE": "Unofficial integration — account ban risk",
+        "BODY": "This connects WhatsApp through an unofficial method (WhatsApp Web / Baileys). It is not supported by WhatsApp, can violate WhatsApp's Terms of Service, and may get the linked phone number permanently banned. For production use, we strongly recommend the official WhatsApp Business Platform instead.",
+        "ACK": "I understand the risks and accept that the linked WhatsApp number may be permanently banned."
+      },
+      "ERROR": "Could not create the inbox. Please try again.",
+      "CONNECTOR_UNAVAILABLE": "The WhatsApp Web connector is not available right now. Please try again later or contact your administrator.",
+      "CONNECT_ERROR": "Could not start WhatsApp pairing. Please retry.",
+      "RETRY_CONNECT": "Retry pairing"
+    },
+    "QR": {
+      "TITLE": "Scan the QR code",
+      "INSTRUCTIONS": "Open WhatsApp on your phone → Settings → Linked devices → Link a device, then scan this code.",
+      "ALT": "WhatsApp Web pairing QR code",
+      "WAITING": "Preparing your QR code…",
+      "REFRESHING": "Refreshing QR code…"
+    },
+    "STATUS": {
+      "LABEL": "Connection status",
+      "UNCONFIGURED": "Not set up yet",
+      "WAITING_FOR_QR": "Waiting for QR scan",
+      "CONNECTING": "Connecting…",
+      "CONNECTED": "Connected",
+      "DISCONNECTED": "Disconnected",
+      "LOGGED_OUT": "Logged out",
+      "AUTHENTICATION_FAILED": "Authentication failed",
+      "REPLACED": "Replaced by another device",
+      "ERROR": "Error",
+      "PENDING": "Setting up…",
+      "UNAVAILABLE": "Connector unavailable"
+    },
+    "CONNECTED": {
+      "TITLE": "WhatsApp connected",
+      "BODY": "Your WhatsApp number is linked. You can now add agents and start handling conversations.",
+      "CONTINUE": "Add agents"
+    },
+    "PANEL": {
+      "TITLE": "WhatsApp Web connection",
+      "DESCRIPTION": "Manage the unofficial WhatsApp Web link for this inbox.",
+      "LINKED_NUMBER": "Linked number",
+      "REFRESH": "Refresh",
+      "RECONNECT": "Reconnect",
+      "LOGOUT": "Log out & pair again",
+      "RETRY": "Retry provisioning",
+      "UNAVAILABLE": "The WhatsApp Web connector is currently unavailable. Status and controls will resume when it is reachable.",
+      "LOGOUT_CONFIRM": {
+        "TITLE": "Log out this WhatsApp number?",
+        "BODY": "This unlinks the WhatsApp number from the connector. The inbox is kept so you can scan a new QR code to pair again.",
+        "CONFIRM": "Log out",
+        "CANCEL": "Cancel"
+      },
+      "ERROR": "That action could not be completed. Please try again."
+    },
+    "FAILED_MESSAGE": {
+      "DISCONNECTED": "WhatsApp disconnected. Please rescan the QR code.",
+      "RESCAN_QR": "Rescan QR code"
+    }
+  }
+}

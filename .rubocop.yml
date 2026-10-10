@@ -106,6 +106,7 @@ Metrics/ModuleLength:
   Exclude:
     - lib/seeders/message_seeder.rb
     - spec/support/slack_stubs.rb
+    - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/reconciler.rb
 
 Rails/HelperInstanceVariable:
   Exclude:
@@ -169,6 +170,10 @@ Style/ClassAndModuleChildren:
     - 'custom/wijaya/batteries/core/loader.rb'
     - 'custom/wijaya/batteries/core/hooks.rb'
     - 'custom/wijaya/batteries/core/routes.rb'
+    # WIJAYA: trusted_internal_webhook battery — required directly from lib/webhooks/trigger.rb.
+    - 'custom/wijaya/batteries/trusted_internal_webhook/policy.rb'
+    - 'custom/wijaya/batteries/trusted_internal_webhook/delivery.rb'
+    - 'custom/wijaya/batteries/trusted_internal_webhook/hooks.rb'
     - 'custom/wijaya/batteries/marine_ai/loader.rb'
     - 'custom/wijaya/batteries/meta_ads_team_routing/loader.rb'
     - 'custom/wijaya/batteries/meta_ads_team_routing/hooks.rb'
@@ -185,9 +190,22 @@ Style/ClassAndModuleChildren:
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/hooks.rb'
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/eligibility.rb'
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/registrar.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/agent_deletion_unassignment.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/orphaned_user_finalizer.rb'
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/trigger_service.rb'
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/inbox_processor.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/deletion_provenance.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/reconciliation_run.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/provenance_recorder.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/reconciler.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/marker_drop_trigger.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/reconciliation_job.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/recovery_drainer_job.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_discovery.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_backfill.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/backfill_operator.rb'
     - 'custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/process_inbox_job.rb'
+    - 'custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/backfill_job.rb'
     - 'custom/wijaya/batteries/erp_lead_sidebar/loader.rb'
     - 'custom/wijaya/batteries/erp_lead_sidebar/refresh_service.rb'
     - 'custom/wijaya/batteries/erp_lead_sidebar/options_service.rb'
@@ -200,6 +218,13 @@ Style/ClassAndModuleChildren:
     - 'custom/wijaya/batteries/erp_lead_sidebar/lead_activity_person_directory.rb'
     - 'custom/wijaya/batteries/erp_lead_sidebar/lead_activity_payload_builder.rb'
     - 'custom/wijaya/batteries/erp_lead_sidebar/lead_activity_service.rb'
+    # WIJAYA: erp_lead_owner_sync battery. loader.rb is required directly before its Wijaya
+    # parent exists; the service/job/mapping are Zeitwerk-autoloaded but stay nested and
+    # uniform with the sibling erp_lead_sidebar battery whose constants they reference.
+    - 'custom/wijaya/batteries/erp_lead_owner_sync/loader.rb'
+    - 'custom/wijaya/batteries/erp_lead_owner_sync/app/services/wijaya/batteries/erp_lead_owner_sync/owner_mapping.rb'
+    - 'custom/wijaya/batteries/erp_lead_owner_sync/app/services/wijaya/batteries/erp_lead_owner_sync/owner_sync_service.rb'
+    - 'custom/wijaya/batteries/erp_lead_owner_sync/app/jobs/wijaya/batteries/erp_lead_owner_sync/owner_sync_job.rb'
     - 'custom/wijaya/batteries/custom_roles/hooks.rb'
     - 'custom/wijaya/batteries/ads_tracking/hooks.rb'
     - 'custom/wijaya/batteries/ads_tracking/referral_parser.rb'
@@ -243,6 +268,27 @@ Style/ClassAndModuleChildren:
     # runtime; the job's `rescue StandardError` then swallowed it and every document
     # was silently marked failed with nil content. Scoped to this one file only.
     - 'custom/wijaya/batteries/marine_ai/app/jobs/marine/documents/process_job.rb'
+    # WIJAYA: whatsapp_web_inbox battery. loader.rb is required directly before its
+    # Wijaya parent exists; the model/services/jobs are Zeitwerk-autoloaded but
+    # reference unqualified sibling constants (Record/Config/RequestSigner/
+    # ConnectorClient/Provisioner/ProvisionJob/CleanupJob) that resolve lexically only
+    # under nested declarations. Kept nested and uniform across the battery.
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/loader.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/models/wijaya/batteries/whatsapp_web_inbox/record.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/config.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/request_signer.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/connector_client.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/provisioner.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/safe_dto.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/provision_job.rb'
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/cleanup_job.rb'
+
+# WIJAYA: the WhatsApp Web connector request signer builds the service HMAC from six
+# irreducible inputs (method, path, raw_body, secret, timestamp, nonce — the last two
+# injectable for deterministic signing tests). Scoped to this one file only.
+Metrics/ParameterLists:
+  Exclude:
+    - 'custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/request_signer.rb'
 
 Style/MapToHash:
   Enabled: false

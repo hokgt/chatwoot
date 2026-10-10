@@ -348,12 +348,28 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::LeadActivityService do
         expect(query_of(request)['fields']).to eq('["name","full_name"]')
       end
 
-      it 'restricts the list to enabled=1 and name!=Guest' do
+      it 'restricts the list to enabled=1, name!=Guest, and the exact TEX - Marketing role' do
         directory.fetch_options(account)
 
         filters = JSON.parse(query_of(only_request)['filters'])
         expect(filters).to include(['User', 'enabled', '=', 1])
         expect(filters).to include(['User', 'name', '!=', 'Guest'])
+        expect(filters).to include(['Has Role', 'role', '=', 'TEX - Marketing'])
+      end
+
+      context 'when the role child-table join surfaces a user more than once' do
+        let(:responder) do
+          lambda do |_request|
+            ok('data' => [
+                 { 'name' => 'amy@erp.example', 'full_name' => 'amy adams' },
+                 { 'name' => 'amy@erp.example', 'full_name' => 'amy adams' }
+               ])
+          end
+        end
+
+        it 'deduplicates by exact User.name so each user appears once' do
+          expect(directory.fetch_options(account)).to eq([{ value: 'amy@erp.example', label: 'amy adams' }])
+        end
       end
 
       it 'returns only value/label, falls back full_name to name, sorts deterministically, and hides raw keys' do
@@ -372,7 +388,7 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::LeadActivityService do
     end
 
     describe '.valid?' do
-      it 'queries the exact name alongside enabled=1 and name!=Guest, asking only for name' do
+      it 'queries the exact name alongside enabled=1, name!=Guest, and the TEX - Marketing role, asking only for name' do
         allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request) do |method:, uri:, **|
           request = SsrfFilter::VERB_MAP.fetch(method).new(uri)
           requests << request
@@ -386,6 +402,7 @@ RSpec.describe Wijaya::Batteries::ErpLeadSidebar::LeadActivityService do
         filters = JSON.parse(query['filters'])
         expect(filters).to include(['User', 'enabled', '=', 1])
         expect(filters).to include(['User', 'name', '!=', 'Guest'])
+        expect(filters).to include(['Has Role', 'role', '=', 'TEX - Marketing'])
         expect(filters).to include(['User', 'name', '=', 'agent@erp.example'])
       end
 

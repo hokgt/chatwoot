@@ -23,7 +23,8 @@ module Wijaya
       ROUTE_MODULES = {
         marine_ai: 'Wijaya::Marine::Routes',
         meta_ads_team_routing: 'Wijaya::Batteries::MetaAdsTeamRouting::Routes',
-        erp_lead_sidebar: 'Wijaya::Batteries::ErpLeadSidebar::Routes'
+        erp_lead_sidebar: 'Wijaya::Batteries::ErpLeadSidebar::Routes',
+        whatsapp_web_inbox: 'Wijaya::Batteries::WhatsappWebInbox::Routes'
       }.freeze
 
       def draw(mapper)

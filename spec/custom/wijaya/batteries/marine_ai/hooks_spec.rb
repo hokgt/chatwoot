@@ -362,4 +362,112 @@ RSpec.describe Wijaya::Marine::Hooks do
       expect(relative).to contain_exactly('custom/wijaya/batteries/marine_ai/app/services/wijaya/marine/hooks.rb')
     end
   end
+
+  # Phase 2 / Stage 4 — the DEFAULT-OFF asynchronous Decision shadow is fired ONLY after the
+  # normal Marine response was scheduled, and its (discarded) result never changes the normal
+  # scheduling args/order/delay or this method's return value.
+  describe '.schedule_marine_response shadow integration' do
+    let(:assistant) { double('assistant') }
+    let(:inbox) { double('inbox', marine_assistant: assistant) }
+    let(:conversation) { double('conversation', inbox: inbox) }
+    let(:message) { double('message', id: 4242, attachments: double(blank?: true)) }
+
+    it 'schedules the normal response FIRST, then fires the shadow enqueuer' do
+      ordered = []
+      allow(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later) { ordered << :response }
+      allow(Marine::Decision::ShadowEnqueuer).to receive(:enqueue) do
+        ordered << :shadow
+        true
+      end
+      allow(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue) do
+        ordered << :product_shadow
+        true
+      end
+
+      described_class.schedule_marine_response(conversation, message)
+      expect(ordered).to eq(%i[response shadow product_shadow])
+    end
+
+    it 'passes the exact ResponseBuilderJob args and returns the scheduled job, not the shadow result' do
+      job = double('job')
+      allow(Marine::Decision::ShadowEnqueuer).to receive(:enqueue).and_return(false)
+      allow(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue).and_return(false)
+      expect(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later)
+        .with(conversation, assistant, 4242).and_return(job)
+
+      expect(described_class.schedule_marine_response(conversation, message)).to eq(job)
+    end
+
+    it 'preserves the 2s attachment delay and still shadows the same conversation/message' do
+      allow(message).to receive(:attachments).and_return(double(blank?: false))
+      set_double = double('set')
+      expect(Marine::Conversation::ResponseBuilderJob).to receive(:set).with(wait: 2.seconds).and_return(set_double)
+      expect(set_double).to receive(:perform_later).with(conversation, assistant, 4242).and_return(double('job'))
+      expect(Marine::Decision::ShadowEnqueuer).to receive(:enqueue).with(conversation: conversation, message: message)
+      expect(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue).with(conversation: conversation, message: message)
+
+      described_class.schedule_marine_response(conversation, message)
+    end
+
+    it 'does not shadow when Marine never schedules a response (handoff active / ineligible)' do
+      messages = double('messages')
+      allow(messages).to receive_messages(outgoing: messages, where: messages, empty?: true, any?: false)
+      handoff = { 'wijaya_marine_ai' => { 'handoff_v1' => { 'version' => 1, 'status' => 'active',
+                                                            'announced_at' => '2026-01-01T00:00:00Z', 'message_ids' => [] } } }
+      convo = double('conversation', resolved?: false, snoozed?: false, messages: messages, inbox: inbox,
+                                     account: double('account'), additional_attributes: handoff)
+      allow(inbox).to receive(:channel_type).and_return('Channel::WebWidget')
+      msg = double('message', incoming?: true)
+
+      expect(Marine::Conversation::ResponseBuilderJob).not_to receive(:perform_later)
+      expect(Marine::Decision::ShadowEnqueuer).not_to receive(:enqueue)
+      expect(Marine::ProductAuthority::ShadowEnqueuer).not_to receive(:enqueue)
+      described_class.claim_message_templates!(conversation: convo, inbox: inbox, message: msg)
+    end
+  end
+
+  # Phase 2 / Stage 4 — the shadow fires ONLY when the primary ResponseBuilderJob enqueue
+  # genuinely succeeded. A halted (false/nil) enqueue, an unsuccessful job, or a job carrying an
+  # enqueue_error must NOT fire the shadow, and the method must still return the exact primary
+  # object unchanged.
+  describe '.schedule_marine_response primary-enqueue success gating' do
+    let(:assistant) { double('assistant') }
+    let(:inbox) { double('inbox', marine_assistant: assistant) }
+    let(:conversation) { double('conversation', inbox: inbox) }
+    let(:message) { double('message', id: 4242, attachments: double(blank?: true)) }
+
+    def expect_primary_returned(primary)
+      allow(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later).and_return(primary)
+      expect(described_class.schedule_marine_response(conversation, message)).to be(primary)
+    end
+
+    it 'does not shadow and returns the primary result when perform_later returns false' do
+      expect(Marine::Decision::ShadowEnqueuer).not_to receive(:enqueue)
+      expect_primary_returned(false)
+    end
+
+    it 'does not shadow and returns nil when perform_later returns nil' do
+      expect(Marine::Decision::ShadowEnqueuer).not_to receive(:enqueue)
+      expect_primary_returned(nil)
+    end
+
+    it 'does not shadow and returns the job when it is not successfully_enqueued?' do
+      expect(Marine::Decision::ShadowEnqueuer).not_to receive(:enqueue)
+      expect_primary_returned(double('job', successfully_enqueued?: false))
+    end
+
+    it 'does not shadow and returns the job when it carries a non-nil enqueue_error' do
+      expect(Marine::Decision::ShadowEnqueuer).not_to receive(:enqueue)
+      expect_primary_returned(double('job', enqueue_error: 'adapter down'))
+    end
+
+    it 'fires the shadow after a successfully_enqueued? job and returns that job' do
+      job = double('job', successfully_enqueued?: true)
+      allow(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later).and_return(job)
+      expect(Marine::Decision::ShadowEnqueuer).to receive(:enqueue).with(conversation: conversation, message: message)
+      expect(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue).with(conversation: conversation, message: message)
+
+      expect(described_class.schedule_marine_response(conversation, message)).to be(job)
+    end
+  end
 end

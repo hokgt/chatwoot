@@ -24,10 +24,23 @@ module Marine
 
       GENERIC_PRODUCT_TEXT = 'Could you share a little more detail about the product you need?'.freeze
 
+      # The customer-facing catalog-assisted variant clarification. It ALWAYS asks for the exact
+      # variant code and NEVER interpolates an internal expected-attribute label (e.g. Colour/Warna)
+      # into visible text — those repository labels stay internal to flow state. Truthful on BOTH
+      # delivery paths (with or without a native catalog attachment): it claims no attached catalog,
+      # and stays downstream-localizable.
+      CLARIFY_VARIANT_TEXT = 'Could you specify the exact variant code you need?'.freeze
+
       # Deterministic, factless, unbranded acknowledgement for a product-flow handoff — the safe
       # localized fallback the natural-wording layer rephrases in context. It asserts nothing and
       # names no company, so it never turns a customer-supplied destination or quantity into a claim.
       HANDOFF_ACK_TEXT = "I'm sorry, I'm not able to confirm that for you directly. Let me bring in a colleague who can help you with this.".freeze
+
+      # The deterministic product-LISTING line: the dynamic template rows the descriptor carries, named
+      # and coded exactly as the catalog repository read them. It claims no price, no stock, and no
+      # attachment, and stays truthful about completeness — a bounded page with more available says so.
+      PRODUCT_LISTING_EMPTY_TEXT = "I'm sorry, we don't currently have any products listed.".freeze
+      PRODUCT_LISTING_MORE_SUFFIX = ' More are available — let me know if you would like to see them.'.freeze
 
       # Request-category-aware factless acknowledgements, keyed by the bounded generic
       # unsupported-request category. Each states only an INABILITY to confirm the request type and a
@@ -42,6 +55,16 @@ module Marine
         'exact_quantity' => "I'm sorry, I can't confirm the exact quantity available for you directly. Let me bring in a colleague to help with this."
       }.freeze
 
+      # Raised when a STANDALONE :price_available reply reaches this presenter's deterministic text
+      # path. A pure price reply is locale-sensitive and MUST be resolved through the shared
+      # Marine::Catalog::PriceReplyComposer (as both ResponseBuilderJob and PlaygroundPreview already
+      # do), which owns the account/language context this pure presenter deliberately lacks. Letting
+      # the presenter answer it would leak a hardcoded English price sentence, so the path fails
+      # closed with this narrowly named error instead of ever emitting one. (A composite price+stock
+      # reply is a DIFFERENT descriptor kind whose price clause is still rendered internally here.)
+      # marker: price-standalone-fail-closed-v1
+      PriceReplyNotPresentable = Class.new(StandardError)
+
       # Renders the caption/text for a plan. A DIRECT catalog request carries a :catalog reply
       # descriptor and renders a catalog caption; a catalog-ASSISTED send_catalog (reply nil)
       # renders the deterministic variant clarification, used both as its no-usable-catalog text
@@ -54,7 +77,7 @@ module Marine
 
         dynamic = dynamic_product_text(descriptor)
         return dynamic if dynamic
-        return clarify_variant_text(Array(plan.dig(:state, :changes, 'expected_attributes'))) if plan[:action] == :send_catalog
+        return clarify_variant_text if plan[:action] == :send_catalog
 
         STATIC_PRODUCT_TEXT[descriptor[:kind]] || GENERIC_PRODUCT_TEXT
       end
@@ -77,6 +100,11 @@ module Marine
       # The deterministic sentence for ONE child descriptor (the same mapping reply_text applies to a
       # standalone reply, excluding the plan-level send_catalog branch a composite part never uses).
       def single_descriptor_text(descriptor)
+        # A composite price leg still renders its deterministic price clause here (the composite as a
+        # whole is naturalized/localized downstream, not routed through the PriceReplyComposer), so it
+        # calls the internal builder directly and never trips the standalone price fail-closed guard.
+        return price_available_text(descriptor) if descriptor[:kind] == :price_available
+
         dynamic_product_text(descriptor) || STATIC_PRODUCT_TEXT[descriptor[:kind]] || GENERIC_PRODUCT_TEXT
       end
 
@@ -130,18 +158,93 @@ module Marine
         descriptor[:family_name].presence || descriptor[:family_code] || 'that product'
       end
 
+      # The deterministic caption for a family price RANGE, grounding the range (from the already
+      # display-formatted facts the descriptor carries) and then asking the customer for the exact
+      # variant code. The ask clause is OUTCOME-AWARE: when a native catalog is actually attached this
+      # turn (`catalog_attached: true`) it points the customer at the code shown in that catalog;
+      # otherwise it never claims a catalog was shown/attached — it simply asks for the exact code.
+      # Equal min and max render a SINGLE amount (handled by #price_range_grounded).
+      def price_range_text(descriptor, catalog_attached:)
+        ask = catalog_attached ? PRICE_RANGE_ASK_WITH_CATALOG : PRICE_RANGE_ASK_WITHOUT_CATALOG
+        "#{price_range_grounded(descriptor)}. #{ask}"
+      end
+
+      # The two outcome-aware ask clauses. The with-catalog clause is delivered ONLY alongside a real
+      # native catalog attachment; the without-catalog clause makes no claim that a catalog is visible.
+      PRICE_RANGE_ASK_WITH_CATALOG = "Please reply with the exact variant code shown in the catalog and I'll confirm the exact price for you.".freeze
+      PRICE_RANGE_ASK_WITHOUT_CATALOG = "Please reply with the exact variant code and I'll confirm the exact price for you.".freeze
+
+      # The proactive nonnumeric catalog-OFFER ask, outcome-aware like the price-range ask: it asks
+      # WHICH variant the customer wants and for the exact variant code, pointing at the code shown in
+      # the attached catalog ONLY when a native catalog is actually delivered this turn; otherwise it
+      # makes no claim that a catalog is visible.
+      CATALOG_OFFER_ASK_WITH_CATALOG = "Which variant would you like? #{PRICE_RANGE_ASK_WITH_CATALOG}".freeze
+      CATALOG_OFFER_ASK_WITHOUT_CATALOG = "Which variant would you like? #{PRICE_RANGE_ASK_WITHOUT_CATALOG}".freeze
+
+      # The deterministic caption for a PROACTIVE nonnumeric catalog OFFER (:catalog_offer): it
+      # introduces the validated family, states it is carried in several variants whose exact price
+      # depends on the chosen variant, and asks for the exact variant code. It names ONLY the
+      # row-derived family — never a price, stock quantity, missing price, conflict, coverage count,
+      # repository state, or any internal attribute label. OUTCOME-AWARE: when a native catalog is
+      # actually attached this turn (`catalog_attached: true`) it says the catalog is shared and points
+      # at the code shown there; otherwise it claims no attachment and simply asks for the exact code.
+      # #reply_text renders the conservative no-attachment form by default.
+      def catalog_offer_text(descriptor, catalog_attached:)
+        family = catalog_family_name(descriptor)
+        intro = "We carry #{family} in several variants, and the exact price depends on the variant you choose."
+        if catalog_attached
+          "#{intro} I've shared our #{family} catalog above. #{CATALOG_OFFER_ASK_WITH_CATALOG}"
+        else
+          "#{intro} #{CATALOG_OFFER_ASK_WITHOUT_CATALOG}"
+        end
+      end
+
       private
 
       def dynamic_product_text(descriptor) # rubocop:disable Metrics/CyclomaticComplexity -- a flat per-kind dispatch
         case descriptor[:kind]
         when :parent_info then parent_info_text(descriptor)
         when :variant_info then "Here are the details for #{descriptor[:variant_code]}. Would you like the price or availability?"
-        when :price_available then price_available_text(descriptor)
+        when :price_available then raise PriceReplyNotPresentable, 'price_available must be resolved via PriceReplyComposer, not presented here'
         when :stock_available, :stock_empty then stock_text(descriptor)
         when :clarify_family then clarify_family_text(descriptor[:candidates])
-        when :clarify_variant then clarify_variant_text(descriptor[:attribute_names])
+        when :clarify_variant then clarify_variant_text
         when :catalog then catalog_ready_text(descriptor)
+        when :catalog_offer then catalog_offer_text(descriptor, catalog_attached: false)
+        when :product_listing then product_listing_text(descriptor)
         end
+      end
+
+      # The deterministic text for a product-LISTING reply: one line enumerating the repository-derived
+      # template identities, optionally scoped to the exactly-resolved item group. Only the descriptor's
+      # already-bounded, cleaned fields are rendered — an empty page renders the truthful empty line,
+      # never a fabricated product, and a page with more renders the explicit more-available suffix.
+      def product_listing_text(descriptor)
+        lines = Array(descriptor[:products]).filter_map { |product| listing_line(product) }
+        return PRODUCT_LISTING_EMPTY_TEXT if lines.empty?
+
+        text = "#{listing_intro(descriptor[:item_group])} #{lines.join(', ')}."
+        descriptor[:has_more] == true ? "#{text}#{PRODUCT_LISTING_MORE_SUFFIX}" : text
+      end
+
+      # One "Name (CODE)" listing line for a repository-derived template row (the bare name or
+      # code when the other is blank); nil — dropped — for a non-Hash or fully blank row.
+      def listing_line(product)
+        return nil unless product.is_a?(Hash)
+
+        code = product[:code].to_s.strip
+        name = product[:name].to_s.strip
+        return nil if code.empty? && name.empty?
+
+        return name if code.empty?
+
+        name.empty? ? code : "#{name} (#{code})"
+      end
+
+      # The scoped (or broad) listing intro, naming only the exactly-resolved item group.
+      def listing_intro(item_group)
+        scope = item_group.to_s.strip
+        scope.empty? ? 'Here are the products we currently offer:' : "Here are the #{scope} products we currently offer:"
       end
 
       # Binary availability naming the exact validated variant code so the deterministic fallback
@@ -195,11 +298,40 @@ module Marine
         "Here is the product catalog for #{catalog_family_name(descriptor)}."
       end
 
+      # The GROUNDED range clause only (no ask): it LEADS naturally with the family availability
+      # ("We carry <family>.") and then states the formatted range — "We carry <family>. Prices range
+      # from <A> to <B> per <uom>" (or a single amount when min == max). Currency and both amounts are
+      # the display facts the PriceRangeReplyComposer already formatted (kept byte-exact through the
+      # mask/localizer); the family name is a translatable display label.
+      def price_range_grounded(descriptor)
+        family = catalog_family_name(descriptor)
+        min = descriptor[:price_min]
+        max = descriptor[:price_max]
+        amounts = if min == max
+                    "The price is #{range_amount(descriptor, min)}#{range_per(descriptor)}"
+                  else
+                    "Prices range from #{range_amount(descriptor, min)} to #{range_amount(descriptor, max)}#{range_per(descriptor)}"
+                  end
+        "We carry #{family}. #{amounts}"
+      end
+
+      def range_amount(descriptor, value)
+        [descriptor[:currency], value].compact.join(' ')
+      end
+
+      def range_per(descriptor)
+        descriptor[:uom].present? ? " per #{descriptor[:uom]}" : ''
+      end
+
       def parent_info_text(descriptor)
         name = descriptor[:family_name].presence || descriptor[:family_code]
         "You're asking about #{name}. Which specific variant would you like to know about?"
       end
 
+      # The deterministic English price clause for a composite price+stock reply ONLY (a standalone
+      # :price_available reply fails closed in #dynamic_product_text — see PriceReplyNotPresentable).
+      # Reached solely by #same_variant_price_stock_text and #single_descriptor_text's composite leg,
+      # never for a pure price reply, which the shared PriceReplyComposer resolves in a locale-safe way.
       def price_available_text(descriptor)
         amount = [descriptor[:currency], descriptor[:price_list_rate]].compact.join(' ')
         subject = descriptor[:variant_code].presence
@@ -215,11 +347,11 @@ module Marine
         "Could you let me know which product you mean? For example: #{names.join(', ')}."
       end
 
-      def clarify_variant_text(attribute_names)
-        names = Array(attribute_names).reject(&:blank?)
-        return 'Could you specify which variant you are interested in?' if names.empty?
-
-        "Could you specify the #{names.join(', ')} you need?"
+      # Catalog-assisted variant clarification: always ask for the exact variant code and never the
+      # internal expected-attribute labels (see CLARIFY_VARIANT_TEXT). Deterministic and fact-free, so
+      # it is identical whether or not a native catalog is attached this turn.
+      def clarify_variant_text
+        CLARIFY_VARIANT_TEXT
       end
     end
   end

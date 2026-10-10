@@ -15,6 +15,7 @@ RSpec.describe 'Deferred auto-assignment marker lifecycle', type: :model do
   let(:contact_inbox) { create(:contact_inbox, contact: contact, inbox: inbox) }
 
   before do
+    account.disable_features!(:assignment_v2) # legacy battery path; assignment_v2 now defaults on
     # Nobody online, so a fresh conversation is created open+unassigned and marked.
     allow(OnlineStatusTracker).to receive(:get_available_users).and_return({})
     allow(AutoAssignment::AssignmentJob).to receive(:enqueue_for_inbox)
@@ -101,5 +102,14 @@ RSpec.describe 'Deferred auto-assignment marker lifecycle', type: :model do
 
     expect { conversation.destroy! }.not_to raise_error
     expect(Wijaya::Batteries::DeferredAutoAssignment::Marker.exists?(marker.id)).to be(false)
+  end
+
+  # Blocker F: the marker FKs must be on_delete: :cascade so a delete_all / cascade path that bypasses
+  # the has_one dependent: :destroy still removes the child marker instead of raising. This introspects
+  # the intended state that migration 20260912000005 repairs on drifted (NO ACTION) upgrade paths.
+  it 'declares on_delete: :cascade on every marker foreign key' do
+    fks = ActiveRecord::Base.connection.foreign_keys('wijaya_deferred_assignments')
+    cascade_targets = fks.select { |fk| fk.on_delete == :cascade }.map(&:to_table)
+    expect(cascade_targets).to include('accounts', 'inboxes', 'conversations')
   end
 end

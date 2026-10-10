@@ -1,23 +1,27 @@
-# Enqueued when a conversation is resolved. Generates Marine memory contact notes,
-# but only for conversations whose inbox is linked to a Marine assistant that has
-# the feature_memory toggle enabled. Independent of unrelated AI config/gates.
-#
-# The job re-checks Marine linkage and the feature toggle itself (defence in depth,
-# so it stays correct even if enqueued directly), is account-scoped, and is safe
-# when records have been deleted between enqueue and execution.
+# frozen_string_literal: true
+
+# Immediate/final trigger for a resolved Marine conversation. The job rechecks
+# linkage, feature flag and resolved state, then delegates to the same incremental,
+# race-safe private-note writer used by the daily checkpoint backstop.
 class Marine::Memory::GenerateContactNotesJob < ApplicationJob
   queue_as :low
 
   def perform(conversation)
-    return if conversation.blank?
-
-    inbox = conversation.inbox
-    assistant = inbox&.try(:marine_assistant)
+    assistant = enabled_assistant(conversation)
     return if assistant.blank?
-    return if assistant.feature_memory.blank?
 
-    Marine::Memory::ContactNotesService.new(assistant: assistant, conversation: conversation).generate_and_store
+    Marine::Memory::ContactNotesService.new(assistant: assistant, conversation: conversation)
+                                       .generate_and_store(state: 'final')
   rescue StandardError => e
     ChatwootExceptionTracker.new(e, account: conversation&.account).capture_exception
+  end
+
+  private
+
+  def enabled_assistant(conversation)
+    return unless conversation&.resolved?
+
+    assistant = conversation.inbox&.try(:marine_assistant)
+    assistant if assistant&.feature_memory.present?
   end
 end

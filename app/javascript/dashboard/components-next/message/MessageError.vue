@@ -5,6 +5,9 @@ import { useI18n } from 'vue-i18n';
 import { useMessageContext } from './provider.js';
 import { hasOneDayPassed } from 'shared/helpers/timeHelper';
 import { ORIENTATION, MESSAGE_STATUS } from './constants';
+// WIJAYA_CUSTOM_START whatsapp_web_inbox
+import WhatsappWebFailedMessageNotice from '@wijaya/whatsapp_web_inbox/frontend/WhatsappWebFailedMessageNotice.vue';
+// WIJAYA_CUSTOM_END whatsapp_web_inbox
 
 defineProps({
   error: { type: String, required: true },
@@ -55,5 +58,8 @@ const canRetry = computed(() => {
     >
       <Icon icon="i-lucide-refresh-ccw" class="text-n-ruby-11 size-[14px]" />
     </button>
+    <!-- WIJAYA_CUSTOM_START whatsapp_web_inbox -->
+    <WhatsappWebFailedMessageNotice :error="error" />
+    <!-- WIJAYA_CUSTOM_END whatsapp_web_inbox -->
   </div>
 </template>

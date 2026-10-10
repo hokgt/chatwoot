@@ -59,4 +59,42 @@ RSpec.describe Marine::Cell::Retriever do
       expect(retriever.send(:score, document, query_tokens)).to be > retriever.send(:score, manual, query_tokens)
     end
   end
+
+  describe '#approved_mentioning (Phase 3 batch candidate load)' do
+    it 'returns the empty relation for a blank/empty key set without touching the scope' do
+      expect(assistant).not_to receive(:responses)
+      expect(retriever.approved_mentioning([]).to_a).to eq([])
+      expect(retriever.approved_mentioning(['', '  ']).to_a).to eq([])
+    end
+
+    it 'loads approved assistant-scoped rows whose question OR answer contains any key in ONE bounded query' do
+      relation = double('relation')
+      approved = double('approved')
+      limited = double('limited')
+      allow(assistant).to receive(:responses).and_return(relation)
+      allow(relation).to receive(:approved).and_return(approved)
+      allow(approved).to receive(:where).with(
+        'question ILIKE :k0 OR answer ILIKE :k0 OR question ILIKE :k1 OR answer ILIKE :k1',
+        { k0: '%aaa%', k1: '%alpha%' }
+      ).and_return(limited)
+      allow(limited).to receive(:limit).with(described_class::CANDIDATE_LIMIT).and_return(:bounded_relation)
+
+      expect(retriever.approved_mentioning(['AAA', ' Alpha ', 'aaa'])).to eq(:bounded_relation)
+    end
+
+    it 'LIKE-escapes a key so wildcard metacharacters are matched literally (candidate retrieval only)' do
+      relation = double('relation')
+      approved = double('approved')
+      limited = double('limited')
+      allow(assistant).to receive(:responses).and_return(relation)
+      allow(relation).to receive(:approved).and_return(approved)
+      allow(approved).to receive(:where).with(
+        'question ILIKE :k0 OR answer ILIKE :k0',
+        { k0: '%50\\% off%' }
+      ).and_return(limited)
+      allow(limited).to receive(:limit).with(described_class::CANDIDATE_LIMIT).and_return(:bounded_relation)
+
+      expect(retriever.approved_mentioning(['50% off'])).to eq(:bounded_relation)
+    end
+  end
 end

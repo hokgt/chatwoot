@@ -126,6 +126,56 @@ patches:
       - spec/enterprise/policies/conversation_policy_spec.rb
       - spec/enterprise/services/enterprise/conversations/permission_filter_service_spec.rb
       - spec/finders/conversation_finder_spec.rb
+
+  - id: trusted_internal_webhook
+    name: Trusted Internal API-Inbox Webhook Delivery
+    battery: custom/wijaya/batteries/trusted_internal_webhook
+    description: >
+      Lets the API-inbox webhook delivery path reach an EXPLICITLY trusted internal host
+      (the WhatsApp Web connector's Docker service name, e.g.
+      http://whatsapp-web-connector:3000/webhooks/chatwoot/<id>) that upstream's
+      Webhooks::Trigger -> SafeFetch/SsrfFilter now rejects with
+      "Hostname '<host>' has no public ip addresses". The battery is a default-deny,
+      configuration-driven allowlist that narrowly scopes this to ONLY api_inbox_webhook
+      deliveries whose destination host is trusted; everything else (account webhooks,
+      agent-bot webhooks, unlisted private hosts, all public URLs, every other SafeFetch
+      caller — uploads, avatars, website fetches) keeps the exact upstream SSRF-guarded
+      path. The trusted set is the union of (a) the configured connector host parsed from
+      WHATSAPP_WEB_CONNECTOR_URL via the already-validated WhatsappWebInbox::Config —
+      the exact host Provisioner#set_webhook_url builds the callback from — and
+      (b) WIJAYA_TRUSTED_INTERNAL_WEBHOOK_HOSTS (comma-separated, optional). Both default
+      empty, so with no WhatsApp Web connector configured NOTHING is trusted.
+      Policy matches the parsed URI host exactly and case-insensitively, rejects any URL
+      carrying userinfo, and never suffix-matches, so user@host / host@evil / case /
+      suffix tricks cannot widen access and it can never become arbitrary RFC1918 access.
+      Delivery performs EXACTLY ONE POST and follows NO redirects (a 3xx is surfaced as an
+      error, never followed to another host), preserving the signed HMAC headers, JSON
+      body, and open/read timeouts, and re-raises SafeFetch::HttpError / FetchError so the
+      native trigger's message-failure/logging behavior is identical to the public path.
+      The seam is a tiny marker-wrapped require + guarded call in lib/webhooks/trigger.rb:
+      the trust DECISION fails OPEN (any error -> native SafeFetch path) while the DELIVERY
+      fails CLOSED (a real transport/HTTP error propagates so the message is marked failed),
+      which is why it calls the battery directly rather than through the fail-open
+      Core::Hooks dispatcher (the dispatcher would swallow a genuine delivery error and
+      silently fall back to a doomed public request against the internal host).
+    custom_files:
+      - custom/wijaya/batteries/trusted_internal_webhook/policy.rb
+      - custom/wijaya/batteries/trusted_internal_webhook/delivery.rb
+      - custom/wijaya/batteries/trusted_internal_webhook/hooks.rb
+    core_hook_touchpoints:
+      # Marker-wrapped require (file top) + guarded deliver() call in #perform_request.
+      - lib/webhooks/trigger.rb
+      # Deployment note (NOT committed; docker-compose.deploy.yaml is host-local/gitignored
+      # like .env): WIJAYA_TRUSTED_INTERNAL_WEBHOOK_HOSTS=whatsapp-web-connector is set on
+      # the rails + sidekiq services as an explicit, auditable allowlist. This is OPTIONAL —
+      # the battery already derives the same host from WHATSAPP_WEB_CONNECTOR_URL — so no
+      # deployment config change is strictly required for the fix.
+    tests:
+      - spec/custom/wijaya/batteries/trusted_internal_webhook/policy_spec.rb
+      - spec/custom/wijaya/batteries/trusted_internal_webhook/delivery_spec.rb
+      - spec/custom/wijaya/batteries/trusted_internal_webhook/hooks_spec.rb
+      - spec/custom/wijaya/batteries/trusted_internal_webhook/trigger_integration_spec.rb
+
   - id: enterprise_extension_compat
     name: Enterprise Extension Custom Namespace Compat
     battery: custom/wijaya/batteries/enterprise_extension_compat
@@ -250,8 +300,15 @@ patches:
       is created ONLY when the conversation is open, human- and bot-unassigned, on the LEGACY
       path (Assignment V2 untouched), and native auto-assignment was applicable (team
       conversation -> team.allow_auto_assign; otherwise inbox.enable_auto_assignment) — i.e.
-      it would have been assigned had an agent been online. No historical backfill and no
-      blanket scan of open unassigned conversations: the marker table is the entire work-list.
+      it would have been assigned had an agent been online. No automatic/recurring historical
+      backfill and no blanket scan of open unassigned conversations in the live path: the marker
+      table is the entire work-list. A separate operator-invoked, one-time historical backfill
+      exists for conversations that became unassigned before the agent-deletion bridge existed —
+      a provably read-only discovery/dry-run (HistoricalDiscovery, default) plus an
+      explicit-allowlist apply (HistoricalBackfill -> bounded BackfillJob ->
+      Registrar.register_unassigned_historical) that reuses this exact pipeline; it fails closed
+      on an empty allowlist, rejects cross-account/missing ids distinctly, is bounded and
+      idempotent, and adds no selector, no direct assignee write, and no new ERP path.
       The conversation stays open with assignee_id nil (no new status), naturally visible in
       Unassigned and All. Two triggers resume processing for exactly the agent's marked
       inboxes: an actual AccountUser availability transition offline/busy -> online
@@ -281,34 +338,200 @@ patches:
       the marker on assignment or on any residual ineligibility, and keeps it only when still
       eligible but nobody is available yet (for a later trigger). Manual unassignment later
       never re-creates a marker (registration is creation-only; cleanup only ever destroys).
-      All native touch points are tiny marker-wrapped calls through the fail-open core
-      dispatcher.
+      Beyond creation, one more registration path exists: when Agents::DestroyJob deletes an
+      agent it clears that agent's assignee_id via update_all (callbacks skipped), leaving those
+      conversations open + unassigned with no marker; a post-commit bridge (IDs collected inside
+      the unassignment transaction, dispatched only after it commits) hands exactly those
+      account-scoped conversations to the battery, which marks each still-eligible one
+      (idempotent per unique conversation_id, so a retried deletion never double-marks) and
+      enqueues the same coalesced per-inbox pass — reassigning an eligible online agent now via
+      the unchanged native selector, or leaving the marker to wait for a later trigger. No
+      account-wide scan. A normal job retry is a safe no-op (the agent owns nothing by then) and
+      the unique conversation_id makes even a same-id redispatch non-duplicating; the sole
+      irreducible gap is a SIGKILL after the commit but before the post-commit dispatch (left
+      unmarked deliberately — see the registrar comment for why marking in-transaction or an
+      account-wide scan were both rejected). All native touch points are tiny marker-wrapped
+      calls through the fail-open core dispatcher.
+      Durable structured provenance closes that crash gap and enables SAFE AUTOMATIC historical
+      reconciliation. A wijaya_deferred_assignment_provenance tombstone (account, conversation,
+      inbox, PRIOR human agent id, event kind + time, reconciled_at cursor) is recorded by the
+      battery AgentDeletionUnassignment service for exactly the rows it cleared under the FOR UPDATE
+      lock, inside the DestroyJob unassignment transaction. Capture is deliberately BEST-EFFORT, NOT
+      guaranteed: the recorder wraps its writes in a SAVEPOINT (requires_new: true) and the whole
+      unassignment hook is routed through the fail-open dispatcher, so a provenance error can never
+      roll back the user deletion — but it also means a recorder failure leaves the deletion
+      committed with that tombstone simply ABSENT (that conversation then unrecoverable by
+      reconciliation). A SUCCESSFUL write is transactional (it commits atomically with the clear);
+      an unsuccessful one is silently skipped. prior_assignee_id carries NO foreign
+      key (a cascading FK would erase the provenance when the agent User is deleted, which is the
+      whole scenario); account/conversation/inbox FKs cascade because nothing is left to reassign
+      once those are gone. No message content, no credentials. The one-time automatic reconciliation
+      (Reconciler) is not triggered by an in-migration Redis enqueue: migration 000003 INSERTs a
+      DURABLE PERSISTED RUN INTENT (a wijaya_deferred_reconciliation_runs row, status 'running',
+      started_at NULL, cutoff_at = the deploy instant), idempotent on the unique generation. The
+      recurring hourly RecoveryDrainerJob is the coordinator: each tick it selects at most one
+      incomplete run and runs the Reconciler INLINE (a direct Reconciler.run under the global advisory
+      lock — it does NOT enqueue ReconciliationJob), so the one-time run is retried until it truthfully
+      completes — surviving a Redis outage or an old Sidekiq worker in the deploy window, because the
+      run always executes later under new code with the full schema. It scans ONLY unreconciled provenance rows (never all unassigned
+      conversations) in bounded batches, guarded by a wijaya_deferred_reconciliation_runs ledger
+      (unique generation = persisted run/cutoff/completion state) so a retry/re-enqueue resumes the
+      same run. Per row it fails closed: it registers (through the narrowly named provenance-backed
+      Registrar.register_unassigned_from_provenance entry, which shares the exact marker ->
+      ProcessInboxJob -> InboxProcessor -> native selector -> update! -> ERP owner-sync pipeline and
+      NEVER writes assignee_id directly) ONLY a conversation that is structurally proven a
+      deleted-agent orphan (event is agent_deletion, prior human agent no longer an account member)
+      AND currently deferrable AND markerless AND same-account AND created before the cutoff; any
+      uncertainty is ambiguous/skipped and every examined row is stamped reconciled_at so it is
+      never rescanned. The historical allowlist apply (HistoricalBackfill/BackfillOperator) is
+      DEPRECATED as the required path — automatic reconciliation needs no manual ids; the read-only
+      discovery/dry-run remains as operator diagnostics. Conversations unassigned by a deletion that
+      predates provenance carry NO provenance row and are never guessed from free-text activity —
+      they cannot be recovered automatically without an external authoritative source (see
+      BACKFILL.md). InboxProcessor emits a content-free per-marker outcome log (assigned /
+      no-eligible-agent-marker-retained / dropped) so assignment outcomes are observable without
+      the Reconciler fabricating async counts it cannot know.
+      Correctness hardening (20260912000002/000003): each batch is claimed FOR UPDATE SKIP LOCKED
+      and, in ONE transaction, classified + registered + stamped reconciled + counted, so a row is
+      stamped only AFTER its disposition commits — a failed batch rolls back wholesale and a
+      retried/duplicate job RESUMES the same generation from the remaining unreconciled rows without
+      losing or double-counting work. The whole scan + dispatch + finalize runs under a PostgreSQL
+      SESSION advisory lock scoped to the generation, so only ONE job is ever inside it; a duplicate
+      that cannot take the lock returns the still-running ledger WITHOUT finalizing (it can never
+      complete a run another worker still owns and may roll back), and the lock auto-releases if that
+      owner's DB session dies. The coalesced ProcessInboxJob is NOT enqueued per batch — the
+      reconciliation-stamped markers are a durable outbox and every still-present one is
+      (re-)dispatched after the scan, then the run is finalized, so a crash between a batch commit and
+      the enqueue strands nothing (a retry re-dispatches idempotently). Counters persist cumulatively
+      and idempotently on the run row (never a once-only finalize), and registered is the ACTUAL
+      adopted count from the Registrar's re-check (a row raced to marked/assigned in between is
+      reported skipped, never a false registered). A nullable reconciliation_generation +
+      reconciliation_outcome on the marker (NULL for every ordinary marker, which stays unchanged)
+      lets the shared InboxProcessor correlate the eventual assignment outcome back to its run and
+      count assigned / no_eligible_agent / dropped as the LATEST unique disposition per conversation
+      (a repeated no-agent pass is not re-counted; a later assign/drop transitions the count); the
+      marker outcome/removal transition and the ledger counter transition are wrapped in ONE
+      transaction at every call site so they can never diverge on a crash. The run ledger carries the
+      full required set: scanned / identified / registered / skipped / ambiguous / assigned /
+      no_eligible_agent / dropped / failed / retries; a run marked completed means only that
+      scan+dispatch were accepted — the async outcome counters keep transitioning afterwards.
+      ReconciliationJob is RETAINED for legacy/manual/already-queued compatibility only (no longer
+      enqueued by the coordinator); when run it uses a bounded retry_on (attempts: 5) — no unbounded
+      custom loop. The coordinator path carries NO retry_on tree: it runs the Reconciler inline, so
+      its only bounded retry is the next hourly cron occurrence. There is
+      NO in-migration Redis enqueue (a one-shot perform_later inside a migration is fragile: a Redis
+      outage or an old Sidekiq consuming the job before new code/schema is in place would silently
+      drop the only trigger). Instead the trigger was MOVED out of 000001 (now a no-op) into 000003,
+      which — running AFTER 000002 created the columns the corrected job requires — INSERTs a durable
+      persisted run intent (a wijaya_deferred_reconciliation_runs row, status 'running', started_at
+      NULL, cutoff_at = the deploy instant), idempotent on the unique generation. The recurring
+      hourly RecoveryDrainerJob coordinator (config/schedule.yml) selects at most one persisted run
+      intent each tick and reconciles it INLINE (never enqueuing a second ReconciliationJob onto the
+      :low queue): an incomplete run is resumed with its own persisted generation/cutoff, and only once
+      none is incomplete does it durably find-or-create exactly one fresh recovery generation (minute
+      bucket) and reconcile it inline. Expected failures ANYWHERE in the tick — lock contention, a
+      transient reconciliation failure, OR a transient DB/query error while selecting the run intent
+      (the incomplete-run query, the provenance existence check, or find-or-create of a fresh intent) —
+      are logged and swallowed at the tick level (never re-raised — that would spin a second unbounded
+      retry tree via ActiveJob's Sidekiq default retry, one per hourly tick under a persistent failure);
+      any in-flight run is left running and the next hourly tick resumes it. The per-batch
+      ProcessInboxJob dispatch is BEST-EFFORT (enqueue_for_inbox is coalesced away by a crashed
+      worker's stale in-flight key, which then expires unconsumed), so the run can finalize right
+      after it ONLY because the marker is durable: on EVERY tick, FIRST and independent of any
+      run/provenance state, the RecoveryDrainerJob also redispatches a BOUNDED, ROTATING batch
+      (MARKER_OUTBOX_BATCH = 100 distinct inbox ids) of the inboxes that currently hold Marker rows,
+      querying ONLY the battery marker table (never Conversation / all Unassigned) and reusing
+      enqueue_for_inbox so a live key coalesces (no storm) while a since-expired stale key lets a
+      later tick enqueue a real job — the marker is thus a true durable outbox. The batch is windowed
+      on a durable Redis cursor (MARKER_OUTBOX_CURSOR_KEY, the last inbox_id dispatched, wrapping at
+      the end of the ring and advanced only after a whole batch dispatches), so low inbox_ids that
+      permanently retain markers (no eligible agent) can never be re-selected every tick and starve
+      the inboxes above them — the window rotates forward and every marker-inbox is eventually drained.
+      The drain runs first
+      so the commonly-expected LockContention (swallowed) never suppresses it, and the whole tick
+      (drain + reconcile) is under the one tick-level guard.
+      So the one-time run is retried until it truthfully completes —
+      surviving Redis downtime and old-worker timing without a fragile once-only enqueue. Deploy
+      order still applies (old Sidekiq must not run the new job against an incomplete schema): stop
+      old Sidekiq, backup, build the new image, migrate with the new image, start new rails/sidekiq
+      (see BACKFILL.md). On this install the initial run scans ZERO legacy rows (the provenance table
+      is new); pre-feature deletions carry no provenance and are never guessed.
     custom_files:
       - custom/wijaya/batteries/deferred_auto_assignment/loader.rb
       - custom/wijaya/batteries/deferred_auto_assignment/conversation_extensions.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/marker.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/deletion_provenance.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/models/wijaya/batteries/deferred_auto_assignment/reconciliation_run.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/hooks.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/eligibility.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/registrar.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/trigger_service.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/inbox_processor.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/process_inbox_job.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/agent_deletion_unassignment.rb
+      # Tail-of-DestroyJob orphaned-User deletion finalizer (membership recheck + DeleteObjectJob
+      # enqueue), serializing the deletion behind provenance capture (race fix).
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/orphaned_user_finalizer.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/provenance_recorder.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/reconciler.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/marker_drop_trigger.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/reconciliation_job.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/recovery_drainer_job.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_discovery.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/historical_backfill.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/backfill_job.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/backfill_operator.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/bin/historical_backfill.rb
       - db/migrate/20260905000000_create_wijaya_deferred_assignments.rb
+      - db/migrate/20260912000000_create_wijaya_deferred_assignment_provenance.rb
+      - db/migrate/20260912000001_enqueue_deferred_assignment_reconciliation.rb
+      - db/migrate/20260912000002_add_deferred_reconciliation_correlation.rb
+      - db/migrate/20260912000003_enqueue_deferred_assignment_reconciliation_after_schema.rb
+      # Per-deletion-occurrence idempotency key (deletion_key) + reindex, so a re-add/re-deletion of
+      # the same conversation+agent records a distinct, independently reconcilable tombstone.
+      - db/migrate/20260912000004_add_deferred_provenance_deletion_key.rb
+      # Forward-only repair of the marker FKs to on_delete: :cascade (the drift left by editing the
+      # already-applied 20260905000000 in place).
+      - db/migrate/20260912000005_repair_wijaya_deferred_assignment_marker_fks.rb
+      # Causal-continuity guard column (superseded_at) stamped in-transaction by the battery when an
+      # intervening assignment/routing/state transition breaks the chain from the deletion.
+      - db/migrate/20260912000006_add_deferred_provenance_superseded_at.rb
+      # Forward repair ensuring the durable one-time reconciliation run intent exists on installs that
+      # recorded the OLD (pre-rewrite) 20260912000003 and would never re-run its rewritten up.
+      - db/migrate/20260912000007_ensure_deferred_reconciliation_initial_run_intent.rb
+      # BEFORE DELETE trigger (shared MarkerDropTrigger) keeping the run ledger's terminal counters
+      # truthful when a DB cascade removes a reconciliation-owned marker with no Rails callback.
+      - db/migrate/20260912000008_install_deferred_marker_drop_trigger.rb
     core_hook_touchpoints:
       # Battery Hooks module resolved by name from the core dispatcher (core/hooks.rb map).
       - custom/wijaya/batteries/core/hooks.rb
       # Creation-only, post-commit registration seam.
       - app/models/conversation.rb
-      # Availability offline/busy -> online trigger (after_commit).
+      # Availability offline/busy -> online trigger (after_commit). Also carries the transient
+      # final user-deletion intent (attr_accessor) and forwards it to Agents::DestroyJob so the
+      # orphaned-User deletion is serialized behind provenance capture, not raced by a sibling.
       - app/models/account_user.rb
+      # Agent-deletion entry point: sets the final user-deletion intent on the account-user before
+      # destroy! (so Agents::DestroyJob deletes the orphaned User last) instead of enqueuing a
+      # sibling DeleteObjectJob that could FK-clear assignee_id before provenance is captured.
+      - app/controllers/api/v1/accounts/agents_controller.rb
       # Absent -> present User presence trigger (transition detected at the seam).
       - app/channels/room_channel.rb
       # New inbox member -> bounded reprocessing of that inbox's markers (after_create_commit).
       - app/models/inbox_member.rb
       # New team member -> bounded reprocessing of that team's marked inboxes (after_create_commit).
       - app/models/team_member.rb
+      # Agent deletion bridge: after the unassignment transaction commits, the exact
+      # conversations this deletion cleared are handed to the battery for re-assignment
+      # (collected inside the transaction, dispatched post-commit; no account-wide scan). Also
+      # serializes the final orphaned-User deletion at the very end — after provenance/unassignment/
+      # dispatch — via a tiny fail-open hook (finalize_orphaned_user_deletion -> OrphanedUserFinalizer)
+      # gated by the caller's intent, with a native DeleteObjectJob fallback if the battery is absent.
+      - app/jobs/agents/destroy_job.rb
       # Generated schema touchpoint for the marker table.
       - db/schema.rb
+      # Low-frequency crash-gap recovery drainer cron entry (provenance-scoped, self-gating).
+      - config/schedule.yml
     loader_touchpoints:
       # Feature loader self-registers with the generic core loader, pushes the battery app/
       # subtree (models/services/jobs) onto the Zeitwerk main autoloader, and (in to_prepare)
@@ -324,6 +547,13 @@ patches:
       - spec/custom/wijaya/deferred_auto_assignment/triggers_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/presence_channel_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/remediation_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/agent_deletion_bridge_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/agent_deletion_user_removal_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/provenance_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/reconciliation_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/recovery_drainer_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/run_intent_repair_migration_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/marker_cascade_counters_spec.rb
 
 
   - id: erp_lead_sidebar
@@ -344,6 +574,31 @@ patches:
       - custom/wijaya/batteries/erp_lead_sidebar/safe_http.rb
       - custom/wijaya/batteries/erp_lead_sidebar/refresh_service.rb
       - custom/wijaya/batteries/erp_lead_sidebar/options_service.rb
+      # Product Requirements master data for the ERP Lead "Product Requirement"
+      # Link field, backed by the EXISTING ERPNext DocType "Lead Product
+      # Requirements". Kept as a dedicated bounded/searchable service + account-scoped
+      # controller (never folding the simple OptionsService into an unbounded master-data
+      # loader). list -> {value: ERP name, label: product_name}; create writes only
+      # product_name + raw numeric product_price, with a server-side normalized
+      # (trim/case-insensitive/whitespace-collapse) duplicate lookup that returns the
+      # existing record with zero POST. The searchable dropdown displays product_name but
+      # stores/sends the ERP name, offers an inline "Create a new Lead Product Requirement"
+      # action (no Advanced Search) with a focused create dialog, and the Indonesian
+      # whole-number price display (50000 -> 50.000) is a standalone testable formatter
+      # while ERP only ever receives raw digits.
+      - custom/wijaya/batteries/erp_lead_sidebar/product_requirements_service.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/app/controllers/api/v1/accounts/wijaya/product_requirements_controller.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/ProductRequirementSelect.vue
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/priceFormat.js
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/api/wijayaErpProductRequirements.js
+      # Account-scoped Chatwoot agent directory for the Lead Owner picker: the
+      # owner options are THIS account's own Chatwoot agents (account.users —
+      # administrators + agents, value + label = agent email), never the ERPNext
+      # User list, so no ERP request is made to populate the picker. It is also the
+      # server-side gate that reconfirms a submitted owner email is a current-account
+      # Chatwoot agent before it is stored; the ERP owner write stays fail-closed
+      # ERP-User validated downstream by the erp_lead_owner_sync battery.
+      - custom/wijaya/batteries/erp_lead_sidebar/account_agent_directory.rb
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/ErpLeadPanel.vue
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/fieldConfig.js
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/mappings.js
@@ -378,12 +633,26 @@ patches:
       # (exact User.name, enabled=1, not Guest) immediately before insert, so an
       # invalid/disabled/deleted/Guest/stale value never reaches ERP. It is NOT
       # derived from the conversation assignee or any agent mapping.
-      # agent_erp_user_map.json is NOT the Lead Activity PIC source; it remains
-      # solely the Lead Details autofill mapping consumed by ErpLeadPanel.vue via
-      # frontend/mappings.js (committed empty; real mappings must stay
-      # source-controlled and may only be added by a future, explicitly approved
-      # code change, never hand-edited in a deployed copy).
-      - custom/wijaya/batteries/erp_lead_sidebar/agent_erp_user_map.json
+      # (The former agent_erp_user_map.json agent -> ERP User mapping has been removed:
+      # the ERP Lead owner is never derived from an id/name mapping and never rides the generic
+      # Lead Details payload. The Lead Owner is an editable, server-validated picker whose options
+      # are THIS account's Chatwoot agents (account_agent_directory.rb, value = agent email), NOT
+      # the ERP User list: by default it follows the committed assignee email (automatic default),
+      # but the agent can set a sticky manual override chosen from the account's Chatwoot agents,
+      # reset it back to the assignee, or retry a still-pending sync, with a pending indicator while
+      # the owner-only ERP write — still fail-closed ERP-User validated — is performed by the
+      # erp_lead_owner_sync battery after the Lead links — see below.)
+      # The Activity Master options source (lead_activity_options_service.rb) now
+      # exposes two read shapes: the strict fetch_activity_names used by the read-only
+      # options endpoint (a malformed 2xx body raises MalformedResponseError so the UI
+      # can Retry rather than silently show "no activities"), and the tolerant
+      # fetch_names retained for the POST insert-validation path (unchanged contract:
+      # a malformed body collapses to []). The controller exposes three independent,
+      # lazily-consumable read endpoints — meta (default_date only; issues NO ERP
+      # request), activity_options (only the Lead Activity Master), and
+      # person_in_charge_options (only the ERP User directory) — plus the unchanged
+      # guarded insert. Each endpoint keeps the same authorization, account/conversation
+      # scoping, configured + linked-Lead gating, and sanitized errors.
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_person_directory.rb
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_options_service.rb
       - custom/wijaya/batteries/erp_lead_sidebar/lead_activity_payload_builder.rb
@@ -391,6 +660,13 @@ patches:
       - custom/wijaya/batteries/erp_lead_sidebar/app/controllers/api/v1/accounts/wijaya/lead_activities_controller.rb
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/api/wijayaErpLeadActivities.js
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/LeadActivityForm.vue
+      # Dropdown-level lazy loader owned by the battery. Each ERP dependency
+      # (Activity Master, Person In Charge) gets one instance with an explicit
+      # idle/loading/loaded/error state, in-flight dedupe, stale-response guarding,
+      # cache reuse, and independent Retry/Refresh. Consumed by LeadActivityForm so
+      # the Activity Type + Follow Up Activity dropdowns share one Activity Master
+      # fetch while Person In Charge loads independently.
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/useLazyErpResource.js
       # Strict real-calendar YYYY-MM-DD validation shared by the form (mirrors the
       # backend Date.iso8601 round-trip); extracted so it is directly unit-testable.
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/dateValidation.js
@@ -442,6 +718,92 @@ patches:
       - spec/custom/wijaya/erp_lead_sidebar/lead_activities_controller_spec.rb
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/LeadActivityForm.spec.js
       - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/dateValidation.spec.js
+      # Product Requirements coverage: bounded searchable list (value=name/label=product_name),
+      # raw numeric price create, server-side normalized duplicate lookup (zero POST),
+      # pre-network invalid rejection, sanitized ERP failures, account scoping; the payload
+      # allowlist (product_requirements/product_requirement in, product_name/product_price out)
+      # and refresh mapping ride the existing payload_builder + drafts controller specs.
+      - spec/custom/wijaya/erp_lead_sidebar/product_requirements_service_spec.rb
+      - spec/custom/wijaya/erp_lead_sidebar/product_requirements_controller_spec.rb
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/ProductRequirementSelect.spec.js
+      - custom/wijaya/batteries/erp_lead_sidebar/frontend/specs/priceFormat.spec.js
+
+  - id: erp_lead_owner_sync
+    name: ERPNext Lead Owner Sync on Assignment
+    battery: custom/wijaya/batteries/erp_lead_owner_sync
+    description: >
+      Keeps the linked ERPNext Lead's lead_owner in step with the desired owner, entirely after
+      the fact and without redesigning assignment. The owner has TWO modes, both server-validated
+      against the live ERP User directory before any write: an AUTOMATIC default that follows the
+      committed conversation assignee email, and a sticky MANUAL override the agent picks from the
+      editable ERP-User picker in the sidebar (dedicated POST owner endpoint — never the generic
+      field payload). The manual owner is reset back to the assignee, and a still-pending owner
+      sync can be retried, through that same endpoint; a lead_owner_sync_pending marker (local
+      storage is never itself proof of ERP sync) drives the sidebar's pending/failed status and
+      Retry action and is cleared only by a successful owner PUT. In automatic mode a battery
+      ConversationExtensions concern (attached to core Conversation via the loader's
+      to_prepare include, so app/models/conversation.rb carries NO owner-sync code) runs an
+      after_update_commit seam: the moment a conversation's assignee_id change to a PRESENT
+      agent commits — Assignment V2's claim_and_assign update! and a genuine manual
+      reassignment alike — it enqueues OwnerSyncJob with the committed assignee id. It never
+      fires for a change to nil (Agents::DestroyJob clears assignee_id with update_all, which
+      skips callbacks; an unassign is filtered out regardless) and never when assignee_id did
+      not change, and it only enqueues when the conversation already has a linked
+      Wijaya::ErpLeadDraft with a present erp_lead_id. The enqueue is fail-open, so a sync
+      error can never roll back or block the committed assignment. The owner is the committed
+      assignee's Chatwoot email (stripped, exact) — the authoritative identity that matches the
+      ERPNext User.name (login/email) on this deployment — never the agent's display name and
+      never a substituted user; a blank email leaves the existing owner untouched. There is no
+      id map: resolution is email-only, so an empty/absent mapping never blocks the sync.
+      Critical Case B — assignment can happen BEFORE any ERP Lead exists, so the
+      assignee-change seam finds no erp_lead_id and returns; a second battery seam
+      (LeadDraftExtensions, mixed into the erp_lead_sidebar Wijaya::ErpLeadDraft model via the
+      loader to_prepare) observes the moment the existing erp_lead_sidebar SyncService/controller
+      path first sets erp_lead_id (create or relink — assignment alone never creates a Lead) and
+      enqueues the same OwnerSyncJob with the conversation's CURRENT committed assignee, so the
+      email becomes lead_owner right after linkage; a reassignment racing the Lead create is
+      reconciled by the same expected-assignee/idempotency guards. OwnerSyncJob is idempotent
+      and stale-safe: it captures the committed assignee as expected_assignee_id and returns
+      without touching ERP if the conversation has since moved to a different (or no) assignee
+      (the B -> C guard), if no draft / blank erp_lead_id, or if the assignee has a blank email.
+      OwnerSyncService reuses the erp_lead_sidebar per-account Config, credentialed SafeHttp
+      transport and the live LeadActivityPersonDirectory User validator: it validates the email
+      is a real enabled non-Guest ERP User (a definite false records a RETRYABLE failure carrying
+      the intended assignee email with NO ERP write — it does NOT preserve the prior owner — so a
+      later draft-driven retry resends once the ERP User exists; an ERP outage raises), then under
+      a conversation row lock re-checks the
+      expected assignee and idempotency (already synced to this owner -> no redundant PUT, while
+      a failed draft still retries) before an owner-ONLY PUT to the already linked Lead (never a
+      create or find-by-phone). On any ERP outage/non-2xx/timeout the Chatwoot assignment stays
+      committed and the draft is marked failed with a generic, non-secret error AND the intended
+      new owner, persisted under the same row lock with a repeated staleness re-check so a stale
+      B failure can never clobber a later C — the sidebar's draft-driven retry then resends the
+      intended owner, not the prior one. Assignment selection (team, inbox, availability,
+      capacity, rate-limit, policy, locking, ordering) is never touched.
+    custom_files:
+      - custom/wijaya/batteries/erp_lead_owner_sync/loader.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/conversation_extensions.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/lead_draft_extensions.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/app/services/wijaya/batteries/erp_lead_owner_sync/owner_sync_service.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/app/jobs/wijaya/batteries/erp_lead_owner_sync/owner_sync_job.rb
+    core_hook_touchpoints:
+      # No core edits: the post-commit assignee-change seam is attached entirely via the
+      # battery ConversationExtensions concern (loader to_prepare), so app/models/conversation.rb
+      # carries no markers. The already-linked ERP draft is read through the has_one that the
+      # erp_lead_sidebar battery defines on Conversation.
+      []
+    loader_touchpoints:
+      # Feature loader self-registers with the generic core loader, pushes the battery app/
+      # subtree (services + job) onto the Zeitwerk main autoloader, and (in to_prepare)
+      # requires + includes the ConversationExtensions concern into core Conversation and the
+      # LeadDraftExtensions concern into the erp_lead_sidebar Wijaya::ErpLeadDraft model.
+      - custom/wijaya/batteries/erp_lead_owner_sync/loader.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/conversation_extensions.rb
+      - custom/wijaya/batteries/erp_lead_owner_sync/lead_draft_extensions.rb
+    tests:
+      - spec/custom/wijaya/erp_lead_owner_sync/owner_sync_spec.rb
+      - spec/custom/wijaya/erp_lead_owner_sync/assignment_integration_spec.rb
+      - spec/custom/wijaya/erp_lead_owner_sync/lead_link_reconcile_spec.rb
 
   - id: development_version
     name: Wijaya Internal Development Versioning
@@ -502,6 +864,146 @@ patches:
       - custom/wijaya/batteries/persistent_agent_presence/frontend/specs/createPresenceHeartbeat.spec.js
       - custom/wijaya/batteries/persistent_agent_presence/frontend/specs/BaseActionCableConnector.integration.spec.js
 
+  - id: whatsapp_web_inbox
+    name: WhatsApp Web (Unofficial) Inbox
+    battery: custom/wijaya/batteries/whatsapp_web_inbox
+    description: >
+      Dedicated native-looking creation + management experience for an unofficial
+      WhatsApp Web (Baileys) inbox that sits on top of a normal Channel::Api. The
+      browser talks ONLY to account-scoped, admin-only Rails endpoints
+      (/api/v1/accounts/:id/wijaya/whatsapp_web/inboxes); Rails alone signs and calls
+      the external connector (service HMAC over method\npath\nts\nnonce\nsha256(body)).
+      Provisioning is durable/idempotent: one DB transaction creates the Channel::Api
+      (hmac_mandatory, provider marker wijaya_provider=whatsapp_web), the Inbox, and a
+      pending mapping keyed by the client request token; AFTER commit a job reconciles
+      by signed list/get on the exact inboxIdentifier (ambiguous-create recovery),
+      creates the connector session only if none exists, sets the channel webhook_url to
+      the connector callback only once a session id exists, and marks the mapping
+      provisioned. A connector outage leaves a recoverable error mapping (the inbox is
+      never deleted) resumable via a retry endpoint. Deletion enqueues an idempotent,
+      bounded-retry connector-session cleanup (has_one dependent: :destroy; FK cascade
+      is the DB safety net); logout wipes connector auth but keeps the inbox for
+      re-pairing. The mapping row stores only sanitized lifecycle metadata — never the
+      service secret, raw QR, Baileys credentials, channel secret/hmac_token, phone
+      number, or message content. The QR data URL is proxied; the raw QR string never
+      crosses the Rails boundary. Management fails closed when connector env is absent
+      while boot and unrelated inboxes stay healthy. The channel is marked generically so
+      a future cross-channel auto_translate battery can detect it; no translation logic
+      is added here.
+    custom_files:
+      - custom/wijaya/batteries/whatsapp_web_inbox/loader.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/routes.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/inbox_extensions.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/models/wijaya/batteries/whatsapp_web_inbox/record.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/config.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/request_signer.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/connector_client.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/provisioner.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/safe_dto.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/provision_job.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/jobs/wijaya/batteries/whatsapp_web_inbox/cleanup_job.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/controllers/api/v1/accounts/wijaya/whatsapp_web/inboxes_controller.rb
+      # Transport parity (private-chat media/quoted/status): Feature A inbound
+      # public-message attribute hook, Feature C signed provider status callback
+      # controller + its battery-owned public route module.
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/hooks.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/public_routes.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/controllers/public/api/v1/wijaya/whatsapp_web/provider_events_controller.rb
+      # Resend fix: a failed whatsapp_web outgoing message re-emits a real
+      # message.created connector delivery instead of the native update-only retry.
+      - custom/wijaya/batteries/whatsapp_web_inbox/app/services/wijaya/batteries/whatsapp_web_inbox/retry_delivery.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/WhatsappWebFailedMessageNotice.vue
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/channel/whatsappWebChannel.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/whatsappWebInbox.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/helpers/connectionStatus.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/api/whatsappWeb.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/composables/useConnectorPolling.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/i18n/whatsappWebInbox.json
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/CreateWhatsappWebInbox.vue
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/WhatsappWebConnectionPanel.vue
+      # Battery-owned idempotent core-hook applicator + its exact block spec.
+      - custom/wijaya/batteries/whatsapp_web_inbox/patch/apply_patches.py
+      - custom/wijaya/batteries/whatsapp_web_inbox/patch/blocks.json
+      - custom/wijaya/batteries/whatsapp_web_inbox/patch/test_apply_patches.py
+    # Deterministic, idempotent, context-safe reapply of the core marker blocks after an
+    # upstream pull. Root apply_custom_patches.sh runs this applicator (reinserts only the
+    # missing blocks at exact anchors; fails loudly on an absent/ambiguous anchor without
+    # partial writes) and then the global checker. The checker asserts these EXACT counts.
+    applicator:
+      script: custom/wijaya/batteries/whatsapp_web_inbox/patch/apply_patches.py
+      blocks: custom/wijaya/batteries/whatsapp_web_inbox/patch/blocks.json
+      expected_marker_counts:
+        app/javascript/dashboard/components/widgets/ChannelItem.vue: 2
+        app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue: 2
+        app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue: 2
+        app/javascript/dashboard/i18n/locale/en/index.js: 2
+        app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue: 5
+        db/migrate/20261002000000_create_wijaya_whatsapp_web_inboxes.rb: 1
+        # Backend transport-parity hooks (Ruby #-comment marker blocks).
+        app/controllers/public/api/v1/inboxes/messages_controller.rb: 1
+        config/routes.rb: 1
+        # Resend fix: retry seam (backend) + failed-message QR shortcut (frontend, 2 blocks).
+        app/controllers/api/v1/accounts/conversations/messages_controller.rb: 1
+        app/javascript/dashboard/components-next/message/MessageError.vue: 2
+    core_hook_touchpoints:
+      # Marker-wrapped migration (db/migrate is outside the app/config addition scan).
+      - db/migrate/20261002000000_create_wijaya_whatsapp_web_inboxes.rb
+      # Feature A: a single guarded dispatch in the public API-Inbox message
+      # create boundary (sets source_id + in_reply_to_external_id for whatsapp_web
+      # inboxes only). The hook module is registered in the core Hooks dispatcher.
+      - app/controllers/public/api/v1/inboxes/messages_controller.rb
+      - custom/wijaya/batteries/core/hooks.rb
+      # Feature C: a battery-owned marker in the public/api/v1 routes namespace
+      # mounting the signed provider status callback (public_routes.rb).
+      - config/routes.rb
+      # Resend fix: the conversation message retry action dispatches (fail-open) to the
+      # battery, which re-emits a real message.created connector delivery for a
+      # whatsapp_web outgoing message; the failed-message bubble mounts the battery QR
+      # shortcut notice. Both hook modules resolve through the core Hooks dispatcher /
+      # frontend helper, so unrelated inboxes keep native behaviour.
+      - app/controllers/api/v1/accounts/conversations/messages_controller.rb
+      - app/javascript/dashboard/components-next/message/MessageError.vue
+      # Generated schema touchpoint for the mapping table.
+      - db/schema.rb
+      # Generic battery route-module registration (ROUTE_MODULES).
+      - custom/wijaya/batteries/core/routes.rb
+      # Style/ClassAndModuleChildren (nested battery files) + Metrics/ParameterLists
+      # (the 6-input request signer) excludes; tooling config, no WIJAYA marker.
+      - .rubocop.yml
+      # Minimal frontend seams: Add-Inbox card, clickability gate, wizard mapping,
+      # inbox-settings panel, and the i18n namespace spread.
+      - app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue
+      - app/javascript/dashboard/components/widgets/ChannelItem.vue
+      - app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue
+      - app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue
+      - app/javascript/dashboard/i18n/locale/en/index.js
+    loader_touchpoints:
+      # Inbox has_one mapping + dependent: :destroy is attached via the battery
+      # InboxExtensions concern (loader to_prepare), so app/models/inbox.rb has no markers.
+      - custom/wijaya/batteries/whatsapp_web_inbox/loader.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/inbox_extensions.rb
+    tests:
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/request_signer_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/config_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/connector_client_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/provisioner_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/cleanup_job_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/record_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/safe_dto_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/inboxes_controller_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/hooks_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/provider_events_controller_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/retry_delivery_spec.rb
+      - spec/custom/wijaya/batteries/whatsapp_web_inbox/messages_controller_retry_spec.rb
+      - custom/wijaya/batteries/whatsapp_web_inbox/patch/test_apply_patches.py
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/whatsappWebDisconnectError.spec.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/WhatsappWebFailedMessageNotice.spec.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/whatsappWebChannel.spec.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/channelFactory.spec.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/isWhatsappWebInbox.spec.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/useConnectorPolling.spec.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/CreateWhatsappWebInbox.spec.js
+      - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/WhatsappWebConnectionPanel.spec.js
 
   - id: test_database_safety
     name: Containerized Test Database Isolation
@@ -551,6 +1053,9 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/account_extensions.rb
       - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/inbox_extensions.rb
       - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/user_extensions.rb
+      # Phase 2 exact-price activation: after claim ownership/eligibility, attempt the single
+      # ExactPriceCustomerExecution seam; only an accepted guarded reply bypasses the unchanged
+      # legacy AssistantChatService fallback. Existing final lock/transaction remains delivery owner.
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/conversation/response_builder_job.rb
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/documents/response_builder_job.rb
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/llm/update_embedding_job.rb
@@ -564,6 +1069,8 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/charge/fact_preservation_validator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/charge/confidence_scorer.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/charge/control_leak_inspector.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/charge/price_claim_inspector.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/charge/numeric_grounding_inspector.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/handoff_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/domain_boundary_guard.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/circuit/domain_security_decision_service.rb
@@ -575,6 +1082,8 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/config.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/provider_config.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/connection_test_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/llm/openrouter_decisions_client.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/llm/settings_store.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/base_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/prompt_renderer.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/json_response_parser.rb
@@ -595,17 +1104,345 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/config.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/connection.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_family_repository.rb
+      # Phase 3 — bounded, deterministic catalog LISTING of active top-level products (templates +
+      # standalone; variants/disabled excluded) with exact completeness metadata (returned_count,
+      # optional total_count, complete). Read-only, parameterized, page+1 probe, fail-closed.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_listing_repository.rb
       # Phase 1 — Deterministic Catalog Data Layer: generic variant resolution, general
       # selling User Price lookup, and binary stock-availability status (numeric stock
       # never leaves PostgreSQL). Read-only, parameterized, bounded, fail-closed.
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/variant_repository.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_repository.rb
+      # Marine AI V1 — deterministic GENERAL selling price RANGE across a family's active variants,
+      # reusing the exact User Price policy. One parameterized SELECT; every active variant must hold
+      # exactly one qualifying tuple with homogeneous currency/UOM, else fails closed (missing ->
+      # unavailable, per-variant/mixed -> conflict). Exact decimal (BigDecimal) min/max, never Float.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_range_repository.rb
+      # Marine AI V1 — shared locale-safe, outcome-truthful family price RANGE caption boundary.
+      # Reuses the exact-price PriceDisplayFormatter display policy for both endpoints per the resolved
+      # reply language, keeps display facts byte-exact via the mask, and fails closed to the safe
+      # catalog-free clarification. Consumed by ResponseBuilderJob and PlaygroundPreview alike.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_range_reply_composer.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/stock_repository.rb
       # Phase 2 — Contextual Product Intent Understanding: LLM-backed extractor that
       # turns customer text + bounded context + a safe state summary into a strict,
       # normalized, allowlisted intent hash. Candidate-only, no repository/DB access,
       # no state mutation; every LLM failure collapses to a safe unknown result.
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/intent_extractor.rb
+      # Phase 2 / Stage 1 — battery-local, side-effect-free, versioned Candidate Plan
+      # contract for the future Decision Maker. Structure & normalization ONLY: folds a
+      # fully UNTRUSTED parsed provider hash into a strict, bounded, deep-frozen candidate
+      # plan (schema_version marine_decision_v1) or fails closed with InvalidCandidatePlan.
+      # A candidate plan is a bounded SUGGESTION (scenario/intent candidates, candidate-only
+      # product/variant strings, language hint) — never backend authority: it can never
+      # carry a validated fact (validated_variant_code/family/price/stock/quantity/warehouse),
+      # a final action, reply text, a tool, or SQL (those are rejected as unknown fields).
+      # No provider call, settings read, DB/catalog access, runner/scenario-selector touch,
+      # or state mutation; not wired to any runtime hook. CandidatePlan.unknown gives a safe
+      # allowlisted-reason fallback carrying no raw exception/provider prose.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/errors.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/schema.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/normalizer.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/candidate_plan.rb
+      # Phase 2 / Stage 2 — battery-local, production-capable but UNWIRED Decision Maker
+      # transport clients. A settings-bound facade (Client) reads ONLY
+      # SettingsStore.for(:decision_maker), validates config before any network, and selects
+      # a transport solely from the allowlisted api_mode: an isolated-RubyLLM chat/completions
+      # client or a direct POST /api/alpha/decisions client. Every transport returns a strict,
+      # bounded, deep-frozen TransportResult carrying only an allowlisted opaque reason
+      # (subset of the candidate-plan unknown reasons) — never a provider object/body/header,
+      # API key, raw exception, or customer request. It builds no prompts, touches no
+      # Config/BaseService/DB/catalog/state, and is wired to no runtime hook.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/transport_result.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/client.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/chat_completions_client.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/openrouter_decisions_client.rb
+      # Phase 2 / Stage 3 — battery-local, ISOLATED, UNWIRED Decision Maker Runner and its
+      # protocol request/response mapping. The Runner reads ONLY SettingsStore.for(:decision_maker)
+      # + api_mode, talks to the network solely through the Stage 2 Client, and returns EXACTLY
+      # one canonical deep-frozen CandidatePlan — never raising: every failure (bad input,
+      # transport error, malformed builder/mapper/parser output, mode race, normalizer rejection)
+      # folds to CandidatePlan.unknown with an allowlisted opaque reason and no leaked body/
+      # exception/input. InputContract bounds the untrusted message/context/coarse-state-hints/
+      # scenario-capability seam; RequestBuilder emits a closed chat JSON schema OR a Jev
+      # choice/noul questions body (scenario text as DATA only, NEVER free-text extraction);
+      # ChatResponseParser strictly parses one JSON object (dup-key-rejecting); DecisionsResponseMapper
+      # maps typed choice/noul answers (slot_operations always [], language nil). Intents are
+      # intersected with the declared capability union + unsupported. No Agent::Runner/ScenarioSelector/
+      # DB/catalog/job/reply/state-mutation; not wired to any runtime hook.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/input_contract.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/request_builder.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/chat_response_parser.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/decisions_response_mapper.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/runner.rb
+      # Phase 2 / Stage 4 — DEFAULT-OFF, ASYNCHRONOUS, SHADOW-ONLY integration of the isolated
+      # Decision Runner. ShadowConfig is a strictly read-only config seam (MARINE_DECISION_SHADOW_ENABLED
+      # on only for the exact 'true'; MARINE_DECISION_SCENARIO_CAPABILITIES a bounded JSON scenario_<id>
+      # -> allowlisted-intents map that fails the WHOLE map closed to {} on any anomaly, never writing
+      # or raising). ScenarioAdapter maps enabled, id-ordered Marine::Scenario rows to the InputContract
+      # seam with the stable scenario_<database id> key and capabilities ONLY from the explicit registry
+      # (never inferred from title/description/instruction/tools). ShadowExecution validates the four
+      # records belong together + public-incoming, then computes the legacy ScenarioSelector choice and
+      # the Decision Runner CandidatePlan on the SAME canonical trigger/scenarios, returning a small
+      # deep-frozen comparison and mutating no state. ShadowJob (scalar IDs only) re-checks the flag,
+      # loads account-scoped records fail-closed, runs ShadowExecution and DISCARDS the result, swallowing
+      # every failure with no reply/routing/state/log. ShadowEnqueuer — called from Wijaya::Marine::Hooks
+      # ONLY after the normal Marine response was scheduled — does nothing when off, else NX+TTL
+      # deduplicates per account+message with a feature-prefixed Redis::Alfred marker, enqueues ShadowJob
+      # with scalar IDs, releases only its own token on enqueue failure, and never propagates into the
+      # primary hook (now gated by ShadowConfig.enabled_for? the resolved assistant, see Stage 5 below).
+      # Phase 2 / Stage 5 — PRIVACY-SAFE aggregate metrics + ADVISORY acceptance (observation-only, NEVER
+      # authority). ShadowConfig gains MARINE_DECISION_SHADOW_ASSISTANT_IDS (a bounded JSON array of unique
+      # positive integer ids, fail-closed) and enabled_for?, making the live shadow opt-in and
+      # assistant-scoped (missing/invalid/empty allowlist => no Redis/job/provider/metrics). ShadowJob is
+      # the ONLY Stage 5 runtime wiring: it re-checks enabled_for? on the LOADED assistant before the
+      # Runner/provider, converts a successful ShadowExecution into a ShadowObservation, and records
+      # AGGREGATE counters via ShadowMetricsStore — a nil execution records nothing and every observation/
+      # metrics failure is swallowed. ShadowObservation is a deep-frozen value exposing ONLY aggregate-safe
+      # allowlisted codes (stable scenario keys/none, comparable/match booleans, reason, confidence, intent
+      # codes, slot operation+slot code pairs) — never raw trigger/history, any message/conversation/
+      # contact/inbox id, customer_language, a slot raw_candidate/candidate_type, a provider body/error, or
+      # a record. ShadowMetricsStore records validated INTEGER counters into a UTC daily hash
+      # (marine:decision:shadow:metrics:v1:<account>:<assistant>:YYYYMMDD) via ONE MULTI + 14-day TTL (no
+      # SCAN/KEYS/broad delete; Redis failure => false), and snapshot reads only the explicit <=14 daily
+      # keys, merging integer counters fail-closed into a deep-frozen aggregate. ShadowAcceptance is a pure
+      # advisory gate over a snapshot with fixed conservative thresholds + integer basis-point rates; its
+      # status is only insufficient_data/hold/eligible_for_review — never cutover — and it mutates nothing.
+      # No Stage 6 cutover/authority/rollback switching.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_config.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/scenario_adapter.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_execution.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_enqueuer.rb
+      - custom/wijaya/batteries/marine_ai/app/jobs/marine/decision/shadow_job.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_observation.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_metrics_store.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/shadow_acceptance.rb
+      # Phase 2 / Stage 6 — CONTROLLED Decision Maker cutover for scenario selection (backend authority
+      # + immediate rollback). This is the ONLY stage where the Decision Maker's canonical CandidatePlan
+      # may drive a live decision, and ONLY the post-pre-RAG scenario-selection seam that previously
+      # called the token-overlap Marine::Agent::ScenarioSelector — never reply, routing, product/price/
+      # stock/quantity, handoff, or state. Default behavior is byte-for-byte legacy when the gate is
+      # closed. CutoverConfig is a strict fail-closed config seam: MARINE_DECISION_CUTOVER_ENABLED (exact
+      # trimmed 'true'), MARINE_DECISION_CUTOVER_ASSISTANT_IDS (bounded JSON array of unique positive
+      # integer ids, max 50, whole-list-closed on any anomaly), and MARINE_DECISION_CUTOVER_ROLLBACK
+      # (exact trimmed 'true', HIGHEST precedence, forces closed); enabled_for? ALSO requires the existing
+      # ShadowConfig.enabled_for? so a cut-over assistant stays under the live shadow + allowlist. Every
+      # read is fresh (no memoized switch), so rollback takes effect on the very next selection with no
+      # metrics/provider work. CutoverGate opens ONLY when the config is open AND the ADVISORY
+      # ShadowAcceptance report over a fixed 14-day ShadowMetricsStore snapshot is EXACTLY eligible_for_
+      # review/thresholds_met; a closed config never reads metrics (immediate rollback); it never writes
+      # config or auto-enables. ScenarioResolver is backend-authoritative: it re-queries
+      # assistant.scenarios.enabled by the exact stable scenario_<id> key at resolution time and returns
+      # the real enabled row or nil (wrong format / zero / out-of-range / disabled / cross-assistant /
+      # error => nil). CutoverScenarioSelector wraps the legacy selector: a blank query or a closed gate
+      # runs the legacy selector directly (no adapter/runner/provider/metrics beyond the gate); an open
+      # gate builds the full enabled scenario seam via ScenarioAdapter and calls Marine::Decision::Runner
+      # exactly once (message=query, bounded role/content context, state={}, adapter scenarios), accepting
+      # the Decision choice ONLY when the plan is canonical-normalized, both confidences are medium/high,
+      # a candidate key is present, and ScenarioResolver re-resolves it — else legacy. The legacy selector
+      # and Decision Runner each run at most once; decision-side failures (gate/adapter/runner/plan/
+      # resolver) NEVER escape — they fall back to legacy — while a legacy selector error is NOT swallowed
+      # and propagates to Marine::Agent::Runner#run, degrading to the historical safe handoff (pre-Stage-6
+      # semantics). It never handoffs/changes the reply from a decision error and returns a
+      # small immutable Selection (scenario + closed source/reason enums) with an optional privacy-safe
+      # ActiveSupport::Notifications event (ids + source/reason only). The internal
+      # Marine::Agent::Runner#select_scenario touchpoint (agent/runner.rb, listed below) routes through it,
+      # passing the already-derived query + already-bounded history (no second ContextBuilder); product
+      # path still returns before scenario selection; no CandidatePlan/intents/slots/cutover metadata leak.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/cutover_config.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/cutover_gate.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/scenario_resolver.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/decision/cutover_scenario_selector.rb
+      # Fase 3A-1 — Isolated product pipeline (Product Authority Seam -> repository
+      # validation/execution -> marine_evidence_v1 Evidence Packet -> Model 2 presentation
+      # seam). Mock-only, ALL flags OFF, ZERO runtime wiring: no reference from Agent::Runner /
+      # ResponseBuilderJob / the live product path. The adapter maps an untrusted normalized
+      # marine_decision_v1 candidate plan into the existing IntentExtractor-shaped product-intent
+      # input under per-scenario capability authority; the planner revalidates every candidate
+      # against the injected read-only repositories (family/variant/price/stock + PriceDisplayFormatter)
+      # and owns all facts (binary stock, immutable price envelope, fail-closed omission); the pure
+      # state transition computes A6-01 invalidation via the store's in-memory snapshot twin
+      # (no persistence, schema_version separate from the revision version); the packet builder emits
+      # a deep-frozen, closed-key/closed-enum, bounded product-only packet; and the presenter runs the
+      # bounded packet-only prompt through an INJECTED generator + deterministic fact/persona gates,
+      # failing closed to a deterministic/handoff fallback (no live provider constructed).
+      # Phase 1 (Opsi B) — the single backend-owned execution-authorization + classification policy
+      # leaf: frozen EXECUTABLE_INTENTS == ["price"], CLASSIFICATION_INTENTS == ["price","unsupported"],
+      # and the exact-canonical-array #authorized? rule. A pure leaf (no production dependency, not
+      # even on Marine::Decision::Schema); every authorization site (adapter, coordinator, planner,
+      # packet builder, Model 2) and both Model 1 protocols ground on it — scenario configuration no
+      # longer participates in authorization.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/execution_policy.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/candidate_plan_to_product_intent_adapter.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/product_execution_planner.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/product_state_transition.rb
+      # price_range proposed-state-transition seam — the pure StateTransitionAdapter maps the existing
+      # (previously-isolated) ProductStateTransition operation onto the closed finalize operation enum
+      # (:product_replacement -> :start, :variant_replacement -> :update, else nil fail-closed). The
+      # AuthorityCoordinator uses it to attach a closed, deep-frozen state_transition_v1 envelope to an
+      # accepted price_range answer (operation + resolver family identity) / an ambiguous price_range
+      # family (handoff_required, nil identity); ExactPriceCustomerExecution revalidates + surfaces it;
+      # ResponseBuilderJob applies it inside the finalize transaction so a Turn-1 range reply persists
+      # the authoritative family, enabling a Turn-2 bare child without the family repeated.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/state_transition_adapter.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_packet_builder.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_prompt_builder.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_packet_presenter.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/post_generation_fact_validator.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/persona_validator.rb
+      # Phase 2A — DEFAULT-OFF, read-only, PRICE-ONLY JEV -> Backend Authority shadow bridge. Reuses
+      # the already-computed Decision CandidatePlan inside the existing default-OFF Decision shadow;
+      # no customer output, no Model 2, no state write, no second provider/Runner call.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/catalog_candidate_resolver.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/listing_scope_resolver.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/family_price_range_authority.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/authority_coordinator.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/authority_shadow_execution.rb
+      # Langkah 3 — DEFAULT-OFF, NON-DELIVERING Evidence Packet -> Model 2 (Response Generator) shadow.
+      # For the ACCEPTED exact-price evidence packet ONLY: a generator adapter + a SEPARATE semantic
+      # fact+language verifier, both over the EXISTING Marine::Llm::BaseService Response Generator
+      # config (no new provider/model), drive the existing EvidencePacketPresenter; the Model2
+      # shadow execution reuses the Phase 2A AuthorityCoordinator::Result and returns ONLY a bounded,
+      # deep-frozen closed status/reason (never the generated text). Wired after AuthorityShadowExecution
+      # in Marine::Decision::ShadowJob, independently rescued; no state write, no delivery, no cutover.
+      # Observability: the closed Result is projected by Model2ShadowObservation to the two aggregate-safe
+      # codes (status, reason) and recorded by Model2ShadowMetricsStore as pure integer counters in a
+      # date-only UTC daily key (NO account/assistant/conversation/message id, text, price, or code),
+      # idempotent per ActiveJob delivery via a job_id-only NX marker; aggregate-only, never delivering.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_reply_generator.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/evidence_fact_verifier.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/model2_shadow_execution.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/model2_shadow_observation.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/model2_shadow_metrics_store.rb
+      # Phase 2 exact-price activation checkpoint A — side-effect-free synchronous attempt. Reuses
+      # one policy-injected CandidatePlan, Backend Authority, marine_evidence_v2, and the existing
+      # presenter/fact guards; it returns validated text or a closed fallback and never delivers.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/exact_price_customer_execution.rb
+      # Presentation Policy checkpoint A — the SINGLE customer-composition-root projection of the
+      # assistant's loaded config (instructions + response_guidelines) into a closed, deeply-frozen
+      # tone/verbosity/range_followup policy. Read-only (no DB/service/provider), never raises; it opts
+      # the answer_price_range packet into marine_evidence_v3 (threaded authority->planner->builder),
+      # while every other goal stays marine_evidence_v2 (the v2-only renderers keep rejecting v3).
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/presentation_policy_projector.rb
+      # Step 17 — deterministic product_listing Evidence renderer. On a listing SEMANTIC
+      # rejection/error/missing (after the deterministic fact + persona gates pass) the presenter
+      # discards the untrusted Model 2 candidate and renders a bounded listing reply from the
+      # marine_evidence_v2 product_listing Evidence alone (localized id/en templates, code+name+counts
+      # only), returned ok=true so the customer execution never invokes the legacy RAG path. Listing
+      # goal only; product_information keeps the closed fallback.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/product_listing_evidence_renderer.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/company_offerings_evidence_renderer.rb
+      # Step 18 — deterministic exact-price Evidence renderer. For a renderable answer_price packet
+      # EVERY Model 2 candidate failure (generation / fact / persona / semantic) discards the untrusted
+      # candidate and renders the exact price from the marine_evidence_v2 price Evidence alone, through
+      # the existing approved price-display-v1 id/en template (authoritative display product/currency/
+      # amount/uom only), returned ok=true so the customer execution never invokes the legacy path.
+      # answer_price goal only; price_range / stock / product_information keep their closed fallback.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/exact_price_evidence_renderer.rb
+      # Checkpoint B — deterministic family price-RANGE Evidence renderer. For a renderable v3
+      # answer_price_range packet EVERY Model 2 candidate failure (generation / fact / persona / semantic)
+      # discards the untrusted candidate and renders the range from the marine_evidence_v3 price_range
+      # Evidence alone, through backend-owned price-display-v1 id/en templates (authoritative family code +
+      # already-formatted display currency/endpoints/uom only; equal endpoints => single amount;
+      # range_followup_mode controls a generic variant follow-up), returned ok=true so the customer
+      # execution never invokes the legacy path. answer_price_range goal only; every other goal keeps its
+      # existing closed fallback.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/price_range_evidence_renderer.rb
+      # Binary stock — deterministic answer_stock Evidence renderer. For a renderable answer_stock packet
+      # EVERY Model 2 candidate failure (generation / fact / persona / semantic) discards the untrusted
+      # candidate and renders the binary availability from the marine_evidence_v2 stock Evidence alone,
+      # through backend-owned stock id/en templates (validated variant code + available/unavailable status
+      # only; never a quantity, location, delivery time, or price), returned ok=true so the customer
+      # execution never invokes the legacy path. answer_stock goal only; every other goal keeps its
+      # existing closed fallback.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/binary_stock_evidence_renderer.rb
+      # Marine Phase 3 — approved-only, assistant-scoped product-description evidence source for the
+      # product_information listing path. One bounded approved knowledge-base query, exact normalized
+      # code/name binding, closed per-authorized-product evidence only (never adds/invents a product).
+      - custom/wijaya/batteries/marine_ai/app/services/marine/backend/approved_product_description_source.rb
+      # Fase 3A-2 — Product Shadow Authority. DEFAULT-OFF, fail-closed observation-only layer that
+      # compares the LEGACY Marine::Catalog::IntentExtractor product outcome against the Fase 3A-1
+      # CandidatePlanToProductIntentAdapter outcome, aggregates privacy-safe metrics, and stages a
+      # FUTURE (never-opening this phase) candidate gate. Live product authority stays LEGACY.
+      # INDEPENDENT of the scenario-level Marine::Decision shadow/cutover: separate
+      # MARINE_PRODUCT_AUTHORITY_* config keys, Redis namespaces, allowlist, and job — it never
+      # reads or reinterprets MARINE_DECISION_CUTOVER_*. ProductOutcome is the shared privacy-safe
+      # projection; ShadowConfig owns the explicit shadow flag + bounded assistant allowlist (max
+      # 50) + future candidate mode + immediate rollback (revalidated every turn/job, no cache);
+      # ShadowExecution is the adapter-only (no catalog-DB, no ProductExecutionPlanner) comparison
+      # harness with injected seams; ShadowObservation/ShadowMetricsStore record aggregate counters
+      # only (UTC daily, 14-day TTL, one MULTI, no scan, mutations:0 proof); ShadowAcceptance is the
+      # advisory basis-point readiness gate; CandidateGate is phase-locked CLOSED; Corpus is the
+      # synthetic labelled acceptance data and Evaluator the deterministic adapter+planner scorer.
+      # Wired ONLY at Wijaya::Marine::Hooks#schedule_marine_response after the primary enqueue
+      # succeeded; the live reply/product path has ZERO references to Marine::Backend.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/product_outcome.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/shadow_config.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/shadow_execution.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/shadow_enqueuer.rb
+      - custom/wijaya/batteries/marine_ai/app/jobs/marine/product_authority/shadow_job.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/shadow_observation.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/shadow_metrics_store.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/shadow_acceptance.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/candidate_gate.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/corpus.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/evaluator.rb
+      # Acceptance-only, advisory per-case pipeline coordinator + its closed-schema CaseResult
+      # artifact. The coordinator folds ONE synthetic case through the real Fase 3A-1 backend
+      # pipeline (adapter -> planner -> evidence packet builder) for acceptance evidence; it is NOT
+      # wired into any live runtime path, reads no settings/Redis, performs NO DB writes, and touches
+      # no ShadowMetricsStore. The default ProductExecutionPlanner it wires MAY perform read-only
+      # catalog DB access (its default read-only repositories); injected in-memory fakes make a
+      # deterministic, DB-free run. It leaves CandidateGate phase-locked. AcceptanceCaseResult is a
+      # bounded, deep-frozen, closed-enum artifact carrying no raw customer/provider/DB data.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/acceptance_case_result.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/acceptance_pipeline_coordinator.rb
+      # Controlled, deterministic, ADVISORY acceptance RUNNER over an explicitly-given case set. It
+      # folds each case EXACTLY ONCE through the same AcceptancePipelineCoordinator the Evaluator uses
+      # (reusing the Evaluator's DB-free fakes + shared price formatter + FIXED_CLOCK + MutationProbe),
+      # produces exactly one closed-schema AcceptanceCaseResult per executed case (input order), and
+      # derives a bounded aggregate (total_executed/passed/failed/not_executed/failures/failure_reasons/
+      # all_evaluated/case_evidence) from ONLY those results — never recomputing pass/fail, never a
+      # second pipeline. quantity_inquiry comes from an injectable canonical extraction seam (the
+      # Marine::Catalog::IntentExtractor contract boolean) with precedence over the corpus
+      # safety.exact_quantity_request fallback. Evidence is IN-MEMORY only (no persistence). NOT wired
+      # into any live runtime path; reads no settings/Redis; touches no ShadowMetricsStore; leaves
+      # CandidateGate phase-locked.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/acceptance_runner.rb
+      # Fase 3A-2c — the SINGLE pure source of the deterministic synthetic (SYN-PARITY) customer turn
+      # projected from a corpus acceptance case. Shared verbatim by the parity intake adapters and the
+      # acceptance IntentExtractorSeam so the real intent seam receives EXACTLY the synthetic message the
+      # intake surfaces use (no new text, no dataset). Side-effect-free; reads only id/intents/slot-op
+      # summary; validates/looks up/mutates nothing.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/synthetic_case_message.rb
+      # Fase 3A-2c — ACCEPTANCE-ONLY thin adapter over the REAL runtime intent seam
+      # (Marine::Catalog::IntentExtractor#extract). Projects the EXISTING parity synthetic customer turn
+      # from a corpus case, calls the real #extract, and returns the closed { source, quantity_inquiry,
+      # reason_code } signal ONLY for a NORMALIZED (extracted/not_product) result — a degraded/malformed
+      # extraction or any exception yields nil so the acceptance surfaces fall back to the corpus safety
+      # metadata (fail-closed). NOT wired into any live runtime path; no DB/Redis/settings; mutates
+      # nothing; leaves CandidateGate phase-locked.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/intent_extractor_seam.rb
+      # Fase 3A-2c — BOUNDED, DETERMINISTIC in-Redis retention of ONE acceptance RUN's evidence for audit
+      # (ShadowMetricsStore precedent). One versioned hash per run (meta + integer/boolean aggregate
+      # scalars + closed mutation-proof projection or 'mutation_proof_missing' marker + per-case rows
+      # carrying ONLY AcceptanceCaseResult's closed #to_h FIELDS), a bounded FIFO run-id index
+      # (LREM+LPUSH+LTRIM, MAX_RUNS), and a TTL_DAYS TTL. Stores NO plan payloads/text/prompts/customer
+      # data; fail-closed on any invalid id/kind/aggregate/Redis error; no SCAN/KEYS/reset. Acceptance-
+      # only; NOT wired into any live runtime path; leaves CandidateGate phase-locked.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/acceptance_evidence_store.rb
+      # Fase 3A-2b — Conversation↔Playground PARITY RUNTIME (acceptance-only, advisory, in-memory).
+      # One cohesive file: two REAL-intake projection adapters (ConversationIntake validates a synthetic
+      # envelope through the PUBLIC Marine::Decision::InputContract.build fail-closed REJECT; PlaygroundIntake
+      # bounds its query/history against the PUBLIC Marine::Catalog::PlaygroundPreview constants, mirroring
+      # its TRUNCATE semantics) plus the Runtime fold driver. Each corpus case is projected through BOTH
+      # surfaces and folded through the SAME AcceptancePipelineCoordinator per surface (reusing the
+      # Evaluator's DB-free fakes + shared price formatter + FIXED_CLOCK + MutationProbe). Parity is the
+      # equality of the normalized actual_outcome across surfaces (PRIMARY); the bounded reason is DIAGNOSTIC
+      # ONLY and never fails parity by itself. NO legacy-plan→CandidatePlan converter, NO full orchestrator
+      # run, NO provider/DB/Redis/settings/reply/mutation, NO ShadowMetricsStore. NOT wired into any live
+      # runtime path; leaves CandidateGate phase-locked and Shadow off; evidence IN-MEMORY only.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/product_authority/parity/intake_adapters.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility primitives.
       # Battery-contained, not yet wired to hooks/jobs/orchestration. State lives in
       # a Marine-owned namespace inside Conversation/Message additional_attributes
@@ -648,6 +1485,20 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/variant_resolver.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_renderer.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_query_orchestrator.rb
+      # Shared, pure Conversation Language Resolver for the deterministic product flow. Resolves
+      # plan[:language] at the orchestrator #process seam from the current turn, the bounded
+      # role-labelled context, the extracted intent, and the assistant's configured language: a
+      # provider guess for a bare code/slot/entity-only turn (no linguistic evidence) is overridden by
+      # the nearest reliable prior CUSTOMER turn, else the configured language, else nil (fail-closed).
+      # Assistant/history turns never set customer language; deprecated aliases (in -> id) canonicalize.
+      # No DB read, no provider call, no state mutation; consumed by both Conversation and Playground.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/conversation_language_resolver.rb
+      # Bug 2 — shared, battery-local collaborator computing the bounded Catalog-derived trusted tokens
+      # for a turn and enriching the bounded context with PER-TURN trusted tokens, so a prior customer
+      # turn that is only a Catalog product name never poisons the strict-sticky language. One bounded
+      # algorithm for the current turn and every prior customer turn (no drift between callers); read-only
+      # ProductFamilyRepository; consumed by ProductQueryOrchestrator and Backend::AuthorityCoordinator.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/catalog_trusted_tokens.rb
       # Pure, side-effect-free presenter for the deterministic English product/catalog TEXT
       # (extracted from ResponseBuilderJob). The single source of truth for that wording, shared
       # by the trigger-bound job and the source-less PlaygroundPreview so the two never drift.
@@ -704,6 +1555,25 @@ patches:
       # (no DB/flow/state read or write); each surface supplies the already-localized fallback + a lazy
       # localized-acknowledgement producer and consumes the returned Decision via its own adapter.
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/stock_reply_composer.rb
+      # price-display-v1 — pure, deterministic DISPLAY formatter for an eligibility-checked
+      # price_available descriptor: turns the raw repository price facts into a deeply immutable
+      # envelope carrying the canonical raw values, the approved per-locale display facts (id: Rp +
+      # dot thousands; en: IDR + comma thousands; lowercase UOM), and a raw-to-display provenance
+      # map. Exact decimal-string/BigDecimal processing, never Float, never rounded; scale preserved.
+      # Fails closed (no envelope) on unsupported locale/currency/UOM, malformed/missing/negative/
+      # nonfinite/non-exact amount. No DB, no LLM, no sentence building.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_display_formatter.rb
+      # price-display-v1 — shared, surface-agnostic dynamic price boundary consumed identically by
+      # ResponseBuilderJob and PlaygroundPreview. Resolves the target (provider -> configured ->
+      # detector on message -> bounded context; id/en only, else SILENT handoff), invokes the
+      # formatter, builds a battery-locale deterministic fallback from the display facts, and
+      # generates a DIRECT target-language line from role-labelled placeholders (<P_PRODUCT>,
+      # <P_CURRENCY>, <P_AMOUNT>, <P_UOM>) with NO raw facts/history/customer content, restoring them
+      # byte-exact. Full fail-closed gates: structured shape, placeholder inventory, display-fact +
+      # token inventory (extended ProductFactProtectionValidator/FactPlaceholderMask), target-language
+      # proof, and the independent semantic FactPreservationValidator — the generator never self-
+      # certifies. Never invokes ReplyLocalizer/TranslateResponseService/GroundedProductWordingService.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/price_reply_composer.rb
       # Phase 7 — context-aware natural wording for a product HANDOFF acknowledgement. An
       # unsupported request (warehouse location, delivery to a customer-supplied destination,
       # shipping cost) or an exact-quantity question hands off; instead of the generic branded
@@ -742,9 +1612,12 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/documents/process_job.rb
       - custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing
       - custom/wijaya/batteries/marine_ai/deploy/install_sop_processing_dependencies.sh
-      # Battery overlay: dedicated marine_sop_worker service (isolated queue + SOP
-      # hardening) + optional read-only catalog secret, kept out of base compose.
-      - custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop.yml
+      # Battery overlays (kept out of base compose): the MANDATORY read-only catalog
+      # secret mount for rails+sidekiq, and the OPTIONAL dedicated marine_sop_worker
+      # service (isolated queue + SOP hardening). Recreation goes through the canonical
+      # entrypoint custom/wijaya/deploy/deploy.sh — never a manual `docker compose up`.
+      - custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml
+      - custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml
       - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/assistant_responses_controller.rb
       - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/inboxes_controller.rb
       - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/preferences_controller.rb
@@ -759,8 +1632,15 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/rewrite_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/translate_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/follow_up_service.rb
+      # Incremental long-term memory: native marked Private Notes, cross-conversation
+      # same-contact advisory reader, and daily unresolved-conversation checkpoint.
       - custom/wijaya/batteries/marine_ai/app/services/marine/memory/contact_notes_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/memory/marker.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/memory/lifecycle_policy.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/memory/reader.rb
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/memory/generate_contact_notes_job.rb
+      - custom/wijaya/batteries/marine_ai/app/jobs/marine/memory/checkpoint_job.rb
+      - custom/wijaya/batteries/marine_ai/patch/apply_patches.py
       - custom/wijaya/batteries/marine_ai/app/models/marine/custom_tool.rb
       - custom/wijaya/batteries/marine_ai/app/models/concerns/marine/toolable.rb
       - custom/wijaya/batteries/marine_ai/app/models/concerns/marine/safe_endpoint_validatable.rb
@@ -801,9 +1681,13 @@ patches:
       - custom/wijaya/batteries/marine_ai/frontend/api/preferences.js
       - custom/wijaya/batteries/marine_ai/frontend/api/llmSettings.js
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/llm-settings/Index.vue
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/llm-settings/LlmProviderCard.vue
       - custom/wijaya/batteries/marine_ai/frontend/i18n/marine.json
-      # Marine backend locale is battery-owned; loader registers this on the i18n load path.
+      # Marine backend locale is battery-owned; loader registers these on the i18n load path
+      # (config/locales/**/*.yml glob — no core edit needed). id.yml carries the price-display-v1
+      # Indonesian deterministic price_available fallback.
       - custom/wijaya/batteries/marine_ai/config/locales/en.yml
+      - custom/wijaya/batteries/marine_ai/config/locales/id.yml
       - db/migrate/20260708010000_create_wijaya_marine_tables.rb
       - db/migrate/20260708010001_create_wijaya_marine_inboxes.rb
       - db/migrate/20260710000000_add_source_kind_to_marine_documents.rb
@@ -860,6 +1744,8 @@ patches:
       # seed/allowlist/localize Marine — the battery owns those via first_or_initialize
       # defaults and its own config/locales/en.yml (registered by the loader).
       # Routes consolidated into the wijaya_core registrar (config/routes.rb wijaya_routes marker).
+      # Marker-wrapped Sidekiq cron registration for the 02:00 Asia/Jakarta checkpoint.
+      - config/schedule.yml
       - app/services/message_templates/hook_execution_service.rb
       # Marine resolved-conversation callback attached via a battery concern
       # (marine_ai/.../concerns/wijaya/marine/conversation_extensions.rb) in the
@@ -879,9 +1765,12 @@ patches:
       - custom/wijaya/batteries/marine_ai/loader.rb
     tests:
       - spec/custom/wijaya/batteries/marine_ai/account_extensions_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/settings_consumption_contract_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/llm/config_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/llm/provider_config_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/llm/connection_test_service_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/llm/openrouter_decisions_client_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/llm/settings_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/llm_settings_controller_spec.rb
       # RBAC regression: administrator-only Marine Inboxes + Settings (preferences)
       # management endpoints reject non-admins (plain agent + custom-role agent).
@@ -904,7 +1793,11 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/charge/grounded_wording_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/charge/fact_preservation_validator_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/charge/control_leak_inspector_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/price_claim_inspector_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/numeric_grounding_inspector_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/agent/runner_price_guard_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/charge/response_generator_confidentiality_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/charge/response_generator_price_guard_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/response_builder_job_spec.rb
       # D6 — full trigger-bound job-path proof: one inbound price+stock turn -> one composite message.
       - spec/custom/wijaya/batteries/marine_ai/conversation/product_multi_intent_job_spec.rb
@@ -915,6 +1808,10 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/copilot/follow_up_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/memory/contact_notes_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/memory/generate_contact_notes_job_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/memory/checkpoint_job_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/memory/reader_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/memory/schedule_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/conversation/memory_context_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/hooks_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/tasks_controller_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/models/custom_tool_spec.rb
@@ -935,15 +1832,198 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/documents/sop/extraction_smoke_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/documents_sop_controller_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_family_repository_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_listing_repository_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/connection_spec.rb
       # Reload-safe sibling-resolution regression for the whole Marine::Catalog tree.
       - spec/custom/wijaya/batteries/marine_ai/catalog/namespace_resolution_spec.rb
       # Phase 1 — Deterministic Catalog Data Layer specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/variant_repository_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/price_repository_spec.rb
+      # Marine AI V1 — family price range repository spec (available range, duplicate identical rows,
+      # missing variant, per-variant conflict, mixed currency/UOM, invalid/nonpositive, equal min/max,
+      # and the exact-policy match: no packing/currency-match/stock-UOM filter, extra tuple -> conflict).
+      - spec/custom/wijaya/batteries/marine_ai/catalog/price_range_repository_spec.rb
+      # Marine AI V1 — price range reply composer spec (id/en display formatting, equal endpoints,
+      # unsupported/unresolved language fail-closed, outcome-truthful with/without catalog captions).
+      - spec/custom/wijaya/batteries/marine_ai/catalog/price_range_reply_composer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/stock_repository_spec.rb
       # Phase 2 — Contextual Product Intent Understanding spec.
       - spec/custom/wijaya/batteries/marine_ai/catalog/intent_extractor_spec.rb
+      # Phase 2 / Stage 1 — Decision Maker Candidate Plan contract spec (valid plans,
+      # multi-intent dedupe/order, set/replace/clear, deep-frozen immutability, schema
+      # rejection, unknown keys/enums, duplicate/incompatible ops, control-char/bounds,
+      # prohibited authority fields, safe unknown reason, input left unmutated).
+      - spec/custom/wijaya/batteries/marine_ai/decision/candidate_plan_spec.rb
+      # Phase 2 / Stage 2 — Decision Maker transport specs (facade settings/mode selection
+      # and fail-closed config/key discipline, isolated chat transport + schema/output
+      # bounds, exact Decisions endpoint/body/answers extraction, failure-reason mapping,
+      # request bounds, key/body/error non-leak, deep-frozen result, input left unmutated).
+      - spec/custom/wijaya/batteries/marine_ai/decision/transport_result_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/client_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/chat_completions_client_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/openrouter_decisions_client_spec.rb
+      # Phase 2 / Stage 3 — Decision Runner + request/response mapping specs (bounded input
+      # contract; exact chat schema + Jev choice/noul request bodies; typed answer mapping with
+      # thresholds; multi-intent noul; capability intersection; dup-key/fenced/oversized chat
+      # rejection; transport/mode/collaborator failure folding to allowlisted unknown reasons;
+      # deep-frozen result; caller ownership; and a source-scan proof of no Agent::Runner/
+      # ScenarioSelector/DB/reply/state-mutation collaborator).
+      - spec/custom/wijaya/batteries/marine_ai/decision/input_contract_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/request_builder_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/chat_response_parser_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/decisions_response_mapper_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/runner_spec.rb
+      # Step 2 — proof that Model 1 (the isolated Decision Runner) emits a STRUCTURED, product-
+      # related candidate via the chat_completions structured-output path: intents + product/
+      # variant typed slots + language survive normalization + capability intersection losslessly;
+      # every slot stays a RAW untrusted candidate (a smuggled top-level/slot authority field or an
+      # unknown candidate_type folds closed); the plan is consumable by the Backend adapter under a
+      # matching explicit capability map (unconfigured/malformed/mismatch fail closed); and a source
+      # scan proves the path activates no gate/shadow/cutover and wires nothing to runtime/backend.
+      - spec/custom/wijaya/batteries/marine_ai/decision/model1_structured_product_candidate_spec.rb
+      # Phase 2 / Stage 4 — DEFAULT-OFF asynchronous shadow integration specs (config default-off +
+      # exact-true-only + fail-closed capability parsing; adapter enabled-only/id-order/stable
+      # scenario_<id>/registry-only capabilities/bounds/ownership; execution relationship + public-
+      # incoming validation, same-trigger legacy+runner call, deep-frozen result, source-scan no-writes;
+      # job flag recheck + scoped loads + private/outgoing/missing skip + swallowed failure + discarded
+      # result; enqueuer off=>no-Redis/no-job, on=>NX+TTL+scalar args, duplicate suppressed, token-safe
+      # release on enqueue failure, never-raise). Hook shadow-integration specs live in hooks_spec.rb.
+      # Stage 5 adds: config assistant allowlist + enabled_for? (opt-in, assistant-scoped, fail-closed);
+      # job enabled_for? recheck on the loaded assistant, observation-record-once, nil-execution no
+      # metrics, swallowed observation/metrics failure; enqueuer enabled_for? gating; observation
+      # privacy/strip/reject + deep-frozen ownership; metrics exact key/date/TTL/MULTI counters +
+      # snapshot <=14-key merge/fail-closed + source-scan no-persist proof; acceptance boundary/basis-point
+      # /status/never-cutover.
+      - spec/custom/wijaya/batteries/marine_ai/decision/shadow_config_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/scenario_adapter_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/shadow_execution_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/shadow_job_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/shadow_enqueuer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/shadow_observation_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/shadow_metrics_store_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/shadow_acceptance_spec.rb
+      # Phase 2 / Stage 6 — CONTROLLED cutover specs. Config: exact-trimmed flag/rollback precedence,
+      # bounded JSON allowlist (max 50, whole-list-closed), cross-shadow enabled_for? gating, malformed/
+      # fail-closed. Gate: eligible ONLY on the exact genuine eligible/thresholds_met report; hold/
+      # insufficient/invalid/malformed/error close; config-closed => no metrics read; fixed 14-day window.
+      # Resolver: exact scenario_<id> format/positive/bounds/enabled/same-assistant/current re-query/
+      # missing/error. Selector: closed path legacy-once + no decision work; rollback/gate-closed; accepted
+      # valid decision; medium/high boundaries; low/unknown/nil/malformed/overflow/empty-seam/provider-error/
+      # resolver-miss fallback; candidate intents/slots never used; bounded context; decision + legacy
+      # at-most-once; notification privacy/failure isolation. Agent::Runner integration (runner_spec.rb):
+      # product path never invokes cutover, closed payload == legacy, a valid decision changes only
+      # scenario id/title/path, no candidate-plan leak.
+      - spec/custom/wijaya/batteries/marine_ai/decision/cutover_config_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/cutover_gate_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/scenario_resolver_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/decision/cutover_scenario_selector_spec.rb
+      # Fase 3A-1 — Isolated product pipeline specs (adapter capability authority + fail-closed;
+      # repository validation/execution facts; pure A6-01 state invalidation + separate schema_version;
+      # marine_evidence_v1 bounds/enum/omission/byte-ceiling; packet-only prompt; deterministic
+      # fact/persona gates; injected-generator presenter fail-closed fallback; static isolation proof
+      # that the live product path has ZERO references to Marine::Backend).
+      - spec/custom/wijaya/batteries/marine_ai/backend/candidate_plan_to_product_intent_adapter_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/product_execution_planner_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/product_state_transition_spec.rb
+      # price_range proposed-state-transition seam specs: the pure adapter mapping/fail-closed; the
+      # coordinator envelope (closed/deep-frozen, resolver-sourced identity, :start/:update derivation,
+      # ambiguity handoff); and a non-vacuous Turn-1 -> Turn-2 continuity proof through the REAL resolver
+      # + ProductFlowStateStore. (Consumer-boundary revalidation + finalize application live in the
+      # exact_price_customer_execution and response_builder_job specs.)
+      - spec/custom/wijaya/batteries/marine_ai/backend/state_transition_adapter_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/price_range_state_transition_continuity_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/evidence_packet_builder_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/evidence_prompt_builder_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/evidence_packet_presenter_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/post_generation_fact_validator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/persona_validator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/backend_isolation_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/backend_pipeline_integration_spec.rb
+      # Phase 1 (Opsi B) — the backend execution-policy leaf spec: the frozen executable/classification
+      # vocabularies, the exact-canonical-array #authorized? rule (no dedupe/sort — duplicates and
+      # reordering never normalize into a pass), and the spec-only Schema-subset membership proof.
+      - spec/custom/wijaya/batteries/marine_ai/backend/execution_policy_spec.rb
+      # Phase 2A — DEFAULT-OFF, read-only, PRICE-ONLY JEV -> Backend Authority shadow bridge specs:
+      # the closed catalog candidate resolver (bounded/overflow-fail-closed generation, §7.4
+      # precedence, ambiguity/outage fail-closed, one-token name-collision guard), the thin family
+      # price-range authority, the coordinator (exact [price] allowlist, fresh resolver-sourced
+      # planner input, language fail-closed, deep-frozen closed Result), the read-only shadow
+      # execution (plan reuse, no second Runner/provider), and the batched repository resolve_any
+      # lookups (single parameterized SELECT, byte-bounded binds, ambiguity detection).
+      - spec/custom/wijaya/batteries/marine_ai/backend/catalog_candidate_resolver_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/listing_scope_resolver_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/family_price_range_authority_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/authority_coordinator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/authority_shadow_execution_spec.rb
+      # Langkah 3 — Evidence Packet -> Model 2 shadow specs: generator adapter envelope/temp-0/fail-closed;
+      # SEPARATE six-field fact+language verifier (all-true accept; malformed/duplicate/missing/extra/
+      # non-boolean/false/uncertain/wrong-language/provider-error/unconfigured fail closed); Model2 shadow
+      # execution (accepted packet => generator once + verifier once, text discarded; non-accepted/invalid
+      # packet/bad relationship => zero providers; deterministic/persona/verifier rejection => closed
+      # rejected). Packet customer_language authoritative in the prompt builder; ShadowJob reuses one
+      # Decision + one Authority result and independently rescues Model 2.
+      - spec/custom/wijaya/batteries/marine_ai/backend/evidence_reply_generator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/evidence_fact_verifier_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/model2_shadow_execution_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/exact_price_customer_execution_spec.rb
+      # Presentation Policy checkpoint A — projector spec (closed deep-frozen output, defaults, pinned
+      # conflict precedence, confidentiality, no DB/provider access).
+      - spec/custom/wijaya/batteries/marine_ai/backend/presentation_policy_projector_spec.rb
+      # Step 17 — deterministic product_listing Evidence renderer spec.
+      - spec/custom/wijaya/batteries/marine_ai/backend/product_listing_evidence_renderer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/company_offerings_evidence_renderer_spec.rb
+      # Step 18 — deterministic exact-price Evidence renderer spec.
+      - spec/custom/wijaya/batteries/marine_ai/backend/exact_price_evidence_renderer_spec.rb
+      # Checkpoint B — deterministic family price-RANGE Evidence renderer spec (19-gate contract).
+      - spec/custom/wijaya/batteries/marine_ai/backend/price_range_evidence_renderer_spec.rb
+      # Binary stock — deterministic answer_stock Evidence renderer spec (real builder packet + fail-closed gates).
+      - spec/custom/wijaya/batteries/marine_ai/backend/binary_stock_evidence_renderer_spec.rb
+      # Marine Phase 3 — approved product-description evidence source spec.
+      - spec/custom/wijaya/batteries/marine_ai/backend/approved_product_description_source_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/resolve_any_spec.rb
+      # Fase 3A-2 — Product Shadow Authority specs. ProductOutcome projection/compare; ShadowConfig
+      # default-off + exact-true + fail-closed allowlist (max 50) + candidate-mode + rollback
+      # precedence; ShadowObservation privacy/strip/reject + frozen; ShadowMetricsStore exact
+      # key/date/TTL/MULTI counters + snapshot <=14 merge/fail-closed + mutations:0 + source no-persist;
+      # ShadowAcceptance boundary/basis-point/never-cutover; CandidateGate phase-locked-closed + rollback
+      # short-circuit before metrics; ShadowExecution injected-seam comparison + relationship/overflow
+      # fail-closed + state:nil + adapter-only; ShadowEnqueuer off=>no-Redis/no-job, on=>NX+TTL+scalar,
+      # dupe/enqueue-failure token-safe release; ShadowJob flag recheck + scoped loads + private/outgoing
+      # skip + record-once idempotency + swallowed failure; Corpus synthetic-labelled coverage; Evaluator
+      # deterministic adapter+planner scoring meets fixed policy (critical 100% / supported >=95% / repo
+      # revalidation / parity / mutations 0); static isolation proof (live path ZERO Marine::Backend refs).
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/product_outcome_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/shadow_config_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/shadow_execution_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/shadow_enqueuer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/shadow_job_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/shadow_observation_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/shadow_metrics_store_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/shadow_acceptance_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/candidate_gate_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/corpus_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/evaluator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/product_authority_isolation_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_case_result_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_pipeline_coordinator_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_runner_spec.rb
+      # Fase 3A-2c — real IntentExtractor seam adapter (normalized -> canonical boolean; degraded/
+      # malformed/raising -> nil fallback; synthetic-message projection) + end-to-end acceptance
+      # consumption via AcceptanceRunner/Parity::Runtime default seam.
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/intent_extractor_seam_spec.rb
+      # Fase 3A-2c — bounded Redis acceptance-evidence retention: save/fetch roundtrip, FIFO MAX_RUNS
+      # index, TTL, fail-closed, no-raw-data sanitization, mutation-proof-missing marker, clock
+      # injection, and the AcceptanceRunner/Parity retention wiring.
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/acceptance_evidence_store_spec.rb
+      # Fase 3A-2b — parity runtime specs: ConversationIntake real-InputContract round-trip (valid,
+      # oversize/control-heavy/bad-state-key/unknown-role reject) + plan-unchanged; PlaygroundIntake
+      # ok/blank/non-String query + bounded_history truncate-500/last-10/role-filter + mirror-equivalence
+      # vs the live PlaygroundPreview#bounded_history (send, spec-only); Runtime full-corpus 38-fold parity,
+      # lossy-intake primary-contract catch, reason-divergence-stays-parity, exact-quantity reads-0,
+      # extractor precedence, skip/rescue/invalid-set, deep-frozen report + CaseResult identity, and
+      # source/namespace isolation (no live Parity references, no Agent/orchestrator/metrics/gate wiring).
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/parity/intake_adapters_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/product_authority/parity/parity_runtime_spec.rb
       # Phase 3 — Product Flow State, Processing Claim, and Eligibility specs.
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_flow_state_store_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/processing_claim_spec.rb
@@ -967,6 +2047,10 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/catalog/variant_resolver_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/reply_renderer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_query_orchestrator_spec.rb
+      # Shared ConversationLanguageResolver spec: bare-code provider override to prior customer
+      # language, meaningful-turn authority/switching, nearest-customer-turn precedence, assistant
+      # turns ignored, configured fallback, fail-closed unresolved/unsupported, alias canonicalization.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/conversation_language_resolver_spec.rb
       # D6 — supported multi-intent (price+stock) composite reply: extractor set, orchestrator
       # composite/precedence/persistence, renderer/presenter, fact-protection, signed round-trip.
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_multi_intent_spec.rb
@@ -995,6 +2079,17 @@ patches:
       # proving identical business conclusions (dynamic deliver, or the same factless handoff).
       - spec/custom/wijaya/batteries/marine_ai/catalog/stock_reply_composer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/stock_reply_parity_spec.rb
+      # price-display-v1 — PriceDisplayFormatter spec: id/en formatting (12500, decimals, large,
+      # zero), immutability/provenance/policy version, no rounding, and fail-closed rejection of
+      # invalid/nonfinite/negative amount and unsupported currency/UOM/locale.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/price_display_formatter_spec.rb
+      # price-display-v1 — PriceReplyComposer spec: placeholder inventory (missing/duplicate/unknown/
+      # mangled + injected numbers/currencies/codes + prompt-injection), language precedence + proof,
+      # every supported-locale failure -> target-language deterministic fallback, unresolved/
+      # unsupported -> silent handoff, >=3 stubbed sentence forms preserving exact facts, and the
+      # conversation<->Playground price parity + ReplyLocalizer/TranslateResponseService/general
+      # GroundedProductWordingService not-invoked-for-price regressions.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/price_reply_composer_spec.rb
       # Phase 7 — context-aware natural product-handoff acknowledgement service + regression
       # coverage for quantity-inquiry routing, price/catalog grounded context, and language
       # consistency (see marine_ai_natural_reply_regression_spec).
@@ -1066,6 +2161,10 @@ patches:
       # Provider / Settings) and their route metadata restrict non-administrators.
       - custom/wijaya/batteries/marine_ai/frontend/specs/marineSidebarSection.spec.js
       - custom/wijaya/batteries/marine_ai/frontend/specs/marine.routes.spec.js
+      # Dual-model AI Provider UI: two independent provider cards (Decision Maker +
+      # Response Generator), per-card Test, single atomic Save, masked-key change.
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/llm-settings/specs/Index.spec.js
+      - custom/wijaya/batteries/marine_ai/frontend/routes/marine/llm-settings/specs/LlmProviderCard.spec.js
       # Product-knowledge grounding regression: a non-transactional attribute question with an
       # unresolvable family defers to grounded KB (orchestrator :not_product) instead of a generic
       # family clarification, and the RAG grounding block leads with the top query-matched approved
@@ -1132,3 +2231,33 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/controllers/provisioning_controller_spec.rb
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/settings/specs/MarineProvisioningSection.spec.js
       - custom/wijaya/batteries/marine_ai/frontend/routes/marine/settings/specs/MarineProvisioningCredentialsDialog.spec.js
+
+  - id: wijaya_deploy_contract
+    name: Development Deployment Contract (canonical entrypoint)
+    battery: custom/wijaya/deploy
+    description: >
+      The canonical, tracked entrypoint for Development recreation/deployment of
+      rails/sidekiq (and the optional marine_sop_worker) on erp-dev. Manual
+      `docker compose up` is forbidden: it can recreate rails/sidekiq from the
+      ignored local docker-compose.deploy.yaml alone, dropping the MANDATORY Marine
+      catalog secret mount and forcing the domain boundary into a fail-closed
+      category=error on every non-product turn. deploy.sh always layers the base
+      compose + the mandatory catalog overlay (docker-compose.marine-catalog.yml),
+      optionally adds the SOP worker overlay (docker-compose.marine-sop-worker.yml),
+      preserves the pinned image (no build, no migrations), recreates only the
+      intended services with --no-deps --force-recreate --no-build, runs a
+      fail-fast preflight (resolved rails+sidekiq must carry the read-only catalog
+      mount backed by a non-empty host file) and a post-deploy health gate. A static
+      contract checker and a secret-safe domain-boundary dependency monitor guard the
+      contract in CI and at deploy time.
+    custom_files:
+      - custom/wijaya/deploy/deploy.sh
+      - custom/wijaya/scripts/check_deploy_contract.sh
+      - custom/wijaya/scripts/marine_domain_boundary_monitor.sh
+    verification:
+      # Static contract check (invoked by root check_custom_patches.sh too).
+      - bash custom/wijaya/scripts/check_deploy_contract.sh
+      # Non-mutating preflight + fixture-based regression suite (no Docker daemon).
+      - bash custom/wijaya/deploy/tests/run_tests.sh
+    tests:
+      - custom/wijaya/deploy/tests/run_tests.sh

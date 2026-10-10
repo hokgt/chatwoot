@@ -24,10 +24,11 @@ module Marine
       # against this allowlist so an unexpected shape can never slip through.
       KINDS = %i[
         parent_info variant_info
-        price_available price_unavailable price_conflict
+        price_available price_unavailable price_conflict price_range
         stock_available stock_empty stock_unavailable
         clarify_family clarify_variant
-        catalog catalog_unavailable unsupported
+        catalog catalog_offer catalog_unavailable unsupported
+        product_listing
         composite
       ].freeze
 
@@ -35,6 +36,9 @@ module Marine
       # results, so these only guard against a misconfigured caller.
       MAX_CANDIDATES = 10
       MAX_ATTRIBUTE_NAMES = 16
+      # Matches the listing repository's hard page ceiling (ProductListingRepository::MAX_PAGE) so a
+      # misconfigured caller can never smuggle a larger page into a frozen descriptor.
+      MAX_LISTING_PRODUCTS = 20
 
       # Per-scalar length ceilings at this trust boundary. Row-derived codes/names and
       # attribute names are bounded and control-char-cleaned before they enter a frozen
@@ -53,6 +57,18 @@ module Marine
       # fallback instead of asking for a variant.
       def catalog(family)
         descriptor(:catalog, family_code: family[:code], family_name: family[:name])
+      end
+
+      # A PROACTIVE, nonnumeric catalog OFFER for a validated family whose native catalog will be sent
+      # but for which no complete authoritative price range can be safely offered. Carries ONLY the
+      # bounded/control-char-cleaned validated family identity so a natural reply can introduce the
+      # family — never a price, stock quantity, row, attribute label, repository state, or arbitrary
+      # text. A blank/non-scalar family scalar is dropped to nil at the same trust boundary as the
+      # other descriptors.
+      def catalog_offer(family)
+        descriptor(:catalog_offer,
+                   family_code: safe_scalar(family[:code], MAX_CODE_NAME_LENGTH),
+                   family_name: safe_scalar(family[:name], MAX_CODE_NAME_LENGTH))
       end
 
       # Supported info for a validated, row-derived child within a validated family.
@@ -74,6 +90,27 @@ module Marine
       def price_unavailable = descriptor(:price_unavailable)
       def price_conflict = descriptor(:price_conflict)
 
+      # A deterministic GENERAL selling price RANGE across a validated family's active variants, plus
+      # the family the range is FOR so the range caption can name it. Carries ONLY the exact min/max
+      # amount strings, currency, and UOM the range repository already validated (homogeneous across
+      # variants); nothing else from any row is copied through. The min and max are repository-derived
+      # exact decimal strings — never a Float. Rendered as a catalog caption, never a standalone price.
+      # EVERY scalar crosses the same trust boundary as the other descriptors (bounded, control-char
+      # cleaned); a blank/malformed REQUIRED range fact (min, max, currency, or uom) fails CLOSED to
+      # nil so the caller hands off rather than letting an invalid fact become customer text.
+      def price_range(range, family)
+        price_min = safe_scalar(range[:min], MAX_CODE_NAME_LENGTH)
+        price_max = safe_scalar(range[:max], MAX_CODE_NAME_LENGTH)
+        currency = safe_scalar(range[:currency], MAX_CODE_NAME_LENGTH)
+        uom = safe_scalar(range[:uom], MAX_CODE_NAME_LENGTH)
+        return nil if price_min.nil? || price_max.nil? || currency.nil? || uom.nil?
+
+        descriptor(:price_range,
+                   family_code: safe_scalar(family[:code], MAX_CODE_NAME_LENGTH),
+                   family_name: safe_scalar(family[:name], MAX_CODE_NAME_LENGTH),
+                   price_min: price_min, price_max: price_max, currency: currency, uom: uom)
+      end
+
       # Stock is a binary availability status ONLY — never a quantity. The validated variant
       # code the availability is FOR rides along (bounded/cleaned like the price code) so a
       # natural reply can name the product it reports on and the deterministic fallback grounds
@@ -82,6 +119,28 @@ module Marine
       def stock_available(variant_code) = descriptor(:stock_available, variant_code: safe_scalar(variant_code, MAX_CODE_NAME_LENGTH))
       def stock_empty(variant_code) = descriptor(:stock_empty, variant_code: safe_scalar(variant_code, MAX_CODE_NAME_LENGTH))
       def stock_unavailable = descriptor(:stock_unavailable)
+
+      # A dynamic product-LISTING page for a category-scoped (or broad) product-listing turn. Carries
+      # ONLY the repository-derived template identities ({ code:, name: }) — never prices, stock
+      # quantities, or any other row field — plus the exactly-resolved item-group scope (or nil for
+      # the broad listing) and the repository's own bounded completeness flags. A blank/non-scalar
+      # code is dropped entirely (the repository guarantees a usable item_code identity). Deeply
+      # frozen like every other descriptor.
+      def product_listing(page, item_group = nil)
+        products = Array(page[:products]).filter_map do |product|
+          next unless product.is_a?(Hash)
+
+          code = safe_scalar(product[:code], MAX_CODE_NAME_LENGTH)
+          next if code.nil?
+
+          { code: code, name: safe_scalar(product[:name], MAX_CODE_NAME_LENGTH) }
+        end.first(MAX_LISTING_PRODUCTS)
+        descriptor(:product_listing,
+                   products: products,
+                   item_group: safe_scalar(item_group, MAX_CODE_NAME_LENGTH),
+                   complete: page[:complete] == true,
+                   has_more: page[:has_more] == true)
+      end
 
       def catalog_unavailable = descriptor(:catalog_unavailable)
       def unsupported = descriptor(:unsupported)

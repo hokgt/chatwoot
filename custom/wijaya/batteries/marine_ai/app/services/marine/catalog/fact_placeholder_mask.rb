@@ -42,12 +42,29 @@ module Marine
       # Generic field-role allowlist: descriptor fields whose VALUE is an immutable fact. Display
       # labels (family_name, a candidate :name, attribute_names) are intentionally NOT listed — they
       # are translatable wording. :candidates and :parts are handled structurally (a candidate's
-      # :code is immutable; a composite recurses into each part).
-      IMMUTABLE_SCALAR_FIELDS = %i[family_code variant_code currency uom price_list_rate].freeze
+      # :code is immutable; a composite recurses into each part). price_min/price_max are the immutable
+      # endpoint amounts of a family price RANGE caption (:price_range), kept byte-exact like any price.
+      IMMUTABLE_SCALAR_FIELDS = %i[family_code variant_code currency uom price_list_rate price_min price_max].freeze
 
-      def initialize(descriptor: nil)
+      # descriptor:     the product descriptor whose immutable fact VALUES are masked (default path).
+      # trusted_values: an OPTIONAL caller-supplied array of already-approved DISPLAY values to mask
+      #   instead of deriving them from a descriptor — used by the price display path, whose display
+      #   facts (e.g. "Rp", "12.500") differ from the raw descriptor values. When present it takes
+      #   precedence; when absent (nil) the descriptor path is byte-identical to before.
+      def initialize(descriptor: nil, trusted_values: nil)
         @descriptor = descriptor
+        @trusted_values = trusted_values
       end
+
+      # The number of DISTINCT values #mask actually replaced (0 before #mask). Lets a caller confirm
+      # every expected value was present as a standalone token, so a missing display fact fails closed.
+      def masked_count = @map ? @map.size : 0
+
+      # The TOTAL number of placeholder occurrences #mask emitted across every value (0 before #mask):
+      # the SUM of each value's occurrence count, versus #masked_count which counts DISTINCT values.
+      # Lets a caller require an EXACT multiplicity (each expected value present exactly once), so an
+      # extra standalone literal occurrence of an approved value fails closed.
+      def masked_total = @map ? @map.values.sum { |entry| entry[:count] } : 0
 
       # Replace every immutable fact value that occurs (as a standalone, alphanumeric-boundary token)
       # in `text` with a unique opaque placeholder, returning the masked text. Returns nil when
@@ -96,9 +113,11 @@ module Marine
         found.tally == @map.transform_values { |entry| entry[:count] }
       end
 
-      # Distinct, non-blank immutable fact values from the descriptor, longest first.
+      # Distinct, non-blank immutable fact values, longest first. Sourced from the caller-supplied
+      # trusted display values when given, else derived from the descriptor field-role allowlist.
       def immutable_values
-        collect(@descriptor).filter_map { |value| stringify(value) }.uniq.sort_by { |value| -value.length }
+        source = @trusted_values ? Array(@trusted_values) : collect(@descriptor)
+        source.filter_map { |value| stringify(value) }.uniq.sort_by { |value| -value.length }
       end
 
       # Walk the descriptor with the generic field-role allowlist: immutable scalar fields yield their

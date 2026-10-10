@@ -28,6 +28,15 @@ class Api::V1::Accounts::Conversations::MessagesController < Api::V1::Accounts::
   def retry
     return if message.blank?
 
+    # WIJAYA_CUSTOM_START whatsapp_web_inbox
+    if defined?(Wijaya::Batteries::Core::Hooks) &&
+       Wijaya::Batteries::Core::Hooks.dispatch(:whatsapp_web_inbox, :retry_message_delivery,
+                                               default: false, message: message)
+      return
+    end
+
+    # WIJAYA_CUSTOM_END whatsapp_web_inbox
+
     service = Messages::StatusUpdateService.new(message, 'sent')
     service.perform
     message.update!(content_attributes: {})

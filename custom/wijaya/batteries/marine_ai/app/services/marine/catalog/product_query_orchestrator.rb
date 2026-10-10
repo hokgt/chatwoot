@@ -18,11 +18,15 @@
 #     action:   one of ACTIONS,
 #     reply:    a frozen ReplyRenderer descriptor or nil,
 #     state:    { operation: :none | :start | :update, changes: { <flow keys> => ... } },
-#     language: (optional) bounded customer-language code for delivery localization
+#     language: (optional) bounded customer-language code for delivery localization,
+#     language_resolution: (optional) the shared resolver's closed reason when #process ran it
 #   }
-# The optional :language key is untrusted delivery metadata drawn from the same intent
-# extraction; it is present only when a usable code was extracted and never affects the
-# family/child/catalog decision.
+# The optional :language key is delivery metadata; it is present only when a usable code was
+# resolved and never affects the family/child/catalog decision. The optional :language_resolution
+# key (prior_customer / current_turn / configured / unresolved) is recorded only on the #process
+# path and marks that an authoritative language decision was made — present even for :unresolved
+# (where :language is absent), so a consumer distinguishes authoritative-unresolved from a direct
+# caller's absence of any decision.
 # operation :start maps to ProductFlowStateStore#start! (a fresh flow — which inherently
 # clears any prior variant / attributes / catalog markers), :update maps to #update!,
 # and :none means no state change. The plan is deeply frozen and contains only
@@ -40,7 +44,10 @@ module Marine
 
       # Intents that always demand an exact, validated child before any answer.
       VARIANT_REQUIRED_INTENTS = %w[price stock variant_info].freeze
-      SUPPORTED_INTENTS = (VARIANT_REQUIRED_INTENTS + %w[parent_info catalog]).freeze
+      # `product_listing` (enumerate the products of a stated category, e.g. fabric) needs NO family or
+      # variant: it is answered by the bounded, dynamic ProductListingRepository template page, so it is
+      # a supported intent planned on its own deterministic branch (see #plan_product_listing).
+      SUPPORTED_INTENTS = (VARIANT_REQUIRED_INTENTS + %w[parent_info catalog product_listing]).freeze
 
       # Non-transactional product-KNOWLEDGE intents: the customer is asking WHAT a product is or is
       # like (its attributes/properties), not for a price, stock level, or catalog document. The
@@ -62,7 +69,9 @@ module Marine
       # output is an attribute-free identity echo or a clarification/handoff — so it may defer to the
       # approved Knowledge Base when the KB actually answers it (see #defer_to_knowledge?). An
       # exact-quantity ask is transactional-adjacent and is excluded separately via quantity_inquiry.
-      TRANSACTIONAL_INTENTS = %w[price stock catalog].freeze
+      # product_listing joins the transactional set: its deterministic, repository-grounded catalog
+      # answer (the dynamic template page) must never be diverted to Knowledge Base retrieval.
+      TRANSACTIONAL_INTENTS = %w[price stock catalog product_listing].freeze
 
       # The only supported COMBINABLE pair for a single turn: price AND stock. Both are supported,
       # repository-grounded, variant-required intents, so one turn asking for both is fulfilled with a
@@ -106,12 +115,25 @@ module Marine
       # `repositories` bundles the four Phase 1 read-only repositories under the keys
       # :family, :variant, :price, :stock (each defaulting to the real repository), so
       # dependency injection stays fully testable without a long parameter list.
+      # The real repository class each `repositories` key defaults to, so #initialize stays a flat
+      # assignment rather than a chain of `|| Class.new` fallbacks (one per repository).
+      REPOSITORY_DEFAULTS = {
+        family: Marine::Catalog::ProductFamilyRepository,
+        variant: Marine::Catalog::VariantRepository,
+        price: Marine::Catalog::PriceRepository,
+        price_range: Marine::Catalog::PriceRangeRepository,
+        stock: Marine::Catalog::StockRepository,
+        listing: Marine::Catalog::ProductListingRepository
+      }.freeze
+
       def initialize(intent_extractor: nil, repositories: {}, variant_resolver: nil, reply_renderer: nil)
         @intent_extractor = intent_extractor
-        @family_repository = repositories[:family] || Marine::Catalog::ProductFamilyRepository.new
-        @variant_repository = repositories[:variant] || Marine::Catalog::VariantRepository.new
-        @price_repository = repositories[:price] || Marine::Catalog::PriceRepository.new
-        @stock_repository = repositories[:stock] || Marine::Catalog::StockRepository.new
+        @family_repository = repository(repositories, :family)
+        @variant_repository = repository(repositories, :variant)
+        @price_repository = repository(repositories, :price)
+        @price_range_repository = repository(repositories, :price_range)
+        @stock_repository = repository(repositories, :stock)
+        @listing_repository = repository(repositories, :listing)
         @variant_resolver = variant_resolver || Marine::Catalog::VariantResolver.new(variant_repository: @variant_repository)
         @reply_renderer = reply_renderer || Marine::Catalog::ReplyRenderer.new
       end
@@ -119,9 +141,22 @@ module Marine
       # Full path: extract intent from raw customer text (via the INJECTED extractor,
       # never the provider directly), then plan. Only this entry point touches the
       # extractor, so a no-provider test uses #plan_for_intent with a pre-extracted intent.
-      def process(text:, context: nil, flow: nil, suppressed: false, knowledge_available: false)
+      #
+      # It is also the single seam where the deterministic product-flow DELIVERY LANGUAGE is
+      # resolved (Marine::Catalog::ConversationLanguageResolver) from the current turn, the bounded
+      # role-labelled context, the extracted intent, and the assistant's `configured_language` — so a
+      # provider that guessed a language for a bare product code (with no linguistic evidence) can no
+      # longer set plan[:language]; the nearest reliable prior CUSTOMER turn (or the configured
+      # language) is used instead. The whole resolver Result (canonical code — possibly nil when
+      # fail-closed — plus its closed reason) is passed authoritatively to #plan_for_intent, so every
+      # product-plan consumer receives BOTH the resolved code AND the fact that an authoritative
+      # decision was made (distinguishing an authoritative unresolved nil from a direct caller's
+      # absence of any decision).
+      def process(text:, context: nil, flow: nil, suppressed: false, knowledge_available: false, configured_language: nil) # rubocop:disable Metrics/ParameterLists -- a flat keyword API at the reasoning entry seam
         intent = intent_extractor.extract(text: text, context: context, state: state_summary(flow))
-        plan_for_intent(intent: intent, flow: flow, suppressed: suppressed, text: text, knowledge_available: knowledge_available)
+        resolution = resolve_reply_language(text, intent, context, configured_language, flow)
+        plan_for_intent(intent: intent, flow: flow, suppressed: suppressed, text: text,
+                        knowledge_available: knowledge_available, reply_language: resolution)
       end
 
       # Deterministic planning over an already-extracted (untrusted) intent hash and a
@@ -131,9 +166,16 @@ module Marine
       # `text` is the OPTIONAL raw customer turn. When supplied (the full #process path),
       # it enables data-driven family recovery from the untrusted turn when the extracted
       # family mention is missing or noisy; direct-component callers may omit it.
-      def plan_for_intent(intent:, flow: nil, suppressed: false, text: nil, knowledge_available: false)
+      # `reply_language` is the OPTIONAL resolver Result from #process (the sentinel :unset preserves
+      # the legacy per-turn provider language for direct callers/tests that never ran the resolver):
+      # when a Result is supplied it is AUTHORITATIVE — its resolved code sets plan[:language] and its
+      # closed reason sets plan[:language_resolution], a resolved nil (fail-closed :unresolved) drops
+      # plan[:language] while STILL recording the authoritative resolution, so #process never falls
+      # back to the raw provider guess and a later consumer can tell authoritative-unresolved apart
+      # from a direct caller's absence of any decision.
+      def plan_for_intent(intent:, flow: nil, suppressed: false, text: nil, knowledge_available: false, reply_language: :unset) # rubocop:disable Metrics/ParameterLists -- a flat keyword API shared by #process and direct callers
         intent = symbolize(intent)
-        capture_turn_metadata(intent, text, knowledge_available)
+        capture_turn_metadata(intent, text, knowledge_available, reply_language)
 
         return build(:stop) if suppressed
 
@@ -148,6 +190,21 @@ module Marine
         @requested_intents = effective_requested_intents(intent, flow)
 
         intent = retain_flow_intent(intent, flow)
+        # A broad, informational product-OVERVIEW question ("what products does Textilindo sell / what is
+        # your product range") is a supported informational intent with NO catalog-grounded answer: the
+        # repositories hold only families/variants/prices/stock, never a product-line summary. Route it to
+        # grounded Knowledge Base retrieval (:not_product, no flow mutation) BEFORE any family resolution
+        # so it can never degrade to an arbitrary "which product?" clarify_family. Unlike
+        # #defer_to_knowledge? this is UNCONDITIONAL (independent of the KB-availability signal): a product
+        # overview always belongs to grounded knowledge generation, never the deterministic catalog flow.
+        # Runs AFTER retain_flow_intent so an active variant-required continuation is already excluded.
+        # Layer 2 — data-driven routing safety net for a probabilistic extraction gate: a
+        # product_overview turn whose untrustworthy candidates resolve EXACTLY to one concrete item
+        # group is a category-scoped enumeration mislabelled as a broad overview — it is rerouted to
+        # the EXISTING deterministic dynamic listing instead of the unconditional :not_product early
+        # return (see #plan_overview_rescue). Missing/ambiguous/unresolved candidates keep the
+        # unchanged :not_product behavior. Data-driven only: no phrase or category list.
+        return plan_overview_rescue(intent) if product_overview?(intent)
         # An INFORMATIONAL product turn the approved KB confidently answers defers to grounded KB
         # retrieval (:not_product) instead of an attribute-free catalog identity echo, a variant
         # clarification, or an unsupported-request handoff — so an approved KB fact about a product is
@@ -176,15 +233,90 @@ module Marine
       # #defer_to_knowledge?) and can never redirect a transactional price/stock/catalog or
       # exact-quantity turn. It defaults false, so every existing direct caller keeps its unchanged
       # deterministic catalog behavior.
-      def capture_turn_metadata(intent, text, knowledge_available)
+      def capture_turn_metadata(intent, text, knowledge_available, reply_language = :unset)
         @turn_text = text.to_s
-        @plan_language = normalize_language(intent[:customer_language])
+        # An authoritative resolver Result from #process wins (its nil language deliberately drops
+        # plan[:language] while its closed reason still records that a decision was made); a direct
+        # caller (:unset) ran no resolver, so it keeps the legacy per-turn provider language and
+        # records NO resolution — the plan then reads as "no upstream decision".
+        if reply_language == :unset
+          @plan_language = normalize_language(intent[:customer_language])
+          @plan_language_resolution = nil
+        else
+          @plan_language = normalize_language(reply_language.language)
+          @plan_language_resolution = reply_language.reason
+        end
         @plan_handoff_category = normalize_unsupported_request(intent[:unsupported_request])
         @knowledge_available = knowledge_available
       end
 
+      # Resolve the deterministic product-flow delivery language for this turn via the shared,
+      # pure resolver (no extra provider call): the current turn's provider language when it carries
+      # meaningful linguistic evidence, else the nearest reliable prior CUSTOMER turn from the bounded
+      # context, else the configured assistant language, else nil (fail-closed). Returns the whole
+      # Result (canonical code — possibly nil — plus its closed reason), which #process threads
+      # authoritatively so the plan records the resolution, not just the code. The turn's bounded
+      # extracted entity candidates are supplied so a message that is exactly a code/entity (any
+      # shape) is treated as non-linguistic, while a candidate plus real wording is still a
+      # meaningful switch.
+      def resolve_reply_language(text, intent, context, configured_language, flow)
+        Marine::Catalog::ConversationLanguageResolver.resolve(
+          text: text, provider_language: intent[:customer_language],
+          context: catalog_trusted_tokens.enrich_context(context),
+          configured_language: configured_language, entity_candidates: entity_candidates(intent),
+          trusted_tokens: trusted_catalog_tokens(text), sticky_language: persisted_customer_language(flow),
+          established_history: legacy_active_flow_without_language?(flow)
+        )
+      end
+
+      # The active flow stores the bounded language resolution made while a prior customer turn was
+      # current. The resolver validates this candidate; malformed or absent legacy state is ignored.
+      def persisted_customer_language(flow)
+        return unless flow.is_a?(Hash) && flow['status'] == ProductFlowStateStore::STATUS_ACTIVE
+
+        flow['customer_language']
+      end
+
+      # Active flows created before customer_language was added have already established a sticky
+      # conversation language but cannot supply its persisted code. Only that exact lifecycle shape
+      # enables oldest-first compatibility reconstruction; inactive flows and active flows carrying the
+      # field retain ordinary resolver behavior, including malformed-code fail-closed normalization.
+      def legacy_active_flow_without_language?(flow)
+        flow.is_a?(Hash) && flow['status'] == ProductFlowStateStore::STATUS_ACTIVE && !flow.key?('customer_language')
+      end
+
+      # The shared, battery-local collaborator that computes the bounded catalog-derived trusted tokens
+      # for a turn and enriches the bounded context with per-turn trusted tokens (Bug 2) — the SAME
+      # bounded algorithm for the current turn and every prior CUSTOMER turn, using this orchestrator's
+      # injected read-only family repository so no algorithm drifts between the two callers.
+      def catalog_trusted_tokens
+        @catalog_trusted_tokens ||= Marine::Catalog::CatalogTrustedTokens.new(family_repository: family_repository)
+      end
+
+      # The bounded catalog-derived tokens for THIS turn, injected into the pure resolver so a product
+      # name in the turn is never counted as linguistic evidence even when the extractor's entity
+      # fields came back incomplete (provider variance). Catalog unavailability degrades to NO trusted
+      # tokens (behavior then equals the legacy per-turn resolution); the language path never raises.
+      def trusted_catalog_tokens(text)
+        catalog_trusted_tokens.for_text(text)
+      end
+
+      # The turn's bounded extracted entity/code/attribute candidates (family_mention,
+      # explicit_child_code, attribute_candidates) — normalized extractor fields only, never a
+      # product/phrase list. The resolver subtracts their tokens from the current turn to decide
+      # whether it carries real linguistic evidence.
+      def entity_candidates(intent)
+        [intent[:family_mention], intent[:explicit_child_code], *Array(intent[:attribute_candidates])]
+      end
+
       attr_reader :family_repository, :variant_repository, :price_repository,
-                  :stock_repository, :variant_resolver, :reply_renderer
+                  :price_range_repository, :stock_repository, :listing_repository,
+                  :variant_resolver, :reply_renderer
+
+      # The injected repository for `key`, or a fresh instance of its real default.
+      def repository(repositories, key)
+        repositories[key] || REPOSITORY_DEFAULTS.fetch(key).new
+      end
 
       # A later runtime phase injects an account-aware extractor; the lazy default
       # keeps Phase 4 self-contained (extraction is only reached via #process).
@@ -249,6 +381,10 @@ module Marine
       # Both clarify exits surface the identifier the decision settled on (the raw mention for an
       # ambiguous raw-turn switch, the finalized identifier for an unresolved family).
       def resolve_and_plan(intent, flow)
+        # A product-LISTING turn enumerates the catalog's actual product names and needs no family or
+        # variant resolution at all: it is answered by its own deterministic, repository-grounded branch.
+        return plan_product_listing(intent) if intent[:intent].to_s == 'product_listing'
+
         decision = family_decision(intent, flow)
         return clarify_or_defer(intent, flow, decision[:identifier]) if decision[:clarify]
 
@@ -286,6 +422,27 @@ module Marine
         return false if truthy(intent[:quantity_inquiry])
 
         TRANSACTIONAL_INTENTS.exclude?(intent[:intent].to_s)
+      end
+
+      # A broad informational product-overview turn — routed straight to grounded KB retrieval and never
+      # to the deterministic catalog flow. Matched against the extractor's single allowlisted constant so
+      # the routing stays free of any product/phrase list.
+      def product_overview?(intent)
+        intent[:intent].to_s == Marine::Catalog::IntentExtractor::PRODUCT_OVERVIEW_INTENT
+      end
+
+      # The Layer-2 rescue plan for a product_overview turn. The turn's untrusted extracted candidates
+      # (family_mention / attribute_candidates) are resolved through the SAME exact item-group authority
+      # plan_product_listing uses (ProductListingRepository#resolve_item_group_any via #listing_item_group —
+      # status :resolved, a single distinct group): a resolved group proves the turn is a category-scoped
+      # enumeration mislabelled as a broad overview, so it is rerouted to the EXISTING deterministic
+      # dynamic listing (answered from the live item table, never a KB that may hallucinate a listing).
+      # Missing, ambiguous, or unresolved candidates contribute NO scope and keep the unchanged
+      # unconditional :not_product behavior. No phrase or category list — repository authority only.
+      def plan_overview_rescue(intent)
+        return build(:not_product) unless listing_item_group(intent)
+
+        plan_product_listing(intent)
       end
 
       # Family decision/context for the turn. Returns the settled
@@ -391,6 +548,34 @@ module Marine
       def plan_catalog(intent, family, state_op)
         build(:send_catalog, reply: reply_renderer.catalog(family),
                              operation: state_op, changes: family_level_changes(family, intent, state_op))
+      end
+
+      # A product-LISTING turn asks to ENUMERATE the catalog's actual product names (e.g. the fabrics
+      # carried). It is a bounded, dynamic DATABASE read — ProductListingRepository#active_top_level,
+      # active sellable TEMPLATE rows only (has_variants = true) — so a brand-new catalog row appears on
+      # the next turn with no prompt or Knowledge Base change. The category scope comes ONLY from the
+      # turn's untrusted extracted candidates, resolved EXACTLY against the item-group authority; a
+      # missing/ambiguous/unresolved mention NEVER guesses a category — the listing stays broad and
+      # truthful. A catalog outage raises CatalogUnavailableError and the #plan_for_intent rescue hands
+      # off fail-closed, never fabricating a listing. No state is mutated: a listing validates no family
+      # and waits on no slot, so the plan is a pure reply with operation :none.
+      def plan_product_listing(intent)
+        item_group = listing_item_group(intent)
+        page = listing_repository.active_top_level(item_group: item_group)
+        build(:reply, reply: reply_renderer.product_listing(page, item_group))
+      end
+
+      # The exact item-group scope for a listing turn, from the turn's untrusted extracted candidates
+      # only (family_mention / attribute_candidates — never the raw turn text). Exactly ONE distinct
+      # group match resolves; zero (missing) or many (ambiguous) contribute NO scope, so the listing
+      # stays broad rather than guessing a category. Data-driven: no phrase or category list here.
+      def listing_item_group(intent)
+        raw = [intent[:family_mention], *Array(intent[:attribute_candidates])]
+        candidates = raw.filter_map { |value| value.to_s.strip.presence }.uniq
+        return nil if candidates.empty?
+
+        resolution = listing_repository.resolve_item_group_any(candidates)
+        resolution[:status] == :resolved ? resolution[:item_group] : nil
       end
 
       # Parent-level answer. Catalog and parent are both family-level (no variant), so both
@@ -515,8 +700,75 @@ module Marine
         else
           # Do NOT select a Marine::Document here; a later phase picks and sends it, then
           # marks catalog_sent — so the plan does not set the catalog markers itself.
-          build(:send_catalog, operation: state_op, changes: changes)
+          price_range_catalog(intent, family, state_op, changes)
         end
+      end
+
+      # The catalog-assisted variant clarification is now PROACTIVE on every awaiting-variant intent:
+      # it always offers the native catalog with a descriptor (never a bare reply nil), and leads the
+      # customer to an exact variant code. The family-only PRICE branch keeps its STRICTER matrix; every
+      # OTHER awaiting-variant intent (family-level stock/availability, variant_info) makes a BEST-EFFORT
+      # supplemental range read that can only ENRICH the catalog, never block it.
+      def price_range_catalog(intent, family, state_op, changes)
+        if intent[:intent] == 'price'
+          price_family_catalog(family, state_op, changes)
+        else
+          enriched_family_catalog(family, state_op, changes)
+        end
+      end
+
+      # Stricter family-only PRICE matrix. Before sending the family catalog it computes a deterministic
+      # price RANGE over every active variant (fixed User Price policy):
+      #   * a clean AVAILABLE range rides the SAME send_catalog action/selector/attachment with a
+      #     range-grounded caption that introduces the family and asks for the exact variant code;
+      #   * an :unavailable / :conflict aggregate range does NOT hand off and never guesses a partial
+      #     range — it CONTINUES the SAME send_catalog flow with the PROACTIVE nonnumeric catalog-offer
+      #     descriptor so the customer can reply with an exact variant code (the exact-child follow-up
+      #     then stays authoritative);
+      #   * an available range whose required facts fail the renderer trust boundary still fails CLOSED
+      #     to the safe price handoff — never an invalid fact turned into customer text;
+      #   * a repository outage raises CatalogError (caught by plan_for_intent -> catalog_unavailable).
+      def price_family_catalog(family, state_op, changes)
+        range = price_range_repository.range_for(family[:code])
+        return catalog_offer_plan(family, state_op, changes) unless range[:status] == :available
+
+        descriptor = reply_renderer.price_range(range, family)
+        return build(:handoff, reply: reply_renderer.price_conflict, operation: state_op, changes: changes) if descriptor.nil?
+
+        build(:send_catalog, reply: descriptor, operation: state_op, changes: changes)
+      end
+
+      # Every NON-PRICE awaiting-variant family inquiry (family-level stock/availability, variant_info)
+      # still offers the native catalog, now PROACTIVELY: a BEST-EFFORT range read enriches it with the
+      # formatted range caption when a COMPLETE authoritative range exists, and ANY other outcome
+      # (unavailable/conflict, a malformed available range, or a repository outage) falls back LOCALLY to
+      # the proactive nonnumeric catalog-offer descriptor and STILL sends the catalog. This OPTIONAL
+      # price enrichment can never turn a viable catalog reply into a handoff, divert it to RAG, or
+      # expose a partial/raw value.
+      def enriched_family_catalog(family, state_op, changes)
+        descriptor = best_effort_range_descriptor(family)
+        return build(:send_catalog, reply: descriptor, operation: state_op, changes: changes) if descriptor
+
+        catalog_offer_plan(family, state_op, changes)
+      end
+
+      # The proactive nonnumeric catalog-offer send_catalog plan shared by the price and non-price
+      # catalog-assisted branches — the SAME action/state as every other awaiting-variant offer.
+      def catalog_offer_plan(family, state_op, changes)
+        build(:send_catalog, reply: reply_renderer.catalog_offer(family), operation: state_op, changes: changes)
+      end
+
+      # The valid :price_range descriptor for a COMPLETE available family range, or nil when the range
+      # is unavailable/conflict, an available range is malformed (renderer trust boundary drops it), or
+      # the repository is briefly unavailable — optional non-price enrichment fails SOFT to the
+      # nonnumeric catalog offer, never a handoff and never a raw value.
+      def best_effort_range_descriptor(family)
+        range = price_range_repository.range_for(family[:code])
+        return nil unless range[:status] == :available
+
+        reply_renderer.price_range(range, family)
+      rescue Marine::Catalog::Errors::CatalogError
+        nil
       end
 
       # Structured FAMILY clarification occurrence. Occurrences 1 and 2 record bounded

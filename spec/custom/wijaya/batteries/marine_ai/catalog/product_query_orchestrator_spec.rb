@@ -5,7 +5,8 @@ require 'rails_helper'
 RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
   subject(:orchestrator) do
     described_class.new(
-      repositories: { family: family_repository, variant: variant_repository, price: price_repository, stock: stock_repository },
+      repositories: { family: family_repository, variant: variant_repository, price: price_repository,
+                      price_range: price_range_repository, stock: stock_repository },
       variant_resolver: variant_resolver
     )
   end
@@ -13,9 +14,11 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
   let(:family_repository) { instance_double(Marine::Catalog::ProductFamilyRepository) }
   let(:variant_repository) { instance_double(Marine::Catalog::VariantRepository) }
   let(:price_repository) { instance_double(Marine::Catalog::PriceRepository) }
+  let(:price_range_repository) { instance_double(Marine::Catalog::PriceRangeRepository) }
   let(:stock_repository) { instance_double(Marine::Catalog::StockRepository) }
   let(:variant_resolver) { instance_double(Marine::Catalog::VariantResolver) }
   let(:available_price) { { status: :available, price_list_rate: '125.50', currency: 'USD', uom: 'Nos' } }
+  let(:available_range) { { status: :available, min: '12500', max: '45000', currency: 'IDR', uom: 'yard' } }
 
   before do
     allow(family_repository).to receive(:resolve_exact).and_return(code: 'FAM-1', name: 'Impeller')
@@ -24,6 +27,7 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
     allow(variant_repository).to receive(:resolve_child).and_return(nil)
     allow(variant_resolver).to receive(:resolve).and_return(status: :unresolved, reason: :missing)
     allow(price_repository).to receive(:price_for).and_return(status: :unavailable)
+    allow(price_range_repository).to receive(:range_for).and_return(status: :unavailable)
     allow(stock_repository).to receive(:status_for).and_return(:empty)
   end
 
@@ -81,6 +85,65 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
     end
   end
 
+  describe 'product_overview (broad informational) routes to grounded knowledge' do
+    it 'returns not_product before any family resolution, with no flow state mutation' do
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'product_overview', family_mention: nil), flow: nil)
+
+      expect(plan[:action]).to eq(:not_product)
+      expect(plan[:reply]).to be_nil
+      expect(plan[:state]).to eq(operation: :none, changes: {})
+      expect(family_repository).not_to have_received(:resolve_exact)
+      expect(family_repository).not_to have_received(:active_candidates)
+    end
+
+    it 'never clarifies the family for a broad overview even when a mention is present' do
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'product_overview', family_mention: 'products'), flow: nil)
+
+      expect(plan[:action]).to eq(:not_product)
+      expect(plan[:action]).not_to eq(:clarify_family)
+    end
+
+    it 'does not resolve or mutate an active validated flow on an overview turn' do
+      flow = active_flow('validated_family' => 'FAM-1', 'validated_variant' => 'CHILD-1', 'current_intent' => 'stock')
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'product_overview', family_mention: nil), flow: flow)
+
+      expect(plan[:action]).to eq(:not_product)
+      expect(plan[:state]).to eq(operation: :none, changes: {})
+      expect(family_repository).not_to have_received(:resolve_exact)
+    end
+
+    it 'routes to grounded knowledge regardless of the KB-availability signal (unconditional)' do
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'product_overview', family_mention: nil),
+                                          flow: nil, knowledge_available: false)
+
+      expect(plan[:action]).to eq(:not_product)
+    end
+  end
+
+  describe 'explicit catalog-document requests stay deterministic (unchanged by product_overview)' do
+    it 'sends the catalog document for an explicit family catalog request' do
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'catalog', family_mention: 'Impeller'), flow: nil)
+
+      expect(family_repository).to have_received(:resolve_exact).with('Impeller')
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog, family_code: 'FAM-1', family_name: 'Impeller')
+    end
+
+    # A GLOBAL catalog document request (no family named) is a transactional catalog intent, NOT an
+    # informational overview: it clarifies the family deterministically and NEVER defers to grounded RAG
+    # (:not_product). catalog ∈ TRANSACTIONAL_INTENTS, so the unresolved-family clarify path applies.
+    it 'clarifies the family for a family-less catalog request instead of routing to knowledge (not RAG)' do
+      allow(family_repository).to receive(:resolve_exact).and_return(nil)
+      allow(family_repository).to receive(:active_candidates).and_return([{ code: 'FAM-1', name: 'Impeller' }])
+
+      plan = orchestrator.plan_for_intent(intent: intent(intent: 'catalog', family_mention: nil), flow: nil)
+
+      expect(plan[:action]).to eq(:clarify_family)
+      expect(plan[:action]).not_to eq(:not_product)
+      expect(plan[:reply][:kind]).to eq(:clarify_family)
+    end
+  end
+
   describe 'unsupported product intent' do
     it 'hands off with a safe, factless descriptor' do
       plan = orchestrator.plan_for_intent(intent: intent(intent: 'unsupported'), flow: nil)
@@ -106,14 +169,18 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
   end
 
   describe 'initial product query (parent-level)' do
-    it 'validates the family via the repository and answers at parent level, starting a flow' do
-      plan = orchestrator.plan_for_intent(intent: intent(intent: 'parent_info', family_mention: 'Impeller'), flow: nil)
+    it 'validates the family and persists the resolved delivery language when starting a flow' do
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'parent_info', family_mention: 'Impeller', customer_language: 'id'), flow: nil
+      )
 
       expect(family_repository).to have_received(:resolve_exact).with('Impeller')
       expect(plan[:action]).to eq(:reply)
       expect(plan[:reply]).to eq(kind: :parent_info, family_code: 'FAM-1', family_name: 'Impeller')
       expect(plan[:state][:operation]).to eq(:start)
-      expect(plan[:state][:changes]).to include('validated_family' => 'FAM-1', 'current_intent' => 'parent_info')
+      expect(plan[:state][:changes]).to include(
+        'validated_family' => 'FAM-1', 'current_intent' => 'parent_info', 'customer_language' => 'id'
+      )
     end
   end
 
@@ -214,11 +281,11 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
   describe 'context-dependent catalog need' do
     let(:variant_intent) { intent(intent: 'variant_info', requires_exact_variant: true, family_mention: 'Impeller') }
 
-    it 'offers send_catalog only when nothing concrete was given and no catalog was sent' do
+    it 'offers send_catalog with the proactive nonnumeric catalog offer only when nothing concrete was given and no catalog was sent' do
       plan = orchestrator.plan_for_intent(intent: variant_intent, flow: nil)
 
       expect(plan[:action]).to eq(:send_catalog)
-      expect(plan[:reply]).to be_nil
+      expect(plan[:reply]).to eq(kind: :catalog_offer, family_code: 'FAM-1', family_name: 'Impeller')
       expect(plan[:state][:changes]).to include('expected_attributes' => %w[Size])
       expect(variant_resolver).not_to have_received(:resolve)
     end
@@ -250,6 +317,181 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       )
 
       expect(plan[:action]).to eq(:clarify_variant)
+    end
+  end
+
+  describe 'family-only price turn grounds the catalog with a price range' do
+    let(:price_family_intent) { intent(intent: 'price', family_mention: 'Impeller') }
+
+    it 'computes the family range and sends the SAME catalog with a range descriptor, asking for the code' do
+      allow(price_range_repository).to receive(:range_for).with('FAM-1').and_return(available_range)
+
+      plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :price_range, family_code: 'FAM-1', family_name: 'Impeller',
+                                 price_min: '12500', price_max: '45000', currency: 'IDR', uom: 'yard')
+      expect(plan[:state][:changes]).to include('validated_family' => 'FAM-1', 'current_intent' => 'price')
+      expect(price_range_repository).to have_received(:range_for).with('FAM-1')
+    end
+
+    it 'carries an equal min/max range through the descriptor unchanged (rendered as one amount downstream)' do
+      allow(price_range_repository).to receive(:range_for)
+        .and_return(status: :available, min: '12500', max: '12500', currency: 'IDR', uom: 'yard')
+
+      plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
+
+      expect(plan[:reply]).to include(kind: :price_range, price_min: '12500', price_max: '12500')
+    end
+
+    it 'continues with a PROACTIVE nonnumeric catalog offer (no handoff, no range) when the family range is unavailable' do
+      # Proven gap (Dev conv 482, family-only "berapa harga baby doll?"): an aggregate :unavailable
+      # range must NOT immediately hand off. Continue the SAME send_catalog variant-selection flow
+      # with the proactive nonnumeric catalog-offer descriptor (never a numeric range) so the customer
+      # can reply with an exact variant code.
+      allow(price_range_repository).to receive(:range_for).and_return(status: :unavailable)
+
+      plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog_offer, family_code: 'FAM-1', family_name: 'Impeller')
+      expect(plan[:state][:operation]).to eq(:start)
+      expect(plan[:state][:changes]).to include('validated_family' => 'FAM-1', 'current_intent' => 'price',
+                                                'expected_attributes' => %w[Size])
+      expect(deep_values(plan)).not_to include(:price_range, :price_conflict)
+    end
+
+    it 'continues the catalog-assisted selection with the proactive catalog offer (no handoff, no range) on an aggregate range conflict' do
+      allow(price_range_repository).to receive(:range_for).and_return(status: :conflict)
+
+      plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog_offer, family_code: 'FAM-1', family_name: 'Impeller')
+      expect(plan[:state][:changes]).to include('validated_family' => 'FAM-1', 'current_intent' => 'price',
+                                                'expected_attributes' => %w[Size])
+      expect(deep_values(plan)).not_to include(:price_range, :price_conflict)
+    end
+
+    it 'fails closed to the safe price handoff when an available range carries an invalid required fact' do
+      # The repository reports :available but a required fact is blank; the renderer trust boundary
+      # drops the descriptor to nil, so the plan must hand off rather than emit an invalid range.
+      allow(price_range_repository).to receive(:range_for)
+        .and_return(status: :available, min: '12500', max: '45000', currency: '  ', uom: 'yard')
+
+      plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply]).to eq(kind: :price_conflict)
+    end
+
+    it 'hands off safely (catalog_unavailable) when the range repository reports a catalog outage' do
+      allow(price_range_repository).to receive(:range_for).and_raise(Marine::Catalog::Errors::CatalogUnavailableError)
+
+      plan = orchestrator.plan_for_intent(intent: price_family_intent, flow: nil)
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply]).to eq(kind: :catalog_unavailable)
+    end
+
+    it 'makes a best-effort range read for a non-price awaiting-variant turn and offers the proactive catalog when the range is unavailable' do
+      # A non-price family inquiry (variant_info/stock) where a native catalog will be offered now
+      # makes a BEST-EFFORT range read; an unavailable range falls back to the proactive nonnumeric
+      # catalog offer (never nil, never a numeric range, never a handoff).
+      allow(price_range_repository).to receive(:range_for).with('FAM-1').and_return(status: :unavailable)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'variant_info', requires_exact_variant: true, family_mention: 'Impeller'), flow: nil
+      )
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog_offer, family_code: 'FAM-1', family_name: 'Impeller')
+      expect(price_range_repository).to have_received(:range_for).with('FAM-1')
+      expect(deep_values(plan)).not_to include(:price_range, :price_conflict)
+    end
+
+    it 'enriches a non-price (stock/availability) family inquiry with the complete range when one is available' do
+      # Matrix A: a family-level stock/availability inquiry with a COMPLETE authoritative range rides
+      # the SAME send_catalog action with the existing :price_range descriptor (formatted downstream),
+      # so the caption introduces the family, states the range, and asks for the exact code.
+      allow(price_range_repository).to receive(:range_for).with('FAM-1').and_return(available_range)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'stock', requires_exact_variant: true, family_mention: 'Impeller'), flow: nil
+      )
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :price_range, family_code: 'FAM-1', family_name: 'Impeller',
+                                 price_min: '12500', price_max: '45000', currency: 'IDR', uom: 'yard')
+      expect(plan[:state][:changes]).to include('validated_family' => 'FAM-1', 'current_intent' => 'stock')
+    end
+
+    it 'never lets optional non-price enrichment hand off or block the catalog when the range repository RAISES' do
+      # Matrix C: a CatalogError during the OPTIONAL supplemental range read for a non-price inquiry
+      # must be caught locally — the catalog is still offered via the proactive nonnumeric descriptor,
+      # never a handoff and never a fall-through to RAG.
+      allow(price_range_repository).to receive(:range_for).and_raise(Marine::Catalog::Errors::CatalogUnavailableError)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'stock', requires_exact_variant: true, family_mention: 'Impeller'), flow: nil
+      )
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog_offer, family_code: 'FAM-1', family_name: 'Impeller')
+      expect(deep_values(plan)).not_to include(:price_range, :price_conflict, :catalog_unavailable)
+    end
+
+    it 'falls back to the proactive catalog offer when an available non-price range carries an invalid required fact (never a handoff)' do
+      # For OPTIONAL non-price enrichment a malformed available range must NOT fail closed to a price
+      # handoff (that is the stricter PRICE path only): it degrades softly to the catalog offer.
+      allow(price_range_repository).to receive(:range_for)
+        .and_return(status: :available, min: '12500', max: '45000', currency: '  ', uom: 'yard')
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'stock', requires_exact_variant: true, family_mention: 'Impeller'), flow: nil
+      )
+
+      expect(plan[:action]).to eq(:send_catalog)
+      expect(plan[:reply]).to eq(kind: :catalog_offer, family_code: 'FAM-1', family_name: 'Impeller')
+      expect(deep_values(plan)).not_to include(:price_conflict)
+    end
+
+    it 'keeps the exact family+child precedence direct to the exact price, with no range prerequisite' do
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'BD-1')
+      allow(price_repository).to receive(:price_for).with('BD-1').and_return(available_price)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'price', explicit_child_code: 'BD-1', requires_exact_variant: true, family_mention: 'Impeller'),
+        flow: nil
+      )
+
+      expect(plan[:reply]).to include(kind: :price_available, variant_code: 'BD-1')
+      expect(price_range_repository).not_to have_received(:range_for)
+    end
+
+    it 'never falls back to a range when a supplied child is invalid / ambiguous' do
+      allow(variant_resolver).to receive(:resolve).and_return(status: :unresolved, reason: :ambiguous)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'price', explicit_child_code: 'CHILD-X', requires_exact_variant: true, family_mention: 'Impeller'),
+        flow: nil
+      )
+
+      expect(plan[:action]).to eq(:clarify_variant)
+      expect(price_range_repository).not_to have_received(:range_for)
+    end
+
+    it 'reaches the exact price on a code-only follow-up that retains the validated family and price intent' do
+      flow = active_flow('current_intent' => 'price', 'validated_variant' => nil)
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'BD-1')
+      allow(price_repository).to receive(:price_for).with('BD-1').and_return(available_price)
+
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'price', explicit_child_code: 'BD-1', family_mention: nil), flow: flow
+      )
+
+      expect(plan[:reply]).to include(kind: :price_available, variant_code: 'BD-1')
+      expect(price_range_repository).not_to have_received(:range_for)
     end
   end
 
@@ -824,11 +1066,11 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       intent(intent: 'variant_info', requires_exact_variant: true, family_mention: 'Impeller')
     end
 
-    it 'offers the native catalog on occurrence 1 (send_catalog, count 1)' do
+    it 'offers the native catalog with the proactive catalog offer on occurrence 1 (send_catalog, count 1)' do
       plan = orchestrator.plan_for_intent(intent: variant_intent, flow: nil)
 
       expect(plan[:action]).to eq(:send_catalog)
-      expect(plan[:reply]).to be_nil
+      expect(plan[:reply]).to eq(kind: :catalog_offer, family_code: 'FAM-1', family_name: 'Impeller')
       expect(plan[:state][:changes]).to include('clarification_kind' => 'variant', 'clarification_count' => 1)
     end
 
@@ -991,6 +1233,382 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(extractor).to have_received(:extract)
         .with(hash_including(text: 'do you have impellers?', state: hash_including(:awaiting_code, :current_family, :current_intent)))
       expect(plan[:action]).to eq(:reply)
+    end
+  end
+
+  # The shared ConversationLanguageResolver runs at the #process seam and sets plan[:language]
+  # authoritatively with STRICT STICKY precedence: whenever a reliable prior CUSTOMER turn exists it
+  # wins, so not only a bare-code provider guess but a meaningful current turn in the OTHER language is
+  # overridden (the language never switches mid-conversation), while #plan_for_intent's direct (test)
+  # path keeps the raw per-turn provider language. The turn's bounded extracted entity candidates flow
+  # through the seam so the resolver can recognize a code of any shape. The local detector is stubbed so
+  # the block is deterministic regardless of CLD3's presence. All codes are synthetic and no behavior is
+  # keyed to any code.
+  describe '#process language resolution (shared resolver at the seam)' do
+    subject(:orchestrator) do
+      described_class.new(
+        intent_extractor: extractor,
+        repositories: { family: family_repository, variant: variant_repository, price: price_repository, stock: stock_repository },
+        variant_resolver: variant_resolver
+      )
+    end
+
+    let(:extractor) { instance_double(Marine::Catalog::IntentExtractor) }
+
+    before do
+      allow(Marine::Llm::LanguageDetector).to receive(:new) do |text|
+        result = case text.to_s
+                 when 'halo berapa harganya semuanya' then { language: 'id', reliable: true, confidence: 0.99 }
+                 else { language: 'unknown', reliable: false, confidence: 0.0 }
+                 end
+        instance_double(Marine::Llm::LanguageDetector, detect: result)
+      end
+    end
+
+    it 'overrides an English provider guess for a bare multi-segment code with the Indonesian prior turn' do
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: 'Impeller', explicit_child_code: 'QLR-2200', customer_language: 'en')
+      )
+
+      plan = orchestrator.process(text: 'QLR-2200', context: [{ role: 'user', content: 'halo berapa harganya semuanya' }], flow: nil)
+
+      expect(plan[:language]).to eq('id')
+    end
+
+    it 'stays sticky to the Indonesian prior turn for a candidate PLUS meaningful English wording (no switch)' do
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: 'Impeller', explicit_child_code: 'QLR-2200', customer_language: 'en')
+      )
+
+      plan = orchestrator.process(text: 'QLR-2200 what is the price please',
+                                  context: [{ role: 'user', content: 'halo berapa harganya semuanya' }], flow: nil)
+
+      expect(plan[:language]).to eq('id')
+    end
+
+    it 'falls back to the configured assistant language when no customer language is reliable' do
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: 'Impeller', explicit_child_code: 'QLR-2200', customer_language: 'en')
+      )
+
+      plan = orchestrator.process(text: 'QLR-2200', context: [], flow: nil, configured_language: 'id')
+
+      expect(plan[:language]).to eq('id')
+    end
+
+    it 'keeps the per-turn provider language on the direct #plan_for_intent path (backward compatible)' do
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'parent_info', family_mention: 'Impeller', customer_language: 'en'), flow: nil
+      )
+
+      expect(plan[:language]).to eq('en')
+    end
+
+    # Bug 3 — the plan carries the resolver's CLOSED reason so a later consumer can tell an
+    # authoritative "no language" decision apart from a direct caller's absence of any decision.
+    it 'records the closed resolution reason on #process plans (prior_customer here)' do
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: 'Impeller', explicit_child_code: 'QLR-2200', customer_language: 'en')
+      )
+
+      plan = orchestrator.process(text: 'QLR-2200', context: [{ role: 'user', content: 'halo berapa harganya semuanya' }], flow: nil)
+
+      expect(plan[:language]).to eq('id')
+      expect(plan[:language_resolution]).to eq(:prior_customer)
+    end
+
+    it 'resolves to the configured language with a :configured reason when no reliable customer language exists' do
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: 'Impeller', explicit_child_code: 'QLR-2200', customer_language: 'en')
+      )
+
+      plan = orchestrator.process(text: 'QLR-2200', context: [], flow: nil, configured_language: 'id')
+
+      expect(plan[:language]).to eq('id')
+      expect(plan[:language_resolution]).to eq(:configured)
+    end
+
+    # The reported shape: a product-code/entity-only turn, no reliable prior history, and NO
+    # configured language. The resolver fails closed to :unresolved (language nil). The plan DROPS
+    # :language but STILL records the authoritative :unresolved reason, so the runtime never
+    # degrades to a random CLD3 language for this turn.
+    it 'records an authoritative :unresolved (language dropped) for an entity-only turn with no configured language' do
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: 'Impeller', explicit_child_code: 'QLR-2200', customer_language: 'en')
+      )
+
+      plan = orchestrator.process(text: 'QLR-2200', context: [], flow: nil)
+
+      expect(plan).not_to have_key(:language)
+      expect(plan[:language_resolution]).to eq(:unresolved)
+    end
+
+    it 'records NO resolution on the direct #plan_for_intent path (no upstream decision)' do
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'parent_info', family_mention: 'Impeller', customer_language: 'en'), flow: nil
+      )
+
+      expect(plan).not_to have_key(:language_resolution)
+    end
+
+    # Bug 3 — the TRUSTED-CATALOG-TOKENS product-name path (not only the entity_candidates path the
+    # QLR-2200 tests exercise). The caller-injected trusted catalog tokens — the row-derived family
+    # name/code found by searching each turn token against the active families — subtract `baby doll`
+    # from the current turn. For the opener `baby doll ada` that leaves ONE genuine non-product residue
+    # token (`ada`), which IS real linguistic content the provider read, so the current-turn provider
+    # language is now honored (:current_turn); only a ZERO-residue pure product name (`baby doll`)
+    # leaves nothing and still rejects the volatile provider guess. The data-driven trusted lookup is
+    # stubbed per query: `baby` and `doll` map to the active family { code: 'BD', name: 'Baby Doll' };
+    # every other token is empty.
+    def trusted_baby_doll
+      allow(family_repository).to receive(:active_candidates).and_return([])
+      allow(family_repository).to receive(:active_candidates).with(query: 'baby', limit: anything).and_return([{ code: 'BD', name: 'Baby Doll' }])
+      allow(family_repository).to receive(:active_candidates).with(query: 'doll', limit: anything).and_return([{ code: 'BD', name: 'Baby Doll' }])
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: 'baby doll', explicit_child_code: nil, customer_language: 'en')
+      )
+    end
+
+    it 'subtracts trusted catalog tokens for "baby doll ada" yet honors the one-residue provider language (:current_turn)' do
+      trusted_baby_doll
+
+      plan = orchestrator.process(text: 'baby doll ada', context: [], flow: nil, configured_language: 'id')
+
+      expect(family_repository).to have_received(:active_candidates).with(query: 'baby', limit: anything)
+      expect(plan[:language]).to eq('en')
+      expect(plan[:language_resolution]).to eq(:current_turn)
+    end
+
+    it 'records an authoritative :unresolved (no language) for a ZERO-residue pure product name with no configured language' do
+      trusted_baby_doll
+
+      plan = orchestrator.process(text: 'baby doll', context: [], flow: nil)
+
+      expect(plan).not_to have_key(:language)
+      expect(plan[:language_resolution]).to eq(:unresolved)
+    end
+
+    # The resolved language rides EVERY deterministic plan action from this one shared seam — the same
+    # #process seam the Conversation Runner and the Playground both call — so both surfaces deliver a
+    # code-only turn in the inherited customer language regardless of the resulting action.
+    it 'applies the SAME resolved language across representative deterministic product actions' do
+      { 'parent_info' => :reply, 'unsupported' => :handoff }.each do |extracted_intent, expected_action|
+        allow(extractor).to receive(:extract).and_return(
+          intent(intent: extracted_intent, family_mention: 'Impeller', explicit_child_code: 'QLR-2200', customer_language: 'en')
+        )
+
+        plan = orchestrator.process(text: 'QLR-2200', context: [{ role: 'user', content: 'halo berapa harganya semuanya' }], flow: nil)
+
+        expect(plan[:action]).to eq(expected_action)
+        expect(plan[:language]).to eq('id')
+      end
+    end
+  end
+
+  # The orchestrator sources the resolver's trusted catalog tokens per turn, data-driven, from the
+  # family repository: each meaningful turn token is searched against the active families and the
+  # matched rows' code/name tokens are injected so a product-name turn with an EMPTY extraction (the
+  # reported session defect) is not mistaken for linguistic evidence. Catalog unavailability degrades
+  # to NO trusted tokens — the language path never raises and the legacy per-turn behavior stands.
+  describe '#process trusted catalog tokens (per-turn repository lookup)' do
+    subject(:orchestrator) do
+      described_class.new(
+        intent_extractor: extractor,
+        repositories: { family: family_repository, variant: variant_repository, price: price_repository, stock: stock_repository },
+        variant_resolver: variant_resolver
+      )
+    end
+
+    let(:extractor) { instance_double(Marine::Catalog::IntentExtractor) }
+
+    before do
+      allow(Marine::Llm::LanguageDetector).to receive(:new) do |text|
+        result = case text.to_s
+                 when 'halo kak mau tanya produknya' then { language: 'id', reliable: true, confidence: 0.99 }
+                 else { language: 'unknown', reliable: false, confidence: 0.0 }
+                 end
+        instance_double(Marine::Llm::LanguageDetector, detect: result)
+      end
+      # EMPTY family_mention (the extractor miss) with a volatile provider guess for the product-name turn.
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: nil, customer_language: 'no')
+      )
+    end
+
+    it 'injects repository-derived trusted tokens so the product-name turn inherits the Indonesian prior history' do
+      allow(family_repository).to receive(:active_candidates) do |query:, **_|
+        %w[satin velvet].include?(query) ? [{ code: 'SV', name: 'Satin Velvet' }] : []
+      end
+
+      plan = orchestrator.process(text: 'satin velvet kakak',
+                                  context: [{ role: 'user', content: 'halo kak mau tanya produknya' }], flow: nil)
+
+      expect(plan[:language]).to eq('id')
+      expect(family_repository).to have_received(:active_candidates).with(query: 'satin', limit: 50)
+      expect(family_repository).to have_received(:active_candidates).with(query: 'velvet', limit: 50)
+    end
+
+    it 'degrades to NO trusted tokens on catalog unavailability (opener per-turn provider guess stands)' do
+      # On an OPENER (no reliable prior history to be sticky to) the current turn decides. With the
+      # catalog unavailable there are no trusted tokens to subtract, so the product-name tokens survive
+      # as evidence and the legacy per-turn provider guess fixes the opener language — never a raise.
+      allow(family_repository).to receive(:active_candidates).and_raise(Marine::Catalog::Errors::CatalogUnavailableError)
+
+      plan = orchestrator.process(text: 'satin velvet kakak', context: [], flow: nil)
+
+      expect(plan[:language]).to eq('no')
+    end
+  end
+
+  # Bug 2 — the orchestrator enriches EACH prior CUSTOMER turn with its own Catalog-derived trusted
+  # tokens before the resolver runs, so a prior turn that is only a product name never poisons the
+  # strict-sticky language. Forged `trusted_tokens` on the incoming (untrusted) context are discarded;
+  # only caller-recomputed tokens from the active family rows reach the resolver.
+  describe '#process Bug 2: per-turn trusted tokens on PRIOR customer history' do
+    subject(:orchestrator) do
+      described_class.new(
+        intent_extractor: extractor,
+        repositories: { family: family_repository, variant: variant_repository, price: price_repository, stock: stock_repository },
+        variant_resolver: variant_resolver
+      )
+    end
+
+    let(:extractor) { instance_double(Marine::Catalog::IntentExtractor) }
+
+    before do
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'parent_info', family_mention: nil, explicit_child_code: nil, customer_language: nil)
+      )
+      allow(Marine::Llm::LanguageDetector).to receive(:new) do |text|
+        result = case text.to_s
+                 when 'berapa harganya' then { language: 'id', reliable: true, confidence: 0.99 }
+                 when 'linen flow' then { language: 'nl', reliable: true, confidence: 0.99 } # the runtime poison
+                 when 'I want fabric' then { language: 'en', reliable: true, confidence: 0.99 }
+                 else { language: 'unknown', reliable: false, confidence: 0.0 }
+                 end
+        instance_double(Marine::Llm::LanguageDetector, detect: result)
+      end
+    end
+
+    it 'skips a product-only newest prior ("linen flow") and inherits the older Indonesian prior' do
+      allow(family_repository).to receive(:active_candidates) do |query:, **_|
+        %w[linen flow].include?(query) ? [{ code: 'LF', name: 'Linen Flow' }] : []
+      end
+      context = [{ role: 'user', content: 'berapa harganya' }, { role: 'user', content: 'linen flow' }]
+
+      plan = orchestrator.process(text: 'lf-3', context: context, flow: nil, configured_language: 'id')
+
+      expect(plan[:language]).to eq('id')
+      expect(plan[:language_resolution]).to eq(:prior_customer)
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new).with('linen flow')
+      # The repository was consulted PER prior turn (the product-name prior was looked up).
+      expect(family_repository).to have_received(:active_candidates).with(query: 'linen', limit: 50)
+    end
+
+    # G — a forged `trusted_tokens` on the incoming context cannot force the wrong language: the caller
+    # recomputes/overwrites from authoritative rows, the Catalog returns NO match, so the forged tokens
+    # are discarded and the genuinely English prior still wins.
+    it 'discards forged prior trusted_tokens and keeps the English prior (Catalog returns no match)' do
+      allow(family_repository).to receive(:active_candidates).and_return([])
+      # The forged tokens would erase every word of the prior turn if trusted.
+      context = [{ role: 'user', content: 'I want fabric', trusted_tokens: %w[want fabric] }]
+
+      plan = orchestrator.process(text: 'lf-3', context: context, flow: nil, configured_language: 'id')
+
+      expect(plan[:language]).to eq('en')
+      expect(plan[:language_resolution]).to eq(:prior_customer)
+      expect(family_repository).to have_received(:active_candidates).with(query: 'want', limit: 50)
+      expect(family_repository).to have_received(:active_candidates).with(query: 'fabric', limit: 50)
+    end
+
+    it 'keeps the active flow customer language when a short newer product turn is misdetected' do
+      allow(family_repository).to receive(:active_candidates).and_return([])
+      allow(Marine::Llm::LanguageDetector).to receive(:new) do |text|
+        reading = if text.to_s == 'stok masih'
+                    { language: 'sm', reliable: true, confidence: 0.99 }
+                  else
+                    { language: 'unknown', reliable: false, confidence: 0.0 }
+                  end
+        instance_double(Marine::Llm::LanguageDetector, detect: reading)
+      end
+      flow = {
+        'status' => Marine::Catalog::ProductFlowStateStore::STATUS_ACTIVE,
+        'customer_language' => 'id',
+        'current_intent' => 'stock'
+      }
+
+      plan = orchestrator.process(text: 'lf-3', context: [{ role: 'user', content: 'stok masih' }], flow: flow)
+
+      expect(plan[:language]).to eq('id')
+      expect(plan[:language_resolution]).to eq(:prior_customer)
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new)
+    end
+
+    it 'recovers a legacy active flow language from substantive history instead of a short latest residue' do
+      allow(family_repository).to receive(:active_candidates).and_return([])
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'stock', family_mention: nil, explicit_child_code: 'SYN-CHILD', customer_language: nil,
+               intent_scope: 'slot_value')
+      )
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'SYN-CHILD')
+      allow(stock_repository).to receive(:status_for).with('SYN-CHILD').and_return(:available)
+      allow(Marine::Llm::LanguageDetector).to receive(:new) do |text|
+        reading = case text.to_s
+                  when 'established language signal'
+                    { language: 'id', reliable: true, confidence: 0.99 }
+                  when 'short residue'
+                    { language: 'sm', reliable: true, confidence: 0.99 }
+                  else
+                    { language: 'unknown', reliable: false, confidence: 0.0 }
+                  end
+        instance_double(Marine::Llm::LanguageDetector, detect: reading)
+      end
+      legacy_flow = {
+        'status' => Marine::Catalog::ProductFlowStateStore::STATUS_ACTIVE,
+        'current_intent' => 'stock', 'validated_family' => 'SYN-FAMILY'
+      }
+      context = [
+        { role: 'user', content: 'established language signal' },
+        { role: 'user', content: 'short residue' }
+      ]
+
+      plan = orchestrator.process(text: 'SYN-CHILD', context: context, flow: legacy_flow)
+
+      expect(plan[:action]).to eq(:reply)
+      expect(plan[:reply]).to eq(kind: :stock_available, variant_code: 'SYN-CHILD')
+      expect(plan[:language]).to eq('id')
+      expect(plan[:language_resolution]).to eq(:prior_customer)
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new).with('short residue')
+      expect(Marine::Llm::LanguageDetector).to have_received(:new).with('established language signal')
+    end
+
+    it 'ignores customer language from expired, completed, or malformed flows' do
+      allow(family_repository).to receive(:active_candidates).and_return([])
+      allow(Marine::Llm::LanguageDetector).to receive(:new) do |text|
+        reading = if text.to_s == 'stok masih'
+                    { language: 'id', reliable: true, confidence: 0.99 }
+                  else
+                    { language: 'unknown', reliable: false, confidence: 0.0 }
+                  end
+        instance_double(Marine::Llm::LanguageDetector, detect: reading)
+      end
+      inactive_flows = [
+        Marine::Catalog::ProductFlowStateStore::STATUS_EXPIRED,
+        Marine::Catalog::ProductFlowStateStore::STATUS_COMPLETED,
+        'malformed'
+      ].map { |status| { 'status' => status, 'customer_language' => 'sm', 'current_intent' => 'stock' } }
+
+      aggregate_failures do
+        inactive_flows.each do |flow|
+          plan = orchestrator.process(
+            text: 'lf-3', context: [{ role: 'user', content: 'stok masih' }],
+            flow: flow, configured_language: 'en'
+          )
+
+          expect(plan[:language]).to eq('id')
+          expect(plan[:language_resolution]).to eq(:prior_customer)
+        end
+      end
     end
   end
 

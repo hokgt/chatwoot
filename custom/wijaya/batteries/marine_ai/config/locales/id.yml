@@ -1,0 +1,23 @@
+id:
+  marine:
+    catalog:
+      # price-display-v1 deterministic price_available fallback (Indonesian display facts:
+      # currency Rp, dot thousands grouping, lowercase unit). Built by PriceReplyComposer
+      # from the approved display facts; never embeds an illustrative amount.
+      price:
+        price_available: 'Harga %{product} adalah %{currency} %{amount} per %{uom}.'
+      # Checkpoint B — deterministic family price-RANGE fallback. Rendered by
+      # PriceRangeEvidenceRenderer from the frozen marine_evidence_v3 price_range Evidence alone
+      # (authoritative family code + already-formatted display currency/endpoints/unit only). The
+      # optional %{followup} carries the generic variant-selection question for the ask_variant_code
+      # presentation policy (empty for standalone); it never claims a catalog was shown.
+      price_range:
+        range_available: 'Untuk produk %{product}, harganya mulai dari %{currency} %{min} sampai %{currency} %{max} per %{uom}.%{followup}'
+        single_available: 'Untuk produk %{product}, harganya %{currency} %{amount} per %{uom}.%{followup}'
+        variant_followup: ' Mau varian yang mana?'
+      # Deterministic binary-stock fallback. Rendered by BinaryStockEvidenceRenderer from the frozen
+      # marine_evidence_v2 stock Evidence alone (validated variant code + binary status only); never
+      # surfaces a quantity, location, delivery time, or price.
+      stock:
+        available: '%{product} saat ini tersedia.'
+        unavailable: 'Mohon maaf, %{product} saat ini sedang habis.'

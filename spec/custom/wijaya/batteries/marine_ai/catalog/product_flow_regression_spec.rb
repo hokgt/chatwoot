@@ -67,9 +67,11 @@ RSpec.describe 'Marine product flow cross-component regression' do
       leaked = [99_999, 42, 'DROP TABLE item;--', 'W-1']
       expect(deep_values(plan)).not_to include(*leaked)
 
-      text = job.send(:presenter).reply_text(plan)
-      expect(text).to eq('The price for C-1 is USD 10.00 per ea.')
-      %w[99999 42 DROP W-1].each { |secret| expect(text).not_to include(secret) }
+      # A standalone price reply now fails closed in the presenter (it is resolved through the shared
+      # PriceReplyComposer instead); the delivered price line's leak guarantee is enforced by
+      # PriceDisplayFormatter/PriceReplyComposer, which copy ONLY the approved display fields.
+      expect { job.send(:presenter).reply_text(plan) }
+        .to raise_error(Marine::Catalog::ReplyPresenter::PriceReplyNotPresentable)
     end
 
     it 'strips malformed / oversized family candidate fields before the plan' do
@@ -99,10 +101,11 @@ RSpec.describe 'Marine product flow cross-component regression' do
       renderer.composite([renderer.price_available({ price_list_rate: '10.00', currency: 'USD', uom: 'ea' }, 'C-1'), renderer.stock_available('C-1')])
     end
 
-    def descriptor_for(kind) # rubocop:disable Metrics/CyclomaticComplexity -- a flat per-kind dispatch
+    def descriptor_for(kind) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/AbcSize -- a flat per-kind dispatch
       case kind
       when :parent_info then renderer.parent_info(code: 'FAM-1', name: 'Impeller')
       when :catalog then renderer.catalog(code: 'FAM-1', name: 'Impeller')
+      when :catalog_offer then renderer.catalog_offer(code: 'FAM-1', name: 'Impeller')
       when :variant_info then renderer.variant_info({ code: 'FAM-1' }, 'C-1')
       when :price_available then renderer.price_available({ price_list_rate: '10.00', currency: 'USD', uom: 'ea' }, 'C-1')
       # A digit-free validated code so the "stock text never contains a digit" quantity invariant below
@@ -111,6 +114,9 @@ RSpec.describe 'Marine product flow cross-component regression' do
       when :stock_empty then renderer.stock_empty('RED')
       when :clarify_family then renderer.clarify_family([{ code: 'FAM-1', name: 'Impeller' }])
       when :clarify_variant then renderer.clarify_variant(%w[Size])
+      when :product_listing then renderer.product_listing({ products: [{ code: 'FAM-1', name: 'Impeller' }], complete: true, has_more: false }, nil)
+      when :price_range
+        renderer.price_range({ status: :available, min: '10', max: '20', currency: 'IDR', uom: 'yard' }, { code: 'FAM-1', name: 'Impeller' })
       when :composite then composite_descriptor
       else renderer.public_send(kind)
       end
@@ -119,8 +125,15 @@ RSpec.describe 'Marine product flow cross-component regression' do
     it 'maps every ReplyRenderer::KINDS descriptor to a non-empty deterministic string' do
       covered = Marine::Catalog::ReplyRenderer::KINDS.map do |kind|
         plan = { action: :reply, reply: descriptor_for(kind), state: { operation: :none, changes: {} } }
-        text = job.send(:presenter).reply_text(plan)
 
+        # A STANDALONE :price_available reply is locale-sensitive and fails closed here — it is resolved
+        # through the shared PriceReplyComposer, never presented as a hardcoded English price line.
+        if kind == :price_available
+          expect { job.send(:presenter).reply_text(plan) }.to raise_error(Marine::Catalog::ReplyPresenter::PriceReplyNotPresentable)
+          next kind
+        end
+
+        text = job.send(:presenter).reply_text(plan)
         expect(text).to be_a(String)
         expect(text).not_to be_empty
         expect(text).not_to match(/\d/) if kind.to_s.start_with?('stock_') # stock is never a quantity

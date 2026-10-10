@@ -203,6 +203,16 @@ RSpec.describe Marine::Agent::Runner do
       expect(orchestrator).to have_received(:process).with(hash_including(text: 'price for impeller 3 inch', suppressed: false))
     end
 
+    it 'forwards the assistant configured language to the shared orchestrator resolver seam' do
+      allow(assistant).to receive(:config).and_return('language' => 'id')
+      allow(orchestrator).to receive(:process).and_return(action: :not_product, reply: nil, state: { operation: :none, changes: {} })
+      allow(generator).to receive(:generate).and_return(reply_payload)
+
+      runner.run(additional_message: 'ignored — text comes from the trigger message')
+
+      expect(orchestrator).to have_received(:process).with(hash_including(configured_language: 'id'))
+    end
+
     it 'falls through to the unchanged retrieval path on a not_product plan' do
       allow(orchestrator).to receive(:process).and_return(action: :not_product, reply: nil, state: { operation: :none, changes: {} })
       allow(generator).to receive(:generate).and_return(reply_payload)
@@ -210,6 +220,112 @@ RSpec.describe Marine::Agent::Runner do
       payload = runner.run(additional_message: 'just saying hello')
 
       expect(payload).to include('response' => 'Your order is on the way', 'orchestration_path' => 'retrieval')
+    end
+  end
+
+  # A broad product-overview turn must reach grounded RAG generation, never a catalog family
+  # clarification. This exercises the REAL orchestrator (only the untrusted IntentExtractor is
+  # stubbed to classify product_overview) so the end-to-end route — product_overview -> :not_product
+  # -> fall through to the RAG ResponseGenerator — is proven at the runner boundary, even when the
+  # Knowledge Base confidently (but non-exactly) answers the turn.
+  describe 'product overview reaches grounded knowledge, not clarify_family' do
+    let(:account) { build_stubbed(:account) }
+    let(:conversation) { build_stubbed(:conversation, account: account) }
+    let(:message) { build_stubbed(:message, conversation: conversation, message_type: :incoming, content: 'What products does Textilindo sell?') }
+    let(:runner) { described_class.new(assistant: assistant, conversation: conversation, source: message) }
+    let(:intent_extractor) { instance_double(Marine::Catalog::IntentExtractor) }
+
+    before do
+      allow(Marine::Catalog::IntentExtractor).to receive(:new).and_return(intent_extractor)
+      allow(intent_extractor).to receive(:extract).and_return(
+        { product_related: true, intent: 'product_overview', family_mention: nil,
+          requested_intents: [], quantity_inquiry: false, customer_language: nil }
+      )
+      # KB confidently answers (non-fallback) but NOT an exact match, so Gate G does not preempt and
+      # knowledge_available? is true — the informational overview should still land in RAG.
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(
+        instance_double(Marine::Cell::KnowledgeBaseService,
+                        retrieve: instance_double(Marine::Cell::RetrievalResult,
+                                                  fallback_reason: nil, confidence: 0.8, source_type: 'faq'))
+      )
+    end
+
+    it 'falls through to the RAG ResponseGenerator instead of emitting a product/clarify payload' do
+      allow(generator).to receive(:generate).and_return(reply_payload)
+
+      payload = runner.run(additional_message: 'What products does Textilindo sell?')
+
+      expect(generator).to have_received(:generate)
+      expect(payload['action']).not_to eq('product')
+      expect(payload['orchestration_path']).to eq('retrieval')
+    end
+  end
+
+  # Phase 1 regression — an EXACT approved, UI-created FAQ that Gate G already matched in the
+  # customer's OWN language must survive to the delivered reply. Before the fix, the RAG
+  # ResponseGenerator translated the query to the knowledge language and independently re-retrieved
+  # with the translated text, which could replace the exact FAQ with a document-backed match for the
+  # translated query. This drives the REAL Runner -> ResponseGenerator path (the generator is NOT
+  # stubbed) and asserts the final payload still cites the original FAQ, not the competing document.
+  describe 'exact Gate G FAQ survives query translation (Phase 1)' do
+    let(:account) { create(:account) }
+    let(:marine) { create(:marine_assistant, account: account) }
+    let(:conversation) { create(:conversation, account: account) }
+    let(:trigger) do
+      create(:message, conversation: conversation, account: account, inbox: conversation.inbox,
+                       message_type: :incoming, content: 'Apa jam operasional?')
+    end
+    let(:runner) { described_class.new(assistant: marine, conversation: conversation, source: trigger) }
+    let(:knowledge_base) { instance_double(Marine::Cell::KnowledgeBaseService) }
+
+    # An approved FAQ authored in the UI: a User-documentable response -> source_type 'user'.
+    let(:faq_response) do
+      Marine::AssistantResponse.new(id: 42, question: 'Apa jam operasional?',
+                                    answer: 'Kami buka Senin sampai Jumat, pukul 09.00-17.00.',
+                                    documentable_type: 'User')
+    end
+    let(:faq_result) { Marine::Cell::RetrievalResult.new(responses: [faq_response], confidence: 1.0) }
+
+    # The competing document-backed match the TRANSLATED English query would otherwise retrieve.
+    let(:document) { build_stubbed(:marine_document, assistant: marine) }
+    let(:document_response) do
+      Marine::AssistantResponse.new(id: 77, question: 'Operating hours', answer: 'See the attached brochure PDF.').tap do |resp|
+        allow(resp).to receive(:documentable).and_return(document)
+      end
+    end
+    let(:doc_result) { Marine::Cell::RetrievalResult.new(responses: [document_response], confidence: 1.0) }
+
+    before do
+      # Exercise the REAL ResponseGenerator so the Runner -> generator integration is covered.
+      allow(Marine::Charge::ResponseGenerator).to receive(:new).and_call_original
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(knowledge_base)
+      # Indonesian query (customer language, used by the runner's Gate G) -> exact FAQ.
+      # English query (the ResponseGenerator translated re-retrieval) -> competing document.
+      allow(knowledge_base).to receive(:retrieve) do |query, **|
+        query.to_s.include?('operasional') ? faq_result : doc_result
+      end
+      # Query translated ID -> EN so the (unfixed) re-retrieval used the English text.
+      allow(Marine::Llm::TranslateQueryService).to receive(:new).and_return(
+        double(call: { text: 'What are the operating hours?', source_language: 'id', translated: true, error: nil })
+      )
+      # Reply delivered back in the customer's language; nil text keeps the approved answer verbatim.
+      allow(Marine::Llm::TranslateResponseService).to receive(:new).and_return(
+        double(call: { text: nil, source_language: 'id', target_language: 'id', translated: false, error: nil })
+      )
+    end
+
+    it 'delivers the exact FAQ (source_type user, its response id, no document replacement)' do
+      payload = runner.run
+
+      expect(payload).to include(
+        'response' => 'Kami buka Senin sampai Jumat, pukul 09.00-17.00.',
+        'action' => 'reply',
+        'marine_cell_response_id' => 42,
+        'source_type' => 'user',
+        'response_ids' => [42],
+        'document_ids' => [],
+        'orchestration_path' => 'retrieval'
+      )
     end
   end
 
@@ -256,13 +372,29 @@ RSpec.describe Marine::Agent::Runner do
       )
     end
 
+    it 'keeps advisory stale-product memory out of product authority while allowing response personalization' do
+      memory = '[ADVISORY HISTORICAL MEMORY] Previously selected valid variant ABC.'
+      reader = instance_double(Marine::Memory::Reader, advisory_envelope: memory)
+      allow(Marine::Memory::Reader).to receive(:new).with(conversation: conversation).and_return(reader)
+
+      runner.run
+
+      expect(orchestrator).to have_received(:process).with(
+        hash_including(text: 'current customer turn', context: canonical_history, suppressed: false)
+      )
+      expect(generator).to have_received(:generate).with(
+        hash_including(message_history: [{ role: 'assistant', content: memory }] + canonical_history)
+      )
+    end
+
     it 'gives the RAG ResponseGenerator the same canonical history and the separate trigger' do
       runner.run
 
       # A prior public Marine reply exists (prior_marine), so this is a follow-up turn and the
       # opening/greeting signal threaded to the generator is false (Phase 4).
       expect(generator).to have_received(:generate).with(
-        additional_message: 'current customer turn', message_history: canonical_history, opening: false
+        additional_message: 'current customer turn', message_history: canonical_history, opening: false,
+        exact_knowledge_result: nil
       )
     end
   end
@@ -455,7 +587,7 @@ RSpec.describe Marine::Agent::Runner do
   # previews the SAME product orchestration a real turn uses, so a valid catalog request is
   # grounded in the catalog BEFORE the RAG path (which would otherwise answer "unavailable").
   describe 'source-less Playground catalog preview' do
-    let(:account) { instance_double(Account) }
+    let(:account) { instance_double(Account, id: 501) }
     let(:assistant) { double('assistant', id: 1, name: 'Marine Bot', account: account) }
     let(:runner) { described_class.new(assistant: assistant, source: 'playground') }
     let(:preview) { instance_double(Marine::Catalog::PlaygroundPreview) }
@@ -635,7 +767,7 @@ RSpec.describe Marine::Agent::Runner do
 
   describe 'source-less run gating' do
     it 'never previews for a non-playground source-less caller even with a product account (source gate)' do
-      account = instance_double(Account)
+      account = instance_double(Account, id: 502)
       assistant = double('assistant', id: 1, name: 'Marine Bot', account: account)
       runner = described_class.new(assistant: assistant, source: nil)
       allow(generator).to receive(:generate).and_return(reply_payload)
@@ -658,6 +790,117 @@ RSpec.describe Marine::Agent::Runner do
       runner.run(additional_message: 'ada katalog baby doll ?')
 
       expect(generator).to have_received(:generate)
+    end
+  end
+
+  # Phase 2 / Stage 6 — the runner routes scenario selection through the controlled cutover wrapper.
+  # When the cutover gate is closed (the default) the payload is byte-for-byte legacy; when the
+  # Decision Maker chooses a scenario ONLY the scenario metadata (id/title/path) changes and response
+  # generation is untouched. The product path returns BEFORE scenario selection, so it never invokes
+  # the wrapper. No candidate plan / intents / slots / cutover metadata ever reaches the payload.
+  describe 'Decision Maker scenario cutover integration (Phase 2 / Stage 6)' do
+    let(:cutover) { instance_double(Marine::Decision::CutoverScenarioSelector) }
+    let(:decision_scenario) { double('scenario', id: 55, title: 'Stock desk') }
+
+    def selection(scenario, source, reason)
+      Marine::Decision::CutoverScenarioSelector::Selection.new(scenario, source, reason)
+    end
+
+    before do
+      allow(generator).to receive(:generate).and_return(reply_payload)
+    end
+
+    it 'routes selection through the wrapper with the derived query and the already-bounded history' do
+      allow(Marine::Decision::CutoverScenarioSelector).to receive(:new).and_return(cutover)
+      allow(cutover).to receive(:select).and_return(selection(nil, 'legacy', 'gate_closed'))
+
+      runner.run(additional_message: 'where is my order')
+
+      expect(Marine::Decision::CutoverScenarioSelector).to have_received(:new).with(assistant: assistant, account_id: nil)
+      expect(cutover).to have_received(:select).with('where is my order', context: [])
+    end
+
+    it 'produces a payload with legacy scenario semantics when the cutover is closed' do
+      allow(Marine::Decision::CutoverScenarioSelector).to receive(:new).and_return(cutover)
+      allow(cutover).to receive(:select).and_return(selection(nil, 'legacy', 'gate_closed'))
+
+      payload = runner.run(additional_message: 'where is my order')
+
+      expect(payload).to include('orchestration_path' => 'retrieval', 'marine_scenario_id' => nil,
+                                 'marine_scenario_title' => nil, 'response' => 'Your order is on the way')
+    end
+
+    it 'changes only the scenario metadata (id/title/path) when the Decision Maker chooses a scenario' do
+      allow(Marine::Decision::CutoverScenarioSelector).to receive(:new).and_return(cutover)
+      allow(cutover).to receive(:select).and_return(selection(decision_scenario, 'decision', 'decision_accepted'))
+
+      payload = runner.run(additional_message: 'stock for impeller')
+
+      expect(payload).to include('orchestration_path' => 'scenario_retrieval', 'marine_scenario_id' => 55,
+                                 'marine_scenario_title' => 'Stock desk')
+      # Response generation is unchanged: same reply body/action/confidence as legacy.
+      expect(payload).to include('response' => 'Your order is on the way', 'action' => 'reply', 'confidence' => 0.9)
+      expect(generator).to have_received(:generate)
+    end
+
+    it 'never exposes candidate plan / intents / slots / cutover metadata in the payload' do
+      allow(Marine::Decision::CutoverScenarioSelector).to receive(:new).and_return(cutover)
+      allow(cutover).to receive(:select).and_return(selection(decision_scenario, 'decision', 'decision_accepted'))
+
+      payload = runner.run(additional_message: 'stock for impeller')
+
+      %w[scenario_candidate candidate_plan intents slot_operations customer_language
+         cutover_source cutover_reason product_plan].each do |leak|
+        expect(payload).not_to have_key(leak)
+      end
+    end
+
+    it 'never invokes the cutover wrapper on the product path (product returns before selection)' do
+      account = build_stubbed(:account)
+      conversation = build_stubbed(:conversation, account: account)
+      message = build_stubbed(:message, conversation: conversation, message_type: :incoming, content: 'price for impeller')
+      product_runner = described_class.new(assistant: assistant, conversation: conversation, source: message)
+      orchestrator = instance_double(Marine::Catalog::ProductQueryOrchestrator)
+      allow(Marine::Catalog::ProductQueryOrchestrator).to receive(:new).and_return(orchestrator)
+      allow(orchestrator).to receive(:process).and_return(action: :reply, reply: { kind: :price_available },
+                                                          state: { operation: :none, changes: {} })
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(
+        instance_double(Marine::Cell::KnowledgeBaseService,
+                        retrieve: Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match'))
+      )
+      expect(Marine::Decision::CutoverScenarioSelector).not_to receive(:new)
+
+      payload = product_runner.run(additional_message: 'price for impeller')
+
+      expect(payload['action']).to eq('product')
+    end
+  end
+
+  # Phase 2 / Stage 6 blocking-review remediation — the controlled cutover wrapper must preserve the
+  # pre-Stage-6 fail-safe. On the CLOSED path (the default) the wrapper defers to the legacy
+  # ScenarioSelector; if that legacy selector raises, the error must still propagate to the Runner's
+  # top-level rescue and degrade to the historical safe handoff — never a silently swallowed nil that
+  # continues into RAG generation. Uses the REAL CutoverScenarioSelector (only its gate dependency is
+  # stubbed closed; the wrapper's own output is NOT stubbed).
+  describe 'legacy scenario selector failure degrades to the historical safe handoff (Stage 6 closed path)' do
+    before do
+      allow(Marine::Decision::CutoverGate).to receive(:new).and_return(
+        instance_double(Marine::Decision::CutoverGate, open?: false)
+      )
+      allow(selector).to receive(:select).and_raise(StandardError, 'legacy boom')
+      allow(generator).to receive(:generate).and_return(reply_payload)
+    end
+
+    it 'returns the runner_error safe handoff and never invokes the ResponseGenerator' do
+      payload = runner.run(additional_message: 'where is my order')
+
+      expect(payload).to include(
+        'response' => 'conversation_handoff',
+        'action' => 'handoff',
+        'action_reason' => 'runner_error',
+        'orchestration_path' => 'handoff'
+      )
+      expect(generator).not_to have_received(:generate)
     end
   end
 

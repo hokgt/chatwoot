@@ -46,18 +46,28 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
     let(:conversation) { create(:conversation) }
     let(:assistant) { create(:marine_assistant, account: conversation.account) }
     let(:incoming) { create(:message, conversation: conversation, message_type: :incoming, content: 'price for impeller 3 inch') }
+    let(:exact_price_attempt) { instance_double(Marine::Backend::ExactPriceCustomerExecution) }
+    let(:target_fallback) do
+      Marine::Backend::ExactPriceCustomerExecution::Result.new(
+        status: :fallback, reason: :authority_rejected, text: nil
+      ).freeze
+    end
+
+    before do
+      allow(Marine::Backend::ExactPriceCustomerExecution).to receive(:new).and_return(exact_price_attempt)
+      allow(exact_price_attempt).to receive(:call).and_return(target_fallback)
+    end
 
     def stub_reasoning(payload)
       chat = instance_double(Marine::Llm::AssistantChatService, generate_response: payload)
       allow(Marine::Llm::AssistantChatService).to receive(:new).and_return(chat)
     end
 
-    def product_payload(action:, reply: nil, operation: :none, changes: {}, language: nil)
-      {
-        'action' => 'product', 'orchestration_path' => 'product',
-        'product_plan' => { action: action, reply: reply, language: language,
-                            state: { operation: operation, changes: changes } }
-      }
+    def product_payload(action:, reply: nil, operation: :none, changes: {}, language: nil, language_resolution: nil) # rubocop:disable Metrics/ParameterLists
+      plan = { action: action, reply: reply, language: language,
+               state: { operation: operation, changes: changes } }
+      plan[:language_resolution] = language_resolution if language_resolution
+      { 'action' => 'product', 'orchestration_path' => 'product', 'product_plan' => plan }
     end
 
     def claim_status
@@ -72,10 +82,625 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload).current
     end
 
-    it 'creates a deterministic product text reply, applies flow state, and completes the claim' do
+    # Phase 6 — the all-capability result matrix. Every accepted Marine capability the generalized
+    # backend seam can satisfy (exact price, product_listing, product_information, family price_range,
+    # binary stock) is delivered through the SAME marine_backend_evidence_v2 / backend_evidence_target
+    # path: one outgoing message, one usage increment, a completed claim, and NO AssistantChatService
+    # legacy call. The seam itself — which capability produced the text, the single Model 1 call, and
+    # every fact guard — is proved in exact_price_customer_execution_spec and
+    # backend_pipeline_integration_spec; the job is capability-agnostic, so this matrix proves only that
+    # it delivers each generalized target identically rather than re-testing the backend facts here.
+    {
+      'exact price' => 'IMP IMP-3 Rp 150.000 per pcs.',
+      'product_listing' => 'Berikut 2 dari 9 produk kami: IMP (Impala) dan ZEB (Zebra).',
+      'product_information' => 'IMP (Impala): kain marine premium untuk kebutuhan Anda.',
+      'price_range' => 'Kisaran harga IMP adalah Rp 100.000 hingga Rp 150.000 per pcs.',
+      'stock' => 'IMP-3 saat ini tersedia.'
+    }.each do |capability, text|
+      it "delivers a fact-guarded #{capability} target reply through the shared evidence-v2 path without the legacy service" do
+        target = Marine::Backend::ExactPriceCustomerExecution::Result.new(
+          status: :deliverable, reason: :accepted, text: text
+        ).freeze
+        allow(exact_price_attempt).to receive(:call).and_return(target)
+        expect(Marine::Llm::AssistantChatService).not_to receive(:new)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        reply = conversation.messages.outgoing.last
+        expect(reply.content).to eq(text)
+        expect(reply.additional_attributes).to include(
+          'source_type' => 'marine_backend_evidence_v2',
+          'orchestration_path' => 'backend_evidence_target'
+        )
+        expect(conversation.messages.outgoing.count).to eq(1)
+        expect(usage_count).to eq(1)
+        expect(claim_status).to eq('completed')
+        expect(exact_price_attempt).to have_received(:call).once
+      end
+    end
+
+    {
+      repository_outage: :authority_rejected, packet_build_or_invalid: :invalid_packet,
+      presenter_exception: :presentation_rejected, renderer_rejection: :presentation_rejected
+    }.each do |stage, reason|
+      it "terminates a product_overview #{stage} without legacy/RAG or customer output" do
+        terminal = Marine::Backend::ExactPriceCustomerExecution::Result.new(
+          status: :terminal_no_output, reason: reason, text: nil, transition: nil
+        ).freeze
+        allow(exact_price_attempt).to receive(:call).and_return(terminal)
+        expect(Marine::Llm::AssistantChatService).not_to receive(:new)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.where(private: false)).to be_empty
+        expect(usage_count).to eq(0)
+        expect(claim_status).to eq('completed')
+      end
+    end
+
+    it 'keeps an authority exception terminal after a real normalized product_overview plan' do
+      MarineInbox.create!(inbox: conversation.inbox, marine_assistant: assistant)
+      overview_plan = Marine::Decision::CandidatePlan.normalize(
+        'schema_version' => Marine::Decision::Schema::SCHEMA_VERSION,
+        'scenario_candidate' => { 'key' => 'scenario_5', 'confidence' => 'high' },
+        'intents' => ['product_overview'], 'slot_operations' => [],
+        'customer_language' => 'id', 'confidence' => 'high'
+      )
+      context = Struct.new(:trigger, :history).new('company offerings', [])
+      scenario_adapter = double(overflow?: false, scenarios: [{ 'key' => 'scenario_5' }])
+      allow(Marine::Backend::ExactPriceCustomerExecution).to receive(:new).and_wrap_original do |original, **kwargs|
+        original.call(
+          **kwargs,
+          decision_runner: ->(**) { overview_plan }, scenario_adapter: scenario_adapter,
+          authority_execution: ->(**) { raise 'private authority detail' },
+          context_builder: double(build: context), policy_projector: double(call: {})
+        )
+      end
+      expect(Marine::Llm::AssistantChatService).not_to receive(:new)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      expect(conversation.messages.outgoing.where(private: false)).to be_empty
+      expect(usage_count).to eq(0)
+      expect(claim_status).to eq('completed')
+    end
+
+    # Checkpoint B — a stateful end-to-end proof that the family price-RANGE deterministic fallback is
+    # delivered through the REAL ExactPriceCustomerExecution + EvidencePacketPresenter + the new
+    # PriceRangeEvidenceRenderer. Only the backend boundaries (authority execution, Model 1 runner,
+    # scenario adapter, context builder, policy projector, Model 2 generator, semantic verifier) are
+    # injected synthetically — no live provider, catalog DB, or RAG is touched. The generator fails so the
+    # presenter discards the (absent) candidate and renders from the synthetic frozen v3 price_range
+    # Evidence alone. It proves ONE outgoing deterministic range reply, a completed claim, exactly one
+    # usage increment, idempotent duplicate replay, and that the legacy AssistantChatService is NEVER
+    # constructed.
+    describe 'real Checkpoint-B presenter/renderer range path (stateful, no live provider/catalog)' do
+      let(:range_reply) { 'Untuk produk BD, harganya mulai dari Rp 10.000 sampai Rp 12.500 per yard. Mau varian yang mana?' }
+
+      def synthetic_v3_range_packet(min: '10000', max: '12500', display_min: '10.000', display_max: '12.500')
+        Marine::Backend::EvidencePacketBuilder.new(clock: -> { Time.utc(2026, 9, 30, 12, 0, 0) }).build(
+          evidence_input: {
+            scenario: { key: 'scenario_8' }, intents: %w[price_range], customer_language: 'id', response_goals: %w[answer_price_range],
+            validated_slots: { product: { code: 'BD', name: 'Santorini', source: 'marine_catalog' } },
+            facts: { price_range: { canonical: { family_code: 'BD', currency: 'IDR', min: min, max: max, uom: 'Yard' },
+                                    display: { currency: 'Rp', min: display_min, max: display_max, uom: 'yard' },
+                                    policy_version: 'price-display-v1', source: 'catalog_price_range_repository',
+                                    checked_at: '2026-09-30T12:00:00Z' } },
+            missing_slots: [], variant_candidates: [],
+            presentation_policy: { tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code' }
+          }
+        )
+      end
+
+      # A deeply-frozen v3 packet that passes the delivery seam's target gate but whose canonical min is a
+      # Float, so the renderer fails closed — exercising the real Checkpoint-B path to a non-deliverable.
+      def unrenderable_v3_range_packet
+        packet = {
+          evidence_version: 'marine_evidence_v3', generated_at: '2026-09-30T12:00:00Z', response_goals: %w[answer_price_range],
+          scenario: { key: 'scenario_8', intents: %w[price_range] },
+          validated_slots: { product: { code: 'BD', name: 'Santorini', attributes: {}, source: 'marine_catalog' } },
+          facts: { price_range: { canonical: { family_code: 'BD', currency: 'IDR', min: 10_000.5, max: '12500', uom: 'Yard' },
+                                  display: { currency: 'Rp', min: '10.000', max: '12.500', uom: 'yard' },
+                                  policy_version: 'price-display-v1', source: 'catalog_price_range_repository',
+                                  checked_at: '2026-09-30T12:00:00Z' } },
+          missing_slots: [], variant_candidates: [],
+          prohibited_claims: %w[exact_stock_quantity warehouse_location delivery_date unverified_discount],
+          response_constraints: { max_paragraphs: 2, role: 'marine_sales_assistant', handoff_self_reference: true },
+          customer_language: 'id', presentation_policy: { tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code' }
+        }
+        deep_freeze_packet(packet)
+      end
+
+      def deep_freeze_packet(value)
+        case value
+        when Hash then value.each { |key, child| deep_freeze_packet(key.freeze) && deep_freeze_packet(child) }
+        when Array then value.each { |child| deep_freeze_packet(child) }
+        end
+        value.freeze
+      end
+
+      def authority_result(packet, transition: price_range_state_transition)
+        Marine::Backend::AuthorityCoordinator::Result.new(
+          outcome_type: Marine::Backend::AuthorityCoordinator::OUTCOME_EVIDENCE_PACKET,
+          reason: Marine::Backend::AuthorityCoordinator::REASON_ACCEPTED, scenario_key: 'scenario_8',
+          intents: %w[price_range].freeze, source: :catalog, evidence_packet: packet,
+          proposed_state_transition: transition
+        ).freeze
+      end
+
+      # The deep-frozen price_range proposed-state-transition the coordinator emits for an accepted
+      # family range. (frozen_string_literal makes every String literal here frozen, so the graph is
+      # deeply frozen.)
+      def price_range_state_transition(operation: :start, family_code: 'BD')
+        { schema_version: 'state_transition_v1', operation: operation, capability: 'price_range',
+          handoff_required: false, authoritative_identity: { family_code: family_code, source: 'marine_catalog' }.freeze }.freeze
+      end
+
+      # Construct the REAL customer execution with injected synthetic boundaries but the REAL presenter
+      # (and thus the REAL PriceRangeEvidenceRenderer), so the job runs the genuine Checkpoint-B path.
+      def wire_real_checkpoint_b(packet, generator:, fact_verifier: ->(**) { true })
+        context = Struct.new(:trigger, :history).new('berapa kisaran harga BD', [])
+        policy = { tone: 'professional', verbosity: 'concise', range_followup_mode: 'ask_variant_code' }
+        scenario_adapter = instance_double(Marine::Decision::ScenarioAdapter, overflow?: false, scenarios: [{ 'key' => 'scenario_8' }])
+        allow(Marine::Backend::ExactPriceCustomerExecution).to receive(:new).and_wrap_original do |orig, **kwargs|
+          orig.call(**kwargs,
+                    decision_runner: ->(**) { { marker: :plan }.freeze },
+                    scenario_adapter: scenario_adapter,
+                    authority_execution: ->(**) { authority_result(packet) },
+                    context_builder: instance_double(Marine::Conversation::ContextBuilder, build: context),
+                    policy_projector: instance_double(Marine::Backend::PresentationPolicyProjector, call: policy),
+                    generator: generator, fact_verifier: fact_verifier)
+        end
+      end
+
+      before do
+        # Link the conversation's inbox to the Marine assistant so the customer execution's relationship
+        # gate passes against the real records.
+        MarineInbox.create!(inbox: conversation.inbox, marine_assistant: assistant)
+      end
+
+      it 'delivers ONE range reply, persists the family state, completes the claim, increments usage once, and never builds the legacy service' do
+        wire_real_checkpoint_b(synthetic_v3_range_packet, generator: ->(**) {}) # generation fails -> render from Evidence
+        expect(Marine::Llm::AssistantChatService).not_to receive(:new)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        reply = conversation.messages.outgoing.last
+        expect(reply.content).to eq(range_reply)
+        expect(reply.additional_attributes).to include(
+          'source_type' => 'marine_backend_evidence_v2', 'orchestration_path' => 'backend_evidence_target'
+        )
+        expect(conversation.messages.outgoing.count).to eq(1)
+        expect(usage_count).to eq(1)
+        expect(claim_status).to eq('completed')
+        # The Turn-1 authoritative family state is now persisted atomically with the reply.
+        state = product_state
+        expect(state['validated_family']).to eq('BD')
+        expect(state['status']).to eq('active')
+        expect(state['version']).to eq(1)
+      end
+
+      it 'is idempotent: a duplicate replay of the same incoming produces no second output and no double usage' do
+        wire_real_checkpoint_b(synthetic_v3_range_packet, generator: ->(**) {})
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.count).to eq(1)
+        expect(usage_count).to eq(1)
+        expect(claim_status).to eq('completed')
+        # The replay is stopped at the claim BEFORE finalize, so the state version is never bumped.
+        expect(product_state['version']).to eq(1)
+      end
+
+      it 'discards a semantically-rejected candidate and still delivers the deterministic range Evidence reply' do
+        wire_real_checkpoint_b(
+          synthetic_v3_range_packet,
+          generator: ->(**) { 'Untuk BD, kisaran harga Rp 10.000 sampai Rp 12.500 per yard.' },
+          fact_verifier: ->(**) { false }
+        )
+        expect(Marine::Llm::AssistantChatService).not_to receive(:new)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        reply = conversation.messages.outgoing.last
+        expect(reply.content).to eq(range_reply)
+        expect(reply.content).not_to include('kisaran harga')
+        expect(conversation.messages.outgoing.count).to eq(1)
+      end
+
+      it 'runs the legacy service EXACTLY ONCE for an unrenderable v3 range packet (fail-closed to legacy)' do
+        wire_real_checkpoint_b(unrenderable_v3_range_packet, generator: ->(**) {})
+        chat = instance_double(Marine::Llm::AssistantChatService, generate_response: { 'response' => 'legacy range fallback', 'action' => 'reply' })
+        allow(Marine::Llm::AssistantChatService).to receive(:new).and_return(chat)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq('legacy range fallback')
+        expect(Marine::Llm::AssistantChatService).to have_received(:new).with(
+          assistant: assistant, conversation: conversation, source: incoming
+        ).once
+        expect(claim_status).to eq('completed')
+      end
+    end
+
+    # --- price_range proposed-state-transition finalization (Group C) ---------------------------
+    #
+    # The accepted price_range target now carries a closed proposed_state_transition the job applies
+    # inside the finalize transaction (after the eligibility/staleness gates, before create). An
+    # ambiguity handoff envelope routes the existing safe handoff and writes no state; a missing
+    # transition declines the target so legacy runs; a create failure rolls the state write back.
+    describe 'price_range state transition at finalize' do
+      let(:range_text) { 'Kisaran harga BD mulai Rp 10.000 sampai Rp 12.500 per yard.' }
+
+      def deliverable_transition_result(transition)
+        Marine::Backend::ExactPriceCustomerExecution::Result.new(
+          status: :deliverable, reason: :accepted, text: range_text, transition: transition
+        ).freeze
+      end
+
+      def transition(operation: :start, family_code: 'BD', handoff_required: false)
+        identity = handoff_required ? nil : { family_code: family_code, source: 'marine_catalog' }.freeze
+        { schema_version: 'state_transition_v1', operation: operation, capability: 'price_range',
+          handoff_required: handoff_required, authoritative_identity: identity }.freeze
+      end
+
+      it 'applies a :start transition (fresh family state) atomically with the delivered reply' do
+        allow(exact_price_attempt).to receive(:call).and_return(deliverable_transition_result(transition(operation: :start)))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        reply = conversation.messages.outgoing.last
+        expect(reply.content).to eq(range_text)
+        expect(reply.additional_attributes['source_type']).to eq('marine_backend_evidence_v2')
+        state = product_state
+        expect(state['validated_family']).to eq('BD')
+        expect(state['status']).to eq('active')
+        expect(usage_count).to eq(1)
+        expect(claim_status).to eq('completed')
+      end
+
+      it 'applies an :update transition (bumping version) onto an existing same-family flow' do
+        Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload).start!('validated_family' => 'BD', 'current_intent' => 'price')
+        allow(exact_price_attempt).to receive(:call).and_return(deliverable_transition_result(transition(operation: :update)))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        state = product_state
+        expect(state['validated_family']).to eq('BD')
+        expect(state['version']).to eq(2)
+      end
+
+      it 'persists ONLY the transition family (a forged plan family can never influence it)' do
+        allow(exact_price_attempt).to receive(:call).and_return(deliverable_transition_result(transition(family_code: 'AUTHORITATIVE')))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(product_state['validated_family']).to eq('AUTHORITATIVE')
+      end
+
+      it 'rolls the state write back and leaves the claim retryable when the reply create fails' do
+        allow(exact_price_attempt).to receive(:call).and_return(deliverable_transition_result(transition))
+        allow_any_instance_of(described_class).to receive(:create_marine_reply).and_raise(ActiveRecord::RecordInvalid)
+
+        expect { described_class.perform_now(conversation, assistant, incoming.id) }.not_to raise_error
+        expect(conversation.messages.outgoing.count).to eq(0)
+        expect(product_state).to be_nil
+        expect(usage_count).to eq(0)
+        expect(claim_status).to eq('processing')
+      end
+
+      it 'writes NO state and produces no output when a newer relevant incoming makes the job stale' do
+        trigger = incoming
+        create(:message, conversation: conversation, message_type: :incoming, content: 'actually never mind')
+        allow(exact_price_attempt).to receive(:call).and_return(deliverable_transition_result(transition))
+
+        described_class.perform_now(conversation, assistant, trigger.id)
+
+        expect(conversation.messages.outgoing.count).to eq(0)
+        expect(product_state).to be_nil
+        expect(claim_status).to eq('completed')
+      end
+
+      it 'routes an ambiguity handoff envelope through the safe handoff, writing NO state and skipping any product renderer' do
+        handoff = Marine::Backend::ExactPriceCustomerExecution::Result.new(
+          status: :handoff, reason: :handoff_required, text: nil, transition: transition(handoff_required: true)
+        ).freeze
+        allow(exact_price_attempt).to receive(:call).and_return(handoff)
+        service = instance_double(Marine::Circuit::HandoffService, perform: nil)
+        expect(Marine::Circuit::HandoffService).to receive(:new)
+          .with(hash_including(conversation: conversation, assistant: assistant, reason: 'product_family_ambiguous', message: nil))
+          .and_return(service)
+        expect(Marine::Catalog::PriceRangeReplyComposer).not_to receive(:new)
+        expect(Marine::Llm::AssistantChatService).not_to receive(:new)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.where(private: false)).to be_empty
+        expect(product_state).to be_nil
+        expect(claim_status).to eq('completed')
+      end
+
+      it 'runs legacy (writing no state) when the target declines (missing/invalid transition fell closed to fallback)' do
+        allow(exact_price_attempt).to receive(:call).and_return(
+          Marine::Backend::ExactPriceCustomerExecution::Result.new(status: :fallback, reason: :transition_required, text: nil, transition: nil).freeze
+        )
+        stub_reasoning('response' => 'legacy range reply', 'action' => 'reply')
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq('legacy range reply')
+        expect(product_state).to be_nil
+        expect(Marine::Llm::AssistantChatService).to have_received(:new).with(
+          assistant: assistant, conversation: conversation, source: incoming
+        ).once
+      end
+    end
+
+    describe 'exact-price family+variant transition at finalize' do
+      let(:exact_text) { 'Harga BD-4 adalah Rp 12.500 per yard.' }
+
+      def exact_transition(operation: :start, family_code: 'BD', variant_code: 'BD-4', source: 'marine_catalog')
+        identity = { family_code: family_code, variant_code: variant_code, source: source }.freeze
+        { schema_version: 'state_transition_v1', operation: operation, capability: 'price',
+          handoff_required: false, authoritative_identity: identity }.freeze
+      end
+
+      def exact_transition_result(value = exact_transition)
+        Marine::Backend::ExactPriceCustomerExecution::Result.new(
+          status: :deliverable, reason: :accepted, text: exact_text, transition: value
+        ).freeze
+      end
+
+      it 'persists authoritative family+variant and bounded intent atomically with the exact-price reply' do
+        allow(exact_price_attempt).to receive(:call).and_return(exact_transition_result)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq(exact_text)
+        expect(product_state).to include('validated_family' => 'BD', 'validated_variant' => 'BD-4',
+                                         'current_intent' => 'price', 'version' => 1)
+        expect(product_state.to_s).not_to match(/12\.500|yard|quantity|stock|location|Harga/)
+      end
+
+      it 'updates the same family while preserving catalog markers and clearing clarification metadata' do
+        store = Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload)
+        store.start!('validated_family' => 'BD', 'current_intent' => 'price', 'validated_variant' => 'BD-OLD',
+                     'expected_attributes' => %w[size], 'clarification_kind' => 'variant', 'clarification_count' => 2,
+                     'requested_intents' => %w[price stock])
+        store.update!('catalog_sent' => true, 'catalog_document_id' => 44, 'catalog_message_id' => 55)
+        allow(exact_price_attempt).to receive(:call).and_return(exact_transition_result(exact_transition(operation: :update)))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(product_state).to include('validated_family' => 'BD', 'validated_variant' => 'BD-4',
+                                         'catalog_sent' => true, 'catalog_document_id' => 44, 'catalog_message_id' => 55)
+        expect(product_state['expected_attributes']).to eq([])
+        expect(product_state).not_to have_key('clarification_kind')
+        expect(product_state).not_to have_key('clarification_count')
+        expect(product_state).not_to have_key('requested_intents')
+      end
+
+      it 'recomputes a stale proposed start as a same-family update under the final lock' do
+        store = Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload)
+        store.start!('validated_family' => 'BD', 'current_intent' => 'price', 'validated_variant' => 'BD-OLD')
+        store.update!('catalog_sent' => true, 'catalog_document_id' => 44, 'catalog_message_id' => 55)
+        allow(exact_price_attempt).to receive(:call).and_return(exact_transition_result(exact_transition(operation: :start)))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(product_state).to include('validated_family' => 'BD', 'validated_variant' => 'BD-4',
+                                         'catalog_sent' => true, 'catalog_document_id' => 44,
+                                         'catalog_message_id' => 55, 'version' => 3)
+      end
+
+      it 'starts fresh on a family switch, clearing stale variant, catalog, and clarification context' do
+        store = Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload)
+        store.start!('validated_family' => 'OLD', 'validated_variant' => 'OLD-1', 'current_intent' => 'stock',
+                     'clarification_kind' => 'variant', 'clarification_count' => 2)
+        store.update!('catalog_sent' => true, 'catalog_document_id' => 44, 'catalog_message_id' => 55)
+        allow(exact_price_attempt).to receive(:call).and_return(exact_transition_result(exact_transition(operation: :start)))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(product_state).to include('validated_family' => 'BD', 'validated_variant' => 'BD-4',
+                                         'current_intent' => 'price', 'version' => 1)
+        expect(product_state).not_to have_key('catalog_sent')
+        expect(product_state).not_to have_key('clarification_kind')
+        expect(product_state).not_to have_key('requested_intents')
+      end
+
+      it 'preserves the validated variant and catalog markers for an accepted same-family information turn' do
+        store = Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload)
+        store.start!('validated_family' => 'BD', 'validated_variant' => 'BD-4', 'current_intent' => 'price')
+        store.update!('catalog_sent' => true, 'catalog_document_id' => 44, 'catalog_message_id' => 55)
+        transition = {
+          schema_version: 'state_transition_v1', operation: :start, capability: 'family_context',
+          handoff_required: false,
+          authoritative_identity: { family_code: 'BD', source: 'marine_catalog' }.freeze
+        }.freeze
+        information = Marine::Backend::ExactPriceCustomerExecution::Result.new(
+          status: :deliverable, reason: :accepted, text: 'BD information.', transition: transition
+        ).freeze
+        allow(exact_price_attempt).to receive(:call).and_return(information)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(product_state).to include(
+          'validated_family' => 'BD', 'validated_variant' => 'BD-4',
+          'catalog_sent' => true, 'catalog_document_id' => 44, 'catalog_message_id' => 55,
+          'version' => 3
+        )
+      end
+
+      it 'switches an accepted authoritative family-information turn cleanly before a context-only price follow-up' do
+        store = Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload)
+        store.start!('validated_family' => 'LF', 'validated_variant' => 'LF-3', 'current_intent' => 'stock',
+                     'expected_attributes' => %w[colour], 'clarification_kind' => 'variant',
+                     'clarification_count' => 2, 'requested_intents' => %w[price stock])
+        store.update!('catalog_sent' => true, 'catalog_document_id' => 44, 'catalog_message_id' => 55)
+        incoming.update!(content: 'Apakah Baby Doll tersedia?')
+        family_transition = {
+          schema_version: 'state_transition_v1', operation: :start, capability: 'family_context',
+          handoff_required: false,
+          authoritative_identity: { family_code: 'BD', source: 'marine_catalog' }.freeze
+        }.freeze
+        information = Marine::Backend::ExactPriceCustomerExecution::Result.new(
+          status: :deliverable, reason: :accepted, text: 'Baby Doll tersedia.', transition: family_transition
+        ).freeze
+        allow(exact_price_attempt).to receive(:call).and_return(information)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        switched = product_state
+        expect(switched).to include('validated_family' => 'BD', 'version' => 1)
+        expect(switched.keys).not_to include('validated_variant', 'catalog_sent', 'clarification_kind', 'requested_intents')
+
+        family_repository = instance_double(Marine::Catalog::ProductFamilyRepository)
+        variant_repository = instance_double(Marine::Catalog::VariantRepository)
+        price_repository = instance_double(Marine::Catalog::PriceRepository)
+        range_repository = instance_double(Marine::Catalog::PriceRangeRepository)
+        stock_repository = instance_double(Marine::Catalog::StockRepository)
+        variant_resolver = instance_double(Marine::Catalog::VariantResolver)
+        allow(family_repository).to receive(:resolve_exact).with('BD').and_return(code: 'BD', name: 'Baby Doll')
+        allow(family_repository).to receive(:active_candidates).and_return([])
+        allow(variant_repository).to receive(:attribute_names).with('BD').and_return([])
+        allow(variant_repository).to receive(:resolve_child)
+        allow(variant_resolver).to receive(:resolve)
+        allow(price_repository).to receive(:price_for)
+        allow(range_repository).to receive(:range_for).with('BD').and_return(status: :unavailable)
+        allow(stock_repository).to receive(:status_for)
+        orchestrator = Marine::Catalog::ProductQueryOrchestrator.new(
+          repositories: { family: family_repository, variant: variant_repository, price: price_repository,
+                          price_range: range_repository, stock: stock_repository },
+          variant_resolver: variant_resolver
+        )
+
+        follow_up = orchestrator.plan_for_intent(
+          intent: { product_related: true, intent: 'price', requested_intents: %w[price],
+                    family_mention: nil, explicit_child_code: nil, attribute_candidates: [],
+                    requires_exact_variant: true, family_changed: false, intent_changed: true,
+                    quantity_inquiry: false },
+          flow: Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload).current_for_planning
+        )
+
+        expect(follow_up.dig(:state, :changes)).to include('validated_family' => 'BD')
+        expect(follow_up.dig(:state, :changes)).not_to include('validated_variant' => 'LF-3')
+        expect(range_repository).to have_received(:range_for).with('BD')
+        expect(price_repository).not_to have_received(:price_for)
+      end
+
+      it 'delivers the Baby Doll to Linen Flow four-turn switch with only the new variant price retained' do
+        family_transition = lambda do |family_code|
+          {
+            schema_version: 'state_transition_v1', operation: :start, capability: 'family_context',
+            handoff_required: false,
+            authoritative_identity: { family_code: family_code, source: 'marine_catalog' }.freeze
+          }.freeze
+        end
+        target = lambda do |text, transition|
+          Marine::Backend::ExactPriceCustomerExecution::Result.new(
+            status: :deliverable, reason: :accepted, text: text, transition: transition
+          ).freeze
+        end
+        results = [
+          target.call('Baby Doll tersedia.', family_transition.call('BD')),
+          target.call('Harga BD-3 adalah Rp 10.000 per yard.', exact_transition(family_code: 'BD', variant_code: 'BD-3')),
+          target.call('Linen Flow tersedia.', family_transition.call('LF')),
+          target.call('Harga LF-3 adalah Rp 20.000 per yard.', exact_transition(family_code: 'LF', variant_code: 'LF-3'))
+        ]
+        allow(exact_price_attempt).to receive(:call).and_return(*results)
+
+        incoming.update!(content: 'Baby Doll')
+        turns = [incoming]
+        described_class.perform_now(conversation, assistant, incoming.id)
+        expect(product_state).to include('validated_family' => 'BD', 'version' => 1)
+        expect(product_state).not_to have_key('validated_variant')
+
+        turns << create(:message, conversation: conversation, message_type: :incoming, content: 'bd-3')
+        described_class.perform_now(conversation, assistant, turns.last.id)
+        expect(product_state).to include('validated_family' => 'BD', 'validated_variant' => 'BD-3', 'version' => 2)
+
+        turns << create(:message, conversation: conversation, message_type: :incoming, content: 'Linen Flow')
+        described_class.perform_now(conversation, assistant, turns.last.id)
+        expect(product_state).to include('validated_family' => 'LF', 'version' => 1)
+        expect(product_state).not_to have_key('validated_variant')
+
+        turns << create(:message, conversation: conversation, message_type: :incoming, content: 'lf-3')
+        described_class.perform_now(conversation, assistant, turns.last.id)
+
+        expect(product_state).to include('validated_family' => 'LF', 'validated_variant' => 'LF-3', 'version' => 2)
+        expect(product_state.to_s).not_to match(/10\.000|BD-3/)
+        replies = conversation.messages.outgoing.order(:id).pluck(:content)
+        expect(replies).to eq(
+          [
+            'Baby Doll tersedia.', 'Harga BD-3 adalah Rp 10.000 per yard.',
+            'Linen Flow tersedia.', 'Harga LF-3 adalah Rp 20.000 per yard.'
+          ]
+        )
+        expect(replies.last).to include('LF-3', '20.000')
+        expect(replies.last).not_to include('BD-3', '10.000')
+        expect(turns.map { |turn| turn.reload.additional_attributes.dig('wijaya_marine_ai', 'processing_claim_v1', 'status') })
+          .to all(eq('completed'))
+        expect(exact_price_attempt).to have_received(:call).exactly(4).times
+      end
+
+      it 'writes no state for a malformed or forged transition' do
+        malformed = exact_transition(source: 'forged')
+        allow(exact_price_attempt).to receive(:call).and_return(exact_transition_result(malformed))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq(exact_text)
+        expect(product_state).to be_nil
+      end
+
+      it 'rolls back the exact identity when reply creation fails' do
+        allow(exact_price_attempt).to receive(:call).and_return(exact_transition_result)
+        allow_any_instance_of(described_class).to receive(:create_marine_reply).and_raise(ActiveRecord::RecordInvalid)
+
+        expect { described_class.perform_now(conversation, assistant, incoming.id) }.not_to raise_error
+        expect(product_state).to be_nil
+        expect(conversation.messages.outgoing).to be_empty
+        expect(claim_status).to eq('processing')
+      end
+    end
+
+    it 'runs the unchanged legacy path when the exact-price target declines the turn' do
+      stub_reasoning('response' => 'legacy fallback', 'action' => 'reply')
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      expect(conversation.messages.outgoing.last.content).to eq('legacy fallback')
+      expect(exact_price_attempt).to have_received(:call).once
+      expect(Marine::Llm::AssistantChatService).to have_received(:new).with(
+        assistant: assistant, conversation: conversation, source: incoming
+      ).once
+    end
+
+    it 'runs the unchanged legacy path when target construction or execution raises' do
+      allow(exact_price_attempt).to receive(:call).and_raise('synthetic target failure')
+      stub_reasoning('response' => 'legacy after target failure', 'action' => 'reply')
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      expect(conversation.messages.outgoing.last.content).to eq('legacy after target failure')
+      expect(claim_status).to eq('completed')
+    end
+
+    # price_available now routes through the shared Marine::Catalog::PriceReplyComposer (see
+    # price_reply_composer_spec); the job delivers the composer's accepted candidate as the product
+    # text, still applying flow state, usage, and claim exactly as any other product reply.
+    it 'delivers a price reply via the shared PriceReplyComposer, applies flow state, and completes the claim' do
+      decision = Marine::Catalog::PriceReplyComposer::Decision.new(
+        decision: :deliver_generated, reason: :generated_accepted, text: 'Harga IMP-3 adalah Rp 150.000 per pcs.'
+      ).freeze
+      allow(Marine::Catalog::PriceReplyComposer).to receive(:new).and_return(
+        instance_double(Marine::Catalog::PriceReplyComposer, compose: decision)
+      )
       stub_reasoning(product_payload(
                        action: :reply,
-                       reply: { kind: :price_available, currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
+                       reply: { kind: :price_available, variant_code: 'IMP-3', currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
                        operation: :update,
                        changes: { 'validated_family' => 'IMP', 'validated_variant' => 'IMP-3', 'current_intent' => 'price' }
                      ))
@@ -84,7 +709,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
 
       conversation.messages.reload
       reply = conversation.messages.outgoing.last
-      expect(reply.content).to eq('The price is IDR 150000 per pcs.')
+      expect(reply.content).to eq('Harga IMP-3 adalah Rp 150.000 per pcs.')
       expect(reply.additional_attributes['source_type']).to eq('marine_product')
       expect(reply.attachments).to be_empty
       expect(product_state['validated_variant']).to eq('IMP-3')
@@ -169,7 +794,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       described_class.perform_now(conversation, assistant, incoming.id)
 
       reply = conversation.messages.outgoing.last
-      expect(reply.content).to eq('Could you specify the size, material you need?')
+      expect(reply.content).to eq('Could you specify the exact variant code you need?')
       expect(reply.attachments).to be_empty
     end
 
@@ -191,7 +816,9 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       described_class.perform_now(conversation, assistant, incoming.id)
 
       reply = conversation.messages.outgoing.last
-      expect(reply.content).to eq('Could you specify the size, material you need?')
+      # Catalog-assisted caption asks for the exact variant code and never a repository attribute label,
+      # delivered truthfully ALONGSIDE the real native catalog attachment (integration seam).
+      expect(reply.content).to eq('Could you specify the exact variant code you need?')
       expect(reply.additional_attributes['source_type']).to eq('marine_product')
       expect(reply.attachments.count).to eq(1)
       expect(reply.attachments.first.file.blob.id).to eq(document.source_file.blob.id)
@@ -214,7 +841,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       described_class.perform_now(conversation, assistant, incoming.id)
 
       reply = conversation.messages.outgoing.last
-      expect(reply.content).to eq('Could you specify the size, material you need?')
+      expect(reply.content).to eq('Could you specify the exact variant code you need?')
       expect(reply.attachments).to be_empty
       expect(product_state['catalog_message_id']).to eq(987)
     end
@@ -247,6 +874,129 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
 
       reply = conversation.messages.outgoing.last
       expect(reply.content).to eq("I'm sorry, I don't have a catalog available for Impeller right now.")
+      expect(reply.attachments).to be_empty
+    end
+
+    # --- Family-only price RANGE caption riding the catalog-assisted clarification --------------
+    #
+    # A family-only PRICE turn grounds the catalog-assisted variant clarification with a deterministic,
+    # locale-safe price RANGE. The "reply with the code shown in the catalog" wording is truthful ONLY
+    # when a native catalog attachment is actually delivered this turn; without one the caption must not
+    # claim a catalog was shown, and no attachment (or a duplicate) is ever created.
+
+    def price_range_payload(operation: :start)
+      product_payload(
+        action: :send_catalog,
+        reply: { kind: :price_range, family_code: 'IMP', family_name: 'Impeller',
+                 price_min: '12500', price_max: '45000', currency: 'IDR', uom: 'yard' },
+        operation: operation, language: 'en',
+        changes: { 'validated_family' => 'IMP', 'current_intent' => 'price', 'expected_attributes' => %w[size material] }
+      )
+    end
+
+    it 'delivers one native catalog attachment with a range caption that points at the catalog, and marks state' do
+      document = usable_catalog
+      stub_reasoning(price_range_payload)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq(
+        'We carry Impeller. Prices range from IDR 12,500 to IDR 45,000 per yard. ' \
+        "Please reply with the exact variant code shown in the catalog and I'll confirm the exact price for you."
+      )
+      expect(reply.attachments.count).to eq(1)
+      expect(reply.attachments.first.file.blob.id).to eq(document.source_file.blob.id)
+
+      state = product_state
+      expect(state['validated_family']).to eq('IMP')
+      expect(state['current_intent']).to eq('price')
+      expect(state['catalog_sent']).to be(true)
+      expect(state['catalog_document_id']).to eq(document.id)
+      expect(state['catalog_message_id']).to eq(reply.id)
+      expect(usage_count).to eq(1)
+      expect(claim_status).to eq('completed')
+    end
+
+    it 'never claims a catalog was shown and attaches nothing when no usable catalog exists for a valid range' do
+      stub_reasoning(price_range_payload)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq(
+        'We carry Impeller. Prices range from IDR 12,500 to IDR 45,000 per yard. ' \
+        "Please reply with the exact variant code and I'll confirm the exact price for you."
+      )
+      expect(reply.content).not_to include('shown in the catalog')
+      expect(reply.attachments).to be_empty
+    end
+
+    it 'sends only truthful range text (no duplicate attachment) when the flow already sent a catalog' do
+      document = usable_catalog
+      store = Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload)
+      store.start!('validated_family' => 'IMP', 'current_intent' => 'price')
+      store.update!('catalog_sent' => true, 'catalog_document_id' => document.id, 'catalog_message_id' => 987)
+      stub_reasoning(price_range_payload(operation: :update))
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq(
+        'We carry Impeller. Prices range from IDR 12,500 to IDR 45,000 per yard. ' \
+        "Please reply with the exact variant code and I'll confirm the exact price for you."
+      )
+      expect(reply.attachments).to be_empty
+      expect(product_state['catalog_message_id']).to eq(987)
+    end
+
+    # --- Proactive nonnumeric catalog OFFER caption (no complete range available) ---------------
+    #
+    # When a family inquiry offers a native catalog but no complete authoritative range can be safely
+    # offered, the plan carries the :catalog_offer descriptor. The caption introduces the family, says
+    # the exact price depends on the chosen variant, and asks for the exact code. It is attachment-
+    # outcome truthful: it claims the catalog is shared ONLY when a native attachment is delivered.
+
+    def catalog_offer_payload(operation: :start)
+      product_payload(
+        action: :send_catalog,
+        reply: { kind: :catalog_offer, family_code: 'IMP', family_name: 'Impeller' },
+        operation: operation, language: 'en',
+        changes: { 'validated_family' => 'IMP', 'current_intent' => 'price', 'expected_attributes' => %w[Shade] }
+      )
+    end
+
+    it 'delivers one native attachment with a catalog-offer caption that says it is shared and asks for the code shown in the catalog' do
+      document = usable_catalog
+      stub_reasoning(catalog_offer_payload)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq(
+        'We carry Impeller in several variants, and the exact price depends on the variant you choose. ' \
+        "I've shared our Impeller catalog above. " \
+        "Which variant would you like? Please reply with the exact variant code shown in the catalog and I'll confirm the exact price for you."
+      )
+      expect(reply.content.downcase).not_to include('shade')
+      expect(reply.attachments.count).to eq(1)
+      expect(reply.attachments.first.file.blob.id).to eq(document.source_file.blob.id)
+      expect(product_state['catalog_sent']).to be(true)
+      expect(product_state['expected_attributes']).to eq(%w[Shade]) # internal, persisted unchanged, never in text
+    end
+
+    it 'never claims a catalog was shared and attaches nothing when no usable catalog exists, but stays active and asks for the exact code' do
+      stub_reasoning(catalog_offer_payload)
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      reply = conversation.messages.outgoing.last
+      expect(reply.content).to eq(
+        'We carry Impeller in several variants, and the exact price depends on the variant you choose. ' \
+        "Which variant would you like? Please reply with the exact variant code and I'll confirm the exact price for you."
+      )
+      expect(reply.content).not_to include('shown in the catalog')
+      expect(reply.content.downcase).not_to include('shared')
       expect(reply.attachments).to be_empty
     end
 
@@ -306,7 +1056,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
                      ))
       stub_language('id')
       # Simulate the translator degrading (unconfigured / error): it returns the original text.
-      original = 'Could you specify the size, material you need?'
+      original = 'Could you specify the exact variant code you need?'
       allow(Marine::Llm::TranslateResponseService).to receive(:new).and_return(
         instance_double(Marine::Llm::TranslateResponseService, call: { ok: false, text: original, translated: false, error: 'x' })
       )
@@ -316,13 +1066,83 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       expect(conversation.messages.outgoing.last.content).to eq(original)
     end
 
-    # D7 — configured-language consistency with exact fact preservation on the real shared path.
-    # A non-English product reply localizes through the SAME ReplyLocalizer + FactPlaceholderMask,
-    # so immutable facts (variant code, currency, amount, UOM) stay byte-exact while the prose
-    # follows the customer's language. The translator only ever sees the masked text (facts replaced
-    # by opaque placeholders); no outbound network runs and exactly one message is delivered.
-    it 'delivers a product price reply in the configured language with every fact byte-exact (masked, no LLM output trusted)' do
+    # Bug 3 — the job threads the plan's CLOSED resolution into ReplyLocalizer as language_resolved,
+    # so once the shared resolver has authoritatively decided (or fail-closed to no language) the
+    # localizer never re-runs CLD3. A plan with no resolution (a direct/legacy caller) stays
+    # language_resolved:false, preserving the legacy CLD3 fallback chain. GroundedProductWordingService
+    # is stubbed to nil so the single localization call is the one under test (no network).
+    describe 'authoritative language resolution threaded into ReplyLocalizer (language_resolved seam)' do
+      def captured_localizer(language:, language_resolution:)
+        captured = nil
+        allow(Marine::Catalog::GroundedProductWordingService).to receive(:new).and_return(
+          instance_double(Marine::Catalog::GroundedProductWordingService, call: nil)
+        )
+        allow(Marine::Catalog::ReplyLocalizer).to receive(:new) do |**kwargs|
+          captured = kwargs
+          instance_double(Marine::Catalog::ReplyLocalizer, call: kwargs[:text])
+        end
+        msg = create(:message, conversation: conversation, message_type: :incoming, content: 'ZX-90')
+        stub_reasoning(product_payload(action: :reply, reply: { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' },
+                                       language: language, language_resolution: language_resolution))
+        described_class.perform_now(conversation, assistant, msg.id)
+        captured
+      end
+
+      it 'passes language_resolved:true and the dropped (nil) provider language for an authoritative :unresolved turn' do
+        kwargs = captured_localizer(language: nil, language_resolution: :unresolved)
+
+        expect(kwargs[:language_resolved]).to be(true)
+        expect(kwargs[:provider_language]).to be_nil
+      end
+
+      it 'passes language_resolved:true with the resolved code when the resolver settled a language' do
+        kwargs = captured_localizer(language: 'id', language_resolution: :prior_customer)
+
+        expect(kwargs[:language_resolved]).to be(true)
+        expect(kwargs[:provider_language]).to eq('id')
+      end
+
+      it 'stays language_resolved:false for a plan with no upstream resolution (legacy CLD3 preserved)' do
+        kwargs = captured_localizer(language: nil, language_resolution: nil)
+
+        expect(kwargs[:language_resolved]).to be(false)
+      end
+
+      # End-to-end: the reported shape — an authoritative :unresolved turn with NO configured
+      # language delivers the deterministic English source and NEVER consults CLD3, instead of a
+      # random misclassified language. Runs the REAL ReplyLocalizer (only the detector is watched).
+      it 'delivers the English source and never calls CLD3 for an unresolved turn with no configured language' do
+        allow(Marine::Catalog::GroundedProductWordingService).to receive(:new).and_return(
+          instance_double(Marine::Catalog::GroundedProductWordingService, call: nil)
+        )
+        expect(Marine::Llm::LanguageDetector).not_to receive(:new)
+        expect(Marine::Llm::TranslateResponseService).not_to receive(:new)
+        assistant.update!(config: assistant.config.to_h.except('language'))
+        descriptor = { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' }
+        english = Marine::Catalog::ReplyPresenter.new.reply_text(action: :reply, reply: descriptor)
+        msg = create(:message, conversation: conversation, message_type: :incoming, content: 'ZX-90')
+        stub_reasoning(product_payload(action: :reply, reply: descriptor, language: nil, language_resolution: :unresolved))
+
+        described_class.perform_now(conversation, assistant, msg.id)
+
+        expect(conversation.messages.outgoing.last.content).to eq(english)
+      end
+    end
+
+    # price-display-v1 — a price reply is now generated DIRECTLY in the resolved target language by
+    # the shared PriceReplyComposer (which does its own display-fact formatting + fail-closed gates),
+    # so the price path NEVER re-localizes via ReplyLocalizer / TranslateResponseService. The job
+    # simply delivers the composer's accepted target-language candidate; exactly one message is sent.
+    it 'delivers a price reply in the target language via the composer, never re-localizing (no ReplyLocalizer/TranslateResponseService)' do
       msg = create(:message, conversation: conversation, message_type: :incoming, content: 'berapa harga IMP-3')
+      decision = Marine::Catalog::PriceReplyComposer::Decision.new(
+        decision: :deliver_generated, reason: :generated_accepted, text: 'Harga IMP-3 adalah Rp 150.000 per pcs.'
+      ).freeze
+      allow(Marine::Catalog::PriceReplyComposer).to receive(:new).and_return(
+        instance_double(Marine::Catalog::PriceReplyComposer, compose: decision)
+      )
+      expect(Marine::Catalog::ReplyLocalizer).not_to receive(:new)
+      expect(Marine::Llm::TranslateResponseService).not_to receive(:new)
       payload = product_payload(
         action: :reply,
         reply: { kind: :price_available, variant_code: 'IMP-3', currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
@@ -331,20 +1151,12 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       )
       payload['product_plan'][:language] = 'id' # per-turn provider language -> deterministic target
       stub_reasoning(payload)
-      # Masking-aware translator: rephrases prose, leaves the opaque fact placeholders verbatim.
-      allow(Marine::Llm::TranslateResponseService).to receive(:new) do |**kwargs|
-        localized = kwargs[:text].gsub('The price for', 'Harga untuk').gsub(' is ', ' adalah ')
-        instance_double(Marine::Llm::TranslateResponseService, call: { ok: true, text: localized, translated: true })
-      end
-      allow(Marine::Charge::FactPreservationValidator).to receive(:new).and_return(
-        instance_double(Marine::Charge::FactPreservationValidator, valid?: true)
-      )
 
       described_class.perform_now(conversation, assistant, msg.id)
 
       reply = conversation.messages.outgoing.last
-      expect(reply.content).to eq('Harga untuk IMP-3 adalah IDR 150000 per pcs.')
-      expect(reply.content).to include('IMP-3', 'IDR', '150000', 'pcs') # immutable facts restored byte-exact
+      expect(reply.content).to eq('Harga IMP-3 adalah Rp 150.000 per pcs.')
+      expect(reply.content).to include('IMP-3', 'Rp', '150.000', 'pcs') # exact display facts
       expect(reply.attachments).to be_empty
       expect(conversation.messages.outgoing.count).to eq(1)
     end
@@ -400,7 +1212,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       state = product_state
       expect(state['clarification_kind']).to eq('variant')
       expect(state['clarification_count']).to eq(1)
-      expect(conversation.messages.outgoing.last.content).to eq('Could you specify the size you need?')
+      expect(conversation.messages.outgoing.last.content).to eq('Could you specify the exact variant code you need?')
       expect(claim_status).to eq('completed')
     end
 
@@ -555,19 +1367,25 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         expect(claim_status).to eq('completed')
       end
 
-      it 'delivers an accepted Tier 3 price candidate as the product text' do
+      # A price reply is delivered by the shared PriceReplyComposer, NOT the general two-gate
+      # GroundedProductWordingService (which stays the path for other product kinds).
+      it 'delivers a price candidate from the shared composer, not the general wording service' do
+        decision = Marine::Catalog::PriceReplyComposer::Decision.new(
+          decision: :deliver_generated, reason: :generated_accepted, text: 'IMP-3 dihargai Rp 150.000 per pcs.'
+        ).freeze
+        allow(Marine::Catalog::PriceReplyComposer).to receive(:new).and_return(
+          instance_double(Marine::Catalog::PriceReplyComposer, compose: decision)
+        )
+        expect(Marine::Catalog::GroundedProductWordingService).not_to receive(:new)
         stub_reasoning(product_payload(
                          action: :reply,
                          reply: { kind: :price_available, variant_code: 'IMP-3', currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
                          operation: :update, changes: { 'validated_family' => 'IMP', 'validated_variant' => 'IMP-3', 'current_intent' => 'price' }
                        ))
-        # A realistic candidate the real two-gate wording service could return: it names the
-        # protected variant code (IMP-3) and preserves the exact amount/currency/UOM.
-        stub_wording('IMP-3 is IDR 150000 per pcs.')
 
         described_class.perform_now(conversation, assistant, incoming.id)
 
-        expect(conversation.messages.outgoing.last.content).to eq('IMP-3 is IDR 150000 per pcs.')
+        expect(conversation.messages.outgoing.last.content).to eq('IMP-3 dihargai Rp 150.000 per pcs.')
         expect(product_state['validated_variant']).to eq('IMP-3')
       end
 
@@ -864,7 +1682,8 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         # The eligible path is already committed, so a wording-service failure retains the exact
         # localized fallback computed lock-free; delivery uses it verbatim with NO second
         # ReplyLocalizer call (which would be a network call under the finalize row lock). A non-stock
-        # reply is used because a stock reply fails closed to the handoff, not the deterministic line.
+        # AND non-price reply is used because both stock and price replies fail closed to the handoff,
+        # not the deterministic line (price now routes through the shared PriceReplyComposer).
         localizer_calls = 0
         allow(Marine::Catalog::ReplyLocalizer).to receive(:new).and_wrap_original do |method, **kwargs|
           localizer_calls += 1
@@ -875,13 +1694,14 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         allow(Marine::Catalog::GroundedProductWordingService).to receive(:new).and_return(raising)
         stub_reasoning(product_payload(
                          action: :reply,
-                         reply: { kind: :price_available, variant_code: 'IMP-3', currency: 'IDR', price_list_rate: '150000', uom: 'pcs' },
-                         operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'price' }
+                         reply: { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' },
+                         operation: :update, changes: { 'validated_family' => 'IMP', 'current_intent' => 'parent_info' }
                        ))
 
         described_class.perform_now(conversation, assistant, incoming.id)
 
-        expect(conversation.messages.outgoing.last.content).to eq('The price for IMP-3 is IDR 150000 per pcs.')
+        deterministic = "You're asking about Impeller. Which specific variant would you like to know about?"
+        expect(conversation.messages.outgoing.last.content).to eq(deterministic)
         expect(localizer_calls).to eq(1) # only the single lock-free precompute; delivery did not re-localize
         expect(claim_status).to eq('completed')
       end
@@ -952,7 +1772,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
 
         described_class.perform_now(conversation, assistant, incoming.id)
 
-        expect(conversation.messages.outgoing.last.content).to eq('Could you specify the size, material you need?')
+        expect(conversation.messages.outgoing.last.content).to eq('Could you specify the exact variant code you need?')
       end
 
       it 'never invokes product wording on a product handoff turn' do

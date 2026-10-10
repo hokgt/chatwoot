@@ -40,10 +40,69 @@ RSpec.describe Marine::Catalog::VariantRepository, type: :model do
         call = captured.last
         expect(call[:params]).to eq(%w[FAM-1 CHILD-1])
         expect(call[:sql]).to include('marine_ai.item')
-        expect(call[:sql]).to include('variant_of = $1 AND item_code = $2 AND disabled = false')
+        expect(call[:sql]).to include('variant_of = $1 AND LOWER(item_code) = LOWER($2) AND disabled = false')
         expect(call[:sql]).to include('LIMIT 2')
         expect(call[:sql]).not_to include('CHILD-1')
         expect(call[:sql]).not_to include('FAM-1')
+      end
+    end
+
+    # Case-insensitive child-code matching against a real-shaped row set. The low-level Connection is
+    # faked to emulate Postgres: it honors the EXACT predicate the repository emits (case-sensitive
+    # `item_code = $2` vs case-insensitive `LOWER(item_code) = LOWER($2)`), filters an in-memory active
+    # row set by family (exact) + that predicate, orders by item_code ASC and caps at 2. VariantRepository
+    # logic stays real; only the DB boundary is stubbed — so these prove the SQL semantics, not the fake.
+    context 'with case-insensitive matching over a faked catalog boundary' do
+      def fake_catalog(rows)
+        allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
+          captured << { sql: sql, params: params }
+          fake_select(rows, params, sql.include?('LOWER(item_code)'))
+        end
+      end
+
+      def fake_select(rows, params, case_insensitive)
+        family = params.first
+        wanted = params.drop(1)
+        wanted = wanted.map(&:downcase) if case_insensitive
+        rows.select { |r| fake_hit?(r, family, wanted, case_insensitive) }
+            .sort_by { |r| r[:item_code] }
+            .first(2)
+            .map { |r| { 'code' => r[:item_code] } }
+      end
+
+      def fake_hit?(row, family, wanted, case_insensitive)
+        return false if row[:disabled] || row[:variant_of] != family
+
+        wanted.include?(case_insensitive ? row[:item_code].downcase : row[:item_code])
+      end
+
+      let(:lf_family) { [{ item_code: 'LF-3', variant_of: 'LF', disabled: false }] }
+
+      it 'resolves the authoritative DB code LF-3 for lf-3, LF-3 and Lf-3 alike' do
+        fake_catalog(lf_family)
+
+        %w[lf-3 LF-3 Lf-3].each do |candidate|
+          expect(repository.resolve_child('LF', candidate)).to eq(code: 'LF-3')
+        end
+        expect(captured.last[:sql]).to include('LOWER(item_code) = LOWER($2)')
+      end
+
+      it 'returns the row-derived code, never the lower/mixed-case input candidate' do
+        fake_catalog(lf_family)
+
+        expect(repository.resolve_child('LF', 'lf-3')[:code]).to eq('LF-3')
+        expect(repository.resolve_child('LF', 'Lf-3')[:code]).to eq('LF-3')
+      end
+
+      it 'remains nil for a child code absent from the family' do
+        fake_catalog(lf_family)
+        expect(repository.resolve_child('LF', 'LF-9')).to be_nil
+      end
+
+      it 'fails closed to nil on a same-family casefold DB collision (LF-3 + lf-3), never collapsing the rows' do
+        fake_catalog([{ item_code: 'LF-3', variant_of: 'LF', disabled: false },
+                      { item_code: 'lf-3', variant_of: 'LF', disabled: false }])
+        expect(repository.resolve_child('LF', 'lf-3')).to be_nil
       end
     end
 

@@ -30,6 +30,37 @@ RSpec.describe Marine::Catalog::FactPlaceholderMask do
       expect(mask.restore(translated)).to eq('Harga untuk IMP-3 adalah IDR 150000 per pcs.')
     end
 
+    it 'masks the FINAL display-formatted min/max/currency/UOM of a family price range caption and restores byte-exact' do
+      # The composer builds the descriptor with the FINAL display facts (Indonesian: Rp symbol, dot
+      # thousands grouping), so the mask must keep those exact formatted values literal in translation.
+      descriptor = { kind: :price_range, family_code: 'FAM-1', family_name: 'Impeller',
+                     price_min: '12.500', price_max: '45.000', currency: 'Rp', uom: 'yard' }
+      mask = described_class.new(descriptor: descriptor)
+      source = 'Prices for Impeller range from Rp 12.500 to Rp 45.000 per yard. Please reply with the code.'
+
+      masked = mask.mask(source)
+
+      # The immutable display facts are gone from the text the translator sees; the family display name
+      # (Impeller) is a translatable label and is intentionally NOT masked.
+      expect(masked).not_to include('12.500', '45.000', 'Rp', 'yard')
+      expect(masked).to include('Impeller')
+      translated = translate(masked, 'Prices for' => 'Harga untuk', 'range from' => 'mulai dari',
+                                     'Please reply with the code.' => 'Silakan balas dengan kodenya.')
+      expect(mask.restore(translated))
+        .to eq('Harga untuk Impeller mulai dari Rp 12.500 to Rp 45.000 per yard. Silakan balas dengan kodenya.')
+    end
+
+    it 'fails closed when a translator mangles a masked formatted range amount' do
+      descriptor = { kind: :price_range, family_code: 'FAM-1', family_name: 'Impeller',
+                     price_min: '12.500', price_max: '45.000', currency: 'Rp', uom: 'yard' }
+      mask = described_class.new(descriptor: descriptor)
+      masked = mask.mask('Prices for Impeller range from Rp 12.500 to Rp 45.000 per yard.')
+
+      # Drop one placeholder (a mangled/lost fact): restoration must fail closed to nil.
+      mangled = masked.sub(described_class::TOKEN, '')
+      expect(mask.restore(mangled)).to be_nil
+    end
+
     it 'masks the variant code in a variant_info reply' do
       mask = described_class.new(descriptor: { kind: :variant_info, family_code: 'IMP', variant_code: 'AB12' })
       masked = mask.mask('Here are the details for AB12. Would you like the price or availability?')

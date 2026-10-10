@@ -35,7 +35,7 @@ module Marine
       def valid?(value, extra_reserved: [])
         validate!(value, label: 'identifier', extra_reserved: extra_reserved)
         true
-      rescue Errors::InvalidIdentifierError
+      rescue Marine::Provisioning::Errors::InvalidIdentifierError
         false
       end
 
@@ -50,7 +50,7 @@ module Marine
       def invalid(label, reason)
         # Message is safe to surface: it contains only the field label and a generic
         # reason, never the raw value.
-        Errors::InvalidIdentifierError.new("#{label} #{reason}")
+        Marine::Provisioning::Errors::InvalidIdentifierError.new("#{label} #{reason}")
       end
     end
   end

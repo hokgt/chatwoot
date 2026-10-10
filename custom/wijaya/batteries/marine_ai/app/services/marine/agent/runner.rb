@@ -58,12 +58,13 @@ class Marine::Agent::Runner
   # and RAG paths ground on the SAME prior turns and receive the trigger exactly once. A legacy
   # (source-less) or direct-unit run has no trigger and falls back to the caller-supplied
   # additional_message / message_history unchanged.
-  def run(additional_message: nil, message_history: [])
+  def run(additional_message: nil, message_history: [], advisory_memory: nil)
     # Reset the per-run Gate-G signal before routing so a prior turn's EXACT approved-FAQ hit can
     # never silently bypass the domain-boundary classifier for a later unrelated turn if this Runner
     # instance is ever reused (a fresh instance is created per call today; this keeps that invariant
     # explicit and safe regardless of caller).
     @faq_precedence_hit = false
+    @faq_precedence_result = nil
     context = canonical_context
     history = context ? context.history : Array(message_history)
     trigger = context ? context.trigger : additional_message
@@ -76,11 +77,10 @@ class Marine::Agent::Runner
     orchestrated = pre_rag_payload(context, query, history)
     return orchestrated if orchestrated
 
-    scenario = select_scenario(query)
+    scenario = select_scenario(query, history)
     tool_slugs = resolved_tool_slugs(scenario)
 
-    payload = response_generator.generate(additional_message: trigger, message_history: history,
-                                          opening: interaction_opening?(context, history))
+    payload = generated_response(context, history, trigger, advisory_memory)
     enriched = preserve_playground_state(enrich(payload, scenario, tool_slugs))
 
     log_result(enriched)
@@ -101,6 +101,27 @@ class Marine::Agent::Runner
     return nil unless message && conversation
 
     Marine::Conversation::ContextBuilder.new(conversation: conversation, trigger_message: message).build
+  end
+
+  # Advisory memory is allowed only at the non-authoritative response-generation
+  # boundary. Canonical history used by product/security/scenario paths stays public-only.
+  def generated_response(context, history, trigger, fallback_memory)
+    response_generator.generate(
+      additional_message: trigger,
+      message_history: personalization_history(history, advisory_memory_for(context, fallback_memory)),
+      opening: interaction_opening?(context, history),
+      exact_knowledge_result: @faq_precedence_result
+    )
+  end
+
+  def advisory_memory_for(context, fallback)
+    context ? context.advisory_memory : fallback
+  end
+
+  def personalization_history(history, advisory_memory)
+    return history if advisory_memory.blank?
+
+    [{ role: 'assistant', content: advisory_memory }] + history
   end
 
   # Canonical interaction phase for the greeting gate. A trigger-bound run uses the
@@ -156,7 +177,8 @@ class Marine::Agent::Runner
 
     plan = product_orchestrator.process(text: context.trigger, context: context.history,
                                         flow: product_flow, suppressed: false,
-                                        knowledge_available: knowledge_available?(kb))
+                                        knowledge_available: knowledge_available?(kb),
+                                        configured_language: configured_reply_language)
     return nil if plan[:action] == :not_product
 
     log_event('answer.product', action: plan[:action])
@@ -183,7 +205,11 @@ class Marine::Agent::Runner
 
     # Remember the EXACT approved match so the shared domain-boundary gate bypasses classification for
     # this highest-trust, curated, in-domain turn (see #domain_boundary_payload) — no extra retrieval.
+    # Also retain the RetrievalResult itself so the RAG ResponseGenerator reuses this exact, curated
+    # match (found in the customer's own language) instead of independently re-retrieving with the
+    # translated query, which could replace it with a document-backed match. See #run.
     @faq_precedence_hit = true
+    @faq_precedence_result = result
     log_event('faq.precedence', confidence: result.confidence, source_type: result.source_type)
     true
   end
@@ -225,6 +251,14 @@ class Marine::Agent::Runner
 
   def product_account
     conversation&.account || (assistant.account if assistant.respond_to?(:account))
+  end
+
+  # The assistant's configured operating (KB/reply) language, supplied to the orchestrator's shared
+  # language resolver as the last-resort fallback when neither the current turn nor a prior customer
+  # turn yields a reliable language. nil when unconfigured. Mirrors the ResponseBuilderJob/
+  # PlaygroundPreview config read; the resolver normalizes/validates the value.
+  def configured_reply_language
+    assistant.config.to_h['language'] if assistant.respond_to?(:config)
   end
 
   # Source-less Playground catalog preview. Runs ONLY for an explicit Playground run (source ==
@@ -327,16 +361,34 @@ class Marine::Agent::Runner
     )
   end
 
-  def select_scenario(query)
-    return nil if query.blank?
+  # Post-pre-RAG scenario selection through the controlled cutover wrapper. When the fail-closed
+  # cutover gate is CLOSED (the default), this is byte-for-byte the legacy token-overlap selection
+  # over the already-derived query — no ScenarioAdapter/Decision Runner/provider/metrics work. When
+  # the gate is OPEN for this account+assistant, the Decision Maker may choose the scenario from the
+  # already-bounded history/context (no second ContextBuilder / customer-history query); an
+  # unaccepted or failed decision falls back to legacy. Only the scenario changes — never the reply,
+  # routing, product/handoff/state path. The safe source/reason enums are logged as routing metadata;
+  # no candidate plan/intents/slots/raw values are ever exposed.
+  def select_scenario(query, history)
+    selection = Marine::Decision::CutoverScenarioSelector
+                .new(assistant: assistant, account_id: scenario_account_id)
+                .select(query, context: history)
 
-    scenario = Marine::Agent::ScenarioSelector.new(assistant: assistant).select(query)
+    scenario = selection.scenario
     if scenario
-      log_event('scenario.selected', scenario_id: scenario.id)
+      log_event('scenario.selected', scenario_id: scenario.id, source: selection.source, reason: selection.reason)
     else
-      log_event('scenario.none')
+      log_event('scenario.none', source: selection.source, reason: selection.reason)
     end
     scenario
+  end
+
+  # The account id for the cutover gate (config + advisory metrics are account+assistant scoped).
+  # Mirrors #product_account's derivation; nil when neither the conversation nor the assistant
+  # exposes an account, in which case the gate fails closed to legacy.
+  def scenario_account_id
+    account = conversation&.account || (assistant.account if assistant.respond_to?(:account))
+    account&.id
   end
 
   # Custom HTTP tools have been removed to eliminate all direct outbound

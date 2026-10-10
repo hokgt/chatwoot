@@ -15,6 +15,10 @@ require Rails.root.join('custom/wijaya/batteries/core/loader')
 #      the after_update_commit lifecycle cleanup) inside to_prepare, so app/models/conversation.rb
 #      carries only the tiny registration seam and the child-marker lifecycle stays battery-owned.
 #
+# The MarkerDropTrigger is NOT installed here: it is owned by migration 20260912000008 (HairTrigger
+# create_trigger DSL) and dumped into db/schema.rb, so both migrate-forward and fresh db:schema:load
+# installs carry it. Boot must do no DDL.
+#
 # Nested (not compact `module Wijaya::Batteries::DeferredAutoAssignment::Loader`) so this
 # file is standalone-safe: the core loader's discover! requires it before any Wijaya parent
 # constant exists; the nested declaration creates the namespace, where a compact form would

@@ -220,7 +220,10 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
     it 'reuses the active validated family on a DISTINCT follow-up turn without re-sending or switching' do
       document = usable_catalog('FAM-CAT')
       seed_stale_flow!
-      stub_cld3('jv')
+      # The customer's language is Indonesian throughout; the follow-up stays STRICTLY STICKY to that
+      # prior history rather than re-deriving language from the current turn, so the detector reads the
+      # prior Indonesian turn as `id` (the wrong-CLD3 provider override is covered by the opener above).
+      stub_cld3('id')
 
       # First turn: recover + deliver the native catalog for FAM-CAT.
       Marine::Conversation::ResponseBuilderJob.perform_now(conversation, assistant, trigger.id)
@@ -239,7 +242,8 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
       expect(second_reply.attachments).to be_empty
       expect(conversation.messages.outgoing.sum { |m| m.attachments.count }).to eq(1)
 
-      # The existing already-shared response, emitted THROUGH localization (provider id).
+      # The existing already-shared response, emitted THROUGH localization in the sticky prior-history
+      # language (id) — the follow-up inherits the conversation's established language, not a re-derivation.
       expect(second_reply.content).to eq(TRANSLATED_MARKER)
       expect(translation_calls.length).to eq(2)
       expect(translation_calls.last[:system]).to include('to id')
@@ -422,6 +426,101 @@ RSpec.describe 'Marine product flow full runtime path', type: :model do
       expect(state['catalog_document_id']).not_to eq(111)
       expect(state).not_to have_key('clarification_count')     # the elapsed counter is gone
       expect(conversation.messages.outgoing.last.attachments.count).to eq(1)
+    end
+  end
+
+  # Family-only PRICE -> catalog-assisted range caption + native attachment, then a code-only
+  # follow-up under that same flow reaching the EXACT price with no family range — the full real
+  # chain (real orchestrator, state store, catalog + price delivery), only the provider/LLM,
+  # detector, price/variant repositories (external catalog DB), and outbound delivery are stubbed.
+  describe 'family-only price grounds a catalog range, then a code follow-up reaches the exact price' do
+    let(:price_trigger) { create(:message, conversation: conversation, message_type: :incoming, content: 'price of Coastal Alpha Series') }
+    let(:range_repository) do
+      instance_double(Marine::Catalog::PriceRangeRepository,
+                      range_for: { status: :available, min: '12500', max: '45000', currency: 'IDR', uom: 'yard' })
+    end
+
+    def price_family_intent
+      { product_related: true, intent: 'price', family_mention: 'Coastal Alpha Series',
+        requires_exact_variant: true, customer_language: 'en' }.to_json
+    end
+
+    def code_followup_intent
+      { product_related: true, intent: 'price', family_mention: nil,
+        explicit_child_code: 'FAM-CAT-1', customer_language: 'en' }.to_json
+    end
+
+    before do
+      price_repository = instance_double(Marine::Catalog::PriceRepository)
+      allow(price_repository).to receive(:price_for).and_return(status: :unavailable)
+      allow(price_repository).to receive(:price_for).with('FAM-CAT-1')
+                                                    .and_return(status: :available, price_list_rate: '30000', currency: 'IDR', uom: 'yard')
+      allow(Marine::Catalog::PriceRangeRepository).to receive(:new).and_return(range_repository)
+      allow(Marine::Catalog::PriceRepository).to receive(:new).and_return(price_repository)
+      allow(Marine::Catalog::VariantRepository).to receive(:new).and_return(
+        instance_double(Marine::Catalog::VariantRepository, attribute_names: %w[Size], resolve_child: nil)
+      )
+      allow(Marine::Catalog::VariantResolver).to receive(:new).and_return(
+        instance_double(Marine::Catalog::VariantResolver, resolve: { status: :resolved, code: 'FAM-CAT-1' })
+      )
+      allow(Marine::Catalog::StockRepository).to receive(:new).and_return(
+        instance_double(Marine::Catalog::StockRepository, status_for: :empty)
+      )
+      # Price intents branch on the customer message; the follow-up carries the exact code.
+      allow(base_service).to receive(:complete) do |prompt:, **|
+        if prompt.to_s.include?('FAM-CAT-1')
+          { ok: true, message: code_followup_intent, error: nil }
+        else
+          { ok: true, message: price_family_intent, error: nil }
+        end
+      end
+      stub_cld3('en')
+    end
+
+    it 'delivers one native catalog with a locale-safe range caption and stores the flow/catalog markers' do
+      document = usable_catalog('FAM-CAT')
+
+      Marine::Conversation::ResponseBuilderJob.perform_now(conversation, assistant, price_trigger.id)
+
+      reply = conversation.messages.reload.outgoing.last
+      expect(reply.content).to eq(
+        'We carry Coastal Alpha Series. Prices range from IDR 12,500 to IDR 45,000 per yard. ' \
+        "Please reply with the exact variant code shown in the catalog and I'll confirm the exact price for you."
+      )
+      expect(reply.attachments.count).to eq(1)
+      expect(reply.attachments.first.file.blob.id).to eq(document.source_file.blob.id)
+
+      state = product_state
+      expect(state['validated_family']).to eq('FAM-CAT')
+      expect(state['current_intent']).to eq('price')
+      expect(state['catalog_sent']).to be(true)
+      expect(state['catalog_document_id']).to eq(document.id)
+      expect(state['catalog_message_id']).to eq(reply.id)
+    end
+
+    it 'reaches the exact price (no family range, no second attachment) for a code-only follow-up under that flow' do
+      document = usable_catalog('FAM-CAT')
+
+      Marine::Conversation::ResponseBuilderJob.perform_now(conversation, assistant, price_trigger.id)
+      first_reply = conversation.messages.reload.outgoing.last
+      expect(first_reply.attachments.count).to eq(1)
+
+      follow_up = create(:message, conversation: conversation, message_type: :incoming, content: 'FAM-CAT-1')
+      Marine::Conversation::ResponseBuilderJob.perform_now(conversation, assistant, follow_up.id)
+
+      second_reply = conversation.messages.reload.outgoing.last
+      expect(second_reply.id).not_to eq(first_reply.id)
+      # The exact single-variant price (deterministic PriceReplyComposer fallback), never a range.
+      expect(second_reply.content).to eq('The price for FAM-CAT-1 is IDR 30,000 per yard.')
+      expect(second_reply.content).not_to include('range from')
+      # No second attachment; the one catalog per flow is preserved.
+      expect(second_reply.attachments).to be_empty
+      expect(conversation.messages.outgoing.sum { |m| m.attachments.count }).to eq(1)
+
+      state = product_state
+      expect(state['validated_variant']).to eq('FAM-CAT-1')
+      expect(state['catalog_document_id']).to eq(document.id)
+      expect(range_repository).to have_received(:range_for).once # only the first (family) turn
     end
   end
 

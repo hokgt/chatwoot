@@ -15,8 +15,11 @@
 # which would otherwise drive a wrong-language rewrite or a robotic English fall-back; anchoring
 # to the known operating language when there is no authoritative per-turn signal keeps the reply
 # in the assistant's own language instead of trusting a misclassification. CLD3 stays only as the
-# last resort for an assistant with no configured language. The language never affects
-# family/catalog/document selection.
+# last resort for an assistant with no configured language AND no upstream language decision: when
+# the caller passes `language_resolved: true` (the product-flow ConversationLanguageResolver already
+# decided the language, including a fail-closed "no language" outcome), CLD3 is never re-run — the
+# configured language is the only fallback, and with none the reply stays the deterministic English
+# source. The language never affects family/catalog/document selection.
 #
 # FACTUAL SAFETY: the English source is the SOLE factual authority; a translation is an
 # UNTRUSTED rewrite. Before the untrusted step runs, the deterministic Marine::Catalog::
@@ -70,7 +73,8 @@ module Marine
       # (trigger_text/context/provider_language), the account, and the optional protected
       # action/descriptor are separate caller-supplied inputs. Bundling them into a value object
       # would only relocate the list and hide the by-name contract each call site relies on.
-      def initialize(text:, trigger_text:, context: [], provider_language: nil, fallback_language: nil, account: nil, action: nil, descriptor: nil)
+      def initialize(text:, trigger_text:, context: [], provider_language: nil, fallback_language: nil, account: nil, action: nil, descriptor: nil,
+                     language_resolved: false)
         # rubocop:enable Metrics/ParameterLists
         @text = text.to_s
         @trigger_text = trigger_text.to_s
@@ -80,6 +84,7 @@ module Marine
         @account = account
         @action = action
         @descriptor = descriptor
+        @language_resolved = language_resolved
       end
 
       def call
@@ -155,12 +160,19 @@ module Marine
       # Preferred signal: the provider language read from the same customer turn. When it is
       # absent/malformed, prefer the assistant's configured operating language over local CLD3
       # classification — a short customer turn is exactly where CLD3 confidently misclassifies,
-      # so the known operating language is the safer anchor than a per-turn guess. Only with no
-      # configured language do we classify the trigger locally, then fall back to bounded recent
-      # customer context when the trigger alone is unknown.
+      # so the known operating language is the safer anchor than a per-turn guess.
+      #
+      # `language_resolved` is true when an upstream authority (the product-flow
+      # ConversationLanguageResolver) has ALREADY decided this turn's delivery language — including a
+      # fail-closed decision of "no language" (its :unresolved reason, surfaced as provider nil). In
+      # that case CLD3 must NOT run again: the configured operating language is the only remaining
+      # fallback, and with none the reply fails closed to the deterministic English source unchanged
+      # (returning the UNKNOWN sentinel, which #call delivers as the original text). CLD3 is consulted
+      # ONLY when no upstream decision exists (language_resolved false) — the legacy fallback chain.
       def target_language
         return @provider_language if @provider_language
         return @fallback_language if @fallback_language
+        return UNKNOWN if @language_resolved
 
         language = classify(@trigger_text)
         language = classify(context_text) if language == UNKNOWN
