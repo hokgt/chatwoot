@@ -147,7 +147,7 @@ module Marine
       # absence of any decision).
       def process(text:, context: nil, flow: nil, suppressed: false, knowledge_available: false, configured_language: nil) # rubocop:disable Metrics/ParameterLists -- a flat keyword API at the reasoning entry seam
         intent = intent_extractor.extract(text: text, context: context, state: state_summary(flow))
-        resolution = resolve_reply_language(text, intent, context, configured_language)
+        resolution = resolve_reply_language(text, intent, context, configured_language, flow)
         plan_for_intent(intent: intent, flow: flow, suppressed: suppressed, text: text,
                         knowledge_available: knowledge_available, reply_language: resolution)
       end
@@ -246,13 +246,21 @@ module Marine
       # extracted entity candidates are supplied so a message that is exactly a code/entity (any
       # shape) is treated as non-linguistic, while a candidate plus real wording is still a
       # meaningful switch.
-      def resolve_reply_language(text, intent, context, configured_language)
+      def resolve_reply_language(text, intent, context, configured_language, flow)
         Marine::Catalog::ConversationLanguageResolver.resolve(
           text: text, provider_language: intent[:customer_language],
           context: catalog_trusted_tokens.enrich_context(context),
           configured_language: configured_language, entity_candidates: entity_candidates(intent),
-          trusted_tokens: trusted_catalog_tokens(text)
+          trusted_tokens: trusted_catalog_tokens(text), sticky_language: persisted_customer_language(flow)
         )
+      end
+
+      # The active flow stores the bounded language resolution made while a prior customer turn was
+      # current. The resolver validates this candidate; malformed or absent legacy state is ignored.
+      def persisted_customer_language(flow)
+        return unless flow.is_a?(Hash) && flow['status'] == ProductFlowStateStore::STATUS_ACTIVE
+
+        flow['customer_language']
       end
 
       # The shared, battery-local collaborator that computes the bounded catalog-derived trusted tokens

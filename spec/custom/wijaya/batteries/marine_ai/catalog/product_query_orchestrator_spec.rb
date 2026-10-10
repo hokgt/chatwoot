@@ -169,14 +169,18 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
   end
 
   describe 'initial product query (parent-level)' do
-    it 'validates the family via the repository and answers at parent level, starting a flow' do
-      plan = orchestrator.plan_for_intent(intent: intent(intent: 'parent_info', family_mention: 'Impeller'), flow: nil)
+    it 'validates the family and persists the resolved delivery language when starting a flow' do
+      plan = orchestrator.plan_for_intent(
+        intent: intent(intent: 'parent_info', family_mention: 'Impeller', customer_language: 'id'), flow: nil
+      )
 
       expect(family_repository).to have_received(:resolve_exact).with('Impeller')
       expect(plan[:action]).to eq(:reply)
       expect(plan[:reply]).to eq(kind: :parent_info, family_code: 'FAM-1', family_name: 'Impeller')
       expect(plan[:state][:operation]).to eq(:start)
-      expect(plan[:state][:changes]).to include('validated_family' => 'FAM-1', 'current_intent' => 'parent_info')
+      expect(plan[:state][:changes]).to include(
+        'validated_family' => 'FAM-1', 'current_intent' => 'parent_info', 'customer_language' => 'id'
+      )
     end
   end
 
@@ -1515,6 +1519,58 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(plan[:language_resolution]).to eq(:prior_customer)
       expect(family_repository).to have_received(:active_candidates).with(query: 'want', limit: 50)
       expect(family_repository).to have_received(:active_candidates).with(query: 'fabric', limit: 50)
+    end
+
+    it 'keeps the active flow customer language when a short newer product turn is misdetected' do
+      allow(family_repository).to receive(:active_candidates).and_return([])
+      allow(Marine::Llm::LanguageDetector).to receive(:new) do |text|
+        reading = if text.to_s == 'stok masih'
+                    { language: 'sm', reliable: true, confidence: 0.99 }
+                  else
+                    { language: 'unknown', reliable: false, confidence: 0.0 }
+                  end
+        instance_double(Marine::Llm::LanguageDetector, detect: reading)
+      end
+      flow = {
+        'status' => Marine::Catalog::ProductFlowStateStore::STATUS_ACTIVE,
+        'customer_language' => 'id',
+        'current_intent' => 'stock'
+      }
+
+      plan = orchestrator.process(text: 'lf-3', context: [{ role: 'user', content: 'stok masih' }], flow: flow)
+
+      expect(plan[:language]).to eq('id')
+      expect(plan[:language_resolution]).to eq(:prior_customer)
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new)
+    end
+
+    it 'ignores customer language from expired, completed, or malformed flows' do
+      allow(family_repository).to receive(:active_candidates).and_return([])
+      allow(Marine::Llm::LanguageDetector).to receive(:new) do |text|
+        reading = if text.to_s == 'stok masih'
+                    { language: 'id', reliable: true, confidence: 0.99 }
+                  else
+                    { language: 'unknown', reliable: false, confidence: 0.0 }
+                  end
+        instance_double(Marine::Llm::LanguageDetector, detect: reading)
+      end
+      inactive_flows = [
+        Marine::Catalog::ProductFlowStateStore::STATUS_EXPIRED,
+        Marine::Catalog::ProductFlowStateStore::STATUS_COMPLETED,
+        'malformed'
+      ].map { |status| { 'status' => status, 'customer_language' => 'sm', 'current_intent' => 'stock' } }
+
+      aggregate_failures do
+        inactive_flows.each do |flow|
+          plan = orchestrator.process(
+            text: 'lf-3', context: [{ role: 'user', content: 'stok masih' }],
+            flow: flow, configured_language: 'en'
+          )
+
+          expect(plan[:language]).to eq('id')
+          expect(plan[:language_resolution]).to eq(:prior_customer)
+        end
+      end
     end
   end
 

@@ -126,21 +126,34 @@ RSpec.describe Marine::Decision::Runner do
   # only) and drops to legacy fallback. These examples drive the fixed protocol end-to-end.
   describe 'Step 3A product_listing / product_information boundary (openrouter_decisions)' do
     let(:settings) { instance_double(Marine::Llm::SettingsStore, api_mode: 'openrouter_decisions') }
-    let(:classification) { %w[product_listing product_information price unsupported] }
+    let(:classification) { %w[product_overview product_listing product_information price unsupported] }
 
     def product_scenarios
       [{ 'key' => 'product_scenario', 'description' => 'product catalog', 'instruction' => 'read catalog' }]
     end
 
-    def product_answers(listing:, information:)
+    def product_answers(listing:, information:, overview: 0.0)
       {
         'scenario_candidate' => { 'type' => 'choice', 'choice' => 'product_scenario', 'confidence' => 0.9,
                                   'probabilities' => { 'product_scenario' => 0.9 } },
+        'mdq_intent__product_overview' => { 'type' => 'noul', 'noul' => overview },
         'mdq_intent__product_listing' => { 'type' => 'noul', 'noul' => listing },
         'mdq_intent__product_information' => { 'type' => 'noul', 'noul' => information },
         'mdq_intent__price' => { 'type' => 'noul', 'noul' => 0.0 },
         'mdq_intent__unsupported' => { 'type' => 'noul', 'noul' => 0.0 }
       }
+    end
+
+    it 'routes the reported listing request through Runner -> Decisions mapper as one packet-authorized intent' do
+      allow(client).to receive(:call).and_return(
+        decisions_ok(product_answers(overview: 0.67, listing: 0.92, information: 0.12))
+      )
+
+      result = runner.call(message: 'ada kain apa saja', scenarios: product_scenarios)
+
+      expect(result[:scenario_candidate][:key]).to eq('product_scenario')
+      expect(result[:intents]).to eq(%w[product_listing])
+      expect(Marine::Backend::ExecutionPolicy.product_authorized?(result[:intents])).to be(true)
     end
 
     it 'classifies "Produk apa saja yang tersedia" as exactly [product_listing] (packet-authorized)' do
