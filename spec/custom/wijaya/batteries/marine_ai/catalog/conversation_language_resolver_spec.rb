@@ -319,6 +319,18 @@ RSpec.describe Marine::Catalog::ConversationLanguageResolver do
 
       expect(resolve(text: 'ZX-90', provider_language: 'en', context: context).language).to eq('en')
     end
+
+    it 'uses the customer language resolved on the active flow instead of re-detecting a prior turn' do
+      detections['halo saya ingin bertanya produk'] = reliable('id')
+      detections['stok masih'] = reliable('sm')
+      context = [user('halo saya ingin bertanya produk'), assistant('...'), user('stok masih')]
+
+      result = resolve(text: 'ZX-90', provider_language: 'sm', context: context, sticky_language: 'id')
+
+      expect(result.language).to eq('id')
+      expect(result.reason).to eq(:prior_customer)
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new)
+    end
   end
 
   describe 'assistant/history turns never determine customer language' do

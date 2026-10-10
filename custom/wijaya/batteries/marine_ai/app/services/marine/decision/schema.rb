@@ -28,15 +28,15 @@ module Marine::Decision::Schema
   INTENTS = %w[price price_range stock parent_info variant_info catalog product_overview product_listing product_information
                order_status sample unsupported].freeze
 
-  # Contractually mutually-exclusive candidate-intent groups. product_listing and
-  # product_information describe DISJOINT requests — a names/catalog availability listing
-  # (no descriptions requested) vs an EXPLICIT request for a description/explanation/details —
-  # so a single turn can propose at most ONE of them. Each inner array is one exclusive group;
-  # the Decisions mapper enforces this over the typed NOUL probabilities (strictly-higher wins,
-  # a tie fails closed), which is what keeps ExecutionPolicy's single-intent product
-  # authorization reachable for these turns. This is a semantic protocol contract, never a
-  # language-specific phrase list, and never widens authority.
-  MUTUALLY_EXCLUSIVE_INTENTS = [%w[product_listing product_information].freeze].freeze
+  # Contractually mutually-exclusive informational offering intents. product_overview is a
+  # company-wide high-level category request; product_listing is a scoped names/catalog request;
+  # product_information explicitly asks for descriptions/details. A single turn can propose at most
+  # ONE of the three. The Decisions mapper enforces this over the typed NOUL probabilities
+  # (strictly-higher wins, a tie fails closed), keeping the single-intent Product Authority path
+  # reachable without widening authority. This is semantic protocol, never a phrase/product list.
+  MUTUALLY_EXCLUSIVE_INTENTS = [
+    %w[product_overview product_listing product_information].freeze
+  ].freeze
 
   # Slot mutation verbs and the two slots a plan may propose to change. A slot value is
   # always a CANDIDATE (raw string + a declared candidate_type), never a resolved or

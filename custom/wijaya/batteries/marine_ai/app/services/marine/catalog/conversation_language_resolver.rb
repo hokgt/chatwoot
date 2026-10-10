@@ -76,6 +76,20 @@ module Marine
         new(**).resolve
       end
 
+      # Shared bounded normalization for delivery-language state. ProductFlowStateStore uses the
+      # same contract when persisting a language resolved here, so plan metadata and durable state
+      # cannot disagree about aliases or valid code shape.
+      def self.normalize_code(value)
+        return nil unless value.is_a?(String)
+
+        code = value.strip.downcase
+        return nil if code.empty? || code == Marine::Llm::LanguageDetector::UNKNOWN[:language]
+        return nil unless code.match?(LANGUAGE_PATTERN)
+
+        primary, *rest = code.split('-')
+        [ALIASES.fetch(primary, primary), *rest].join('-')
+      end
+
       # text                - the current customer turn (String).
       # provider_language   - IntentExtractor#customer_language for THIS turn (untrusted guess).
       # context             - bounded role-labelled prior turns (Array of { role:, content: });
@@ -100,17 +114,23 @@ module Marine
       # tokens. The keyword API is intentionally flat rather than wrapped in a params object so
       # each piece of evidence stays independently named and documented above; not refactored.
       def initialize(text:, provider_language: nil, context: [], configured_language: nil,
-                     entity_candidates: [], trusted_tokens: [])
+                     entity_candidates: [], trusted_tokens: [], sticky_language: nil)
         @text = text.to_s
         @provider_language = normalize(provider_language)
         @context = Array(context)
         @configured_language = normalize(configured_language)
         @entity_candidates = Array(entity_candidates)
         @trusted_tokens = Array(trusted_tokens)
+        # A language already resolved from a prior customer turn and persisted in the active product
+        # flow. It preserves the decision made while that turn was current; invalid/absent legacy state
+        # simply falls through to authoritative Catalog-filtered history detection below.
+        @sticky_language = normalize(sticky_language)
       end
       # rubocop:enable Metrics/ParameterLists
 
       def resolve
+        return Result.new(language: @sticky_language, reason: :prior_customer) if @sticky_language
+
         prior = prior_customer_language
         return Result.new(language: prior, reason: :prior_customer) if prior
 
@@ -255,19 +275,7 @@ module Marine
 
       # Bounded, allowlisted, alias-canonicalized code, or nil for a missing/malformed value.
       def normalize(value)
-        return nil unless value.is_a?(String)
-
-        code = value.strip.downcase
-        return nil if code.empty? || code == Marine::Llm::LanguageDetector::UNKNOWN[:language]
-        return nil unless code.match?(LANGUAGE_PATTERN)
-
-        canonicalize(code)
-      end
-
-      # Canonicalize the PRIMARY subtag through the deprecated-alias map, preserving any region subtag.
-      def canonicalize(code)
-        primary, *rest = code.split('-')
-        [ALIASES.fetch(primary, primary), *rest].join('-')
+        self.class.normalize_code(value)
       end
     end
   end

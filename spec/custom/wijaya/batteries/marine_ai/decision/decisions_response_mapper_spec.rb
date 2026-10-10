@@ -96,6 +96,40 @@ RSpec.describe Marine::Decision::DecisionsResponseMapper do
     end
   end
 
+  describe 'product overview / listing / information mutual-exclusivity contract' do
+    let(:scenario_keys) { %w[product_scenario] }
+    let(:allowed_intents) { %w[product_overview product_listing product_information unsupported] }
+
+    def offering_answers(overview:, listing:, information: 0.0)
+      {
+        'scenario_candidate' => { 'type' => 'choice', 'choice' => 'product_scenario', 'confidence' => 0.9,
+                                  'probabilities' => { 'product_scenario' => 0.9 } },
+        'mdq_intent__product_overview' => { 'type' => 'noul', 'noul' => overview },
+        'mdq_intent__product_listing' => { 'type' => 'noul', 'noul' => listing },
+        'mdq_intent__product_information' => { 'type' => 'noul', 'noul' => information },
+        'mdq_intent__unsupported' => { 'type' => 'noul', 'noul' => 0.0 }
+      }
+    end
+
+    it 'keeps the more-specific listing when overview and listing both clear the threshold' do
+      result = map(offering_answers(overview: 0.61, listing: 0.92))
+
+      expect(result['intents']).to eq(%w[product_listing])
+    end
+
+    it 'keeps overview when it is strictly stronger than the scoped listing signal' do
+      result = map(offering_answers(overview: 0.93, listing: 0.62))
+
+      expect(result['intents']).to eq(%w[product_overview])
+    end
+
+    it 'drops the whole conflicting offering set on an exact tie' do
+      result = map(offering_answers(overview: 0.9, listing: 0.9, information: 0.9))
+
+      expect(result['intents']).to eq([])
+    end
+  end
+
   # price and price_range are disjoint at the classification contract (specific item vs family-wide
   # span), but they are deliberately NOT in MUTUALLY_EXCLUSIVE_INTENTS: the correct discriminator is
   # the catalog exact-child authority, which is unavailable at the mapper, not a NOUL probability.
