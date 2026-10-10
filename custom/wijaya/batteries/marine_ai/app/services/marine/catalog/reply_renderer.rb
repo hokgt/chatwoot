@@ -28,6 +28,7 @@ module Marine
         stock_available stock_empty stock_unavailable
         clarify_family clarify_variant
         catalog catalog_offer catalog_unavailable unsupported
+        product_listing
         composite
       ].freeze
 
@@ -35,6 +36,9 @@ module Marine
       # results, so these only guard against a misconfigured caller.
       MAX_CANDIDATES = 10
       MAX_ATTRIBUTE_NAMES = 16
+      # Matches the listing repository's hard page ceiling (ProductListingRepository::MAX_PAGE) so a
+      # misconfigured caller can never smuggle a larger page into a frozen descriptor.
+      MAX_LISTING_PRODUCTS = 20
 
       # Per-scalar length ceilings at this trust boundary. Row-derived codes/names and
       # attribute names are bounded and control-char-cleaned before they enter a frozen
@@ -115,6 +119,28 @@ module Marine
       def stock_available(variant_code) = descriptor(:stock_available, variant_code: safe_scalar(variant_code, MAX_CODE_NAME_LENGTH))
       def stock_empty(variant_code) = descriptor(:stock_empty, variant_code: safe_scalar(variant_code, MAX_CODE_NAME_LENGTH))
       def stock_unavailable = descriptor(:stock_unavailable)
+
+      # A dynamic product-LISTING page for a category-scoped (or broad) product-listing turn. Carries
+      # ONLY the repository-derived template identities ({ code:, name: }) — never prices, stock
+      # quantities, or any other row field — plus the exactly-resolved item-group scope (or nil for
+      # the broad listing) and the repository's own bounded completeness flags. A blank/non-scalar
+      # code is dropped entirely (the repository guarantees a usable item_code identity). Deeply
+      # frozen like every other descriptor.
+      def product_listing(page, item_group = nil)
+        products = Array(page[:products]).filter_map do |product|
+          next unless product.is_a?(Hash)
+
+          code = safe_scalar(product[:code], MAX_CODE_NAME_LENGTH)
+          next if code.nil?
+
+          { code: code, name: safe_scalar(product[:name], MAX_CODE_NAME_LENGTH) }
+        end.first(MAX_LISTING_PRODUCTS)
+        descriptor(:product_listing,
+                   products: products,
+                   item_group: safe_scalar(item_group, MAX_CODE_NAME_LENGTH),
+                   complete: page[:complete] == true,
+                   has_more: page[:has_more] == true)
+      end
 
       def catalog_unavailable = descriptor(:catalog_unavailable)
       def unsupported = descriptor(:unsupported)

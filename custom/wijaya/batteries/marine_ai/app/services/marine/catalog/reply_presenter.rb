@@ -36,6 +36,12 @@ module Marine
       # names no company, so it never turns a customer-supplied destination or quantity into a claim.
       HANDOFF_ACK_TEXT = "I'm sorry, I'm not able to confirm that for you directly. Let me bring in a colleague who can help you with this.".freeze
 
+      # The deterministic product-LISTING line: the dynamic template rows the descriptor carries, named
+      # and coded exactly as the catalog repository read them. It claims no price, no stock, and no
+      # attachment, and stays truthful about completeness — a bounded page with more available says so.
+      PRODUCT_LISTING_EMPTY_TEXT = "I'm sorry, we don't currently have any products listed.".freeze
+      PRODUCT_LISTING_MORE_SUFFIX = ' More are available — let me know if you would like to see them.'.freeze
+
       # Request-category-aware factless acknowledgements, keyed by the bounded generic
       # unsupported-request category. Each states only an INABILITY to confirm the request type and a
       # human follow-up — never an answer, a promise, or a customer/destination/price value. The
@@ -205,7 +211,40 @@ module Marine
         when :clarify_variant then clarify_variant_text
         when :catalog then catalog_ready_text(descriptor)
         when :catalog_offer then catalog_offer_text(descriptor, catalog_attached: false)
+        when :product_listing then product_listing_text(descriptor)
         end
+      end
+
+      # The deterministic text for a product-LISTING reply: one line enumerating the repository-derived
+      # template identities, optionally scoped to the exactly-resolved item group. Only the descriptor's
+      # already-bounded, cleaned fields are rendered — an empty page renders the truthful empty line,
+      # never a fabricated product, and a page with more renders the explicit more-available suffix.
+      def product_listing_text(descriptor)
+        lines = Array(descriptor[:products]).filter_map { |product| listing_line(product) }
+        return PRODUCT_LISTING_EMPTY_TEXT if lines.empty?
+
+        text = "#{listing_intro(descriptor[:item_group])} #{lines.join(', ')}."
+        descriptor[:has_more] == true ? "#{text}#{PRODUCT_LISTING_MORE_SUFFIX}" : text
+      end
+
+      # One "Name (CODE)" listing line for a repository-derived template row (the bare name or
+      # code when the other is blank); nil — dropped — for a non-Hash or fully blank row.
+      def listing_line(product)
+        return nil unless product.is_a?(Hash)
+
+        code = product[:code].to_s.strip
+        name = product[:name].to_s.strip
+        return nil if code.empty? && name.empty?
+
+        return name if code.empty?
+
+        name.empty? ? code : "#{name} (#{code})"
+      end
+
+      # The scoped (or broad) listing intro, naming only the exactly-resolved item group.
+      def listing_intro(item_group)
+        scope = item_group.to_s.strip
+        scope.empty? ? 'Here are the products we currently offer:' : "Here are the #{scope} products we currently offer:"
       end
 
       # Binary availability naming the exact validated variant code so the deterministic fallback

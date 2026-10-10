@@ -125,8 +125,10 @@ RSpec.describe Marine::Backend::CandidatePlanToProductIntentAdapter do
 
       expect(result.ok?).to be(true)
       expect(result.intents).to eq(%w[product_listing])
+      # product_listing is now a TRANSACTIONAL supported intent (IntentExtractor vocabulary), so the
+      # adapter — like the extractor — carries it as the single-element requested-intent set.
       expect(result.product_intent).to include(
-        product_related: true, intent: 'product_listing', requested_intents: [],
+        product_related: true, intent: 'product_listing', requested_intents: %w[product_listing],
         family_mention: 'Santorini', requires_exact_variant: false
       )
     end

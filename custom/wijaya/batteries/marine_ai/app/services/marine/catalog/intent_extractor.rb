@@ -49,12 +49,15 @@ module Marine
   module Catalog
     class IntentExtractor # rubocop:disable Metrics/ClassLength
       # Product intents we actively support downstream through the deterministic catalog flow
-      # (price/stock/variant resolution, parent identity echo, catalog document delivery). Anything
-      # else that is still a product query normalizes to `unsupported`; a failed/unavailable/malformed
-      # extraction normalizes to `unknown`. This set also drives the per-turn requested-intent SET and
-      # the combinable price+stock pair, so `product_overview` is deliberately NOT a member: it never
-      # combines and never reaches variant/price/stock fulfillment.
-      SUPPORTED_PRODUCT_INTENTS = %w[price stock parent_info variant_info catalog].freeze
+      # (price/stock/variant resolution, parent identity echo, catalog document delivery, and the
+      # dynamic product-LISTING page). Anything else that is still a product query normalizes to
+      # `unsupported`; a failed/unavailable/malformed extraction normalizes to `unknown`. This set
+      # also drives the per-turn requested-intent SET, so `product_overview` is deliberately NOT a
+      # member: it never combines and never reaches variant/price/stock fulfillment.
+      # `product_listing` — enumerating the actual product NAMES carried in one stated category
+      # (e.g. a fabric category) — IS a member: it is transactional/deliverable (a bounded, dynamic
+      # catalog database read), so the orchestrator routes it to the listing answer, never to RAG.
+      SUPPORTED_PRODUCT_INTENTS = %w[price stock parent_info variant_info catalog product_listing].freeze
 
       # A broad, informational product-OVERVIEW question — "what products does Textilindo sell", "what
       # kind of products do you offer", "what is your product range" — asks WHAT the business sells at a
@@ -429,7 +432,7 @@ module Marine
       SYSTEM_PROMPT = <<~PROMPT.strip
         You classify a customer's product intent for a marine parts catalog assistant. You only UNDERSTAND intent;
         you never look anything up, price, or confirm it. Respond with a single JSON object and nothing else, with these keys:
-        product_related (boolean); intent (one of "price", "stock", "parent_info", "variant_info", "catalog", "product_overview", "unsupported");
+        product_related (boolean); intent (one of "price", "stock", "parent_info", "variant_info", "catalog", "product_listing", "product_overview", "unsupported");
         intents (array of the supported intents the SAME turn asks for, e.g. ["price","stock"] when the customer asks for both
         the price and whether it is in stock; use a single-element array for a single ask; omit or leave empty when unsure);
         family_mention (string|null, a candidate name only); explicit_child_code (string|null, a candidate code only);
@@ -460,6 +463,13 @@ module Marine
         phrase "product catalog" can denote the DOCUMENT and is NOT automatically "product_overview". This also includes a short
         follow-up that simply asks to receive or see the catalog while a family is already in focus (use
         current_family_in_focus) — do not treat that as unsupported.
+        Also only AFTER ruling out an artifact/document request, use "product_listing" when the customer asks to ENUMERATE or LIST the actual
+        PRODUCTS carried within ONE stated product category or product type — for example the fabric category — i.e. to be TOLD the NAMES of the
+        products you carry in that category, answered dynamically from the live catalog. Examples that are product_listing: "What fabrics do you
+        carry?", "Which fabric types do you have?", and their Indonesian equivalents such as "Kain apa saja?" or "Ada kain apa saja?". Judge this
+        from the MEANING of the customer's own words in whatever language they use, not from surface keywords. The distinction from
+        "product_overview": product_listing stays INSIDE one stated category or product type (naming the products within it), while
+        product_overview asks WHAT the business sells at a high level overall (its product lines or range) with no single category in focus.
         Only AFTER ruling out an artifact/document request, use "product_overview" for a BROAD, informational question about WHAT
         the business sells at a high level — its product lines or overall range — that asks to be TOLD what is offered rather than
         to RECEIVE any document. Examples that are product_overview: "What products does Textilindo sell?", "What kind of products

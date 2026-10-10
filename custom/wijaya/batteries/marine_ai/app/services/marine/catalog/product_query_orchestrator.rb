@@ -44,7 +44,10 @@ module Marine
 
       # Intents that always demand an exact, validated child before any answer.
       VARIANT_REQUIRED_INTENTS = %w[price stock variant_info].freeze
-      SUPPORTED_INTENTS = (VARIANT_REQUIRED_INTENTS + %w[parent_info catalog]).freeze
+      # `product_listing` (enumerate the products of a stated category, e.g. fabric) needs NO family or
+      # variant: it is answered by the bounded, dynamic ProductListingRepository template page, so it is
+      # a supported intent planned on its own deterministic branch (see #plan_product_listing).
+      SUPPORTED_INTENTS = (VARIANT_REQUIRED_INTENTS + %w[parent_info catalog product_listing]).freeze
 
       # Non-transactional product-KNOWLEDGE intents: the customer is asking WHAT a product is or is
       # like (its attributes/properties), not for a price, stock level, or catalog document. The
@@ -66,7 +69,9 @@ module Marine
       # output is an attribute-free identity echo or a clarification/handoff — so it may defer to the
       # approved Knowledge Base when the KB actually answers it (see #defer_to_knowledge?). An
       # exact-quantity ask is transactional-adjacent and is excluded separately via quantity_inquiry.
-      TRANSACTIONAL_INTENTS = %w[price stock catalog].freeze
+      # product_listing joins the transactional set: its deterministic, repository-grounded catalog
+      # answer (the dynamic template page) must never be diverted to Knowledge Base retrieval.
+      TRANSACTIONAL_INTENTS = %w[price stock catalog product_listing].freeze
 
       # The only supported COMBINABLE pair for a single turn: price AND stock. Both are supported,
       # repository-grounded, variant-required intents, so one turn asking for both is fulfilled with a
@@ -117,7 +122,8 @@ module Marine
         variant: Marine::Catalog::VariantRepository,
         price: Marine::Catalog::PriceRepository,
         price_range: Marine::Catalog::PriceRangeRepository,
-        stock: Marine::Catalog::StockRepository
+        stock: Marine::Catalog::StockRepository,
+        listing: Marine::Catalog::ProductListingRepository
       }.freeze
 
       def initialize(intent_extractor: nil, repositories: {}, variant_resolver: nil, reply_renderer: nil)
@@ -127,6 +133,7 @@ module Marine
         @price_repository = repository(repositories, :price)
         @price_range_repository = repository(repositories, :price_range)
         @stock_repository = repository(repositories, :stock)
+        @listing_repository = repository(repositories, :listing)
         @variant_resolver = variant_resolver || Marine::Catalog::VariantResolver.new(variant_repository: @variant_repository)
         @reply_renderer = reply_renderer || Marine::Catalog::ReplyRenderer.new
       end
@@ -297,7 +304,8 @@ module Marine
       end
 
       attr_reader :family_repository, :variant_repository, :price_repository,
-                  :price_range_repository, :stock_repository, :variant_resolver, :reply_renderer
+                  :price_range_repository, :stock_repository, :listing_repository,
+                  :variant_resolver, :reply_renderer
 
       # The injected repository for `key`, or a fresh instance of its real default.
       def repository(repositories, key)
@@ -367,6 +375,10 @@ module Marine
       # Both clarify exits surface the identifier the decision settled on (the raw mention for an
       # ambiguous raw-turn switch, the finalized identifier for an unresolved family).
       def resolve_and_plan(intent, flow)
+        # A product-LISTING turn enumerates the catalog's actual product names and needs no family or
+        # variant resolution at all: it is answered by its own deterministic, repository-grounded branch.
+        return plan_product_listing(intent) if intent[:intent].to_s == 'product_listing'
+
         decision = family_decision(intent, flow)
         return clarify_or_defer(intent, flow, decision[:identifier]) if decision[:clarify]
 
@@ -516,6 +528,34 @@ module Marine
       def plan_catalog(intent, family, state_op)
         build(:send_catalog, reply: reply_renderer.catalog(family),
                              operation: state_op, changes: family_level_changes(family, intent, state_op))
+      end
+
+      # A product-LISTING turn asks to ENUMERATE the catalog's actual product names (e.g. the fabrics
+      # carried). It is a bounded, dynamic DATABASE read — ProductListingRepository#active_top_level,
+      # active sellable TEMPLATE rows only (has_variants = true) — so a brand-new catalog row appears on
+      # the next turn with no prompt or Knowledge Base change. The category scope comes ONLY from the
+      # turn's untrusted extracted candidates, resolved EXACTLY against the item-group authority; a
+      # missing/ambiguous/unresolved mention NEVER guesses a category — the listing stays broad and
+      # truthful. A catalog outage raises CatalogUnavailableError and the #plan_for_intent rescue hands
+      # off fail-closed, never fabricating a listing. No state is mutated: a listing validates no family
+      # and waits on no slot, so the plan is a pure reply with operation :none.
+      def plan_product_listing(intent)
+        item_group = listing_item_group(intent)
+        page = listing_repository.active_top_level(item_group: item_group)
+        build(:reply, reply: reply_renderer.product_listing(page, item_group))
+      end
+
+      # The exact item-group scope for a listing turn, from the turn's untrusted extracted candidates
+      # only (family_mention / attribute_candidates — never the raw turn text). Exactly ONE distinct
+      # group match resolves; zero (missing) or many (ambiguous) contribute NO scope, so the listing
+      # stays broad rather than guessing a category. Data-driven: no phrase or category list here.
+      def listing_item_group(intent)
+        raw = [intent[:family_mention], *Array(intent[:attribute_candidates])]
+        candidates = raw.filter_map { |value| value.to_s.strip.presence }.uniq
+        return nil if candidates.empty?
+
+        resolution = listing_repository.resolve_item_group_any(candidates)
+        resolution[:status] == :resolved ? resolution[:item_group] : nil
       end
 
       # Parent-level answer. Catalog and parent are both family-level (no variant), so both
