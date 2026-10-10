@@ -1544,6 +1544,44 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
       expect(Marine::Llm::LanguageDetector).not_to have_received(:new)
     end
 
+    it 'recovers a legacy active flow language from substantive history instead of a short latest residue' do
+      allow(family_repository).to receive(:active_candidates).and_return([])
+      allow(extractor).to receive(:extract).and_return(
+        intent(intent: 'stock', family_mention: nil, explicit_child_code: 'SYN-CHILD', customer_language: nil,
+               intent_scope: 'slot_value')
+      )
+      allow(variant_resolver).to receive(:resolve).and_return(status: :resolved, code: 'SYN-CHILD')
+      allow(stock_repository).to receive(:status_for).with('SYN-CHILD').and_return(:available)
+      allow(Marine::Llm::LanguageDetector).to receive(:new) do |text|
+        reading = case text.to_s
+                  when 'established language signal'
+                    { language: 'id', reliable: true, confidence: 0.99 }
+                  when 'short residue'
+                    { language: 'sm', reliable: true, confidence: 0.99 }
+                  else
+                    { language: 'unknown', reliable: false, confidence: 0.0 }
+                  end
+        instance_double(Marine::Llm::LanguageDetector, detect: reading)
+      end
+      legacy_flow = {
+        'status' => Marine::Catalog::ProductFlowStateStore::STATUS_ACTIVE,
+        'current_intent' => 'stock', 'validated_family' => 'SYN-FAMILY'
+      }
+      context = [
+        { role: 'user', content: 'established language signal' },
+        { role: 'user', content: 'short residue' }
+      ]
+
+      plan = orchestrator.process(text: 'SYN-CHILD', context: context, flow: legacy_flow)
+
+      expect(plan[:action]).to eq(:reply)
+      expect(plan[:reply]).to eq(kind: :stock_available, variant_code: 'SYN-CHILD')
+      expect(plan[:language]).to eq('id')
+      expect(plan[:language_resolution]).to eq(:prior_customer)
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new).with('short residue')
+      expect(Marine::Llm::LanguageDetector).to have_received(:new).with('established language signal')
+    end
+
     it 'ignores customer language from expired, completed, or malformed flows' do
       allow(family_repository).to receive(:active_candidates).and_return([])
       allow(Marine::Llm::LanguageDetector).to receive(:new) do |text|

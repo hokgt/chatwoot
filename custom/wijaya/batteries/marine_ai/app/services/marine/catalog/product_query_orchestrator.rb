@@ -251,7 +251,8 @@ module Marine
           text: text, provider_language: intent[:customer_language],
           context: catalog_trusted_tokens.enrich_context(context),
           configured_language: configured_language, entity_candidates: entity_candidates(intent),
-          trusted_tokens: trusted_catalog_tokens(text), sticky_language: persisted_customer_language(flow)
+          trusted_tokens: trusted_catalog_tokens(text), sticky_language: persisted_customer_language(flow),
+          established_history: legacy_active_flow_without_language?(flow)
         )
       end
 
@@ -261,6 +262,14 @@ module Marine
         return unless flow.is_a?(Hash) && flow['status'] == ProductFlowStateStore::STATUS_ACTIVE
 
         flow['customer_language']
+      end
+
+      # Active flows created before customer_language was added have already established a sticky
+      # conversation language but cannot supply its persisted code. Only that exact lifecycle shape
+      # enables oldest-first compatibility reconstruction; inactive flows and active flows carrying the
+      # field retain ordinary resolver behavior, including malformed-code fail-closed normalization.
+      def legacy_active_flow_without_language?(flow)
+        flow.is_a?(Hash) && flow['status'] == ProductFlowStateStore::STATUS_ACTIVE && !flow.key?('customer_language')
       end
 
       # The shared, battery-local collaborator that computes the bounded catalog-derived trusted tokens

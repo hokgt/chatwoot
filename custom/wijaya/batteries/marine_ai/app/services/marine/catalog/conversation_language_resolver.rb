@@ -114,7 +114,7 @@ module Marine
       # tokens. The keyword API is intentionally flat rather than wrapped in a params object so
       # each piece of evidence stays independently named and documented above; not refactored.
       def initialize(text:, provider_language: nil, context: [], configured_language: nil,
-                     entity_candidates: [], trusted_tokens: [], sticky_language: nil)
+                     entity_candidates: [], trusted_tokens: [], sticky_language: nil, established_history: false)
         @text = text.to_s
         @provider_language = normalize(provider_language)
         @context = Array(context)
@@ -125,6 +125,11 @@ module Marine
         # flow. It preserves the decision made while that turn was current; invalid/absent legacy state
         # simply falls through to authoritative Catalog-filtered history detection below.
         @sticky_language = normalize(sticky_language)
+        # Compatibility for an ACTIVE flow created before customer_language persistence: its language
+        # was already meant to be sticky, so reconstruct it from the earliest reliable bounded customer
+        # evidence rather than letting a newer short turn redefine it. The caller alone establishes the
+        # active legacy lifecycle; this pure resolver still receives only bounded in-memory evidence.
+        @established_history = established_history == true
       end
       # rubocop:enable Metrics/ParameterLists
 
@@ -220,11 +225,13 @@ module Marine
       # the customer's. Bug 2: a prior turn that is only a Catalog product name carries no meaningful
       # linguistic residue once ITS OWN caller-computed trusted catalog tokens are subtracted — it is
       # skipped WITHOUT a CLD3 detection (so it can never poison the sticky language), and the next
-      # older customer turn is tried; the first reliable eligible prior still wins. A turn that IS kept
+      # older customer turn is tried; the first reliable eligible prior still wins. For an active legacy
+      # flow whose established language predates persistence, the caller asks for oldest-first selection
+      # so a newer short residue cannot redefine that already-sticky conversation. A turn that IS kept
       # is detected from that same linguistic RESIDUE, never its full product-bearing content, so a
       # product name surviving alongside real wording can never poison the sticky reading either.
       def prior_customer_language
-        customer_turns_newest_first.each do |turn|
+        customer_turns_in_priority_order.each do |turn|
           next if prior_entity_only?(turn)
 
           language = detected_reliable(residue_text(turn[:content], turn[:trusted_tokens]))
@@ -233,8 +240,13 @@ module Marine
         nil
       end
 
-      def customer_turns_newest_first
-        @context.reverse.filter_map do |turn|
+      def customer_turns_in_priority_order
+        turns = customer_turns_chronological
+        @established_history ? turns : turns.reverse
+      end
+
+      def customer_turns_chronological
+        @context.filter_map do |turn|
           next unless turn.is_a?(Hash)
           next unless (turn[:role] || turn['role']).to_s == CUSTOMER_ROLE
 
