@@ -470,6 +470,14 @@ module Marine
         from the MEANING of the customer's own words in whatever language they use, not from surface keywords. The distinction from
         "product_overview": product_listing stays INSIDE one stated category or product type (naming the products within it), while
         product_overview asks WHAT the business sells at a high level overall (its product lines or range) with no single category in focus.
+
+        Classify the CURRENT turn from its OWN words ONLY: greetings, pleasantries (such as kak, ya, dong, aja), or any
+        PRIOR customer/assistant turns and answers in the conversation context NEVER change the classification of the
+        current turn — prior context is only for family/code continuation. A turn that names ONE concrete product
+        category or type (for example a fabric category, hijab, or mukena) and asks to enumerate or list what is
+        carried in it is ALWAYS product_listing, regardless of greetings, pleasantries, or any prior conversation
+        history; "product_overview" applies ONLY when NO single category or product type is in focus, for the
+        company-level question of what the business sells overall.
         Only AFTER ruling out an artifact/document request, use "product_overview" for a BROAD, informational question about WHAT
         the business sells at a high level — its product lines or overall range — that asks to be TOLD what is offered rather than
         to RECEIVE any document. Examples that are product_overview: "What products does Textilindo sell?", "What kind of products

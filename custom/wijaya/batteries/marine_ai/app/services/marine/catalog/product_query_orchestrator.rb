@@ -198,7 +198,13 @@ module Marine
         # #defer_to_knowledge? this is UNCONDITIONAL (independent of the KB-availability signal): a product
         # overview always belongs to grounded knowledge generation, never the deterministic catalog flow.
         # Runs AFTER retain_flow_intent so an active variant-required continuation is already excluded.
-        return build(:not_product) if product_overview?(intent)
+        # Layer 2 — data-driven routing safety net for a probabilistic extraction gate: a
+        # product_overview turn whose untrustworthy candidates resolve EXACTLY to one concrete item
+        # group is a category-scoped enumeration mislabelled as a broad overview — it is rerouted to
+        # the EXISTING deterministic dynamic listing instead of the unconditional :not_product early
+        # return (see #plan_overview_rescue). Missing/ambiguous/unresolved candidates keep the
+        # unchanged :not_product behavior. Data-driven only: no phrase or category list.
+        return plan_overview_rescue(intent) if product_overview?(intent)
         # An INFORMATIONAL product turn the approved KB confidently answers defers to grounded KB
         # retrieval (:not_product) instead of an attribute-free catalog identity echo, a variant
         # clarification, or an unsupported-request handoff — so an approved KB fact about a product is
@@ -423,6 +429,20 @@ module Marine
       # the routing stays free of any product/phrase list.
       def product_overview?(intent)
         intent[:intent].to_s == Marine::Catalog::IntentExtractor::PRODUCT_OVERVIEW_INTENT
+      end
+
+      # The Layer-2 rescue plan for a product_overview turn. The turn's untrusted extracted candidates
+      # (family_mention / attribute_candidates) are resolved through the SAME exact item-group authority
+      # plan_product_listing uses (ProductListingRepository#resolve_item_group_any via #listing_item_group —
+      # status :resolved, a single distinct group): a resolved group proves the turn is a category-scoped
+      # enumeration mislabelled as a broad overview, so it is rerouted to the EXISTING deterministic
+      # dynamic listing (answered from the live item table, never a KB that may hallucinate a listing).
+      # Missing, ambiguous, or unresolved candidates contribute NO scope and keep the unchanged
+      # unconditional :not_product behavior. No phrase or category list — repository authority only.
+      def plan_overview_rescue(intent)
+        return build(:not_product) unless listing_item_group(intent)
+
+        plan_product_listing(intent)
       end
 
       # Family decision/context for the turn. Returns the settled

@@ -237,4 +237,93 @@ RSpec.describe 'Marine fabric product-listing routing', type: :model do
       expect(presenter.reply_text(plan)).to include('currently')
     end
   end
+
+  describe 'product_overview classification rescue (Layer 2 deterministic safety net)' do
+    it 'routes a product_overview turn whose candidates resolve EXACTLY to one item group to the DB listing branch, never not_product' do
+      stub_listing_connection!
+
+      plan = orchestrator.plan_for_intent(intent: listing_intent(intent: 'product_overview', family_mention: 'kain'), flow: nil)
+
+      expect(plan[:action]).to eq(:reply)
+      expect(plan[:action]).not_to eq(:not_product)
+      expect(plan[:reply][:kind]).to eq(:product_listing)
+      expect(plan[:reply][:item_group]).to eq('Kain')
+      expect(plan[:reply][:products]).to eq([{ code: 'KAIN-01', name: 'Katun' }, { code: 'KAIN-02', name: 'Denim' }])
+    end
+
+    it 'keeps a genuine company-level product_overview (no resolvable scope) on the unchanged not_product RAG path' do
+      stub_listing_connection!
+
+      plan = orchestrator.plan_for_intent(intent: listing_intent(intent: 'product_overview', family_mention: nil), flow: nil)
+
+      expect(plan[:action]).to eq(:not_product)
+      expect(plan[:reply]).to be_nil
+      listing_call = captured_sql.find { |call| call[:sql].include?('DISTINCT ON (item_code)') }
+      expect(listing_call).to be_nil
+    end
+
+    it 'keeps a product_overview turn with MISSING candidates (no item group match) on the not_product path' do
+      stub_listing_connection!(groups: [])
+
+      plan = orchestrator.plan_for_intent(intent: listing_intent(intent: 'product_overview', family_mention: 'unknown category'), flow: nil)
+
+      expect(plan[:action]).to eq(:not_product)
+      expect(plan[:reply]).to be_nil
+    end
+
+    it 'keeps a product_overview turn with AMBIGUOUS candidates (multiple item groups) on the not_product path' do
+      stub_listing_connection!(groups: [{ 'item_group' => 'Kain' }, { 'item_group' => 'Katun Combed' }])
+
+      plan = orchestrator.plan_for_intent(intent: listing_intent(intent: 'product_overview', family_mention: 'kain'), flow: nil)
+
+      expect(plan[:action]).to eq(:not_product)
+      expect(plan[:reply]).to be_nil
+    end
+
+    it 'routes a product_listing turn with greetings and polluted real conversational context to the DB listing reply' do
+      stub_listing_connection!
+
+      plan = orchestrator.plan_for_intent(
+        intent: listing_intent(intent: 'product_listing', family_mention: 'kain'),
+        flow: nil,
+        text: 'halo kak, jadi untuk kain tadi ada apa aja ya'
+      )
+
+      expect(plan[:action]).to eq(:reply)
+      expect(plan[:action]).not_to eq(:not_product)
+      expect(plan[:reply][:kind]).to eq(:product_listing)
+      expect(plan[:reply][:item_group]).to eq('Kain')
+    end
+  end
+
+  describe 'IntentExtractor SYSTEM_PROMPT classification contract (Layer 1)' do
+    subject(:extractor) { Marine::Catalog::IntentExtractor.new(base_service: base_service) }
+
+    let(:base_service) { instance_double(Marine::Llm::BaseService, configured?: true) }
+    let(:captured_prompts) { [] }
+
+    before do
+      allow(base_service).to receive(:complete) do |prompt:, system: nil, **options|
+        captured_prompts << { prompt: prompt, system: system, options: options }
+        { ok: true, message: %({"product_related": true, "intent": "product_listing"}), error: nil }
+      end
+    end
+
+    it 'keeps the greetings/history-invariant category-enumeration contract markers in the system prompt' do
+      extractor.extract(text: 'Kain apa saja?')
+
+      system = captured_prompts.last[:system]
+      # Both intents stay named in the JSON contract.
+      expect(system).to include('"product_listing"')
+      expect(system).to include('"product_overview"')
+      # The category-enumeration semantics stay contract markers: a stated-category
+      # enumeration is ALWAYS product_listing regardless of greetings or history.
+      expect(system).to include('ALWAYS product_listing')
+      expect(system).to include('regardless of greetings')
+      expect(system).to include('NO single category or product type is in focus')
+      # History-invariance: prior turns/assistant answers never reclassify the current turn.
+      expect(system).to include('NEVER change the classification of')
+      expect(system.index('product_listing')).to be < system.index('What products does Textilindo sell?')
+    end
+  end
 end
