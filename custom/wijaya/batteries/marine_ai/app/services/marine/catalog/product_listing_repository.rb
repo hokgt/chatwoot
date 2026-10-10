@@ -1,18 +1,14 @@
-# Phase 3 — read-only repository for a BOUNDED, deterministic catalog LISTING of active
-# TOP-LEVEL products over the canonical Marine item data (schema-qualified `marine_ai.item`).
+# Phase 3 — read-only repository for bounded, deterministic catalog listing and offering scopes
+# over the canonical Marine item data (schema-qualified `marine_ai.item`).
 #
-# "Top-level" = a product the customer can be shown as a catalog entry: an active TEMPLATE
-# (has_variants = true) OR an active STANDALONE product (has_variants = false). What makes a row
-# top-level is that it is NOT a child/variant: a variant row carries its parent family code in
-# `variant_of`, so the canonical top-level test is "variant_of is empty". A plain `variant_of IS
-# NULL` is WRONG — it silently drops a standalone row whose `variant_of` is a blank/whitespace
-# string (equally not a child), so the catalog-authoritative predicate is
-# `disabled = false AND COALESCE(BTRIM(variant_of), '') = ''`: a disabled row is excluded, a NULL
-# or blank/whitespace `variant_of` is kept, and only a row naming an actual parent family is
-# dropped. `has_variants` is deliberately NOT in the predicate: it merely splits template vs
-# standalone, and both are top-level — it does not discriminate top-level-ness, so adding it would
-# only risk dropping a legitimately listable row on a dirty flag. Deterministically ordered by
-# item_code.
+# General customer-visible product listings contain active sellable TEMPLATE rows only
+# (`has_variants = true`) and independently reject child rows through an empty `variant_of` guard.
+# Company offering / Item Group authority is deliberately broader: every active sellable non-child
+# row contributes, including standalone rows (`has_variants = false`). Exact top-level identity
+# lookup remains on that established broad population; only general listing page/count membership is
+# narrowed. A plain `variant_of IS NULL` is insufficient because no parent may be represented by a
+# blank/whitespace value, so both scopes use `COALESCE(BTRIM(variant_of), '') = ''`.
+# Results are deterministically ordered by item_code.
 #
 # Authoritative identity is the item_code, NEVER the item_name. The active-set query DEDUPLICATES
 # on item_code (SQL `DISTINCT ON (item_code)`) BEFORE the page limit, and the total is a
@@ -46,9 +42,9 @@ module Marine
       MAX_ANY_CANDIDATE_BYTES = Marine::Decision::Schema::MAX_RAW_CANDIDATE_LENGTH
       MAX_INFERENCE_MATCHES = 20
 
-      # Bounded, deterministic listing of ACTIVE TOP-LEVEL products, DEDUPLICATED on item_code. Returns:
+      # Bounded, deterministic listing of ACTIVE TEMPLATE products, DEDUPLICATED on item_code. Returns:
       #   { products: [{ code:, name: }], returned_count:, total_count: (Integer|nil), complete:, has_more: }
-      # complete == true means the returned page IS the whole active top-level set, and is always the
+      # complete == true means the returned page IS the whole active template set, and is always the
       # exact complement of has_more (complete == !has_more).
       def active_top_level(limit: DEFAULT_PAGE, item_group: nil)
         ensure_configured!
@@ -75,7 +71,8 @@ module Marine
 
       # Bounded authoritative company-offering categories projected from the real item_group field.
       # This deliberately returns category names only: a company-wide question must not enumerate item
-      # rows. Categories are derived from the same active sellable top-level population used by listings.
+      # rows. Categories use all active sellable non-child rows, including standalone products,
+      # independently of the narrower template-only product listing scope.
       def active_item_groups(limit: DEFAULT_PAGE)
         ensure_configured!
         capped = clamp_limit(limit)
@@ -124,7 +121,8 @@ module Marine
         resolve_any(values, item_group_any_sql(values.length), :item_group)
       end
 
-      # Infer a category only from eligible top-level products whose normalized item name/code contains
+      # Infer a category only from active sellable non-child products (templates or standalone) whose
+      # normalized item name/code contains
       # an exact token match. This is deliberately bounded and unanimous: every distinct matching
       # product must converge on one normalized Item Group with one display spelling. Missing,
       # conflicting, or overflowed evidence never guesses a category.
@@ -147,9 +145,10 @@ module Marine
         { status: :unavailable }
       end
 
-      # Exact resolution of ONE active top-level product (template OR standalone) by its exact
-      # item_code or exact (case-insensitive) item_name, under the IDENTICAL authoritative predicate
-      # used by the page/count and DEDUPLICATED on item_code. Returns { code:, name: } for a single
+      # Exact resolution of ONE active sellable non-child product (template OR standalone) by its exact
+      # item_code or exact (case-insensitive) item_name. This intentionally preserves the established
+      # broad exact-identity scope rather than inheriting the narrower general-listing predicate.
+      # Returns { code:, name: } for a single
       # unique item_code match, or nil for a blank mention, no match, or an AMBIGUOUS match (more than
       # one DISTINCT item_code) — so a caller never binds to a guessed or non-unique product.
       # Duplicate physical rows for the SAME item_code collapse to one identity and never manufacture
@@ -239,28 +238,26 @@ module Marine
         [value, MAX_PAGE].min
       end
 
-      # The single canonical top-level predicate, shared VERBATIM by page / count / exact lookup so
-      # the three can never disagree about what "active top-level" means: an active row (disabled =
-      # false) that is NOT a child/variant. A variant names its parent family in variant_of, so the
-      # test is COALESCE(BTRIM(variant_of), '') = '' — a NULL or blank/whitespace variant_of is kept
-      # (templates + standalone), only a row naming an actual parent is dropped. has_variants is
-      # deliberately absent (it splits template vs standalone, both top-level — it does not
-      # discriminate top-level-ness).
-      TOP_LEVEL_PREDICATE = "disabled = false AND is_sales_item = true AND COALESCE(BTRIM(variant_of), '') = ''".freeze
+      # Shared eligibility for authoritative top-level identities and Item Group/service authority.
+      # Templates and standalone rows are both relevant; children, disabled rows, and non-sales rows
+      # are not. Keep this independent from the narrower general-listing membership predicate.
+      ACTIVE_SELLABLE_NON_CHILD_PREDICATE =
+        "disabled = false AND is_sales_item = true AND COALESCE(BTRIM(variant_of), '') = ''".freeze
+
+      # General customer-visible product lists contain templates only. The non-child guard remains
+      # independent so a malformed child row cannot become listable merely by claiming template status.
+      TEMPLATE_LISTING_PREDICATE = "#{ACTIVE_SELLABLE_NON_CHILD_PREDICATE} AND has_variants = true".freeze
 
       # The authoritative identity is item_code. A blank/whitespace item_code is NOT a usable
       # identity: since the active set deduplicates on item_code, a blank code would collapse
       # unrelated rows into one phantom "" product and corrupt the count/completeness semantics. It is
-      # therefore excluded alongside the top-level membership test. This is an identity guard, not a
-      # change to the canonical membership predicate (TOP_LEVEL_PREDICATE is preserved verbatim).
+      # therefore excluded from every identity-bearing query.
       IDENTITY_PREDICATE = "COALESCE(BTRIM(item_code), '') <> ''".freeze
 
-      # The full authoritative filter — membership (TOP_LEVEL_PREDICATE) AND a usable item_code
-      # identity — shared VERBATIM by page / count / exact lookup so the three can never disagree
-      # about which rows are the active, deduplicable top-level set.
-      AUTHORITATIVE_PREDICATE = "#{TOP_LEVEL_PREDICATE} AND #{IDENTITY_PREDICATE}".freeze
+      TEMPLATE_LISTING_AUTHORITY_PREDICATE = "#{TEMPLATE_LISTING_PREDICATE} AND #{IDENTITY_PREDICATE}".freeze
+      TOP_LEVEL_AUTHORITY_PREDICATE = "#{ACTIVE_SELLABLE_NON_CHILD_PREDICATE} AND #{IDENTITY_PREDICATE}".freeze
 
-      # Active top-level rows (templates + standalone; variants and disabled excluded), DEDUPLICATED
+      # Active template rows (standalone, variants, and disabled rows excluded), DEDUPLICATED
       # on the authoritative item_code and ordered deterministically. `DISTINCT ON (item_code)` keeps
       # exactly one physical row per item_code; the ORDER BY leads with item_code (required by
       # DISTINCT ON and the deterministic page order) and breaks ties on item_name ASC, so the name
@@ -271,7 +268,7 @@ module Marine
         <<~SQL.squish
           SELECT DISTINCT ON (item_code) item_code AS code, item_name AS name
           FROM #{Marine::Catalog::Config.qualified_table}
-          WHERE #{AUTHORITATIVE_PREDICATE}
+          WHERE #{TEMPLATE_LISTING_AUTHORITY_PREDICATE}
             #{category_clause}
           ORDER BY item_code ASC, item_name ASC
           LIMIT $1
@@ -284,7 +281,7 @@ module Marine
         <<~SQL.squish
           SELECT COUNT(DISTINCT item_code) AS total
           FROM #{Marine::Catalog::Config.qualified_table}
-          WHERE #{AUTHORITATIVE_PREDICATE}
+          WHERE #{TEMPLATE_LISTING_AUTHORITY_PREDICATE}
             #{category_clause}
         SQL
       end
@@ -293,7 +290,7 @@ module Marine
         <<~SQL.squish
           SELECT MIN(BTRIM(item_group)) AS item_group, LOWER(BTRIM(item_group)) AS normalized_group
           FROM #{Marine::Catalog::Config.qualified_table}
-          WHERE #{AUTHORITATIVE_PREDICATE}
+          WHERE #{TOP_LEVEL_AUTHORITY_PREDICATE}
             AND COALESCE(BTRIM(item_group), '') <> ''
           GROUP BY LOWER(BTRIM(item_group))
           ORDER BY normalized_group ASC
@@ -305,7 +302,7 @@ module Marine
         <<~SQL.squish
           SELECT COUNT(DISTINCT LOWER(BTRIM(item_group))) AS total
           FROM #{Marine::Catalog::Config.qualified_table}
-          WHERE #{AUTHORITATIVE_PREDICATE}
+          WHERE #{TOP_LEVEL_AUTHORITY_PREDICATE}
             AND COALESCE(BTRIM(item_group), '') <> ''
         SQL
       end
@@ -314,7 +311,7 @@ module Marine
         <<~SQL.squish
           SELECT MIN(BTRIM(item_group)) AS item_group
           FROM #{Marine::Catalog::Config.qualified_table}
-          WHERE #{AUTHORITATIVE_PREDICATE}
+          WHERE #{TOP_LEVEL_AUTHORITY_PREDICATE}
             AND COALESCE(BTRIM(item_group), '') <> ''
             AND LOWER(BTRIM(item_group)) = $1
           GROUP BY LOWER(BTRIM(item_group))
@@ -328,7 +325,7 @@ module Marine
         <<~SQL.squish
           SELECT DISTINCT ON (item_code) item_code AS code, item_name AS name
           FROM #{Marine::Catalog::Config.qualified_table}
-          WHERE #{AUTHORITATIVE_PREDICATE}
+          WHERE #{TOP_LEVEL_AUTHORITY_PREDICATE}
             AND (LOWER(BTRIM(item_code)) IN (#{identities}) OR LOWER(BTRIM(item_name)) IN (#{identities}))
           ORDER BY item_code ASC, item_name ASC
           LIMIT 2
@@ -340,7 +337,7 @@ module Marine
         <<~SQL.squish
           SELECT MIN(BTRIM(item_group)) AS item_group, LOWER(BTRIM(item_group)) AS normalized_group
           FROM #{Marine::Catalog::Config.qualified_table}
-          WHERE #{AUTHORITATIVE_PREDICATE}
+          WHERE #{TOP_LEVEL_AUTHORITY_PREDICATE}
             AND COALESCE(BTRIM(item_group), '') <> ''
             AND LOWER(BTRIM(item_group)) IN (#{names})
           GROUP BY LOWER(BTRIM(item_group))
@@ -357,7 +354,7 @@ module Marine
                  MIN(BTRIM(item_group)) AS item_group,
                  COUNT(DISTINCT BTRIM(item_group)) AS display_count
           FROM #{Marine::Catalog::Config.qualified_table}
-          WHERE #{AUTHORITATIVE_PREDICATE}
+          WHERE #{TOP_LEVEL_AUTHORITY_PREDICATE}
             AND COALESCE(BTRIM(item_group), '') <> ''
             AND EXISTS (
               SELECT 1
@@ -372,7 +369,7 @@ module Marine
         SQL
       end
 
-      # Exact lookup over the SAME authoritative predicate, DEDUPLICATED on item_code: match the exact
+      # Exact lookup over the broad top-level authority predicate, DEDUPLICATED on item_code: match the exact
       # item_code ($1) or the case-insensitive exact item_name ($2 = lowered mention). DISTINCT ON
       # (item_code) collapses duplicate physical rows for one item_code to a single identity so they
       # cannot manufacture a false ambiguity; LIMIT 2 still lets the caller detect a genuine ambiguity
@@ -381,7 +378,7 @@ module Marine
         <<~SQL.squish
           SELECT DISTINCT ON (item_code) item_code AS code, item_name AS name
           FROM #{Marine::Catalog::Config.qualified_table}
-          WHERE #{AUTHORITATIVE_PREDICATE}
+          WHERE #{TOP_LEVEL_AUTHORITY_PREDICATE}
             AND (item_code = $1 OR LOWER(item_name) = $2)
           ORDER BY item_code ASC, item_name ASC
           LIMIT 2

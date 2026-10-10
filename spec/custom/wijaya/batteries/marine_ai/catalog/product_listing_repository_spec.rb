@@ -2,13 +2,10 @@
 
 require 'rails_helper'
 
-# Phase 3 — bounded, deterministic catalog LISTING of active TOP-LEVEL products (templates +
-# standalone; variants and disabled excluded). Every example stubs the low-level Connection so no
-# live external DB is touched; we assert the exact canonical top-level predicate (shared VERBATIM by
-# page / count / exact lookup), the page+1 bind that makes completeness known, the exact completeness
-# metadata, and the exact single-product lookup. The predicate's row-level semantics (a NULL vs
-# blank-string vs child vs disabled variant_of) are PROVEN by the SQL predicate asserted here and
-# validated empirically by the read-only runtime aggregate proof.
+# Phase 3 — bounded, deterministic catalog listing with intentionally separate authority scopes.
+# General product pages/counts are template-only; Item Group/service authority and established exact
+# top-level identity/inference remain active sellable non-child (templates + standalone). Every
+# example stubs the low-level Connection so no live external DB is touched.
 RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
   subject(:repository) { described_class.new }
 
@@ -32,23 +29,47 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
     end
   end
 
-  # The one canonical top-level predicate every query must carry VERBATIM: active, and NOT a child
-  # (a NULL or blank/whitespace variant_of is kept; only a row naming a parent family is dropped).
-  describe 'the canonical top-level predicate' do
-    it 'keeps only active sellable non-child rows, without using has_variants as the top-level discriminator' do
-      expect(described_class::TOP_LEVEL_PREDICATE)
-        .to eq("disabled = false AND is_sales_item = true AND COALESCE(BTRIM(variant_of), '') = ''")
+  describe 'separate listing and Item Group authority predicates' do
+    it 'defines template-only listing membership separately from broad sellable non-child authority' do
+      expect(described_class::ACTIVE_SELLABLE_NON_CHILD_PREDICATE).to eq(
+        "disabled = false AND is_sales_item = true AND COALESCE(BTRIM(variant_of), '') = ''"
+      )
+      expect(described_class::TEMPLATE_LISTING_PREDICATE).to eq(
+        "#{described_class::ACTIVE_SELLABLE_NON_CHILD_PREDICATE} AND has_variants = true"
+      )
     end
 
-    it 'shares that exact predicate across page, count, and exact lookup' do
-      repository.active_top_level(limit: 1)
-      repository.exact_top_level('AAA')
-      sqls = captured.map { |c| c[:sql] }
-      expect(sqls).to all(include(described_class::TOP_LEVEL_PREDICATE))
-      # A child variant (variant_of names a parent), a blank-string standalone, and a NULL standalone
-      # are all discriminated by this single predicate; a disabled row is excluded by disabled=false.
-      expect(sqls).to all(satisfy { |sql| sql.exclude?('variant_of IS NULL') })
-      expect(sqls).to all(satisfy { |sql| sql.exclude?('has_variants') })
+    it 'lists templates only while retaining a standalone-derived Item Group service' do
+      allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
+        captured << { sql: sql, params: params }
+        if sql.include?('SELECT DISTINCT ON (item_code)')
+          [{ 'code' => 'TPL-1', 'name' => 'Template Fabric' }]
+        elsif sql.include?('SELECT MIN(BTRIM(item_group)) AS item_group')
+          [{ 'item_group' => 'Fabric' }, { 'item_group' => 'Standalone Service' }]
+        else
+          []
+        end
+      end
+
+      listing = repository.active_top_level
+      offerings = repository.active_item_groups
+      listing_sql, offering_sql = captured.map { |call| call[:sql] }
+
+      expect(listing[:products]).to eq([{ code: 'TPL-1', name: 'Template Fabric' }])
+      expect(offerings[:item_groups]).to eq(['Fabric', 'Standalone Service'])
+      expect(listing_sql).to include(described_class::TEMPLATE_LISTING_AUTHORITY_PREDICATE)
+      expect(offering_sql).to include(described_class::TOP_LEVEL_AUTHORITY_PREDICATE)
+      expect(offering_sql).not_to include('has_variants = true')
+    end
+
+    it 'keeps exact top-level identity and Item Group inference on the established broad scope' do
+      repository.exact_top_level('Standalone Product')
+      repository.infer_item_group_from_top_level_any(['standalone'])
+      exact_sql, inference_sql = captured.map { |call| call[:sql] }
+
+      expect(exact_sql).to include(described_class::TOP_LEVEL_AUTHORITY_PREDICATE)
+      expect(inference_sql).to include(described_class::TOP_LEVEL_AUTHORITY_PREDICATE)
+      expect([exact_sql, inference_sql]).to all(satisfy { |sql| sql.exclude?('has_variants = true') })
     end
   end
 
@@ -95,12 +116,12 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
     context 'when the page is the whole set (no extra row)' do
       let(:listing_rows) { [{ 'code' => 'AAA', 'name' => 'Alpha' }, { 'code' => 'BBB', 'name' => 'Bravo' }] }
 
-      it 'lists top-level active products, orders by item_code, and binds page+1' do
+      it 'lists active templates, orders by item_code, and binds page+1' do
         result = repository.active_top_level(limit: 20)
 
         call = captured.first
         expect(call[:params]).to eq([21])
-        expect(call[:sql]).to include(described_class::TOP_LEVEL_PREDICATE)
+        expect(call[:sql]).to include(described_class::TEMPLATE_LISTING_AUTHORITY_PREDICATE)
         expect(call[:sql]).to include('ORDER BY item_code ASC')
         expect(call[:sql]).to include('LIMIT $1')
         expect(result[:products]).to eq([{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }])
@@ -134,7 +155,7 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
         expect(result[:has_more]).to be(true)
         expect(result[:total_count]).to eq(42)
         expect(captured.last[:sql]).to include('COUNT(DISTINCT item_code)')
-        expect(captured.last[:sql]).to include(described_class::TOP_LEVEL_PREDICATE)
+        expect(captured.last[:sql]).to include(described_class::TEMPLATE_LISTING_AUTHORITY_PREDICATE)
       end
 
       it 'reports a nil total_count when the COUNT query fails (honest bounded selection)' do
@@ -254,7 +275,7 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
       expect(calls[1][:params]).to eq([2, 'Fabric'])
       expect(calls[2][:params]).to eq(['Fabric'])
       expect(calls.drop(1).map { |call| call[:sql] }).to all(include('LOWER(BTRIM(item_group)) = LOWER(BTRIM('))
-      expect(calls.drop(1).map { |call| call[:sql] }).to all(include(described_class::TOP_LEVEL_PREDICATE))
+      expect(calls.drop(1).map { |call| call[:sql] }).to all(include(described_class::TEMPLATE_LISTING_AUTHORITY_PREDICATE))
       expect(result[:products]).to eq([{ code: 'AAA', name: 'Alpha' }])
       expect(result).to include(returned_count: 1, total_count: 3, complete: false, has_more: true)
     end
@@ -319,7 +340,7 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
       result = repository.infer_item_group_from_top_level_any(['kain'])
       expect(result).to eq(status: :resolved, item_group: 'Fabric')
       expect(captured.first[:params]).to eq(['kain'])
-      expect(captured.first[:sql]).to include(described_class::AUTHORITATIVE_PREDICATE)
+      expect(captured.first[:sql]).to include(described_class::TOP_LEVEL_AUTHORITY_PREDICATE)
       expect(captured.first[:sql]).to match(/\ASELECT\b/i)
       expect(captured.first[:sql]).to include('FROM (VALUES ($1)) AS candidates(value)')
       expect(Marine::Catalog::Connection.single_select?(captured.first[:sql])).to be(true)
@@ -359,7 +380,8 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
         result = repository.exact_top_level(' Alpha ')
         call = captured.first
         expect(call[:params]).to eq(%w[Alpha alpha])
-        expect(call[:sql]).to include(described_class::TOP_LEVEL_PREDICATE)
+        expect(call[:sql]).to include(described_class::TOP_LEVEL_AUTHORITY_PREDICATE)
+        expect(call[:sql]).not_to include('has_variants = true')
         expect(call[:sql]).to include('item_code = $1 OR LOWER(item_name) = $2')
         # DISTINCT ON (item_code) collapses duplicate physical rows for one item_code to a single
         # identity; LIMIT 2 still surfaces a genuine ambiguity across DISTINCT item_codes.

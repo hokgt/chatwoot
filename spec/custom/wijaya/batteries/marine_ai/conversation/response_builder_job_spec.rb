@@ -590,6 +590,61 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         expect(price_repository).not_to have_received(:price_for)
       end
 
+      it 'delivers the Baby Doll to Linen Flow four-turn switch with only the new variant price retained' do
+        family_transition = lambda do |family_code|
+          {
+            schema_version: 'state_transition_v1', operation: :start, capability: 'family_context',
+            handoff_required: false,
+            authoritative_identity: { family_code: family_code, source: 'marine_catalog' }.freeze
+          }.freeze
+        end
+        target = lambda do |text, transition|
+          Marine::Backend::ExactPriceCustomerExecution::Result.new(
+            status: :deliverable, reason: :accepted, text: text, transition: transition
+          ).freeze
+        end
+        results = [
+          target.call('Baby Doll tersedia.', family_transition.call('BD')),
+          target.call('Harga BD-3 adalah Rp 10.000 per yard.', exact_transition(family_code: 'BD', variant_code: 'BD-3')),
+          target.call('Linen Flow tersedia.', family_transition.call('LF')),
+          target.call('Harga LF-3 adalah Rp 20.000 per yard.', exact_transition(family_code: 'LF', variant_code: 'LF-3'))
+        ]
+        allow(exact_price_attempt).to receive(:call).and_return(*results)
+
+        incoming.update!(content: 'Baby Doll')
+        turns = [incoming]
+        described_class.perform_now(conversation, assistant, incoming.id)
+        expect(product_state).to include('validated_family' => 'BD', 'version' => 1)
+        expect(product_state).not_to have_key('validated_variant')
+
+        turns << create(:message, conversation: conversation, message_type: :incoming, content: 'bd-3')
+        described_class.perform_now(conversation, assistant, turns.last.id)
+        expect(product_state).to include('validated_family' => 'BD', 'validated_variant' => 'BD-3', 'version' => 2)
+
+        turns << create(:message, conversation: conversation, message_type: :incoming, content: 'Linen Flow')
+        described_class.perform_now(conversation, assistant, turns.last.id)
+        expect(product_state).to include('validated_family' => 'LF', 'version' => 1)
+        expect(product_state).not_to have_key('validated_variant')
+
+        turns << create(:message, conversation: conversation, message_type: :incoming, content: 'lf-3')
+        described_class.perform_now(conversation, assistant, turns.last.id)
+
+        expect(product_state).to include('validated_family' => 'LF', 'validated_variant' => 'LF-3', 'version' => 2)
+        expect(product_state.to_s).not_to match(/10\.000|BD-3/)
+        replies = conversation.messages.outgoing.order(:id).pluck(:content)
+        expect(replies).to eq(
+          [
+            'Baby Doll tersedia.', 'Harga BD-3 adalah Rp 10.000 per yard.',
+            'Linen Flow tersedia.', 'Harga LF-3 adalah Rp 20.000 per yard.'
+          ]
+        )
+        expect(replies.last).to include('LF-3', '20.000')
+        expect(replies.last).not_to include('BD-3', '10.000')
+        expect(turns.map { |turn| turn.reload.additional_attributes.dig('wijaya_marine_ai', 'processing_claim_v1', 'status') })
+          .to all(eq('completed'))
+        expect(exact_price_attempt).to have_received(:call).exactly(4).times
+      end
+
       it 'writes no state for a malformed or forged transition' do
         malformed = exact_transition(source: 'forged')
         allow(exact_price_attempt).to receive(:call).and_return(exact_transition_result(malformed))

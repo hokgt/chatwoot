@@ -178,6 +178,22 @@ RSpec.describe Marine::Decision::RequestBuilder do
       expect(stock['false']).to include('which types/items').and include('product_listing')
     end
 
+    it 'expresses company-wide service offerings generically for an Indonesian overview request' do
+      service_input = Marine::Decision::InputContract.build(
+        message: 'Textil menyediakan layanan apa saja?', context: [], state: {},
+        scenarios: [{ 'key' => 'product_scenario', 'description' => 'catalog', 'instruction' => 'read' }],
+        classification_intents: %w[product_overview product_listing unsupported]
+      )
+      request = described_class.build(mode: 'openrouter_decisions', input: service_input)
+      overview = request[:questions]['mdq_intent__product_overview']['criteria']
+      listing = request[:questions]['mdq_intent__product_listing']['criteria']
+
+      expect(request[:state]['message']).to eq('Textil menyediakan layanan apa saja?')
+      expect(overview['true']).to include('service lines, offerings, or categories')
+      expect(overview['false']).to include('concrete product or service kind/subcategory')
+      expect(listing['true']).to include('concrete product or service category')
+    end
+
     it 'never asks Jev to extract free text (no non-choice/noul question types)' do
       types = request[:questions].values.map { |q| q['type'] }.uniq
       expect(types).to match_array(%w[choice noul])
@@ -231,7 +247,9 @@ RSpec.describe Marine::Decision::RequestBuilder do
       prompt = described_class::SYSTEM_PROMPT
 
       expect(prompt).to match(/product_overview.*company-wide.*high-level.*categories/im)
-      expect(prompt).to match(/product_listing.*names, types, or items.*concrete product category/im)
+      expect(prompt).to match(
+        /product_listing means a request for names, types, or items within a concrete product or service\s+category/
+      )
       expect(prompt).to match(/category.*scope.*must not become a product slot/im)
       expect(prompt).to match(%r{stock.*binary.*one specific.*product/variant}im)
       expect(prompt).to match(%r{which.*types/items.*category is product_listing, not stock}im)
