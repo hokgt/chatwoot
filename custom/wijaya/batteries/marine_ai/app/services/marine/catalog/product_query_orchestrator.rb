@@ -173,7 +173,9 @@ module Marine
       # plan[:language] while STILL recording the authoritative resolution, so #process never falls
       # back to the raw provider guess and a later consumer can tell authoritative-unresolved apart
       # from a direct caller's absence of any decision.
-      def plan_for_intent(intent:, flow: nil, suppressed: false, text: nil, knowledge_available: false, reply_language: :unset) # rubocop:disable Metrics/ParameterLists -- a flat keyword API shared by #process and direct callers
+      # A flat keyword API plus ordered fail-closed routing guards keeps all direct/process callers aligned.
+      # rubocop:disable Metrics/ParameterLists, Metrics/AbcSize, Metrics/CyclomaticComplexity
+      def plan_for_intent(intent:, flow: nil, suppressed: false, text: nil, knowledge_available: false, reply_language: :unset)
         intent = symbolize(intent)
         capture_turn_metadata(intent, text, knowledge_available, reply_language)
 
@@ -182,6 +184,14 @@ module Marine
         flow = string_keyed(flow)
 
         return build(:not_product) unless truthy(intent[:product_related])
+
+        # WIJAYA_CUSTOM_START: listing-recommendation-routing
+        # A fresh use-case recommendation is informational and independent of any active price/stock
+        # slot. Route it before flow-intent retention: grounded approved KB may answer; without that
+        # evidence, use the existing factless handoff. It never reaches a Catalog listing read.
+        return plan_product_recommendation if product_recommendation?(intent)
+
+        # WIJAYA_CUSTOM_END: listing-recommendation-routing
 
         # Effective supported-intent SET for this turn, computed from the untrusted extraction BEFORE
         # retain_flow_intent rewrites the scalar intent: the turn's own stated set wins, and a bare
@@ -221,6 +231,7 @@ module Marine
         # status): no fabricated fact — hand off with a safe, factless descriptor.
         build(:handoff, reply: reply_renderer.catalog_unavailable)
       end
+      # rubocop:enable Metrics/ParameterLists, Metrics/AbcSize, Metrics/CyclomaticComplexity
 
       private
 
@@ -431,6 +442,18 @@ module Marine
         intent[:intent].to_s == Marine::Catalog::IntentExtractor::PRODUCT_OVERVIEW_INTENT
       end
 
+      # WIJAYA_CUSTOM_START: listing-recommendation-routing
+      def product_recommendation?(intent)
+        intent[:intent].to_s == Marine::Catalog::IntentExtractor::PRODUCT_RECOMMENDATION_INTENT
+      end
+
+      def plan_product_recommendation
+        return build(:not_product) if @knowledge_available
+
+        build(:handoff, reply: reply_renderer.unsupported)
+      end
+      # WIJAYA_CUSTOM_END: listing-recommendation-routing
+
       # The Layer-2 rescue plan for a product_overview turn. The turn's untrusted extracted candidates
       # (family_mention / attribute_candidates) are resolved through the SAME exact item-group authority
       # plan_product_listing uses (ProductListingRepository#resolve_item_group_any via #listing_item_group —
@@ -550,33 +573,84 @@ module Marine
                              operation: state_op, changes: family_level_changes(family, intent, state_op))
       end
 
-      # A product-LISTING turn asks to ENUMERATE the catalog's actual product names (e.g. the fabrics
-      # carried). It is a bounded, dynamic DATABASE read — ProductListingRepository#active_top_level,
-      # active sellable TEMPLATE rows only (has_variants = true) — so a brand-new catalog row appears on
-      # the next turn with no prompt or Knowledge Base change. The category scope comes ONLY from the
-      # turn's untrusted extracted candidates, resolved EXACTLY against the item-group authority; a
-      # missing/ambiguous/unresolved mention NEVER guesses a category — the listing stays broad and
-      # truthful. A catalog outage raises CatalogUnavailableError and the #plan_for_intent rescue hands
-      # off fail-closed, never fabricating a listing. No state is mutated: a listing validates no family
-      # and waits on no slot, so the plan is a pure reply with operation :none.
+      # A product-LISTING turn asks to ENUMERATE the catalog's actual product names. It is a bounded,
+      # dynamic DATABASE read of active sellable TEMPLATE rows. A closed provider scope distinguishes
+      # the genuine all-products page from one explicitly scoped to an Item Group. Item-group candidates
+      # must resolve exactly; unresolved/ambiguous scopes defer only to approved KB evidence, otherwise
+      # hand off factlessly. An exact top-level product candidate never broadens into the all-products
+      # page. A catalog outage raises CatalogUnavailableError and fails closed. No state is mutated.
+      # WIJAYA_CUSTOM_START: listing-recommendation-routing
       def plan_product_listing(intent)
-        item_group = listing_item_group(intent)
+        scope = listing_scope(intent)
+        if %i[missing ambiguous].include?(scope[:status])
+          return build(:not_product) if @knowledge_available
+
+          return build(:handoff, reply: reply_renderer.unsupported)
+        end
+        return build(:handoff, reply: reply_renderer.unsupported) unless %i[unscoped resolved].include?(scope[:status])
+
+        item_group = scope[:item_group]
         page = listing_repository.active_top_level(item_group: item_group)
         build(:reply, reply: reply_renderer.product_listing(page, item_group))
       end
 
-      # The exact item-group scope for a listing turn, from the turn's untrusted extracted candidates
-      # only (family_mention / attribute_candidates — never the raw turn text). Exactly ONE distinct
-      # group match resolves; zero (missing) or many (ambiguous) contribute NO scope, so the listing
-      # stays broad rather than guessing a category. Data-driven: no phrase or category list here.
-      def listing_item_group(intent)
+      # Resolve the untrusted closed listing_scope against repository authority. Broad scopes may carry
+      # a provider's generic umbrella candidate, but an exact top-level product identity still blocks
+      # broadening. item_group requires one exact Item Group. Missing/invalid scope fails closed.
+      def listing_scope(intent)
+        mode = intent[:listing_scope].to_s
+        candidates = listing_candidates(intent)
+        return { status: :invalid } unless Marine::Catalog::IntentExtractor::LISTING_SCOPES.include?(mode)
+
+        return broad_listing_scope(candidates) if %w[all_products catalog_domain].include?(mode)
+
+        item_group_listing_scope(candidates)
+      end
+
+      def broad_listing_scope(candidates)
+        return { status: :unscoped, item_group: nil } if candidates.empty?
+
+        product = listing_repository.resolve_top_level_any(candidates)
+        raise Marine::Catalog::Errors::CatalogUnavailableError if product[:status] == :unavailable
+
+        product[:status] == :resolved ? { status: :exact_product } : { status: :unscoped, item_group: nil }
+      end
+
+      def item_group_listing_scope(candidates)
+        return { status: :missing } if candidates.empty?
+
+        group = listing_repository.resolve_item_group_any(candidates)
+        raise Marine::Catalog::Errors::CatalogUnavailableError if group[:status] == :unavailable
+        return { status: :resolved, item_group: group[:item_group] } if group[:status] == :resolved
+        return { status: group[:status] } unless group[:status] == :missing
+
+        exact_product_or_missing_scope(candidates)
+      end
+
+      def exact_product_or_missing_scope(candidates)
+        product = listing_repository.resolve_top_level_any(candidates)
+        raise Marine::Catalog::Errors::CatalogUnavailableError if product[:status] == :unavailable
+
+        { status: product[:status] == :resolved ? :exact_product : :missing }
+      end
+
+      def listing_candidates(intent)
         raw = [intent[:family_mention], *Array(intent[:attribute_candidates])]
-        candidates = raw.filter_map { |value| value.to_s.strip.presence }.uniq
+        raw.filter_map { |value| value.to_s.strip.presence }.uniq
+      end
+
+      # Overview rescue keeps its established contract independently of listing_scope: only one exact
+      # Item Group reroutes to listing; every other result remains grounded overview/not_product.
+      def listing_item_group(intent)
+        candidates = listing_candidates(intent)
         return nil if candidates.empty?
 
         resolution = listing_repository.resolve_item_group_any(candidates)
-        resolution[:status] == :resolved ? resolution[:item_group] : nil
+        resolution[:item_group] if resolution[:status] == :resolved
+      rescue Marine::Catalog::Errors::CatalogUnavailableError
+        nil
       end
+      # WIJAYA_CUSTOM_END: listing-recommendation-routing
 
       # Parent-level answer. Catalog and parent are both family-level (no variant), so both
       # clear stale variant context via #family_level_changes.

@@ -40,7 +40,7 @@ RSpec.describe 'Marine fabric product-listing routing', type: :model do
 
   # Stub the low-level Connection (the same boundary the repository spec stubs) so the
   # REAL ProductListingRepository runs its template-only SQL and no live DB is touched.
-  def stub_listing_connection!(rows: listing_rows, groups: group_rows, raise_error: false)
+  def stub_listing_connection!(rows: listing_rows, groups: group_rows, products: [], total: 2, raise_error: false)
     allow(Marine::Catalog::Config).to receive(:configured?).and_return(true)
     allow(Marine::Catalog::Config).to receive(:qualified_table).and_return('marine_ai.item')
     allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
@@ -48,9 +48,11 @@ RSpec.describe 'Marine fabric product-listing routing', type: :model do
       raise StandardError, 'catalog outage' if raise_error
 
       if sql.include?('COUNT(DISTINCT')
-        [{ 'total' => 2 }]
+        [{ 'total' => total }]
       elsif sql.include?('MIN(BTRIM(item_group))')
         groups
+      elsif sql.include?('LOWER(BTRIM(item_code)) IN')
+        products
       else
         rows
       end
@@ -60,7 +62,7 @@ RSpec.describe 'Marine fabric product-listing routing', type: :model do
   # A Phase-2-shaped (symbol-keyed) product-listing intent, as the extractor emits.
   def listing_intent(overrides = {})
     {
-      product_related: true, intent: 'product_listing', family_mention: 'kain',
+      product_related: true, intent: 'product_listing', family_mention: 'kain', listing_scope: 'item_group',
       explicit_child_code: nil, attribute_candidates: [], requires_exact_variant: false,
       clarification_reply: nil, family_changed: false, intent_changed: false,
       intent_scope: nil, multiple_numeric_candidates: false, quantity_inquiry: false,
@@ -99,12 +101,13 @@ RSpec.describe 'Marine fabric product-listing routing', type: :model do
     end
 
     it 'normalizes an emitted product_listing intent unchanged with a single-element requested set' do
-      stub_llm(message: %({"product_related": true, "intent": "product_listing", "family_mention": "kain"}))
+      stub_llm(message: %({"product_related": true, "intent": "product_listing", "family_mention": "kain", "listing_scope": "item_group"}))
 
       result = extractor.extract(text: 'Kain apa saja?')
 
       expect(result[:intent]).to eq('product_listing')
       expect(result[:family_mention]).to eq('kain')
+      expect(result[:listing_scope]).to eq('item_group')
       expect(result[:requested_intents]).to eq(%w[product_listing])
       expect(result[:reason]).to eq('extracted')
     end
@@ -147,16 +150,14 @@ RSpec.describe 'Marine fabric product-listing routing', type: :model do
       expect(listing_call[:params]).to include('Kain')
     end
 
-    it 'falls back to the broad template listing when the extracted mention resolves to no item group' do
-      stub_listing_connection!(groups: [])
+    it 'fails closed instead of broadening when an extracted nonblank scope resolves to no item group' do
+      stub_listing_connection!(groups: [], products: [])
 
       plan = orchestrator.plan_for_intent(intent: listing_intent(family_mention: 'unknown category'), flow: nil)
 
-      expect(plan[:action]).to eq(:reply)
-      expect(plan[:reply][:kind]).to eq(:product_listing)
-      expect(plan[:reply][:item_group]).to be_nil
-      listing_call = captured_sql.find { |call| call[:sql].include?('DISTINCT ON (item_code)') }
-      expect(listing_call[:params]).to eq([21])
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply][:kind]).to eq(:unsupported)
+      expect(captured_sql.none? { |call| call[:params] == [21] }).to be(true)
     end
 
     it 'hands off fail-closed on a catalog outage instead of fabricating a listing' do
@@ -232,7 +233,9 @@ RSpec.describe 'Marine fabric product-listing routing', type: :model do
     it 'renders a truthful generic line for an empty listing, never a fabricated product' do
       stub_listing_connection!(rows: [])
 
-      plan = orchestrator.plan_for_intent(intent: listing_intent(family_mention: nil), flow: nil)
+      plan = orchestrator.plan_for_intent(
+        intent: listing_intent(family_mention: nil, listing_scope: 'all_products'), flow: nil
+      )
 
       expect(plan[:reply][:products]).to eq([])
       expect(presenter.reply_text(plan)).to include('currently')
@@ -327,4 +330,146 @@ RSpec.describe 'Marine fabric product-listing routing', type: :model do
       expect(system.index('product_listing')).to be < system.index('What products does Textilindo sell?')
     end
   end
+
+  # WIJAYA_CUSTOM_START: listing-recommendation-routing
+  describe 'P0 listing versus availability/recommendation routing' do
+    it 'allowlists product_recommendation as informational and documents the generic three-way prompt contract' do
+      expect(Marine::Catalog::IntentExtractor::ALLOWED_PRODUCT_INTENTS).to include('product_recommendation')
+      expect(Marine::Catalog::IntentExtractor::SUPPORTED_PRODUCT_INTENTS).not_to include('product_recommendation')
+
+      system = Marine::Catalog::IntentExtractor::SYSTEM_PROMPT
+      expect(system).to include('named product')
+      expect(system).to include('availability')
+      expect(system).to include('product_recommendation')
+      expect(system).to include('intended use')
+      expect(system).to include('listing_scope')
+      expect(system).to include('all_products')
+      expect(system).to include('catalog_domain')
+      expect(system).to include('CURRENT turn')
+    end
+
+    it 'defers a use-case recommendation to grounded knowledge only when approved knowledge is available' do
+      expect(Marine::Catalog::Connection).not_to receive(:select)
+
+      plan = orchestrator.plan_for_intent(
+        intent: listing_intent(intent: 'product_recommendation', family_mention: 'worship garment'),
+        flow: nil,
+        knowledge_available: true
+      )
+
+      expect(plan[:action]).to eq(:not_product)
+      expect(plan[:state]).to eq(operation: :none, changes: {})
+    end
+
+    it 'uses the existing factless handoff for a recommendation without approved knowledge' do
+      expect(Marine::Catalog::Connection).not_to receive(:select)
+
+      plan = orchestrator.plan_for_intent(
+        intent: listing_intent(intent: 'product_recommendation', family_mention: 'worship garment'),
+        flow: nil,
+        knowledge_available: false
+      )
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply][:kind]).to eq(:unsupported)
+      expect(plan[:state]).to eq(operation: :none, changes: {})
+    end
+
+    it 'does not let an active price or stock flow hijack a fresh recommendation turn' do
+      expect(Marine::Catalog::Connection).not_to receive(:select)
+      flow = {
+        'status' => Marine::Catalog::ProductFlowStateStore::STATUS_ACTIVE,
+        'validated_family' => 'LINEN-FLOW', 'validated_variant' => nil, 'current_intent' => 'stock'
+      }
+
+      plan = orchestrator.plan_for_intent(
+        intent: listing_intent(intent: 'product_recommendation', family_mention: 'prayer garment',
+                               intent_scope: 'new_intent'),
+        flow: flow,
+        knowledge_available: false
+      )
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply][:kind]).to eq(:unsupported)
+      expect(plan[:state]).to eq(operation: :none, changes: {})
+      expect(stock_repository).not_to have_received(:status_for)
+    end
+
+    it 'never broadens a nonblank listing scope that resolves to no item group' do
+      stub_listing_connection!(groups: [], products: [])
+
+      plan = orchestrator.plan_for_intent(
+        intent: listing_intent(family_mention: 'missing category'),
+        flow: nil
+      )
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply][:kind]).to eq(:unsupported)
+      expect(captured_sql.none? { |call| call[:params] == [21] }).to be(true)
+    end
+
+    it 'defers an unresolved item-group listing to grounded knowledge when approved evidence exists' do
+      stub_listing_connection!(groups: [], products: [])
+
+      plan = orchestrator.plan_for_intent(
+        intent: listing_intent(family_mention: 'intended use', listing_scope: 'item_group'),
+        flow: nil,
+        knowledge_available: true
+      )
+
+      expect(plan[:action]).to eq(:not_product)
+      expect(captured_sql.none? { |call| call[:params] == [21] }).to be(true)
+    end
+
+    it 'fails closed when product_listing lacks a valid closed listing scope' do
+      expect(Marine::Catalog::Connection).not_to receive(:select)
+
+      plan = orchestrator.plan_for_intent(
+        intent: listing_intent(listing_scope: nil),
+        flow: nil
+      )
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(plan[:reply][:kind]).to eq(:unsupported)
+    end
+
+    it 'never broadens an ambiguous nonblank listing scope' do
+      stub_listing_connection!(groups: [{ 'item_group' => 'A' }, { 'item_group' => 'B' }])
+
+      plan = orchestrator.plan_for_intent(intent: listing_intent(family_mention: 'ambiguous scope'), flow: nil)
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(captured_sql.none? { |call| call[:params] == [21] }).to be(true)
+    end
+
+    it 'detects an exact top-level product candidate and never turns it into a broad listing' do
+      stub_listing_connection!(groups: [], products: [{ 'code' => 'LINEN-FLOW', 'name' => 'Linen Flow' }])
+
+      plan = orchestrator.plan_for_intent(intent: listing_intent(family_mention: 'Linen Flow'), flow: nil)
+
+      expect(plan[:action]).to eq(:handoff)
+      expect(captured_sql.any? { |call| call[:sql].include?('LOWER(BTRIM(item_code)) IN') }).to be(true)
+      expect(captured_sql.none? { |call| call[:params] == [21] }).to be(true)
+    end
+
+    it 'preserves a genuinely unscoped broad listing with truthful has_more and CTA wording' do
+      rows = Array.new(21) { |index| { 'code' => format('TPL-%02d', index), 'name' => "Template #{index}" } }
+      stub_listing_connection!(rows: rows, groups: [], total: 25)
+
+      plan = orchestrator.plan_for_intent(
+        intent: listing_intent(family_mention: 'kain', attribute_candidates: [], listing_scope: 'catalog_domain'),
+        flow: nil
+      )
+      text = presenter.reply_text(plan)
+
+      expect(plan[:action]).to eq(:reply)
+      expect(plan[:reply]).to include(item_group: nil, complete: false, has_more: true)
+      expect(plan[:reply][:products].length).to eq(20)
+      expect(captured_sql.any? { |call| call[:params] == [21] }).to be(true)
+      expect(captured_sql.any? { |call| call[:sql].include?('COUNT(DISTINCT') }).to be(true)
+      expect(text).to include(Marine::Catalog::ReplyPresenter::PRODUCT_LISTING_MORE_SUFFIX)
+      expect(text).to end_with(Marine::Catalog::ReplyPresenter::PRODUCT_LISTING_NEEDS_QUESTION)
+    end
+  end
+  # WIJAYA_CUSTOM_END: listing-recommendation-routing
 end

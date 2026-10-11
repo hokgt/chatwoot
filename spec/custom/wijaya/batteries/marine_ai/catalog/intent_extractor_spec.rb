@@ -19,7 +19,7 @@ RSpec.describe Marine::Catalog::IntentExtractor do
   # The exact, complete set of contract keys — the result must never drift from it.
   CONTRACT_KEYS = %i[
     product_related intent requested_intents family_mention explicit_child_code attribute_candidates
-    requires_exact_variant clarification_reply family_changed intent_changed intent_scope
+    requires_exact_variant clarification_reply family_changed intent_changed intent_scope listing_scope
     multiple_numeric_candidates quantity_inquiry unsupported_request confidence customer_language reason
   ].freeze
 

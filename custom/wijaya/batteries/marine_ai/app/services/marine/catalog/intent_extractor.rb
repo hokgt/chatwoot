@@ -14,7 +14,7 @@
 # Output contract (exactly these keys, always):
 #   product_related, intent, family_mention, explicit_child_code,
 #   attribute_candidates, requires_exact_variant, clarification_reply,
-#   family_changed, intent_changed, intent_scope, multiple_numeric_candidates,
+#   family_changed, intent_changed, intent_scope, listing_scope, multiple_numeric_candidates,
 #   quantity_inquiry, unsupported_request, confidence, customer_language, reason
 #
 # intent_scope is a bounded, untrusted, allowlisted CONTINUATION classifier (or nil) that is only
@@ -66,14 +66,27 @@ module Marine
       # has no catalog-grounded answer; the orchestrator routes it to grounded Knowledge Base retrieval
       # instead of a "which product?" family clarification. It is a supported informational intent
       # (allowlisted here) but never a transactional/deliverable one (kept out of SUPPORTED_PRODUCT_INTENTS).
+      # WIJAYA_CUSTOM_START: listing-recommendation-routing
       PRODUCT_OVERVIEW_INTENT = 'product_overview'.freeze
-      INFORMATIONAL_PRODUCT_INTENTS = [PRODUCT_OVERVIEW_INTENT].freeze
+      # A generic use-case/application request asks which product would suit a purpose. It is
+      # informational, never a repository-backed listing or transactional requested intent: only an
+      # approved Knowledge Base result may answer it downstream; otherwise planning fails factlessly.
+      PRODUCT_RECOMMENDATION_INTENT = 'product_recommendation'.freeze
+      INFORMATIONAL_PRODUCT_INTENTS = [PRODUCT_OVERVIEW_INTENT, PRODUCT_RECOMMENDATION_INTENT].freeze
+      # WIJAYA_CUSTOM_END: listing-recommendation-routing
 
       # Every product intent the extractor may surface as-is (transactional + informational). Only these
       # survive normalization unchanged; any other product query folds to `unsupported`.
       ALLOWED_PRODUCT_INTENTS = (SUPPORTED_PRODUCT_INTENTS + INFORMATIONAL_PRODUCT_INTENTS).freeze
       INTENTS = (ALLOWED_PRODUCT_INTENTS + %w[unsupported unknown]).freeze
       CONFIDENCE_LEVELS = %w[low medium high].freeze
+
+      # WIJAYA_CUSTOM_START: listing-recommendation-routing
+      # Closed listing scope from the provider. It is mandatory for product_listing and distinguishes
+      # a genuine broad enumeration from one explicitly scoped to a catalog Item Group. Unknown or
+      # malformed values normalize to nil and fail closed in the orchestrator.
+      LISTING_SCOPES = %w[all_products catalog_domain item_group].freeze
+      # WIJAYA_CUSTOM_END: listing-recommendation-routing
 
       # Fixed, generic allowlist for the untrusted unsupported-request CATEGORY. These are
       # request-type NAMES only — no product, destination, price, or customer value — used solely
@@ -197,6 +210,9 @@ module Marine
           family_changed: family_changed?(family_mention, state),
           intent_changed: intent_changed?(intent, state),
           intent_scope: normalize_intent_scope(parsed['intent_scope']),
+          # WIJAYA_CUSTOM_START: listing-recommendation-routing
+          listing_scope: normalize_listing_scope(parsed['listing_scope']),
+          # WIJAYA_CUSTOM_END: listing-recommendation-routing
           multiple_numeric_candidates: multiple_numeric,
           quantity_inquiry: quantity_inquiry,
           unsupported_request: normalize_unsupported_request(parsed['unsupported_request'], quantity_inquiry),
@@ -243,6 +259,17 @@ module Marine
         scope = value.strip.downcase
         INTENT_SCOPES.include?(scope) ? scope : nil
       end
+
+      # WIJAYA_CUSTOM_START: listing-recommendation-routing
+      # Untrusted product-listing scope, folded to a fixed allowlist. It has no effect outside the
+      # product_listing branch and never validates a candidate or authorizes a database identity.
+      def normalize_listing_scope(value)
+        return nil unless value.is_a?(String)
+
+        scope = value.strip.downcase
+        LISTING_SCOPES.include?(scope) ? scope : nil
+      end
+      # WIJAYA_CUSTOM_END: listing-recommendation-routing
 
       # Untrusted unsupported-request category, folded to the fixed generic allowlist or nil. An exact
       # on-hand quantity ask IS, by definition, the exact_quantity category, so a turn normalized to a
@@ -401,7 +428,8 @@ module Marine
         bounded_string(content.to_s.gsub(/[[:cntrl:]]/, ' '), MAX_CONTEXT_MESSAGE_CHARS)
       end
 
-      def unknown_result(reason)
+      # Fixed full contract is intentionally explicit so every failure mode returns identical keys.
+      def unknown_result(reason) # rubocop:disable Metrics/MethodLength
         {
           product_related: false,
           intent: 'unknown',
@@ -414,6 +442,9 @@ module Marine
           family_changed: false,
           intent_changed: false,
           intent_scope: nil,
+          # WIJAYA_CUSTOM_START: listing-recommendation-routing
+          listing_scope: nil,
+          # WIJAYA_CUSTOM_END: listing-recommendation-routing
           multiple_numeric_candidates: false,
           quantity_inquiry: false,
           unsupported_request: nil,
@@ -429,10 +460,11 @@ module Marine
         ChatwootExceptionTracker.new(exception, account: account).capture_exception
       end
 
+      # WIJAYA_CUSTOM_START: listing-recommendation-routing
       SYSTEM_PROMPT = <<~PROMPT.strip
         You classify a customer's product intent for a marine parts catalog assistant. You only UNDERSTAND intent;
         you never look anything up, price, or confirm it. Respond with a single JSON object and nothing else, with these keys:
-        product_related (boolean); intent (one of "price", "stock", "parent_info", "variant_info", "catalog", "product_listing", "product_overview", "unsupported");
+        product_related (boolean); intent (one of "price", "stock", "parent_info", "variant_info", "catalog", "product_listing", "product_overview", "product_recommendation", "unsupported");
         intents (array of the supported intents the SAME turn asks for, e.g. ["price","stock"] when the customer asks for both
         the price and whether it is in stock; use a single-element array for a single ask; omit or leave empty when unsure);
         family_mention (string|null, a candidate name only); explicit_child_code (string|null, a candidate code only);
@@ -446,6 +478,10 @@ module Marine
         the code, variant, or attribute the assistant just asked for — continuing the SAME current_intent without stating a new
         request; "new_intent" when the message EXPLICITLY asks for something different from current_intent (for example switching to
         price, stock, catalog, or a distinct information question); null when awaiting_code is false or neither clearly applies);
+        listing_scope (string|null, REQUIRED when intent is "product_listing": "all_products" for a completely general
+        product enumeration; "catalog_domain" when the customer names the business's principal merchandise class as a whole
+        (a generic umbrella product type, not a narrower database category); "item_group" only when they name a narrower
+        subgroup/category inside that principal class; null for every other intent);
         confidence ("low"/"medium"/"high");
         unsupported_request (string|null, ONLY when the customer asks for something this catalog assistant cannot answer — one of
         "delivery_feasibility" (can you deliver to a place), "shipping_cost" (how much is shipping/delivery), "warehouse_location"
@@ -466,18 +502,27 @@ module Marine
         Also only AFTER ruling out an artifact/document request, use "product_listing" when the customer asks to ENUMERATE or LIST the actual
         PRODUCTS carried within ONE stated product category or product type — for example the fabric category — i.e. to be TOLD the NAMES of the
         products you carry in that category, answered dynamically from the live catalog. Examples that are product_listing: "What fabrics do you
-        carry?", "Which fabric types do you have?", and their Indonesian equivalents such as "Kain apa saja?" or "Ada kain apa saja?". Judge this
-        from the MEANING of the customer's own words in whatever language they use, not from surface keywords. The distinction from
+        carry?", "Which fabric types do you have?", and their Indonesian equivalents such as "Kain apa saja?" or "Ada kain apa saja?". These broad
+        principal-merchandise examples use listing_scope "catalog_domain", not "item_group"; reserve item_group for a narrower named subgroup.
+        Judge this from the MEANING of the customer's own words in whatever language they use, not from surface keywords. The distinction from
         "product_overview": product_listing stays INSIDE one stated category or product type (naming the products within it), while
         product_overview asks WHAT the business sells at a high level overall (its product lines or range) with no single category in focus.
 
         Classify the CURRENT turn from its OWN words ONLY: greetings, pleasantries (such as kak, ya, dong, aja), or any
         PRIOR customer/assistant turns and answers in the conversation context NEVER change the classification of the
-        current turn — prior context is only for family/code continuation. A turn that names ONE concrete product
-        category or type (for example a fabric category, hijab, or mukena) and asks to enumerate or list what is
-        carried in it is ALWAYS product_listing, regardless of greetings, pleasantries, or any prior conversation
-        history; "product_overview" applies ONLY when NO single category or product type is in focus, for the
-        company-level question of what the business sells overall.
+        current turn — prior context is only for family/code continuation. Distinguish these requests semantically:
+        (1) use "product_listing" only when the customer explicitly asks to ENUMERATE, LIST, or name the products carried,
+        either as a genuinely unscoped general list or within one explicitly stated catalog category/type. A bare availability
+        question is NOT enumeration; (2) a named product or product
+        family asking whether it is available is "stock" with stock_answer_shape "availability", NEVER a broad listing;
+        (3) use "product_recommendation" when the customer asks whether there is a product suitable for an intended use,
+        application, or finished item, or asks which product would suit that purpose. This remains product_recommendation even
+        when the wording asks whether such a product is available. The intended use or finished item is NOT a catalog category
+        and must not become family_mention. Do not invent a category candidate for a genuinely unscoped list.
+        "product_overview" applies ONLY when no product list, named-product availability, or use-case recommendation is
+        requested and NO single category or product type is in focus, for the company-level question of what the business
+        sells overall. A stated-category enumeration is ALWAYS product_listing. These rules apply regardless of greetings,
+        pleasantries, or any prior conversation history.
         Only AFTER ruling out an artifact/document request, use "product_overview" for a BROAD, informational question about WHAT
         the business sells at a high level — its product lines or overall range — that asks to be TOLD what is offered rather than
         to RECEIVE any document. Examples that are product_overview: "What products does Textilindo sell?", "What kind of products
@@ -497,6 +542,7 @@ module Marine
         "new_intent" only when the customer clearly asks for something different from current_intent. Judge this from the meaning of
         the customer's own words in whatever language they use, not from surface keywords.
       PROMPT
+      # WIJAYA_CUSTOM_END: listing-recommendation-routing
     end
   end
 end

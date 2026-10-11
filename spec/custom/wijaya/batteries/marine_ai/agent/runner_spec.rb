@@ -912,4 +912,56 @@ RSpec.describe Marine::Agent::Runner do
       expect(source).not_to match(captain_dependency)
     end
   end
+
+  # WIJAYA_CUSTOM_START: listing-recommendation-routing
+  describe 'product recommendation grounded-routing boundary' do
+    let(:account) { build_stubbed(:account) }
+    let(:conversation) { build_stubbed(:conversation, account: account) }
+    let(:message) do
+      build_stubbed(:message, conversation: conversation, message_type: :incoming,
+                              content: 'Do you have a fabric suitable for a ceremonial garment?')
+    end
+    let(:runner) { described_class.new(assistant: assistant, conversation: conversation, source: message) }
+    let(:intent_extractor) { instance_double(Marine::Catalog::IntentExtractor) }
+    let(:knowledge_base) { instance_double(Marine::Cell::KnowledgeBaseService) }
+
+    before do
+      allow(Marine::Catalog::IntentExtractor).to receive(:new).and_return(intent_extractor)
+      allow(intent_extractor).to receive(:extract).and_return(
+        { product_related: true, intent: 'product_recommendation', family_mention: 'ceremonial garment',
+          attribute_candidates: [], requested_intents: [], quantity_inquiry: false,
+          customer_language: 'en', intent_scope: 'new_intent' }
+      )
+      allow(Marine::Cell::KnowledgeBaseService).to receive(:new).and_return(knowledge_base)
+    end
+
+    it 'uses the single approved-KB result and reaches grounded retrieval when knowledge exists' do
+      result = instance_double(Marine::Cell::RetrievalResult,
+                               fallback_reason: nil, confidence: 0.8, source_type: 'document')
+      allow(knowledge_base).to receive(:retrieve).and_return(result)
+      allow(generator).to receive(:generate).and_return(reply_payload('source_type' => 'document'))
+      expect(Marine::Catalog::Connection).not_to receive(:select)
+
+      payload = runner.run
+
+      expect(knowledge_base).to have_received(:retrieve).once
+      expect(generator).to have_received(:generate)
+      expect(payload).to include('orchestration_path' => 'retrieval', 'source_type' => 'document')
+    end
+
+    it 'returns the existing factless product handoff without listing or model-memory recommendation when no KB exists' do
+      allow(knowledge_base).to receive(:retrieve)
+        .and_return(Marine::Cell::RetrievalResult.empty(fallback_reason: 'no_confident_cell_match'))
+      expect(Marine::Catalog::Connection).not_to receive(:select)
+      expect(generator).not_to receive(:generate)
+
+      payload = runner.run
+
+      expect(knowledge_base).to have_received(:retrieve).once
+      expect(payload).to include('action' => 'product', 'orchestration_path' => 'product')
+      expect(payload.dig('product_plan', :action)).to eq(:handoff)
+      expect(payload.dig('product_plan', :reply, :kind)).to eq(:unsupported)
+    end
+  end
+  # WIJAYA_CUSTOM_END: listing-recommendation-routing
 end

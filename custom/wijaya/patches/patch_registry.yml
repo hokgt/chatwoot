@@ -1833,6 +1833,9 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/controllers/documents_sop_controller_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_family_repository_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/product_listing_repository_spec.rb
+      # P0 listing/recommendation routing: prompt/allowlist, fail-closed explicit listing scope,
+      # exact-product guard, unscoped broad-list preservation, KB-only recommendation routing.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_listing_routing_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/catalog/connection_spec.rb
       # Reload-safe sibling-resolution regression for the whole Marine::Catalog tree.
       - spec/custom/wijaya/batteries/marine_ai/catalog/namespace_resolution_spec.rb
