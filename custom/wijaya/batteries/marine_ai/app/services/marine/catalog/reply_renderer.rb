@@ -135,11 +135,24 @@ module Marine
 
           { code: code, name: safe_scalar(product[:name], MAX_CODE_NAME_LENGTH) }
         end.first(MAX_LISTING_PRODUCTS)
+        # WIJAYA_CUSTOM_START: dynamic-listing-wording
+        # Carry the repository's bounded count/completeness facts into the shared wording boundary.
+        # No new repository fact is derived here: returned_count must match the cleaned page and the
+        # total must truthfully equal it when complete or exceed it when more rows exist.
+        returned_count = products.length
+        complete = page[:complete] == true
+        has_more = page[:has_more] == true
+        total_count = page[:total_count]
+        total_count = nil unless total_count.is_a?(Integer)
+        total_count = nil unless complete ? total_count == returned_count : total_count.to_i > returned_count
         descriptor(:product_listing,
                    products: products,
                    item_group: safe_scalar(item_group, MAX_CODE_NAME_LENGTH),
-                   complete: page[:complete] == true,
-                   has_more: page[:has_more] == true)
+                   returned_count: returned_count,
+                   total_count: total_count,
+                   complete: complete,
+                   has_more: has_more)
+        # WIJAYA_CUSTOM_END: dynamic-listing-wording
       end
 
       def catalog_unavailable = descriptor(:catalog_unavailable)

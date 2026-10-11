@@ -599,6 +599,11 @@ require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/catal
 # Marine Phase 3 — bounded catalog listing repository (active top-level products + completeness).
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_listing_repository.rb
 require_file spec/custom/wijaya/batteries/marine_ai/catalog/product_listing_repository_spec.rb
+# P1 dynamic-listing-wording — shared Conversation/Playground structured-fact composer.
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_listing_reply_composer.rb
+require_file spec/custom/wijaya/batteries/marine_ai/catalog/product_listing_reply_composer_spec.rb
+require_marker custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_listing_reply_composer.rb "WIJAYA_CUSTOM_START: dynamic-listing-wording"
+require_marker custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_listing_reply_composer.rb "WIJAYA_CUSTOM_END: dynamic-listing-wording"
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/backend/listing_scope_resolver.rb
 require_file spec/custom/wijaya/batteries/marine_ai/backend/listing_scope_resolver_spec.rb
 # Marine Option B Phase 1 — backend-owned execution/classification policy leaf.

@@ -46,13 +46,14 @@ class Marine::Backend::PostGenerationFactValidator
   # product, code, amount, currency, …) that a legitimate reply may contain.
   LEAK_MARKERS = %w[
     evidence_version marine_evidence_v1 marine_evidence_v2 marine_evidence_v3 generated_at response_goals response_constraints
-    prohibited_claims validated_slots missing_slots variant_candidates customer_language
+    prohibited_claims validated_slots missing_slots variant_candidates customer_language response_objective
     policy_version price_list_rate checked_at resolution_status item_group max_paragraphs
     handoff_self_reference marine_sales_assistant catalog_price_repository stock_repository
     price-display-v1 capabilities canonical
     product_listing returned_count total_count catalog_listing_repository
     company_offerings item_groups catalog_item_group_repository
     price_range family_code catalog_price_range_repository
+    ask_customer_intended_need_for_product_recommendation
   ].freeze
 
   # The Model 2 control instruction whose wording a reply must never copy back verbatim. Reused as

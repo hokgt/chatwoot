@@ -717,6 +717,44 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       expect(claim_status).to eq('completed')
     end
 
+    # WIJAYA_CUSTOM_START: dynamic-listing-wording
+    it 'delivers an accepted dynamic product listing through the public job exactly once' do
+      descriptor = Marine::Catalog::ReplyRenderer.new.product_listing(
+        {
+          products: [{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }],
+          total_count: 2, complete: true, has_more: false
+        }
+      )
+      plan = { action: :reply, reply: descriptor }
+      fallback = Marine::Catalog::ReplyPresenter.new.reply_text(plan)
+      candidate = 'Pilihan kami mencakup Alpha (AAA) dan Bravo (BBB). Produk ini akan digunakan untuk kebutuhan apa ' \
+                  'agar saya dapat membantu merekomendasikan yang sesuai?'
+      generator = ->(**) { candidate }
+      fact_verifier = ->(**) { true }
+      composer = Marine::Catalog::ProductListingReplyComposer.new(
+        account: conversation.account, generator: generator, fact_verifier: fact_verifier
+      )
+      allow(Marine::Catalog::ProductListingReplyComposer).to receive(:new).and_return(composer)
+      allow(Marine::Catalog::ReplyLocalizer).to receive(:new) do |**kwargs|
+        instance_double(Marine::Catalog::ReplyLocalizer, call: kwargs[:text])
+      end
+      stub_reasoning(product_payload(action: :reply, reply: descriptor, language: 'id'))
+
+      described_class.perform_now(conversation, assistant, incoming.id)
+      described_class.perform_now(conversation, assistant, incoming.id)
+
+      replies = conversation.messages.outgoing.reload
+      expect(replies.size).to eq(1)
+      expect(replies.first.content).to eq(candidate)
+      expect(replies.first.content).not_to eq(fallback)
+      expect(replies.first.additional_attributes['source_type']).to eq('marine_product')
+      expect(replies.first.attachments).to be_empty
+      expect(usage_count).to eq(1)
+      expect(claim_status).to eq('completed')
+      expect(Marine::Catalog::ProductListingReplyComposer).to have_received(:new).once
+    end
+    # WIJAYA_CUSTOM_END: dynamic-listing-wording
+
     it 'produces no second output and no double usage on a duplicate delivery of the same incoming message' do
       stub_reasoning(product_payload(action: :reply, reply: { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' }))
 

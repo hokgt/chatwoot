@@ -119,6 +119,11 @@ module Marine
         english, catalog_card, next_snapshot = render(plan, snapshot)
         text = localize(english: english, protection: localization_protection(plan),
                         language: plan[:language], query: query, history: history)
+        # WIJAYA_CUSTOM_START: dynamic-listing-wording
+        # Use the same pure, structured-fact naturalization boundary as Conversation delivery. The
+        # Playground remains source-less/read-only and merely previews the returned text.
+        text = naturalized_listing_text(plan, text)
+        # WIJAYA_CUSTOM_END: dynamic-listing-wording
         reply_payload(text, next_state: next_snapshot, catalog: catalog_card)
       end
 
@@ -328,6 +333,22 @@ module Marine
 
         [plan[:action], plan[:reply]]
       end
+
+      # WIJAYA_CUSTOM_START: dynamic-listing-wording
+      def naturalized_listing_text(plan, fallback)
+        descriptor = plan[:reply]
+        return fallback unless descriptor.is_a?(Hash) &&
+                               descriptor[:kind] == Marine::Catalog::ProductListingReplyComposer::LISTING_KIND
+
+        product_listing_composer.compose(
+          descriptor: descriptor, fallback: fallback, reply_language: plan[:language]
+        )
+      end
+
+      def product_listing_composer
+        @product_listing_composer ||= Marine::Catalog::ProductListingReplyComposer.new(account: account)
+      end
+      # WIJAYA_CUSTOM_END: dynamic-listing-wording
 
       # Delivery-only localization to the customer's language via the canonical ReplyLocalizer
       # (source-less: no conversation needed). It fails closed to English internally, and never

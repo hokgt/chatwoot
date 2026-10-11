@@ -623,11 +623,33 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # Runs inside #prepare_product_wording's rescue, so any wording/localization failure still degrades
   # to the deterministic English text.
   def naturalized_product_text(plan, descriptor, fallback)
+    # WIJAYA_CUSTOM_START: dynamic-listing-wording
+    # Product Listing uses its own structured-fact composer: unlike generic naturalization it never
+    # sends fallback prose or customer history to generation, and it preserves this exact fallback on
+    # every rejected/unavailable outcome. Conversation remains the sole delivery owner.
+    return product_listing_text(descriptor, fallback) if product_listing_reply_kind?(descriptor)
+    # WIJAYA_CUSTOM_END: dynamic-listing-wording
     return stock_reply_text(descriptor, fallback) if stock_reply_kind?(descriptor)
     return fallback unless fact_protection.eligible?(action: plan[:action], descriptor: descriptor)
 
     wording_candidate(plan, descriptor, fallback) || fallback
   end
+
+  # WIJAYA_CUSTOM_START: dynamic-listing-wording
+  def product_listing_text(descriptor, fallback)
+    product_listing_composer.compose(
+      descriptor: descriptor, fallback: fallback, reply_language: @product_language
+    )
+  end
+
+  def product_listing_reply_kind?(descriptor)
+    descriptor.is_a?(Hash) && descriptor[:kind] == Marine::Catalog::ProductListingReplyComposer::LISTING_KIND
+  end
+
+  def product_listing_composer
+    @product_listing_composer ||= Marine::Catalog::ProductListingReplyComposer.new(account: @conversation.account)
+  end
+  # WIJAYA_CUSTOM_END: dynamic-listing-wording
 
   # Resolve a pure stock reply through the shared composer, then map its Decision onto this
   # conversation's delivery adapter: deliver the accepted DYNAMIC candidate, or record the fail-closed

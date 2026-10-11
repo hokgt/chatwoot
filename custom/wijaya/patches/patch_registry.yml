@@ -1503,6 +1503,11 @@ patches:
       # (extracted from ResponseBuilderJob). The single source of truth for that wording, shared
       # by the trigger-bound job and the source-less PlaygroundPreview so the two never drift.
       - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/reply_presenter.rb
+      # WIJAYA dynamic-listing-wording — shared pure composer for Conversation + Playground. It sends
+      # only bounded structured product identities/counts/completeness/language/objective to one
+      # provider generation attempt, then applies deterministic inventory, persona, and independent
+      # semantic/language gates; every failure preserves the exact deterministic localized fallback.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/catalog/product_listing_reply_composer.rb
       # Source-less Product Catalog PREVIEW for the Assistant Playground: runs the SAME
       # deterministic orchestrator with an empty flow snapshot + bounded history, renders via
       # ReplyPresenter, localizes via ReplyLocalizer. Read-only, non-delivering, no persistence;
@@ -1977,6 +1982,7 @@ patches:
       # MVP listing-followup-question — deterministic needs-question CTA on the legacy listing,
       # the Evidence listing renderer, and the Model 2 prompt contract.
       - spec/custom/wijaya/batteries/marine_ai/catalog/reply_presenter_followup_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/catalog/product_listing_reply_composer_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/product_listing_evidence_renderer_followup_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/evidence_prompt_builder_followup_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/company_offerings_evidence_renderer_spec.rb
