@@ -26,6 +26,19 @@ class Marine::Backend::ProductListingEvidenceRenderer
   # The listing page bound (mirrors EvidencePacketBuilder::MAX_LISTING_PRODUCTS).
   MAX_PRODUCTS = 20
 
+  # WIJAYA_CUSTOM_START: listing-followup-question
+  # The localized needs follow-up appended to EVERY rendered listing: a factless, question-only
+  # closing asking what the customer needs the products for so the assistant can recommend. It adds
+  # no product, price, stock, quantity, brand, or completeness claim — the lead sentence remains
+  # the only completeness wording. Keyed by the packet's supported customer_language so the
+  # follow-up is always in the reply language (the language gate above already fails closed on
+  # any unsupported language).
+  FOLLOWUP_QUESTION = {
+    'id' => ' Kalau boleh tahu, kebutuhannya untuk apa ya? Supaya saya bisa bantu rekomendasikan yang tepat.',
+    'en' => ' By the way, may I ask what you need them for? That way I can help recommend the right one.'
+  }.freeze
+  # WIJAYA_CUSTOM_END: listing-followup-question
+
   # packet: a frozen marine_evidence_v2 answer_product_listing Evidence Packet.
   # Returns the deterministic reply String, or nil on any non-listing/malformed/unsupported outcome.
   def call(packet:)
@@ -85,7 +98,9 @@ class Marine::Backend::ProductListingEvidenceRenderer
 
   def render(listing, language)
     items = listing[:products].map { |product| product_label(product) }.join(', ')
-    "#{lead_sentence(listing, language)} #{items}."
+    # WIJAYA_CUSTOM_START: listing-followup-question
+    "#{lead_sentence(listing, language)} #{items}.#{FOLLOWUP_QUESTION.fetch(language, '')}"
+    # WIJAYA_CUSTOM_END: listing-followup-question
   end
 
   # Exact code + optional display name, both literal — never a description or any other claim.

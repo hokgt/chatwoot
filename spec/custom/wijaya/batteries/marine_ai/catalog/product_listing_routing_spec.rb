@@ -219,13 +219,14 @@ RSpec.describe 'Marine fabric product-listing routing', type: :model do
   end
 
   describe 'ReplyPresenter deterministic listing text' do
-    it 'renders the dynamic DB rows as one deterministic, fact-safe line' do
+    it 'renders the dynamic DB rows as one deterministic, fact-safe line with the needs follow-up' do
       stub_listing_connection!
 
       plan = orchestrator.plan_for_intent(intent: listing_intent, flow: nil)
       text = presenter.reply_text(plan)
 
-      expect(text).to eq('Here are the Kain products we currently offer: Katun (KAIN-01), Denim (KAIN-02).')
+      expected = 'Here are the Kain products we currently offer: Katun (KAIN-01), Denim (KAIN-02).'
+      expect(text).to eq("#{expected}#{Marine::Catalog::ReplyPresenter::PRODUCT_LISTING_NEEDS_QUESTION}")
     end
 
     it 'renders a truthful generic line for an empty listing, never a fabricated product' do

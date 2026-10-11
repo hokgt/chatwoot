@@ -41,6 +41,15 @@ module Marine
       # attachment, and stays truthful about completeness — a bounded page with more available says so.
       PRODUCT_LISTING_EMPTY_TEXT = "I'm sorry, we don't currently have any products listed.".freeze
       PRODUCT_LISTING_MORE_SUFFIX = ' More are available — let me know if you would like to see them.'.freeze
+      # WIJAYA_CUSTOM_START: listing-followup-question
+      # The deterministic needs follow-up appended to EVERY non-empty product listing: a factless,
+      # question-only closing asking what the customer needs the products for so the assistant can
+      # recommend. It asserts no product, price, stock, quantity, brand, or completeness claim (the
+      # has_more suffix remains the only completeness wording), so it adds no fact the descriptor
+      # does not carry. Kept here (not in the orchestrator/renderer) so every listing surface shares
+      # one deterministic source, downstream-localizable like the rest of the presenter text.
+      PRODUCT_LISTING_NEEDS_QUESTION = ' By the way, may I ask what you need them for? That way I can help recommend the right one.'.freeze
+      # WIJAYA_CUSTOM_END: listing-followup-question
 
       # Request-category-aware factless acknowledgements, keyed by the bounded generic
       # unsupported-request category. Each states only an INABILITY to confirm the request type and a
@@ -224,7 +233,10 @@ module Marine
         return PRODUCT_LISTING_EMPTY_TEXT if lines.empty?
 
         text = "#{listing_intro(descriptor[:item_group])} #{lines.join(', ')}."
-        descriptor[:has_more] == true ? "#{text}#{PRODUCT_LISTING_MORE_SUFFIX}" : text
+        text = "#{text}#{PRODUCT_LISTING_MORE_SUFFIX}" if descriptor[:has_more] == true
+        # WIJAYA_CUSTOM_START: listing-followup-question
+        "#{text}#{PRODUCT_LISTING_NEEDS_QUESTION}"
+        # WIJAYA_CUSTOM_END: listing-followup-question
       end
 
       # One "Name (CODE)" listing line for a repository-derived template row (the bare name or

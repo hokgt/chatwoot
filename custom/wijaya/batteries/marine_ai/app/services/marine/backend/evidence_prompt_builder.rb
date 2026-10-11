@@ -51,6 +51,16 @@ class Marine::Backend::EvidencePromptBuilder
   MAX_MESSAGE_BYTES = Extractor::MAX_CONTEXT_MESSAGE_CHARS
   MAX_REQUEST_BYTES = Extractor::MAX_INPUT_TEXT
 
+  # WIJAYA_CUSTOM_START: listing-followup-question
+  # The Model 2 listing close-out contract: after presenting the packet's product listing, the
+  # model asks the customer what they need the products for so it can recommend. Question-only,
+  # factless — it authorizes no product, price, or stock claim beyond the packet, and the leak
+  # guards still apply to the whole reply. Extracted as a constant so the deterministic renderer
+  # wording and the Model 2 prompt contract stay independently auditable (see
+  # ProductListingEvidenceRenderer::FOLLOWUP_QUESTION for the deterministic twin).
+  LISTING_NEEDS_QUESTION_INSTRUCTION = 'After presenting a product listing, close your reply by asking the customer what they need the products for, so you can recommend the right product for them; ask it as your own short closing question and add no product, price, or stock claim the packet does not contain.'.freeze # rubocop:disable Layout/LineLength -- a single frozen prompt-contract sentence, kept whole for auditability
+  # WIJAYA_CUSTOM_END: listing-followup-question
+
   # Generic, language-neutral role + fact-discipline instruction. It names no product, phrase
   # list, or per-language template. The reply language is NOT guessed from the customer's prose: it
   # is fixed authoritatively by the packet's customer_language, stated as a target directive below
@@ -64,7 +74,7 @@ class Marine::Backend::EvidencePromptBuilder
     Keep every product code, variant code, price amount, currency, and unit of measure it contains exactly and unchanged; state them freshly in your own words rather than echoing a sentence.
     State stock only as the packet's binary availability, and never state or imply a quantity, a warehouse or location, a delivery or lead time, or any discount.
     When the packet contains company offerings, present exactly the item-group categories it lists and no item-level products. If the offering set is incomplete, state the exact returned and total counts and say it is a limited selection.
-    When the packet contains a product listing, present exactly the products it lists and no others, stating each product's code and its name exactly as given, and add no product the listing does not contain. When a product carries a description, describe it using only that description and never invent or swap details between products. When every listed product carries a description, explain each product individually, using only its own description for it. If the listing is not complete, do not claim it is the whole catalogue — say you are showing a limited selection, stating the exact returned and total counts the packet gives (for example, these N products out of the stated total), and invite the customer to narrow down what they are looking for.
+    When the packet contains a product listing, present exactly the products it lists and no others, stating each product's code and its name exactly as given, and add no product the listing does not contain. When a product carries a description, describe it using only that description and never invent or swap details between products. When every listed product carries a description, explain each product individually, using only its own description for it. If the listing is not complete, do not claim it is the whole catalogue — say you are showing a limited selection, stating the exact returned and total counts the packet gives (for example, these N products out of the stated total), and invite the customer to narrow down what they are looking for. #{LISTING_NEEDS_QUESTION_INSTRUCTION}
     Add no fact the packet does not contain. Never tell the customer to contact a sales team yourself; you are the assistant helping them.
     Output only your reply text, with no JSON, markdown, quotes, or explanation.
   PROMPT

@@ -1971,6 +1971,11 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/backend/presentation_policy_projector_spec.rb
       # Step 17 — deterministic product_listing Evidence renderer spec.
       - spec/custom/wijaya/batteries/marine_ai/backend/product_listing_evidence_renderer_spec.rb
+      # MVP listing-followup-question — deterministic needs-question CTA on the legacy listing,
+      # the Evidence listing renderer, and the Model 2 prompt contract.
+      - spec/custom/wijaya/batteries/marine_ai/catalog/reply_presenter_followup_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/product_listing_evidence_renderer_followup_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/backend/evidence_prompt_builder_followup_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/backend/company_offerings_evidence_renderer_spec.rb
       # Step 18 — deterministic exact-price Evidence renderer spec.
       - spec/custom/wijaya/batteries/marine_ai/backend/exact_price_evidence_renderer_spec.rb
