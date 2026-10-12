@@ -1047,8 +1047,7 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/models/marine/assistant_response.rb
       - custom/wijaya/batteries/marine_ai/app/models/marine_inbox.rb
       # Marine namespace module + model concerns attached to native Account/Inbox/User
-      # via the loader's to_prepare block (account/inbox/user_extensions). conversation_extensions
-      # is listed separately below; these self-register with no native markers.
+      # via the loader's to_prepare block. These self-register with no native markers.
       - custom/wijaya/batteries/marine_ai/app/models/marine.rb
       - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/account_extensions.rb
       - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/inbox_extensions.rb
@@ -1091,7 +1090,6 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/translate_query_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/llm/translate_response_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/wijaya/marine/hooks.rb
-      - custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/conversation_extensions.rb
       - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/assistants_controller.rb
       - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/documents_controller.rb
       # Commit 1B — Product Catalog backend (upload storage + read-only family repo)
@@ -1637,13 +1635,16 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/rewrite_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/translate_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/follow_up_service.rb
-      # Incremental long-term memory: native marked Private Notes, cross-conversation
-      # same-contact advisory reader, and daily unresolved-conversation checkpoint.
+      # Idle/evidence-complete long-term memory: trigger-message signals, native marked
+      # Private Notes, cross-conversation advisory reader, delayed trigger, and cron fail-safe.
       - custom/wijaya/batteries/marine_ai/app/services/marine/memory/contact_notes_service.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/memory/summary_validator.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/memory/marker.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/memory/signal.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/memory/signal_projection.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/memory/lifecycle_policy.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/memory/reader.rb
-      - custom/wijaya/batteries/marine_ai/app/jobs/marine/memory/generate_contact_notes_job.rb
+      - custom/wijaya/batteries/marine_ai/app/jobs/marine/memory/idle_summary_job.rb
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/memory/checkpoint_job.rb
       - custom/wijaya/batteries/marine_ai/patch/apply_patches.py
       - custom/wijaya/batteries/marine_ai/app/models/marine/custom_tool.rb
@@ -1752,9 +1753,6 @@ patches:
       # Marker-wrapped Sidekiq cron registration for the 02:00 Asia/Jakarta checkpoint.
       - config/schedule.yml
       - app/services/message_templates/hook_execution_service.rb
-      # Marine resolved-conversation callback attached via a battery concern
-      # (marine_ai/.../concerns/wijaya/marine/conversation_extensions.rb) in the
-      # loader's to_prepare block, so app/models/conversation.rb carries no markers.
       - app/views/api/v1/models/_inbox.json.jbuilder
       - app/javascript/dashboard/routes/dashboard/dashboard.routes.js
       - app/javascript/dashboard/routes/dashboard/settings/settings.routes.js
@@ -1812,8 +1810,10 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/copilot/translate_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/copilot/follow_up_service_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/memory/contact_notes_service_spec.rb
-      - spec/custom/wijaya/batteries/marine_ai/memory/generate_contact_notes_job_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/memory/checkpoint_job_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/memory/idle_summary_job_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/memory/idle_memory_redesign_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/memory/signal_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/memory/reader_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/memory/schedule_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/memory_context_spec.rb

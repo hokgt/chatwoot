@@ -17,7 +17,10 @@ class Marine::Assistant < ApplicationRecord
   has_many :messages, as: :sender, dependent: :nullify
 
   store_accessor :config, :temperature, :feature_faq, :feature_memory, :feature_contact_attributes, :product_name, :welcome_message,
-                 :handoff_message, :resolution_message, :instructions, :language
+                 :handoff_message, :resolution_message, :instructions, :language, :memory_idle_timeout_hours
+
+  MEMORY_IDLE_TIMEOUT_DEFAULT = 2
+  MEMORY_IDLE_TIMEOUT_RANGE = (1..24)
 
   validates :name, :description, :account_id, presence: true
 
@@ -31,6 +34,12 @@ class Marine::Assistant < ApplicationRecord
   def available_agent_tools = []
 
   def available_tool_ids = []
+
+  def memory_idle_timeout_hours
+    value = config.to_h['memory_idle_timeout_hours']
+    integer = Integer(value, exception: false)
+    MEMORY_IDLE_TIMEOUT_RANGE.cover?(integer) ? integer : MEMORY_IDLE_TIMEOUT_DEFAULT
+  end
 
   def push_event_data
     { id: id, name: name, avatar_url: avatar_url.presence || default_avatar_url, description: description, created_at: created_at,

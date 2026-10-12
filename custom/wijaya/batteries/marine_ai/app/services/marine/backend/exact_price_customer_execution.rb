@@ -38,11 +38,13 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
   }.freeze
 
   STATUS_DELIVERABLE = :deliverable
+  STATUS_NEUTRAL = :neutral
   STATUS_HANDOFF = :handoff
   STATUS_TERMINAL_NO_OUTPUT = :terminal_no_output
   STATUS_FALLBACK = :fallback
 
   REASON_ACCEPTED = :accepted
+  REASON_NON_PRODUCT = :non_product
   REASON_RELATIONSHIP_INVALID = :relationship_invalid
   REASON_SCENARIOS_UNAVAILABLE = :scenarios_unavailable
   REASON_AUTHORITY_REJECTED = :authority_rejected
@@ -77,10 +79,40 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
   STATE_TRANSITION_CODE_MAX_BYTES = 120
 
   Result = Struct.new(:status, :reason, :text, :transition, keyword_init: true) do
+    attr_reader :requested_capabilities, :delivered_capabilities, :evidence_versions
+
+    # rubocop:disable Metrics/ParameterLists -- Stable immutable result keyword contract.
+    def initialize(status:, reason:, text:, transition: nil, requested_capabilities: [],
+                   delivered_capabilities: [], evidence_versions: [])
+      super(status: status, reason: reason, text: text, transition: transition)
+      @requested_capabilities = deeply_frozen_strings(requested_capabilities)
+      @delivered_capabilities = deeply_frozen_strings(delivered_capabilities)
+      @evidence_versions = deeply_frozen_strings(evidence_versions)
+    end
+
+    # rubocop:enable Metrics/ParameterLists
+
     def deliverable? = status == STATUS_DELIVERABLE
     def handoff? = status == STATUS_HANDOFF
     def terminal_no_output? = status == STATUS_TERMINAL_NO_OUTPUT
+
+    private
+
+    def deeply_frozen_strings(values)
+      Array(values).map { |value| value.to_s.dup.freeze }.freeze
+    end
   end
+
+  MEMORY_CAPABILITIES = {
+    'price' => 'price', 'price_range' => 'price_range', 'stock' => 'stock',
+    'product_listing' => 'product_listing', 'product_information' => 'product_information',
+    'product_overview' => 'company_offerings'
+  }.freeze
+  GOAL_MEMORY_CAPABILITIES = {
+    'answer_price' => 'price', 'answer_price_range' => 'price_range', 'answer_stock' => 'stock',
+    'answer_product_overview' => 'company_offerings', 'answer_product_listing' => 'product_listing',
+    'answer_product_information' => 'product_information'
+  }.freeze
 
   def initialize(account:, assistant:, conversation:, message:, # rubocop:disable Metrics/ParameterLists -- record boundary plus injectable side-effect-free collaborators
                  decision_runner: nil, scenario_adapter: nil, authority_execution: nil,
@@ -113,8 +145,12 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
 
   private
 
+  # rubocop:disable Metrics/CyclomaticComplexity -- Stable authority fail-closed flow.
   def execute(context, scenarios)
     candidate_plan = runner.call(message: context.trigger, scenarios: scenarios, context: context.history)
+    @memory_requested_capabilities = memory_capabilities(candidate_plan)
+    return neutral if neutral_candidate_plan?(candidate_plan)
+
     overview = overview_candidate_plan?(candidate_plan)
     authority_result = execute_authority(candidate_plan, presentation_policy)
     transition = validated_transition(authority_result)
@@ -165,7 +201,7 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
       return fallback(REASON_PRESENTATION_REJECTED)
     end
 
-    deliverable(presentation.text, transition)
+    deliverable(presentation.text, transition, packet)
   rescue StandardError
     overview ? terminal_no_output(REASON_PRESENTATION_REJECTED) : fallback(REASON_PRESENTATION_REJECTED)
   end
@@ -264,6 +300,8 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
   def valid_code?(value)
     value.is_a?(String) && !value.strip.empty? && value.bytesize <= STATE_TRANSITION_CODE_MAX_BYTES
   end
+
+  # rubocop:enable Metrics/CyclomaticComplexity
 
   def valid_relationship?
     records_present? && same_account? && public_incoming_message? && linked_assistant?
@@ -410,21 +448,52 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
       result.text.is_a?(String) && !result.text.strip.empty?
   end
 
-  def deliverable(text, transition = nil)
-    Result.new(status: STATUS_DELIVERABLE, reason: REASON_ACCEPTED, text: text.dup.freeze, transition: transition).freeze
+  def memory_capabilities(candidate_plan)
+    return [] unless candidate_plan.is_a?(Hash)
+
+    Array(candidate_plan[:intents]).filter_map { |intent| MEMORY_CAPABILITIES[intent.to_s] }.uniq.sort.freeze
+  end
+
+  def neutral_candidate_plan?(candidate_plan)
+    candidate_plan.is_a?(Hash) && candidate_plan[:reason] == Marine::Decision::Schema::REASON_NORMALIZED &&
+      candidate_plan[:intents] == [] && candidate_plan[:slot_operations] == []
+  end
+
+  # rubocop:disable Metrics/ParameterLists -- Internal result adapter mirrors the stable Result contract.
+  def memory_result(status:, reason:, text: nil, transition: nil, delivered: [], evidence_versions: [])
+    Result.new(
+      status: status, reason: reason, text: text, transition: transition,
+      requested_capabilities: Array(@memory_requested_capabilities).freeze,
+      delivered_capabilities: delivered.freeze, evidence_versions: evidence_versions.freeze
+    ).freeze
+  end
+
+  # rubocop:enable Metrics/ParameterLists
+
+  def neutral
+    memory_result(status: STATUS_NEUTRAL, reason: REASON_NON_PRODUCT)
+  end
+
+  def deliverable(text, transition, packet)
+    capability = GOAL_MEMORY_CAPABILITIES[packet[:response_goals].first]
+    delivered = capability ? [capability] : []
+    memory_result(
+      status: STATUS_DELIVERABLE, reason: REASON_ACCEPTED, text: text.dup.freeze, transition: transition,
+      delivered: delivered, evidence_versions: [packet[:evidence_version]]
+    )
   end
 
   # A catalog-ambiguity handoff: carries the validated handoff envelope (so the job routes the existing
   # safe handoff and writes no state) and NO text — the renderer/presenter was never reached.
   def handoff(transition)
-    Result.new(status: STATUS_HANDOFF, reason: REASON_HANDOFF_REQUIRED, text: nil, transition: transition).freeze
+    memory_result(status: STATUS_HANDOFF, reason: REASON_HANDOFF_REQUIRED, transition: transition)
   end
 
   def terminal_no_output(reason)
-    Result.new(status: STATUS_TERMINAL_NO_OUTPUT, reason: reason, text: nil, transition: nil).freeze
+    memory_result(status: STATUS_TERMINAL_NO_OUTPUT, reason: reason)
   end
 
   def fallback(reason)
-    Result.new(status: STATUS_FALLBACK, reason: reason, text: nil, transition: nil).freeze
+    memory_result(status: STATUS_FALLBACK, reason: reason)
   end
 end

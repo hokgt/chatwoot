@@ -29,8 +29,8 @@ RSpec.describe 'Marine::ProductAuthority Fase 3A-2 isolation' do
     end
   end
 
-  describe 'the only runtime consumers of Marine::Backend are the product-authority shadow + evaluator + acceptance coordinator' do
-    it 'restricts every Marine::Backend reference to the backend services and the advisory product-authority files' do
+  describe 'every runtime Marine::Backend consumer is explicitly allowlisted' do
+    it 'restricts every Marine::Backend reference to the backend services, the advisory product-authority files, and the explicit narrow bridges' do
       scan_dirs = [root.join('app/services/marine'), root.join('app/jobs/marine')]
       referencing = scan_dirs.flat_map { |dir| Dir[dir.join('**/*.rb').to_s] }
                              .select { |path| File.read(path).include?('Marine::Backend') }
@@ -50,15 +50,49 @@ RSpec.describe 'Marine::ProductAuthority Fase 3A-2 isolation' do
         app/jobs/marine/conversation/response_builder_job.rb
       ]
 
+      # The committed P2 Product Listing natural-wording boundary: the Catalog composer reuses
+      # only the Backend generation-safety validators — never a repository or execution component.
+      allowed_listing_wording_bridge = %w[
+        app/services/marine/catalog/product_listing_reply_composer.rb
+      ]
+
+      # The memory-signal provenance projection classifies only the exact-price customer-execution
+      # Result constants — never a repository or orchestration component.
+      allowed_memory_signal_bridge = %w[
+        app/services/marine/memory/signal_projection.rb
+      ]
+
       referencing.each do |relative|
         permitted = relative.start_with?('app/services/marine/backend/') ||
                     allowed_product_authority.include?(relative) ||
-                    allowed_decision_bridge.include?(relative)
+                    allowed_decision_bridge.include?(relative) ||
+                    allowed_listing_wording_bridge.include?(relative) ||
+                    allowed_memory_signal_bridge.include?(relative)
         expect(permitted).to be(true), "unexpected Marine::Backend consumer: #{relative}"
       end
 
-      # And the advisory consumers really are present in the set.
-      expect(referencing).to include(*allowed_product_authority, *allowed_decision_bridge)
+      # And the allowlisted consumers really are present in the set.
+      expect(referencing).to include(
+        *allowed_product_authority, *allowed_decision_bridge,
+        *allowed_listing_wording_bridge, *allowed_memory_signal_bridge
+      )
+    end
+
+    it 'lets the Product Listing composer reference only the Backend generation-safety validators' do
+      source = root.join('app/services/marine/catalog/product_listing_reply_composer.rb').read
+
+      expect(source.scan(/Marine::Backend::[A-Za-z]+/).uniq).to match_array(
+        %w[Marine::Backend::PostGenerationFactValidator
+           Marine::Backend::PersonaValidator
+           Marine::Backend::EvidenceFactVerifier]
+      )
+    end
+
+    it 'lets the memory signal projection reference only the exact-price customer execution' do
+      source = root.join('app/services/marine/memory/signal_projection.rb').read
+
+      expect(source.scan(/Marine::Backend::[A-Za-z]+/).uniq)
+        .to match_array(%w[Marine::Backend::ExactPriceCustomerExecution])
     end
   end
 

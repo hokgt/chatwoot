@@ -436,6 +436,11 @@
           "LABEL": "Description",
           "PLACEHOLDER": "Enter description"
         },
+        "MEMORY_IDLE_TIMEOUT": {
+          "LABEL": "Memory idle timeout (hours)",
+          "PLACEHOLDER": "2",
+          "HELP": "Create durable-memory notes after 1–24 hours without public activity. Default: 2 hours."
+        },
         "HANDOFF_MESSAGE": {
           "LABEL": "Handoff message",
           "PLACEHOLDER": "Message shown when handing off to an agent"

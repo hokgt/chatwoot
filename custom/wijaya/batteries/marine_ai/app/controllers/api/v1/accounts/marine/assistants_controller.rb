@@ -77,7 +77,7 @@ class Api::V1::Accounts::Marine::AssistantsController < Api::V1::Accounts::BaseC
                                                            config: [:product_name, :welcome_message, :handoff_message,
                                                                     :resolution_message, :instructions, :temperature,
                                                                     :feature_faq, :feature_memory, :feature_contact_attributes,
-                                                                    :language])
+                                                                    :language, :memory_idle_timeout_hours])
   end
 
   def playground_params

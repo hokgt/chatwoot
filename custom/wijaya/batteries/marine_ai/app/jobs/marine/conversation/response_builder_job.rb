@@ -99,6 +99,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
   # --- Trigger-bound (3-arg) product/RAG path --------------------------------
 
+  # rubocop:disable Metrics/CyclomaticComplexity, Metrics/MethodLength -- Ordered claim/finalization gates are behavior-sensitive.
   def trigger_bound_perform
     message = trigger_message
     return unless message # not found / not incoming: stop safely, no claim, no output
@@ -109,7 +110,11 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     return unless acquired.owner? # duplicate / completed / competing fresh claim: no second output
 
     @claim_id = acquired.claim['claim_id']
-    return complete_no_output unless eligible? # takeover/resolved/snoozed BEFORE reasoning
+    unless eligible? # takeover/resolved/snoozed BEFORE reasoning
+      finalized = finalize_no_output
+      schedule_idle_summary if finalized
+      return
+    end
 
     Current.executed_by = @assistant
     # Phase 2/3 target activation attempts the Backend Evidence-v2 architecture first. It returns a
@@ -124,7 +129,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     # rechecks eligibility/staleness and applies state/message/claim atomically.
     prepare_product_wording
     prepare_handoff_wording
-    finalize
+    finalized = finalize
+    schedule_idle_summary if finalized
   rescue StandardError => e
     # A failure anywhere in reasoning/finalization (including message-create) must
     # leave the claim untouched ('processing') so it is retryable/stale. Never
@@ -139,10 +145,13 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # construction as well as execution so any target defect still reaches the required legacy path. The
   # source_type/orchestration_path are GENERIC (a Backend Evidence-v2 target, not necessarily price),
   # so a listing/information target is never mislabelled as a price.
+  # rubocop:enable Metrics/CyclomaticComplexity, Metrics/MethodLength
+
   def target_evidence_response(message)
     result = Marine::Backend::ExactPriceCustomerExecution.new(
       account: @conversation.account, assistant: @assistant, conversation: @conversation, message: message
     ).call
+    @backend_memory_result = result
     # A price_range catalog ambiguity routes the existing safe handoff (no renderer, no state write);
     # it is NOT nil, so the legacy service is NOT run for the superseded ambiguous turn.
     return backend_handoff_response if result.handoff?
@@ -305,6 +314,9 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       document: document, content: content
     ).call
     mark_catalog_sent(document, message)
+    @public_reply_message_id = message.id
+    @catalog_attachment_delivered = true
+    message
   end
 
   # One catalog per flow: record the delivery markers only after the Message exists, as a
@@ -469,8 +481,9 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
   # --- Message builders ------------------------------------------------------
 
+  # rubocop:disable Metrics/MethodLength -- Preserve the stable outgoing-message attribute contract.
   def create_marine_reply
-    @conversation.messages.create!(
+    message = @conversation.messages.create!(
       message_type: :outgoing,
       account_id: @conversation.account_id,
       inbox_id: @conversation.inbox_id,
@@ -489,6 +502,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
         orchestration_path: @response['orchestration_path']
       }.compact
     )
+    @public_reply_message_id = message.id
+    message
   end
 
   # Deterministic product TEXT only — no citations, confidence, or raw catalog facts
@@ -499,6 +514,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # again and no LLM/translation call is made under the finalize lock. The explicit flag (not
   # text truthiness) gates this so an eligible path never re-enters the localization path.
   # Ineligible product replies retain the existing deterministic localization path.
+  # rubocop:enable Metrics/MethodLength
+
   def create_product_reply(plan)
     return create_product_message_with(@prepared_product_text) if @product_wording_prepared
 
@@ -510,7 +527,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   end
 
   def create_product_message_with(final_text)
-    @conversation.messages.create!(
+    message = @conversation.messages.create!(
       message_type: :outgoing,
       account_id: @conversation.account_id,
       inbox_id: @conversation.inbox_id,
@@ -518,6 +535,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       content: final_text,
       additional_attributes: { source_type: 'marine_product', orchestration_path: 'product' }
     )
+    @public_reply_message_id = message.id
+    message
   end
 
   # --- Phase 6/7: fact-protected natural product wording (precomputed, lock-free) ---------
@@ -933,14 +952,36 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   end
 
   def complete_claim
-    @claim.complete!(claim_id: @claim_id)
+    completed = @claim.complete!(claim_id: @claim_id)
+    raise ActiveRecord::Rollback unless completed.completed? && completed.owner?
+
+    projection = Marine::Memory::SignalProjection.new(
+      response: @response, backend_result: @backend_memory_result,
+      public_reply_message_id: @public_reply_message_id,
+      catalog_attachment_delivered: @catalog_attachment_delivered == true
+    ).to_h
+    Marine::Memory::Signal.write!(message: @trigger_message, **projection)
+  end
+
+  # A pre-reasoning ineligible trigger is finalized under the same Conversation lock as
+  # every other no-output decision, so claim completion and the blocking signal commit atomically.
+  def finalize_no_output
+    @conversation.reload
+    @conversation.with_lock { complete_no_output }
+  end
+
+  # Enqueue only after the finalization transaction has committed. A newer public turn makes
+  # this delayed job harmless: shared eligibility rechecks the latest revision and idle age.
+  def schedule_idle_summary
+    Marine::Memory::IdleSummaryJob
+      .set(wait: @assistant.memory_idle_timeout_hours.hours)
+      .perform_later(@conversation.id, @assistant.id, @trigger_message.id)
   end
 
   # Terminal no-output branch: record completion so a duplicate delivery of the same
   # incoming message never reprocesses, then stop.
   def complete_no_output
     complete_claim
-    nil
   end
 
   def increment_marine_usage

@@ -21,13 +21,15 @@ RSpec.describe 'Marine historical memory runtime context' do
 
   def trusted_memory(content)
     source = create(:conversation, account: account, inbox: inbox, contact: contact)
-    marker = {
-      'version' => 1, 'kind' => 'marine_long_term_memory', 'state' => 'final',
-      'source_account_id' => account.id, 'source_contact_id' => contact.id,
-      'source_conversation_id' => source.id, 'start_public_message_id' => 1,
-      'end_public_message_id' => 1, 'transcript_fingerprint' => Digest::SHA256.hexdigest('source'),
-      'generator' => 'marine_llm_v1'
-    }
+    start_message = create(:message, conversation: source, account: account, inbox: inbox, sender: contact,
+                                     message_type: :incoming, private: false, content: 'source customer turn')
+    end_message = create(:message, conversation: source, account: account, inbox: inbox, sender: assistant,
+                                   message_type: :outgoing, private: false, content: 'source assistant reply')
+    marker = Marine::Memory::Marker.build_v2(
+      trigger_source: 'idle_timeout', conversation: source,
+      start_id: start_message.id, end_id: end_message.id,
+      fingerprint: Digest::SHA256.hexdigest("source-#{start_message.id}-#{end_message.id}")
+    )
     create(:message, conversation: source, account: account, inbox: inbox, sender: assistant,
                      message_type: :outgoing, private: true, content: content,
                      additional_attributes: { Marine::Memory::Marker::KEY => marker })
@@ -58,6 +60,28 @@ RSpec.describe 'Marine historical memory runtime context' do
     expect(context.history).to eq([{ role: 'user', content: prior.content }])
     expect(context.trigger).to eq('CURRENT TURN')
     expect(context.advisory_memory).to be_nil
+  end
+
+  it 'passes v2 advisory memory through the Agent personalization boundary without changing canonical product history' do
+    trusted_memory('Customer previously mentioned SYN-OLD, which is advisory only.')
+    prior = incoming('RECENT PUBLIC CONTEXT', at: 1.hour.ago)
+    trigger = incoming('CURRENT PRODUCT REQUEST', at: Time.current)
+    context = Marine::Conversation::ContextBuilder.new(conversation: conversation, trigger_message: trigger).build
+    generator = instance_double(Marine::Charge::ResponseGenerator)
+    runner = Marine::Agent::Runner.new(assistant: assistant, conversation: conversation, source: trigger)
+    allow(runner).to receive(:response_generator).and_return(generator)
+    expect(generator).to receive(:generate) do |additional_message:, message_history:, **|
+      expect(additional_message).to eq('CURRENT PRODUCT REQUEST')
+      expect(message_history.first.fetch(:content)).to include('ADVISORY HISTORICAL MEMORY', 'SYN-OLD')
+      expect(message_history.last).to eq(role: 'user', content: prior.content)
+      { 'response' => 'personalized' }
+    end
+
+    result = runner.send(:generated_response, context, context.history, context.trigger, nil)
+
+    expect(result).to include('response' => 'personalized')
+    expect(context.history).to eq([{ role: 'user', content: prior.content }])
+    expect(context.trigger).to eq('CURRENT PRODUCT REQUEST')
   end
 
   it 'passes advisory memory through the real ResponseBuilder legacy pre-answer seam' do

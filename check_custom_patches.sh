@@ -531,8 +531,6 @@ require_file custom/wijaya/batteries/marine_ai/app/models/marine/assistant_respo
 require_file custom/wijaya/batteries/marine_ai/app/models/marine_inbox.rb
 require_file custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/account_extensions.rb
 require_file custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/inbox_extensions.rb
-# Marine resolved-conversation callback attached to Conversation via a battery concern.
-require_file custom/wijaya/batteries/marine_ai/app/models/concerns/wijaya/marine/conversation_extensions.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/wijaya/marine/hooks.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/cell/knowledge_base_service.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/cell/retriever.rb
@@ -567,13 +565,20 @@ require_file custom/wijaya/batteries/marine_ai/app/services/marine/copilot/rewri
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/copilot/translate_service.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/copilot/follow_up_service.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/memory/contact_notes_service.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/memory/summary_validator.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/memory/marker.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/memory/signal.rb
+require_file custom/wijaya/batteries/marine_ai/app/services/marine/memory/signal_projection.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/memory/lifecycle_policy.rb
 require_file custom/wijaya/batteries/marine_ai/app/services/marine/memory/reader.rb
-require_file custom/wijaya/batteries/marine_ai/app/jobs/marine/memory/generate_contact_notes_job.rb
+require_file custom/wijaya/batteries/marine_ai/app/jobs/marine/memory/idle_summary_job.rb
 require_file custom/wijaya/batteries/marine_ai/app/jobs/marine/memory/checkpoint_job.rb
 require_file custom/wijaya/batteries/marine_ai/patch/apply_patches.py
+require_file spec/custom/wijaya/batteries/marine_ai/memory/contact_notes_service_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/memory/checkpoint_job_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/memory/idle_summary_job_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/memory/idle_memory_redesign_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/memory/signal_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/memory/reader_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/memory/schedule_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/conversation/memory_context_spec.rb

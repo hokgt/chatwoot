@@ -6,236 +6,317 @@ RSpec.describe Marine::Memory::ContactNotesService do
   let(:account) { create(:account) }
   let(:contact) { create(:contact, account: account) }
   let(:inbox) { create(:inbox, account: account) }
-  let(:assistant) { create(:marine_assistant, account: account, config: { 'feature_memory' => true }) }
+  let(:assistant) do
+    create(:marine_assistant, account: account,
+                              config: { 'feature_memory' => true, 'memory_idle_timeout_hours' => 2 })
+  end
   let(:conversation) { create(:conversation, account: account, inbox: inbox, contact: contact, status: :open) }
   let(:base_service) { instance_double(Marine::Llm::BaseService, configured?: true) }
+  let(:valid_json) { { has_durable_memory: true, summary: 'Pelanggan lebih suka dihubungi melalui email.' }.to_json }
+  let(:valid_verdict) { { is_indonesian: true, is_durable: true, is_generic: false, has_dynamic_product_facts: false }.to_json }
 
   before do
     MarineInbox.create!(inbox: inbox, marine_assistant: assistant)
     allow(Marine::Llm::BaseService).to receive(:new).with(account: account).and_return(base_service)
-    allow(base_service).to receive(:complete).and_return(ok: true, message: 'Customer prefers email contact.', error: nil)
+    completion_count = 0
+    allow(base_service).to receive(:complete) do
+      completion_count += 1
+      { ok: true, message: completion_count.odd? ? valid_json : valid_verdict, error: nil }
+    end
   end
 
-  def incoming(content, at: Time.current)
+  def incoming(content, at: 3.hours.ago)
     create(:message, conversation: conversation, account: account, inbox: inbox, sender: contact,
                      message_type: :incoming, private: false, content: content, created_at: at)
   end
 
-  def outgoing(content, at: Time.current)
+  def outgoing(content, at: 3.hours.ago)
     create(:message, conversation: conversation, account: account, inbox: inbox, sender: assistant,
                      message_type: :outgoing, private: false, content: content, created_at: at)
   end
 
-  def memory_notes
+  # rubocop:disable Metrics/ParameterLists -- Test setup helper models the complete signal contract.
+  def signal_turn(status:, requested: [], delivered: [], at: 3.hours.ago, reply: true, evidence: [])
+    trigger = incoming("turn-#{status}-#{SecureRandom.hex(3)}", at: at)
+    claim = Marine::Conversation::ProcessingClaim.new(message: trigger)
+    owner = claim.acquire!
+    public_reply = outgoing("reply-#{status}", at: at) if reply
+    claim.complete!(claim_id: owner.claim['claim_id'])
+    Marine::Memory::Signal.write!(
+      message: trigger, status: status, requested_capabilities: requested,
+      delivered_capabilities: delivered, evidence_versions: evidence,
+      public_reply_message_id: public_reply&.id
+    )
+    trigger
+  end
+  # rubocop:enable Metrics/ParameterLists
+
+  def complete_turn(capability: 'price', at: 3.hours.ago)
+    signal_turn(status: 'complete', requested: [capability], delivered: [capability], at: at,
+                evidence: ['marine_evidence_v2'])
+  end
+
+  def notes
     conversation.messages.where(private: true, message_type: :outgoing)
   end
 
-  def resolve_conversation
-    conversation.update!(status: :resolved)
+  def service
+    described_class.new(assistant: assistant, conversation: conversation)
   end
 
-  it 'stores exactly one human-readable marked private Message and never a Contact Note for a final summary' do
-    first = incoming('Please remember that email is best.')
-    last = outgoing('Understood.')
-    resolve_conversation
-    original_status = conversation.status
-    original_assignee = conversation.assignee_id
+  it 'creates one private v2 Indonesian note after the configured idle timeout without mutating status or assignee' do
+    complete_turn
+    before_state = conversation.reload.attributes.slice('status', 'assignee_id')
 
-    original_contact_note_count = contact.notes.count
-    expect { described_class.new(assistant: assistant, conversation: conversation).generate_and_store(state: 'final') }
-      .to change(memory_notes, :count).by(1)
-    expect(contact.notes.count).to eq(original_contact_note_count)
+    expect { service.generate_and_store(trigger_source: 'idle_timeout') }.to change(notes, :count).by(1)
 
-    note = memory_notes.last
+    note = notes.last
     marker = note.additional_attributes.fetch(Marine::Memory::Marker::KEY)
-    expect(note).to have_attributes(private: true, content: include('Customer prefers email contact.'))
-    expect(marker).to include(
-      'version' => 1,
-      'kind' => 'marine_long_term_memory',
-      'state' => 'final',
-      'source_account_id' => account.id,
-      'source_contact_id' => contact.id,
-      'source_conversation_id' => conversation.id,
-      'start_public_message_id' => first.id,
-      'end_public_message_id' => last.id,
-      'generator' => 'marine_llm_v1'
-    )
-    expect(marker.fetch('transcript_fingerprint')).to match(/\A[0-9a-f]{64}\z/)
-    expect(conversation.reload).to have_attributes(status: original_status, assignee_id: original_assignee)
-    expect(conversation.messages.where(private: false, message_type: %i[incoming outgoing]).count).to eq(2)
+    expect(note).to have_attributes(private: true, content: include('Pelanggan lebih suka'))
+    expect(marker).to include('version' => 2, 'trigger_source' => 'idle_timeout',
+                              'memory_signal_version' => 'marine_memory_signal_v1')
+    expect(conversation.reload.attributes.slice('status', 'assignee_id')).to eq(before_state)
+    expect(contact.notes).to be_empty
   end
 
-  it 'summarizes only public incoming/outgoing text and excludes private notes and activity' do
-    incoming('PUBLIC CUSTOMER')
-    outgoing('PUBLIC ASSISTANT')
-    create(:message, conversation: conversation, account: account, inbox: inbox, sender: assistant,
-                     message_type: :outgoing, private: true, content: 'PRIVATE SECRET')
-    create(:message, conversation: conversation, account: account, inbox: inbox,
-                     message_type: :activity, private: false, content: 'ACTIVITY SECRET')
-    resolve_conversation
+  %i[open pending resolved].each do |status|
+    it "treats #{status} as an equivalent eligible state rather than a trigger" do
+      conversation.update!(status: status)
+      complete_turn
+      expect(service.generate_and_store(trigger_source: 'cron_fallback')).to include(ok: true, created: 1)
+    end
+  end
 
-    expect(base_service).to receive(:complete) do |prompt:, system:|
-      expect(prompt).to include('PUBLIC CUSTOMER', 'PUBLIC ASSISTANT')
-      expect(prompt).not_to include('PRIVATE SECRET', 'ACTIVITY SECRET')
-      expect(system).to include('durable')
-      { ok: true, message: 'Safe summary.', error: nil }
+  it 'skips snoozed conversations and recent public activity' do
+    complete_turn
+    conversation.update!(status: :snoozed)
+    expect(service.generate_and_store(trigger_source: 'idle_timeout')).to include(created: 0, error: 'conversation_ineligible_status')
+
+    conversation.update!(status: :open)
+    outgoing('recent', at: 5.minutes.ago)
+    expect(service.generate_and_store(trigger_source: 'idle_timeout')).to include(created: 0, error: 'not_idle')
+    expect(notes).to be_empty
+  end
+
+  it 'allows complete then neutral, blocks complete then blocking, and allows a later complete' do
+    complete_turn
+    signal_turn(status: 'neutral', at: 3.hours.ago)
+    expect(service).to be_eligible
+
+    signal_turn(status: 'blocking', requested: ['stock'], at: 3.hours.ago, reply: false)
+    expect(service).not_to be_eligible
+
+    complete_turn(capability: 'stock')
+    expect(service).to be_eligible
+  end
+
+  it 'blocks unmatched incoming messages and active unresolved flow state' do
+    complete_turn
+    incoming('unfinalized', at: 3.hours.ago)
+    expect(service.generate_and_store(trigger_source: 'idle_timeout')).to include(created: 0, error: 'unmatched_incoming')
+
+    unmatched = conversation.messages.incoming.last
+    unmatched.destroy!
+    conversation.reload
+    Marine::Catalog::ProductFlowStateStore.new(conversation: conversation).start!(
+      'validated_family' => 'SYN-FAMILY', 'requested_intents' => ['price']
+    )
+    expect(service.generate_and_store(trigger_source: 'idle_timeout')).to include(created: 0, error: 'unresolved_clarification')
+  end
+
+  it 'drops a generated result when public activity arrives during generation beyond the snapshot cap' do
+    stub_const("#{described_class}::MAX_SOURCE_MESSAGES", 2)
+    complete_turn
+    completion_count = 0
+    allow(base_service).to receive(:complete) do
+      completion_count += 1
+      if completion_count == 1
+        outgoing('arrived during generation', at: Time.current)
+        { ok: true, message: valid_json, error: nil }
+      else
+        { ok: true, message: valid_verdict, error: nil }
+      end
     end
 
-    described_class.new(assistant: assistant, conversation: conversation).generate_and_store(state: 'final')
+    expect(service.generate_and_store(trigger_source: 'idle_timeout')).to include(created: 0, error: 'stale_snapshot')
+    expect(notes).to be_empty
   end
 
-  it 'is range/fingerprint idempotent across replay and a competing interleaving' do
-    incoming('Remember this.')
-    resolve_conversation
+  it 'deduplicates an exact range across idle/cron interleaving and a later-day cron replay' do
+    complete_turn
     competitor = described_class.new(assistant: assistant, conversation: conversation)
     outer = described_class.new(assistant: assistant, conversation: conversation)
     allow(outer).to receive(:summarize) do |_snapshot|
-      competitor.generate_and_store(state: 'final')
-      'Outer duplicate summary.'
+      competitor.generate_and_store(trigger_source: 'cron_fallback')
+      'Pelanggan lebih suka dihubungi melalui email.'
     end
 
-    outer.generate_and_store(state: 'final')
-    described_class.new(assistant: assistant, conversation: conversation).generate_and_store(state: 'final')
-
-    expect(memory_notes.count).to eq(1)
-  end
-
-  it 'appends only the later unsummarized public delta as a second note' do
-    first = incoming('First session.', at: 2.hours.ago)
-    described_class.new(assistant: assistant, conversation: conversation).generate_and_store(state: 'checkpoint')
-    later = incoming('Second session.', at: 1.hour.ago)
-    allow(base_service).to receive(:complete).and_return(ok: true, message: 'Second summary.', error: nil)
-
-    described_class.new(assistant: assistant, conversation: conversation).generate_and_store(state: 'checkpoint')
-
-    expect(memory_notes.count).to eq(2)
-    markers = memory_notes.map { |note| note.additional_attributes.fetch(Marine::Memory::Marker::KEY) }
-    expect(markers.map { |marker| marker['start_public_message_id'] }).to eq([first.id, later.id])
-    expect(markers.map { |marker| marker['end_public_message_id'] }).to eq([first.id, later.id])
-  end
-
-  it 'does not duplicate a checkpoint on resolve without new public messages, but writes a final delta when new incoming exists' do
-    incoming('Checkpointed.', at: 2.hours.ago)
-    service = described_class.new(assistant: assistant, conversation: conversation)
-    service.generate_and_store(state: 'checkpoint')
-    resolve_conversation
-    service.generate_and_store(state: 'final')
-    expect(memory_notes.count).to eq(1)
-
-    incoming('New before resolve.')
-    resolve_conversation
-    service.generate_and_store(state: 'final')
-
-    expect(memory_notes.count).to eq(2)
-    expect(memory_notes.last.additional_attributes.dig(Marine::Memory::Marker::KEY, 'state')).to eq('final')
-  end
-
-  it 'drops a stale generated result even when a new message lands beyond the bounded snapshot' do
-    stub_const("#{described_class}::MAX_SOURCE_MESSAGES", 2)
-    incoming('Snapshot me.', at: 2.hours.ago)
-    outgoing('Initial bounded reply.', at: 2.hours.ago)
-    service = described_class.new(assistant: assistant, conversation: conversation)
-    allow(service).to receive(:summarize) do |_snapshot|
-      incoming('Arrived during generation.')
-      'Now stale.'
+    outer.generate_and_store(trigger_source: 'idle_timeout')
+    travel 1.day do
+      described_class.new(assistant: assistant, conversation: conversation)
+                     .generate_and_store(trigger_source: 'cron_fallback')
     end
-
-    result = service.generate_and_store(state: 'checkpoint')
-
-    expect(result).to include(ok: false, created: 0, error: 'stale_snapshot')
-    expect(memory_notes).to be_empty
+    expect(notes.count).to eq(1)
   end
 
-  it 'keeps historical product identity advisory while excluding current price and stock claims from memory' do
-    incoming('Remember the family and variant I selected.', at: 1.hour.ago)
-
-    expect(base_service).to receive(:complete) do |prompt:, system:|
-      expect(prompt).to include('family and variant')
-      expect(system).to include('historical product family', 'advisory context')
-      expect(system).to include('Never preserve price or stock as current facts')
-      { ok: true, message: 'Customer previously selected a family and variant.', error: nil }
-    end
-
-    described_class.new(assistant: assistant, conversation: conversation).generate_and_store(state: 'checkpoint')
+  it 'allows two distinct eligible ranges on the same day' do
+    complete_turn
+    expect(service.generate_and_store(trigger_source: 'idle_timeout')).to include(created: 1)
+    complete_turn(capability: 'stock', at: 2.hours.ago - 1.minute)
+    expect(described_class.new(assistant: assistant, conversation: conversation)
+                          .generate_and_store(trigger_source: 'cron_fallback')).to include(created: 1)
+    expect(notes.count).to eq(2)
   end
 
-  it 'fails closed when the assistant is disabled or is not the conversation inbox assistant' do
-    incoming('Do not summarize through an unrelated assistant.')
-    unrelated = create(:marine_assistant, account: account, config: { 'feature_memory' => true })
-    assistant.update!(config: { 'feature_memory' => false })
+  it 'keeps a trusted v1 watermark and does not resummarize its range' do
+    trigger = incoming('legacy range', at: 3.hours.ago)
+    reply = outgoing('legacy reply', at: 3.hours.ago)
+    snapshot = service.send(:public_snapshot_after, 0)
+    marker = Marine::Memory::Marker.build(
+      state: 'checkpoint', conversation: conversation, start_id: trigger.id, end_id: reply.id,
+      fingerprint: service.send(:fingerprint, snapshot)
+    )
+    conversation.messages.create!(account: account, inbox: inbox, sender: assistant, message_type: :outgoing,
+                                  private: true, content: 'Marine memory: catatan lama',
+                                  additional_attributes: { Marine::Memory::Marker::KEY => marker })
 
     expect(base_service).not_to receive(:complete)
-    disabled = described_class.new(assistant: assistant, conversation: conversation).generate_and_store
-    mismatched = described_class.new(assistant: unrelated, conversation: conversation).generate_and_store
-
-    expect(disabled).to include(created: 0, error: 'memory_disabled')
-    expect(mismatched).to include(created: 0, error: 'assistant_mismatch')
-    expect(memory_notes).to be_empty
+    expect(service.generate_and_store(trigger_source: 'cron_fallback')).to include(created: 0, error: 'no_new_incoming')
+    expect(notes.count).to eq(1)
   end
 
-  it 'requires at least one new public incoming message' do
-    outgoing('Assistant only.')
-    expect(base_service).not_to receive(:complete)
-    expect(described_class.new(assistant: assistant, conversation: conversation).generate_and_store(state: 'checkpoint'))
-      .to include(created: 0, error: 'no_new_incoming')
+  {
+    'no durable memory' => { has_durable_memory: false, summary: nil }.to_json,
+    'malformed JSON' => 'not-json',
+    'prose around JSON' => 'Result: {"has_durable_memory":false,"summary":null}',
+    'a fenced payload' => "```json\n{\"has_durable_memory\":false,\"summary\":null}\n```",
+    'an extra key' => '{"has_durable_memory":true,"summary":"Pelanggan lebih suka dihubungi melalui email.","extra":1}',
+    'a wrong boolean type' => '{"has_durable_memory":"true","summary":"Pelanggan lebih suka dihubungi melalui email."}',
+    'a wrong summary type' => '{"has_durable_memory":true,"summary":["Pelanggan lebih suka email"]}',
+    'a non-object payload' => '[true,"Pelanggan lebih suka dihubungi melalui email."]',
+    'an invalid encoding' => -> { "{\"has_durable_memory\":true,\"summary\":\"pelanggan\"}\xFF".dup.force_encoding(Encoding::UTF_8) },
+    'a non-string validator input' => Object.new,
+    'an oversized payload' => -> { %({"has_durable_memory":true,"summary":"#{'a' * 5000}"}) }
+  }.each do |label, payload|
+    it "writes no note and does not call the judge for generator #{label}" do
+      complete_turn
+      message = payload.respond_to?(:call) ? payload.call : payload
+      expect(base_service).to receive(:complete).once.and_return(ok: true, message: message, error: nil)
+
+      expect(service.generate_and_store(trigger_source: 'idle_timeout')).to include(created: 0, error: 'no_durable_memory')
+      expect(notes).to be_empty
+    end
   end
 
-  it 'safely folds LLM failure' do
-    incoming('Customer turn.')
-    resolve_conversation
-    allow(base_service).to receive(:complete).and_raise(StandardError, 'provider failed')
-    expect { described_class.new(assistant: assistant, conversation: conversation).generate_and_store(state: 'final') }
-      .not_to raise_error
-    expect(memory_notes).to be_empty
+  it 'rejects an accepting last-value generator duplicate without calling the judge' do
+    complete_turn
+    generator = '{"has_durable_memory":false,"has_durable_memory":true,"summary":"Pelanggan lebih suka dihubungi melalui email."}'
+    expect(base_service).to receive(:complete).once.and_return(ok: true, message: generator, error: nil)
+
+    expect(service.generate_and_store(trigger_source: 'idle_timeout')).to include(created: 0, error: 'no_durable_memory')
+    expect(notes).to be_empty
   end
 
-  it 'reloads lifecycle status before calling the provider' do
-    incoming('Resolve then reopen elsewhere.')
-    resolve_conversation
-    service = described_class.new(assistant: assistant, conversation: conversation)
-    Conversation.where(id: conversation.id).update_all(status: Conversation.statuses[:open]) # rubocop:disable Rails/SkipsModelValidations
+  {
+    'English containing email' => ['Customer prefers email communication.',
+                                   { is_indonesian: false, is_durable: true, is_generic: false, has_dynamic_product_facts: false }],
+    'mixed language with shared markers' => ['Customer prefers email dan nomor telepon.',
+                                             { is_indonesian: false, is_durable: true, is_generic: false, has_dynamic_product_facts: false }],
+    'a generic note' => ['Catatan umum pelanggan telah dibuat.',
+                         { is_indonesian: true, is_durable: true, is_generic: true, has_dynamic_product_facts: false }],
+    'a current price claim' => ['Pelanggan meminta harga saat ini sebesar seratus ribu rupiah.',
+                                { is_indonesian: true, is_durable: true, is_generic: false, has_dynamic_product_facts: true }],
+    'a current stock claim' => ['Pelanggan telah memilih produk yang stoknya tersedia sekarang.',
+                                { is_indonesian: true, is_durable: true, is_generic: false, has_dynamic_product_facts: true }],
+    'a current quantity claim' => ['Pelanggan meminta jumlah saat ini sebanyak sepuluh unit.',
+                                   { is_indonesian: true, is_durable: true, is_generic: false, has_dynamic_product_facts: true }],
+    'a current location claim' => ['Pelanggan telah memilih barang di lokasi gudang utama.',
+                                   { is_indonesian: true, is_durable: true, is_generic: false, has_dynamic_product_facts: true }]
+  }.each do |label, (summary, verdict)|
+    it "writes no note for #{label} by typed judge verdict" do
+      complete_turn
+      generator = { has_durable_memory: true, summary: summary }.to_json
+      allow(base_service).to receive(:complete).and_return(
+        { ok: true, message: generator, error: nil }, { ok: true, message: verdict.to_json, error: nil }
+      )
 
-    expect(conversation.status).to eq('resolved')
-    expect(base_service).not_to receive(:complete)
-    expect(service.generate_and_store(state: 'final'))
-      .to include(created: 0, error: 'conversation_not_resolved')
+      expect(service.generate_and_store(trigger_source: 'idle_timeout')).to include(created: 0, error: 'no_durable_memory')
+      expect(notes).to be_empty
+    end
   end
 
-  it 'rechecks checkpoint quietness before calling the provider' do
-    incoming('Initially quiet.', at: 2.hours.ago)
-    service = described_class.new(assistant: assistant, conversation: conversation)
-    expect(service.checkpoint_eligible?).to be(true)
-    incoming('Recent activity.', at: Time.current)
+  [
+    'not-json',
+    'Judge: {"is_indonesian":true,"is_durable":true,"is_generic":false,"has_dynamic_product_facts":false}',
+    "```json\n{\"is_indonesian\":true,\"is_durable\":true,\"is_generic\":false,\"has_dynamic_product_facts\":false}\n```",
+    '{"is_indonesian":true,"is_durable":true,"is_generic":false,"has_dynamic_product_facts":false,"extra":true}',
+    '{"is_indonesian":"true","is_durable":true,"is_generic":false,"has_dynamic_product_facts":false}',
+    lambda {
+      "{\"is_indonesian\":true,\"is_durable\":true,\"is_generic\":false,\"has_dynamic_product_facts\":false}\xFF".dup.force_encoding(Encoding::UTF_8)
+    },
+    -> { %({"is_indonesian":true,"is_durable":true,"is_generic":false,"has_dynamic_product_facts":false,"padding":"#{'a' * 5000}"}) }
+  ].each_with_index do |verdict, index|
+    it "rejects strict malformed judge verdict #{index + 1} without writing a note" do
+      complete_turn
+      response = verdict.respond_to?(:call) ? verdict.call : verdict
+      allow(base_service).to receive(:complete).and_return(
+        { ok: true, message: valid_json, error: nil }, { ok: true, message: response, error: nil }
+      )
 
-    expect(base_service).not_to receive(:complete)
-    expect(service.generate_and_store(state: 'checkpoint'))
-      .to include(created: 0, error: 'checkpoint_not_quiet')
+      expect(service.generate_and_store(trigger_source: 'idle_timeout')).to include(created: 0, error: 'no_durable_memory')
+      expect(notes).to be_empty
+    end
   end
 
-  it 'drops a final summary if the conversation reopens during generation' do
-    incoming('Resolve this conversation.')
-    resolve_conversation
-    service = described_class.new(assistant: assistant, conversation: conversation)
-    allow(service).to receive(:summarize) do |_snapshot|
-      conversation.update!(status: :open)
-      'Stale final summary.'
+  it 'rejects an accepting last-value judge duplicate without writing a note' do
+    complete_turn
+    judge = '{"is_indonesian":false,"is_indonesian":true,"is_durable":true,"is_generic":false,"has_dynamic_product_facts":false}'
+    expect(base_service).to receive(:complete).twice.and_return(
+      { ok: true, message: valid_json, error: nil }, { ok: true, message: judge, error: nil }
+    )
+
+    expect(service.generate_and_store(trigger_source: 'idle_timeout')).to include(created: 0, error: 'no_durable_memory')
+    expect(notes).to be_empty
+  end
+
+  it 'calls the generator before the judge with candidate JSON and writes no note on judge provider failure' do
+    complete_turn
+    expect(base_service).to receive(:complete).ordered do |prompt:, system:|
+      expect(prompt).to include('Customer:', 'Assistant:')
+      expect(system).to include('has_durable_memory')
+      { ok: true, message: valid_json, error: nil }
+    end
+    expect(base_service).to receive(:complete).ordered do |prompt:, system:|
+      expect(prompt).to eq(JSON.generate(candidate: 'Pelanggan lebih suka dihubungi melalui email.'))
+      expect(system).to include('advisory validation judge only', 'not a business or product authority')
+      { ok: false, message: nil, error: 'provider_error' }
     end
 
-    expect(service.generate_and_store(state: 'final'))
-      .to include(created: 0, error: 'conversation_not_resolved')
-    expect(memory_notes).to be_empty
+    expect(service.generate_and_store(trigger_source: 'idle_timeout')).to include(created: 0, error: 'no_durable_memory')
+    expect(notes).to be_empty
   end
 
-  it 'drops a checkpoint if the conversation resolves during generation' do
-    incoming('Quiet checkpoint.', at: 2.hours.ago)
-    service = described_class.new(assistant: assistant, conversation: conversation)
-    allow(service).to receive(:summarize) do |_snapshot|
-      resolve_conversation
-      'Stale checkpoint summary.'
-    end
+  it 'writes no note and advances no watermark for provider failure' do
+    complete_turn
+    allow(base_service).to receive(:complete).and_return(ok: false, error: 'provider_error')
 
-    expect(service.generate_and_store(state: 'checkpoint'))
-      .to include(created: 0, error: 'checkpoint_ineligible_status')
-    expect(memory_notes).to be_empty
+    expect(service.generate_and_store(trigger_source: 'idle_timeout')).to include(created: 0, error: 'no_durable_memory')
+    expect(notes).to be_empty
+  end
+
+  it 'excludes private/activity rows from both the transcript and public idle revision' do
+    complete_turn
+    create(:message, conversation: conversation, account: account, inbox: inbox, sender: assistant,
+                     message_type: :outgoing, private: true, content: 'PRIVATE SECRET', created_at: Time.current)
+    create(:message, conversation: conversation, account: account, inbox: inbox,
+                     message_type: :activity, private: false, content: 'ACTIVITY SECRET', created_at: Time.current)
+    expect(base_service).to receive(:complete).ordered do |prompt:, system:|
+      expect(prompt).not_to include('PRIVATE SECRET', 'ACTIVITY SECRET')
+      expect(system).to include('strict JSON', 'Bahasa Indonesia', 'Never preserve current price, stock, quantity, or location')
+      { ok: true, message: valid_json, error: nil }
+    end
+    expect(base_service).to receive(:complete).ordered.and_return(ok: true, message: valid_verdict, error: nil)
+
+    expect(service.generate_and_store(trigger_source: 'idle_timeout')).to include(created: 1)
   end
 end

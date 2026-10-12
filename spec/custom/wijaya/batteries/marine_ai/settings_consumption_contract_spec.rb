@@ -105,28 +105,36 @@ RSpec.describe 'Marine settings consumption contract' do
   end
 
   # --- assistant.config['feature_memory'] ------------------------------------------------------
-  # Consumer: Wijaya::Marine::Hooks#marine_memory_enabled? (hooks.rb:71-76) gates the
-  # GenerateContactNotesJob enqueue; the job itself re-checks the same toggle
-  # (generate_contact_notes_job.rb:17). Build a REAL assistant so the toggle is a real attribute.
-  describe "assistant config['feature_memory'] -> Hooks memory-job gate" do
+  # Consumer: Marine::Memory::ContactNotesService#request_error (contact_notes_service.rb:60-66)
+  # gates the shared idle/cron writer. Exercise the real writer boundary without reviving a resolve
+  # trigger; the enabled path advances to normal range eligibility, while the disabled path stops.
+  describe "assistant config['feature_memory'] -> shared idle/cron writer gate" do
     let(:account) { create(:account) }
-    let(:inbox) { double('inbox') }
-    let(:conversation) { double('conversation', inbox: inbox, account: account) }
+    let(:contact) { create(:contact, account: account) }
+    let(:inbox) { create(:inbox, account: account) }
+    let(:conversation) { create(:conversation, account: account, inbox: inbox, contact: contact) }
+    let(:base_service) { instance_double(Marine::Llm::BaseService, configured?: true) }
 
-    it 'enqueues the contact-notes job when feature_memory is enabled' do
+    before { allow(Marine::Llm::BaseService).to receive(:new).and_return(base_service) }
+
+    it 'lets the shared writer evaluate normal eligibility when feature_memory is enabled' do
       assistant = create(:marine_assistant, account: account, config: { 'feature_memory' => true })
-      allow(inbox).to receive(:marine_assistant).and_return(assistant)
+      MarineInbox.create!(inbox: inbox, marine_assistant: assistant)
 
-      expect(Marine::Memory::GenerateContactNotesJob).to receive(:perform_later).with(conversation)
-      Wijaya::Marine::Hooks.after_conversation_resolved(conversation)
+      gate_result = Marine::Memory::ContactNotesService.new(assistant: assistant, conversation: conversation)
+                                                       .send(:request_error, 'idle_timeout')
+
+      expect(gate_result).to be_nil
     end
 
-    it 'does not enqueue when feature_memory is unset' do
+    it 'stops the shared writer when feature_memory is unset' do
       assistant = create(:marine_assistant, account: account, config: {})
-      allow(inbox).to receive(:marine_assistant).and_return(assistant)
+      MarineInbox.create!(inbox: inbox, marine_assistant: assistant)
 
-      expect(Marine::Memory::GenerateContactNotesJob).not_to receive(:perform_later)
-      Wijaya::Marine::Hooks.after_conversation_resolved(conversation)
+      gate_result = Marine::Memory::ContactNotesService.new(assistant: assistant, conversation: conversation)
+                                                       .send(:request_error, 'cron_fallback')
+
+      expect(gate_result).to eq('memory_disabled')
     end
   end
 

@@ -36,7 +36,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
             document_ids: []
           }
         )
-      )
+      ).and_return(double(id: 33))
 
       job.send(:create_marine_reply)
     end
@@ -1923,6 +1923,323 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         described_class.perform_now(conversation, assistant, incoming.id)
 
         expect(conversation.messages.outgoing.last.content).to eq("I'm sorry, I don't have the price for that item right now.")
+      end
+    end
+
+    describe 'memory signal finalization boundary' do
+      before do
+        incoming.update!(account_id: conversation.account_id, inbox_id: conversation.inbox_id)
+        MarineInbox.create!(inbox: conversation.inbox, marine_assistant: assistant)
+        clear_enqueued_jobs
+      end
+
+      def persisted_signal(message = incoming)
+        Marine::Memory::Signal.extract(message.reload)
+      end
+
+      # rubocop:disable Metrics/ParameterLists -- Test factory mirrors the production result keywords.
+      def memory_result(status:, requested: [], delivered: [], text: 'authoritative reply', reason: nil, versions: [])
+        reason ||= status == :deliverable ? :accepted : :synthetic
+        Marine::Backend::ExactPriceCustomerExecution::Result.new(
+          status: status, reason: reason, text: text,
+          requested_capabilities: requested, delivered_capabilities: delivered,
+          evidence_versions: versions
+        ).freeze
+      end
+
+      # rubocop:enable Metrics/ParameterLists
+
+      def reclaim_processing_claim(message = incoming)
+        attributes = message.reload.additional_attributes.deep_dup
+        attributes['wijaya_marine_ai']['processing_claim_v1']['claimed_at'] = 2.hours.ago.iso8601
+        message.update!(additional_attributes: attributes)
+
+        replacement = Marine::Conversation::ProcessingClaim.new(message: message).acquire!
+        expect(replacement).to be_owner
+        expect(replacement.status).to eq(Marine::Conversation::ProcessingClaim::STATUS_RECLAIMED)
+        replacement
+      end
+
+      it 'atomically persists the completed claim, authoritative reply, complete signal, and delayed enqueue' do
+        allow(exact_price_attempt).to receive(:call).and_return(
+          memory_result(status: :deliverable, requested: ['product_information'],
+                        delivered: ['product_information'], versions: ['marine_evidence_v2'])
+        )
+
+        expect do
+          described_class.perform_now(conversation, assistant, incoming.id)
+        end.to have_enqueued_job(Marine::Memory::IdleSummaryJob).with(conversation.id, assistant.id, incoming.id).once
+
+        reply = conversation.messages.outgoing.where(private: false).last
+        expect(reply).to be_present
+        expect(claim_status).to eq('completed')
+        expect(persisted_signal).to include(
+          'status' => 'complete', 'requested_capabilities' => ['product_information'],
+          'delivered_capabilities' => ['product_information'], 'evidence_versions' => ['marine_evidence_v2'],
+          'public_reply_message_id' => reply.id
+        )
+      end
+
+      it 'projects company offerings through the real job finalization contract' do
+        allow(exact_price_attempt).to receive(:call).and_return(
+          memory_result(status: :deliverable, requested: ['company_offerings'],
+                        delivered: ['company_offerings'], versions: ['marine_evidence_v2'])
+        )
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(persisted_signal).to include(
+          'status' => 'complete', 'requested_capabilities' => ['company_offerings'],
+          'delivered_capabilities' => ['company_offerings']
+        )
+      end
+
+      it 'persists neutral only for the Backend typed non-product outcome' do
+        allow(exact_price_attempt).to receive(:call).and_return(
+          memory_result(status: :neutral, reason: :non_product, text: nil)
+        )
+        stub_reasoning('response' => 'A conversational response', 'action' => 'reply')
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(persisted_signal).to include('status' => 'neutral', 'requested_capabilities' => [])
+      end
+
+      it 'finalizes terminal no-output with a blocking signal and no public reply' do
+        allow(exact_price_attempt).to receive(:call).and_return(
+          memory_result(status: :terminal_no_output, reason: :authority_rejected, requested: ['company_offerings'])
+        )
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.where(private: false)).to be_empty
+        expect(claim_status).to eq('completed')
+        expect(persisted_signal).to include('status' => 'blocking', 'public_reply_message_id' => nil)
+      end
+
+      it 'finalizes a silent handoff with a blocking signal and no public reply' do
+        stub_reasoning(product_payload(
+                         action: :reply, reply: { kind: :stock_available, variant_code: 'IMP-3' },
+                         operation: :start,
+                         changes: { 'validated_family' => 'IMP', 'validated_variant' => 'IMP-3',
+                                    'current_intent' => 'stock' }
+                       ))
+        allow_any_instance_of(described_class).to receive(:prepare_product_wording) do |job|
+          job.instance_variable_set(:@force_stock_language_handoff, true)
+          job.instance_variable_set(:@stock_handoff_silent, true)
+          job.instance_variable_set(:@handoff_message, nil)
+        end
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.where(private: false)).to be_empty
+        expect(Marine::Circuit::HandoffStateStore.new(conversation: conversation.reload).active?).to be(true)
+        expect(claim_status).to eq('completed')
+        expect(persisted_signal).to include(
+          'status' => 'blocking', 'requested_capabilities' => ['stock'],
+          'delivered_capabilities' => [], 'public_reply_message_id' => nil
+        )
+      end
+
+      it 'completes a Backend price failure when the trigger-bound legacy path authoritatively delivers an exact price' do
+        allow(exact_price_attempt).to receive(:call).and_return(
+          memory_result(status: :fallback, reason: :presentation_rejected, requested: ['price'])
+        )
+        stub_reasoning(product_payload(
+                         action: :reply,
+                         reply: { kind: :price_available, variant_code: 'IMP-3', currency: 'IDR',
+                                  price_list_rate: '150000', uom: 'pcs' },
+                         operation: :start,
+                         changes: { 'validated_family' => 'IMP', 'validated_variant' => 'IMP-3',
+                                    'current_intent' => 'price' }
+                       ))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(persisted_signal).to include(
+          'status' => 'complete', 'requested_capabilities' => ['price'],
+          'delivered_capabilities' => ['price']
+        )
+      end
+
+      it 'keeps a trigger-bound legacy price_unavailable outcome blocking' do
+        stub_reasoning(product_payload(
+                         action: :reply, reply: { kind: :price_unavailable }, operation: :start,
+                         changes: { 'validated_family' => 'IMP', 'current_intent' => 'price' }
+                       ))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(persisted_signal).to include(
+          'status' => 'blocking', 'requested_capabilities' => ['price'], 'delivered_capabilities' => []
+        )
+      end
+
+      it 'keeps an early Backend failure plus a generic trigger-bound legacy reply blocking' do
+        allow(exact_price_attempt).to receive(:call).and_return(
+          memory_result(status: :fallback, reason: :relationship_invalid)
+        )
+        stub_reasoning('response' => 'A generic fallback', 'action' => 'reply')
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(persisted_signal).to include(
+          'status' => 'blocking', 'requested_capabilities' => [], 'delivered_capabilities' => []
+        )
+      end
+
+      it 'keeps trigger-bound legacy parent and variant information requested but undelivered' do
+        %i[parent_info variant_info].each do |kind|
+          message = create(:message, conversation: conversation, account: conversation.account,
+                                     inbox: conversation.inbox, message_type: :incoming,
+                                     content: "legacy #{kind}")
+          stub_reasoning(product_payload(
+                           action: :reply, reply: { kind: kind, family_code: 'IMP', family_name: 'Impeller' },
+                           operation: :start,
+                           changes: { 'validated_family' => 'IMP', 'current_intent' => kind.to_s }
+                         ))
+
+          described_class.perform_now(conversation, assistant, message.id)
+
+          expect(persisted_signal(message)).to include(
+            'status' => 'blocking', 'requested_capabilities' => ['product_information'],
+            'delivered_capabilities' => []
+          )
+        end
+      end
+
+      it 'rolls back every stale-worker effect when its processing claim is reclaimed during reasoning' do
+        replacement = nil
+        chat = instance_double(Marine::Llm::AssistantChatService)
+        allow(Marine::Llm::AssistantChatService).to receive(:new).and_return(chat)
+        allow(chat).to receive(:generate_response) do
+          replacement = reclaim_processing_claim
+          product_payload(
+            action: :reply,
+            reply: { kind: :price_available, variant_code: 'IMP-3', currency: 'IDR',
+                     price_list_rate: '150000', uom: 'pcs' },
+            operation: :start,
+            changes: { 'validated_family' => 'IMP', 'validated_variant' => 'IMP-3',
+                       'current_intent' => 'price' }
+          )
+        end
+
+        expect do
+          described_class.perform_now(conversation, assistant, incoming.id)
+        end.not_to have_enqueued_job(Marine::Memory::IdleSummaryJob)
+
+        expect(conversation.messages.outgoing.where(private: false)).to be_empty
+        expect(product_state).to be_nil
+        expect(usage_count).to eq(0)
+        expect(persisted_signal).to be_nil
+        expect(Marine::Circuit::HandoffStateStore.new(conversation: conversation.reload)).not_to be_active
+        expect(incoming.reload.additional_attributes.dig('wijaya_marine_ai', 'processing_claim_v1')).to include(
+          'claim_id' => replacement.claim['claim_id'], 'status' => 'processing'
+        )
+      end
+
+      it 'rolls back handoff mutation when the stale worker loses its claim before finalization' do
+        replacement = nil
+        chat = instance_double(Marine::Llm::AssistantChatService)
+        allow(Marine::Llm::AssistantChatService).to receive(:new).and_return(chat)
+        allow(chat).to receive(:generate_response) do
+          replacement = reclaim_processing_claim
+          product_payload(
+            action: :handoff, reply: { kind: :unsupported }, operation: :start,
+            changes: { 'validated_family' => 'IMP', 'current_intent' => 'price' }
+          )
+        end
+
+        expect do
+          described_class.perform_now(conversation, assistant, incoming.id)
+        end.not_to have_enqueued_job(Marine::Memory::IdleSummaryJob)
+
+        expect(conversation.messages.outgoing.where(private: false)).to be_empty
+        expect(conversation.messages.where(private: true)).to be_empty
+        expect(product_state).to be_nil
+        expect(usage_count).to eq(0)
+        expect(persisted_signal).to be_nil
+        expect(Marine::Circuit::HandoffStateStore.new(conversation: conversation.reload)).not_to be_active
+        expect(incoming.reload.additional_attributes.dig('wijaya_marine_ai', 'processing_claim_v1')).to include(
+          'claim_id' => replacement.claim['claim_id'], 'status' => 'processing'
+        )
+      end
+
+      it 'rolls back reply and claim completion and skips enqueue when signal writing fails' do
+        allow(exact_price_attempt).to receive(:call).and_return(
+          memory_result(status: :deliverable, requested: ['product_information'],
+                        delivered: ['product_information'], versions: ['marine_evidence_v2'])
+        )
+        allow(Marine::Memory::Signal).to receive(:write!).and_raise(ActiveRecord::RecordInvalid)
+
+        expect do
+          described_class.perform_now(conversation, assistant, incoming.id)
+        end.not_to have_enqueued_job(Marine::Memory::IdleSummaryJob)
+
+        expect(conversation.messages.outgoing.where(private: false)).to be_empty
+        expect(claim_status).to eq('processing')
+        expect(incoming.reload.additional_attributes).not_to have_key(Marine::Memory::Signal::KEY)
+      end
+
+      it 'rolls back product state/reply/claim and skips enqueue when message creation fails' do
+        stub_reasoning(product_payload(
+                         action: :reply,
+                         reply: { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' },
+                         operation: :start,
+                         changes: { 'validated_family' => 'IMP',
+                                    'current_intent' => 'parent_info' }
+                       ))
+        allow_any_instance_of(described_class).to receive(:create_product_reply).and_raise(ActiveRecord::RecordInvalid)
+
+        expect do
+          described_class.perform_now(conversation, assistant, incoming.id)
+        end.not_to have_enqueued_job(Marine::Memory::IdleSummaryJob)
+
+        expect(conversation.messages.outgoing.where(private: false)).to be_empty
+        expect(product_state).to be_nil
+        expect(claim_status).to eq('processing')
+        expect(incoming.reload.additional_attributes).not_to have_key(Marine::Memory::Signal::KEY)
+      end
+
+      it 'projects all-requested and partial multi-intent Backend outcomes through persisted job signals' do
+        allow(exact_price_attempt).to receive(:call).and_return(
+          memory_result(status: :deliverable, requested: %w[price stock], delivered: %w[price stock],
+                        versions: ['marine_evidence_v2'])
+        )
+        described_class.perform_now(conversation, assistant, incoming.id)
+        expect(persisted_signal).to include(
+          'status' => 'complete', 'requested_capabilities' => %w[price stock],
+          'delivered_capabilities' => %w[price stock]
+        )
+
+        later = create(:message, conversation: conversation, account: conversation.account, inbox: conversation.inbox,
+                                 message_type: :incoming, content: 'price and stock again')
+        allow(exact_price_attempt).to receive(:call).and_return(
+          memory_result(status: :deliverable, requested: %w[price stock], delivered: ['price'],
+                        versions: ['marine_evidence_v2'])
+        )
+        described_class.perform_now(conversation, assistant, later.id)
+        expect(persisted_signal(later)).to include(
+          'status' => 'blocking', 'requested_capabilities' => %w[price stock],
+          'delivered_capabilities' => ['price']
+        )
+      end
+
+      it 'projects an actual catalog attachment and commits its state in the same finalization' do
+        document = usable_catalog
+        stub_reasoning(send_catalog_payload)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        reply = conversation.messages.outgoing.where(private: false).last
+        expect(reply.attachments.count).to eq(1)
+        expect(product_state).to include(
+          'catalog_sent' => true, 'catalog_document_id' => document.id, 'catalog_message_id' => reply.id
+        )
+        expect(persisted_signal).to include(
+          'status' => 'blocking', 'requested_capabilities' => %w[catalog_attachment price],
+          'delivered_capabilities' => ['catalog_attachment'], 'public_reply_message_id' => reply.id
+        )
       end
     end
   end

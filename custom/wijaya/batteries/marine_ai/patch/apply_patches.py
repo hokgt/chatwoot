@@ -13,9 +13,9 @@ START = "# WIJAYA_CUSTOM_START marine_ai"
 END = "# WIJAYA_CUSTOM_END marine_ai"
 ANCHOR = "# WIJAYA_CUSTOM_END deferred_auto_assignment\n"
 BLOCK = """# WIJAYA_CUSTOM_START marine_ai
-# Daily 02:00 Asia/Jakarta checkpoint for unresolved, idle Marine conversations.
-# The battery job is self-gating: it skips disabled assistants, resolved conversations,
-# active conversations, and ranges without a new public incoming customer message.
+# Daily 02:00 Asia/Jakarta fallback for idle Marine conversations missed by delayed jobs.
+# The shared writer scans open, pending, and resolved conversations, then skips disabled,
+# snoozed or active conversations and ineligible public-message ranges.
 wijaya_marine_memory_checkpoint_job:
   cron: '0 2 * * * Asia/Jakarta'
   class: 'Marine::Memory::CheckpointJob'

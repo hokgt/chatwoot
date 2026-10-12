@@ -160,12 +160,15 @@ RSpec.describe 'Marine product flow cross-component regression' do
       job.instance_variable_set(:@assistant, assistant)
       plan = { action: :reply, reply: { kind: :parent_info, family_code: 'IMP', family_name: 'Impeller' }, state: { operation: :none, changes: {} } }
 
+      # create_product_message_with intentionally returns the created message id (the memory-signal
+      # provenance capture behind @public_reply_message_id), so the verifying double must return a
+      # message-like object with a valid id — a successful create! never yields nil.
       expect(messages).to receive(:create!).with(
         hash_including(
           message_type: :outgoing, content: "You're asking about Impeller. Which specific variant would you like to know about?",
           additional_attributes: { source_type: 'marine_product', orchestration_path: 'product' }
         )
-      )
+      ).and_return(double(id: 33))
 
       job.send(:create_product_reply, plan)
     end

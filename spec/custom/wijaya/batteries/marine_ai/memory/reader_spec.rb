@@ -29,6 +29,23 @@ RSpec.describe Marine::Memory::Reader do
                      additional_attributes: { Marine::Memory::Marker::KEY => marker })
   end
 
+  def marked_v2_note(source_conversation, content)
+    start_message = create(:message, conversation: source_conversation, account: account, inbox: inbox,
+                                     sender: contact, message_type: :incoming, private: false,
+                                     content: 'source customer turn')
+    end_message = create(:message, conversation: source_conversation, account: account, inbox: inbox,
+                                   sender: assistant, message_type: :outgoing, private: false,
+                                   content: 'source assistant reply')
+    marker = Marine::Memory::Marker.build_v2(
+      trigger_source: 'idle_timeout', conversation: source_conversation,
+      start_id: start_message.id, end_id: end_message.id,
+      fingerprint: Digest::SHA256.hexdigest("v2-range-#{start_message.id}-#{end_message.id}")
+    )
+    create(:message, conversation: source_conversation, account: account, inbox: inbox, sender: assistant,
+                     message_type: :outgoing, private: true, content: content,
+                     additional_attributes: { Marine::Memory::Marker::KEY => marker })
+  end
+
   it 'reads only trusted marked notes for the same account/contact across conversations in deterministic newest order' do
     prior = create(:conversation, account: account, inbox: inbox, contact: contact)
     older = marked_note(prior, 'Older trusted memory', range_end: 10)
@@ -70,6 +87,20 @@ RSpec.describe Marine::Memory::Reader do
     expect(envelope.scan(/^\d+\./).length).to be <= described_class::MAX_NOTES
     expect(envelope).to include("memory-#{described_class::MAX_NOTES + 1}")
     expect(envelope).not_to include('memory-0-')
+  end
+
+  it 'recalls a trusted v2 note in a new conversation for the same account/contact and rejects malformed v2 provenance' do
+    source = create(:conversation, account: account, inbox: inbox, contact: contact)
+    trusted = marked_v2_note(source, 'Pelanggan menyukai komunikasi ringkas.')
+    malformed = trusted.additional_attributes.fetch(Marine::Memory::Marker::KEY).merge('unexpected' => true)
+    create(:message, conversation: source, account: account, inbox: inbox, sender: assistant,
+                     message_type: :outgoing, private: true, content: 'MALFORMED MEMORY',
+                     additional_attributes: { Marine::Memory::Marker::KEY => malformed })
+
+    envelope = described_class.new(conversation: conversation).advisory_envelope
+
+    expect(envelope).to include('Pelanggan menyukai komunikasi ringkas.')
+    expect(envelope).not_to include('MALFORMED MEMORY')
   end
 
   it 'returns nil safely when there is no trusted memory or querying fails' do
