@@ -199,13 +199,29 @@ RSpec.describe Marine::Backend::CatalogCandidateResolver do
       expect(result.source).to eq(:flow_state)
     end
 
-    it 'never uses the state family alone (no current family and no current child under state)' do
+    it 'reuses a repository-revalidated authoritative saved variant for a natural follow-up' do
+      allow(family_repo).to receive(:resolve_exact_any) do |cands|
+        cands == ['FAM1'] ? { status: :resolved, code: 'FAM1', name: 'Hull' } : { status: :missing }
+      end
+      allow(variant_repo).to receive(:resolve_child_any) do |_family, candidates|
+        candidates == ['SAVED-CHILD'] ? { status: :resolved, code: 'SAVED-CHILD' } : { status: :missing }
+      end
+
+      result = resolver.call(trigger: 'what is the price?', flow_state: active_state(family: 'FAM1', variant: 'SAVED-CHILD'))
+
+      expect(result.status).to eq(:exact_child)
+      expect(result.family_code).to eq('FAM1')
+      expect(result.child_code).to eq('SAVED-CHILD')
+      expect(result.source).to eq(:flow_state)
+    end
+
+    it 'never uses a family-only state as exact identity for a natural follow-up' do
       allow(family_repo).to receive(:resolve_exact_any) do |cands|
         cands == ['FAM1'] ? { status: :resolved, code: 'FAM1', name: 'Hull' } : { status: :missing }
       end
       allow(variant_repo).to receive(:resolve_child_any).and_return(status: :missing)
 
-      result = resolver.call(trigger: 'do you deliver on weekends', flow_state: active_state(family: 'FAM1'))
+      result = resolver.call(trigger: 'what is the price?', flow_state: active_state(family: 'FAM1'))
 
       expect(result.status).to eq(:no_catalog_match)
       expect(result.reason).to eq(:candidate_context_insufficient)

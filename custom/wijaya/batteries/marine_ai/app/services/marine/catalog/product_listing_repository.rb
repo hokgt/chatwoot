@@ -131,8 +131,11 @@ module Marine
         return { status: :missing } if values.empty?
 
         ensure_configured!
-        rows = Marine::Catalog::Connection.select(inferred_item_group_sql(values.length), values)
-        return { status: :missing } if rows.empty?
+        rows = Marine::Catalog::Connection.select(inferred_item_group_sql(values.length, template_only: true), values)
+        if rows.empty?
+          excluded = Marine::Catalog::Connection.select(inferred_item_group_sql(values.length, template_only: false), values)
+          return { status: excluded.empty? ? :missing : :excluded_only }
+        end
         return { status: :ambiguous } if rows.length > MAX_INFERENCE_MATCHES
         return { status: :ambiguous } if rows.any? { |row| Integer(row['display_count']) != 1 }
 
@@ -346,15 +349,16 @@ module Marine
         SQL
       end
 
-      def inferred_item_group_sql(count) # rubocop:disable Metrics/MethodLength -- readable derived VALUES query keeps product conflicts and bound in one SELECT
+      def inferred_item_group_sql(count, template_only:) # rubocop:disable Metrics/MethodLength -- readable derived VALUES query keeps product conflicts and bound in one SELECT
         values = (1..count).map { |index| "($#{index})" }.join(', ')
+        predicate = template_only ? TEMPLATE_LISTING_AUTHORITY_PREDICATE : TOP_LEVEL_AUTHORITY_PREDICATE
         <<~SQL.squish
           SELECT item_code,
                  LOWER(BTRIM(item_group)) AS normalized_group,
                  MIN(BTRIM(item_group)) AS item_group,
                  COUNT(DISTINCT BTRIM(item_group)) AS display_count
           FROM #{Marine::Catalog::Config.qualified_table}
-          WHERE #{TOP_LEVEL_AUTHORITY_PREDICATE}
+          WHERE #{predicate}
             AND COALESCE(BTRIM(item_group), '') <> ''
             AND EXISTS (
               SELECT 1

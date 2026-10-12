@@ -78,6 +78,7 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   # through the existing ProductStateTransition helper (StateTransitionAdapter maps its operation) — never
   # from the untrusted CandidatePlan or any Model 2 / renderer text.
   PRICE_RANGE_INTENT = 'price_range'.freeze
+  STOCK_INTENT = 'stock'.freeze
   STATE_TRANSITION_SCHEMA_VERSION = 'state_transition_v1'.freeze
   STATE_TRANSITION_SOURCE = 'marine_catalog'.freeze
   ProductStateTransition = Marine::Backend::ProductStateTransition
@@ -273,9 +274,13 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   def classify_identity_packet(packet, authorized, resolved, intent, flow_state)
     goals = packet[:response_goals]
     if goals.include?(IDENTITY_ANSWER_GOAL[intent])
-      # In this price_range/stock branch, only accepted price_range carries a family transition;
-      # accepted exact price is handled separately by #evidence_dispatch with family+variant identity.
-      transition = intent == PRICE_RANGE_INTENT ? price_range_transition(resolved, flow_state) : nil
+      # Accepted price_range carries family identity; accepted stock carries the exact repository-
+      # authoritative family+variant identity, just like exact price.
+      transition = if intent == PRICE_RANGE_INTENT
+                     price_range_transition(resolved, flow_state)
+                   elsif intent == STOCK_INTENT
+                     exact_variant_transition(resolved, flow_state, STOCK_INTENT)
+                   end
       terminal(OUTCOME_EVIDENCE_PACKET, REASON_ACCEPTED, authorized, resolved, evidence_packet: packet, proposed_state_transition: transition)
     elsif goals.include?('handoff')
       terminal(OUTCOME_HANDOFF, IDENTITY_UNAVAILABLE_REASON[intent], authorized, resolved, evidence_packet: packet)
@@ -288,6 +293,10 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
   # operation is :update only for the same active family; fresh, expired, and switched-family flows
   # start clean. Blank/malformed identity fails closed to nil, which the customer consumer rejects.
   def exact_price_transition(resolved, flow_state)
+    exact_variant_transition(resolved, flow_state, 'price')
+  end
+
+  def exact_variant_transition(resolved, flow_state, capability)
     operation = price_range_operation(resolved, flow_state)
     family = resolved.family_code.to_s.strip
     variant = resolved.child_code.to_s.strip
@@ -296,7 +305,7 @@ class Marine::Backend::AuthorityCoordinator # rubocop:disable Metrics/ClassLengt
     deep_freeze(
       schema_version: STATE_TRANSITION_SCHEMA_VERSION,
       operation: operation,
-      capability: 'price',
+      capability: capability,
       handoff_required: false,
       authoritative_identity: {
         family_code: family.dup,

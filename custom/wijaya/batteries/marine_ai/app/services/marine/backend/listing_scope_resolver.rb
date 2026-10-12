@@ -39,6 +39,12 @@ class Marine::Backend::ListingScopeResolver
     return result(STATUS_UNAVAILABLE) if inferred[:status] == :unavailable
     return result(STATUS_AMBIGUOUS) if inferred[:status] == :ambiguous
 
+    if inferred[:status] == :excluded_only
+      return result(STATUS_PRODUCT, product: { code: product[:code], name: product[:name] }) if product_match
+
+      return result(STATUS_BROAD)
+    end
+
     inferred_match = inferred[:status] == :resolved
     return result(STATUS_AMBIGUOUS) if product_match && inferred_match
     return result(STATUS_PRODUCT, product: { code: product[:code], name: product[:name] }) if product_match

@@ -591,11 +591,30 @@ RSpec.describe Marine::Backend::AuthorityCoordinator do
       expect(result.proposed_state_transition).to be_nil
     end
 
-    it 'attaches NO transition for a stock identity turn' do
+    it 'attaches a closed, deep-frozen stock transition carrying resolver family+variant identity' do
       allow(resolver).to receive(:call).and_return(resolved(status: :exact_child, child_code: 'FAM1-CHILD'))
       allow(packet_builder).to receive(:build).and_return({ response_goals: %w[answer_stock], evidence_version: 'marine_evidence_v2' }.freeze)
 
-      expect(call(candidate_plan: plan(intents: %w[stock])).proposed_state_transition).to be_nil
+      transition = call(candidate_plan: plan(intents: %w[stock])).proposed_state_transition
+
+      expect(transition).to eq(
+        schema_version: 'state_transition_v1', operation: :start, capability: 'stock',
+        handoff_required: false,
+        authoritative_identity: { family_code: 'FAM1', variant_code: 'FAM1-CHILD', source: 'marine_catalog' }
+      )
+      expect(transition).to be_frozen
+      expect(transition[:authoritative_identity]).to be_frozen
+    end
+
+    it 'uses update only for an active same-family stock identity and starts clean on a switch' do
+      allow(resolver).to receive(:call).and_return(resolved(status: :exact_child, child_code: 'FAM1-CHILD'))
+      allow(packet_builder).to receive(:build).and_return({ response_goals: %w[answer_stock], evidence_version: 'marine_evidence_v2' }.freeze)
+
+      same = call(candidate_plan: plan(intents: %w[stock]), flow_state: { 'status' => 'active', 'validated_family' => 'FAM1' })
+      switched = call(candidate_plan: plan(intents: %w[stock]), flow_state: { 'status' => 'active', 'validated_family' => 'OTHER' })
+
+      expect(same.proposed_state_transition[:operation]).to eq(:update)
+      expect(switched.proposed_state_transition[:operation]).to eq(:start)
     end
 
     it 'attaches NO transition for a product_listing turn (an existing family state stays untouched)' do

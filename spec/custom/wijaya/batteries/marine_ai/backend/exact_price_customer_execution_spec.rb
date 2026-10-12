@@ -118,6 +118,24 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
                 handoff_required: handoff_required, authoritative_identity: identity)
   end
 
+  def stock_transition(operation: :start, family_code: 'BD', variant_code: 'BD-4')
+    deep_freeze(schema_version: 'state_transition_v1', operation: operation, capability: 'stock',
+                handoff_required: false,
+                authoritative_identity: { family_code: family_code, variant_code: variant_code, source: 'marine_catalog' })
+  end
+
+  def stock_packet(family_code: 'BD', variant_code: 'BD-4', stock_fact: nil)
+    stock_fact ||= { status: 'available', source: 'stock_repository', checked_at: '2026-09-30T12:00:00Z' }
+    deep_freeze(
+      evidence_version: 'marine_evidence_v2', response_goals: %w[answer_stock],
+      validated_slots: {
+        product: { code: family_code, source: 'marine_catalog' },
+        variant: { code: variant_code, resolution_status: 'resolved', source: 'marine_catalog', attributes: {} }
+      },
+      facts: { stock: stock_fact }
+    )
+  end
+
   def family_context_packet(family_code: 'BD', listed_code: family_code)
     deep_freeze(
       evidence_version: 'marine_evidence_v2', response_goals: %w[answer_product_information],
@@ -459,22 +477,46 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
       expect(presenter).not_to have_received(:call)
     end
 
-    it 'a non-price_range (stock) deliverable carries NO transition (state untouched for other capabilities)' do
-      accepted = authority_result(intents: %w[stock], evidence_packet: packet(goals: %w[answer_stock], facts: { stock: { status: 'available' } }))
+    it 'requires and threads a stock transition bound to product, variant, and the closed stock fact' do
+      transition = stock_transition
+      accepted = authority_result(intents: %w[stock], evidence_packet: stock_packet,
+                                  proposed_state_transition: transition)
       allow(authority_execution).to receive(:call).and_return(accepted)
       allow(presenter).to receive(:call).and_return(Struct.new(:ok?, :text, :reason).new(true, 'BD-4 tersedia.', :accepted))
 
       result = execution.call
       expect(result).to be_deliverable
-      expect(result.transition).to be_nil
+      expect(result.transition).to equal(transition)
     end
 
-    it 'delivers a stock target only for the exact answer_stock => [:stock] shape' do
-      accepted = authority_result(intents: %w[stock], evidence_packet: packet(goals: %w[answer_stock], facts: { stock: { status: 'available' } }))
-      allow(authority_execution).to receive(:call).and_return(accepted)
-      allow(presenter).to receive(:call).and_return(Struct.new(:ok?, :text, :reason).new(true, 'BD-4 tersedia.', :accepted))
+    it 'fails closed before presentation for missing, mutable, forged, or packet-mismatched stock transitions' do
+      shallow = { schema_version: 'state_transition_v1', operation: :start, capability: 'stock',
+                  handoff_required: false,
+                  authoritative_identity: { family_code: 'BD', variant_code: 'BD-4', source: 'marine_catalog' } }.freeze
+      cases = [
+        [nil, stock_packet],
+        [shallow, stock_packet],
+        [stock_transition(family_code: 'FORGED'), stock_packet],
+        [stock_transition(variant_code: 'FORGED'), stock_packet],
+        [stock_transition, stock_packet(variant_code: 'OTHER')],
+        [deep_freeze(stock_transition.merge(capability: 'price')), stock_packet],
+        [stock_transition, stock_packet(stock_fact: { status: 'available', source: 'stock_repository' })],
+        [stock_transition, stock_packet(stock_fact: { status: 'available', source: 'stock_repository',
+                                                      checked_at: 'not-a-time' })],
+        [stock_transition, stock_packet(stock_fact: { status: 'available', source: 'forged',
+                                                      checked_at: '2026-09-30T12:00:00Z' })],
+        [stock_transition, stock_packet(stock_fact: { status: 'available', source: 'stock_repository',
+                                                      checked_at: '2026-09-30T12:00:00Z', quantity: 3 })]
+      ]
 
-      expect(execution.call).to be_deliverable
+      cases.each do |transition, evidence|
+        allow(authority_execution).to receive(:call).and_return(
+          authority_result(intents: %w[stock], evidence_packet: evidence,
+                           proposed_state_transition: transition)
+        )
+        expect(execution.call).to have_attributes(status: :fallback, reason: :transition_required, transition: nil)
+      end
+      expect(presenter).not_to have_received(:call)
     end
 
     it 'rejects (fallback, presenter untouched) a price_range goal whose facts do not match the closed matrix' do

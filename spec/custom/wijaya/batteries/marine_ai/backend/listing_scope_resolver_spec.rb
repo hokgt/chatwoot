@@ -68,6 +68,26 @@ RSpec.describe Marine::Backend::ListingScopeResolver do
     expect(result.item_group).to eq('Fabric')
   end
 
+  it 'preserves an exact standalone product when template inference only finds excluded rows' do
+    product = { code: 'SYNTHETIC-STANDALONE', name: 'Synthetic Standalone' }
+    allow(repository).to receive(:resolve_top_level_any).and_return(status: :resolved, **product)
+    allow(repository).to receive(:infer_item_group_from_top_level_any).and_return(status: :excluded_only)
+
+    result = resolver.call(trigger: product[:code])
+
+    expect(result.status).to eq(:product)
+    expect(result.product).to eq(product)
+  end
+
+  it 'broadens only when the token matches excluded standalone rows, never narrowing to their group' do
+    allow(repository).to receive(:infer_item_group_from_top_level_any).and_return(status: :excluded_only)
+
+    result = resolver.call(trigger: 'generic products')
+
+    expect(result.status).to eq(:broad)
+    expect(result.item_group).to be_nil
+  end
+
   it 'fails closed for a nonblank trigger with no exact or inferred authority' do
     expect(resolver.call(trigger: 'unknown-category').status).to eq(:ambiguous)
   end

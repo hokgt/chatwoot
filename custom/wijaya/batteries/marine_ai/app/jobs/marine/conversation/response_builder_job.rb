@@ -412,7 +412,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     {
       'validated_family' => family,
       'validated_variant' => variant,
-      'current_intent' => 'price',
+      'current_intent' => transition[:capability],
       'expected_attributes' => [],
       'clarification_kind' => nil,
       'clarification_count' => nil,
@@ -433,7 +433,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       transition[:schema_version] == 'state_transition_v1' &&
       transition[:handoff_required] == false &&
       %i[start update].include?(transition[:operation]) &&
-      %w[family_context price price_range].include?(transition[:capability])
+      %w[family_context price price_range stock].include?(transition[:capability])
   end
 
   def valid_state_transition_identity?(identity, capability)
@@ -442,7 +442,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   end
 
   def state_transition_identity_keys(capability)
-    return %i[family_code source variant_code] if capability == 'price'
+    return %i[family_code source variant_code] if %w[price stock].include?(capability)
 
     %i[family_code source]
   end

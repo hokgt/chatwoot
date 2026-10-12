@@ -131,7 +131,19 @@ class Marine::Backend::CatalogCandidateResolver
     family = revalidated_state_family(state)
     return family if family.is_a?(Result) # unavailable / ambiguous / no_match terminal
 
-    child_under_state(family, candidates)
+    child = child_under_state(family, candidates)
+    return child unless child.status == STATUS_NO_CATALOG_MATCH && state[:variant]
+
+    revalidated_saved_child(family, state[:variant])
+  end
+
+  def revalidated_saved_child(family, variant_code)
+    child = variant_repository.resolve_child_any(family[:code], [variant_code])
+    return unavailable if child[:status] == :unavailable
+    return exact_child(family, child[:code], SOURCE_FLOW_STATE) if child[:status] == :resolved
+    return ambiguous_variant(family, SOURCE_FLOW_STATE) if child[:status] == :ambiguous
+
+    no_match
   end
 
   # The revalidated active-state family as a { code:, name: } Hash, or a terminal Result when the

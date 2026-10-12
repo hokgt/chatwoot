@@ -62,14 +62,14 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
       expect(offering_sql).not_to include('has_variants = true')
     end
 
-    it 'keeps exact top-level identity and Item Group inference on the established broad scope' do
+    it 'keeps exact top-level identity broad but derives listing inference from templates only' do
       repository.exact_top_level('Standalone Product')
-      repository.infer_item_group_from_top_level_any(['standalone'])
+      repository.infer_item_group_from_top_level_any(['generic'])
       exact_sql, inference_sql = captured.map { |call| call[:sql] }
 
       expect(exact_sql).to include(described_class::TOP_LEVEL_AUTHORITY_PREDICATE)
-      expect(inference_sql).to include(described_class::TOP_LEVEL_AUTHORITY_PREDICATE)
-      expect([exact_sql, inference_sql]).to all(satisfy { |sql| sql.exclude?('has_variants = true') })
+      expect(exact_sql).not_to include('has_variants = true')
+      expect(inference_sql).to include(described_class::TEMPLATE_LISTING_AUTHORITY_PREDICATE)
     end
   end
 
@@ -330,7 +330,29 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
       expect(captured.first[:sql]).to include('LOWER(BTRIM(item_name)) IN (LOWER($1))')
     end
 
-    it 'infers one Item Group when all exact token-boundary product matches converge' do
+    it 'returns excluded_only when a token matches only standalone non-listable rows' do
+      calls = 0
+      allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
+        captured << { sql: sql, params: params }
+        calls += 1
+        if calls == 1
+          []
+        else
+          [{ 'item_code' => 'STANDALONE-1', 'normalized_group' => 'group-a',
+             'item_group' => 'Group A', 'display_count' => '1' }]
+        end
+      end
+
+      result = repository.infer_item_group_from_top_level_any(['generic'])
+
+      expect(result).to eq(status: :excluded_only)
+      expect(captured.length).to eq(2)
+      expect(captured.first[:sql]).to include(described_class::TEMPLATE_LISTING_AUTHORITY_PREDICATE)
+      expect(captured.last[:sql]).to include(described_class::TOP_LEVEL_AUTHORITY_PREDICATE)
+      expect(captured.last[:sql]).not_to include('has_variants = true')
+    end
+
+    it 'infers one Item Group when all exact token-boundary template matches converge' do
       allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
         captured << { sql: sql, params: params }
         [{ 'item_code' => 'KAIN-1', 'normalized_group' => 'fabric', 'item_group' => 'Fabric', 'display_count' => '1' },
@@ -340,7 +362,7 @@ RSpec.describe Marine::Catalog::ProductListingRepository, type: :model do
       result = repository.infer_item_group_from_top_level_any(['kain'])
       expect(result).to eq(status: :resolved, item_group: 'Fabric')
       expect(captured.first[:params]).to eq(['kain'])
-      expect(captured.first[:sql]).to include(described_class::TOP_LEVEL_AUTHORITY_PREDICATE)
+      expect(captured.first[:sql]).to include(described_class::TEMPLATE_LISTING_AUTHORITY_PREDICATE)
       expect(captured.first[:sql]).to match(/\ASELECT\b/i)
       expect(captured.first[:sql]).to include('FROM (VALUES ($1)) AS candidates(value)')
       expect(Marine::Catalog::Connection.single_select?(captured.first[:sql])).to be(true)

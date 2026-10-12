@@ -61,11 +61,13 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
   STATE_TRANSITION_IDENTITY_KEYS = {
     'family_context' => %i[family_code source].freeze,
     'price_range' => %i[family_code source].freeze,
-    'price' => %i[family_code variant_code source].freeze
+    'price' => %i[family_code variant_code source].freeze,
+    'stock' => %i[family_code variant_code source].freeze
   }.freeze
   STATE_TRANSITION_GOALS = {
     RANGE_GOAL => 'price_range',
-    PRICE_GOAL => 'price'
+    PRICE_GOAL => 'price',
+    'answer_stock' => 'stock'
   }.freeze
   FAMILY_CONTEXT_GOALS = %w[answer_product_listing answer_product_information].freeze
   CANDIDATE_PLAN_KEYS = %i[
@@ -194,9 +196,20 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
                        packet.dig(:facts, :price, :canonical, :variant_code)]
       return matching_codes?(family_codes) && matching_codes?(variant_codes)
     end
+    if capability == 'stock'
+      family_codes = [identity[:family_code], packet.dig(:validated_slots, :product, :code)]
+      variant_codes = [identity[:variant_code], packet.dig(:validated_slots, :variant, :code)]
+      return matching_codes?(family_codes) && matching_codes?(variant_codes) && valid_stock_fact?(packet.dig(:facts, :stock))
+    end
     return family_context_bound?(identity, packet) if capability == 'family_context'
 
     true
+  end
+
+  def valid_stock_fact?(fact)
+    fact.is_a?(Hash) && fact.keys.sort == %i[checked_at source status] &&
+      %w[available unavailable].include?(fact[:status]) && fact[:source] == 'stock_repository' &&
+      fact[:checked_at].is_a?(String) && fact[:checked_at].match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\z/)
   end
 
   def family_context_bound?(identity, packet)
@@ -245,7 +258,7 @@ class Marine::Backend::ExactPriceCustomerExecution # rubocop:disable Metrics/Cla
     return false unless identity.keys.sort == expected_keys.sort
     return false unless valid_code?(identity[:family_code]) && identity[:source] == STATE_TRANSITION_SOURCE
 
-    capability != 'price' || valid_code?(identity[:variant_code])
+    %w[price stock].exclude?(capability) || valid_code?(identity[:variant_code])
   end
 
   def valid_code?(value)

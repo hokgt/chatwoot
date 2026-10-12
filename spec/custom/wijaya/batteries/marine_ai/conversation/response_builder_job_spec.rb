@@ -437,6 +437,100 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       end
     end
 
+    describe 'accepted stock family+variant transition at finalize' do
+      let(:stock_text) { 'BD-4 saat ini tersedia.' }
+
+      def stock_transition(operation: :start, family_code: 'BD', variant_code: 'BD-4')
+        identity = { family_code: family_code, variant_code: variant_code, source: 'marine_catalog' }.freeze
+        { schema_version: 'state_transition_v1', operation: operation, capability: 'stock',
+          handoff_required: false, authoritative_identity: identity }.freeze
+      end
+
+      def stock_transition_result(value = stock_transition)
+        Marine::Backend::ExactPriceCustomerExecution::Result.new(
+          status: :deliverable, reason: :accepted, text: stock_text, transition: value
+        ).freeze
+      end
+
+      it 'atomically persists authoritative stock identity, clears stale clarification, and replays once' do
+        store = Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload)
+        store.start!('validated_family' => 'BD', 'validated_variant' => 'BD-OLD', 'current_intent' => 'price',
+                     'expected_attributes' => %w[size], 'clarification_kind' => 'variant',
+                     'clarification_count' => 2, 'requested_intents' => %w[price stock])
+        allow(exact_price_attempt).to receive(:call).and_return(stock_transition_result(stock_transition(operation: :update)))
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(product_state).to include('validated_family' => 'BD', 'validated_variant' => 'BD-4',
+                                         'current_intent' => 'stock', 'version' => 2)
+        expect(product_state['expected_attributes']).to eq([])
+        expect(product_state.keys).not_to include('clarification_kind', 'clarification_count', 'requested_intents')
+        expect(product_state.to_s).not_to match(/quantity|warehouse|location|actual_qty/i)
+        expect(conversation.messages.outgoing.where(private: false).pluck(:content)).to eq([stock_text])
+        expect(usage_count).to eq(1)
+      end
+
+      it 'starts clean on a switched family and never retains the stale variant/catalog markers' do
+        store = Marine::Catalog::ProductFlowStateStore.new(conversation: conversation.reload)
+        store.start!('validated_family' => 'OLD', 'validated_variant' => 'OLD-1', 'current_intent' => 'price')
+        store.update!('catalog_sent' => true, 'catalog_document_id' => 44, 'catalog_message_id' => 55)
+        allow(exact_price_attempt).to receive(:call).and_return(stock_transition_result)
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(product_state).to include('validated_family' => 'BD', 'validated_variant' => 'BD-4',
+                                         'current_intent' => 'stock', 'version' => 1)
+        expect(product_state.keys).not_to include('catalog_sent', 'catalog_document_id', 'catalog_message_id')
+      end
+
+      it 'lets a natural price follow-up reuse and revalidate the accepted stock variant, while family-only state cannot' do
+        allow(exact_price_attempt).to receive(:call).and_return(stock_transition_result)
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        family_repository = instance_double(Marine::Catalog::ProductFamilyRepository)
+        variant_repository = instance_double(Marine::Catalog::VariantRepository)
+        allow(family_repository).to receive(:resolve_exact_any) do |candidates|
+          candidates == ['BD'] ? { status: :resolved, code: 'BD', name: 'Synthetic family' } : { status: :missing }
+        end
+        allow(variant_repository).to receive(:resolve_child_any) do |_family, candidates|
+          candidates == ['BD-4'] ? { status: :resolved, code: 'BD-4' } : { status: :missing }
+        end
+        resolver = Marine::Backend::CatalogCandidateResolver.new(
+          family_repository: family_repository, variant_repository: variant_repository
+        )
+
+        continued = resolver.call(trigger: 'what is the price?', flow_state: product_state)
+        family_only = product_state.except('validated_variant')
+        unresolved = resolver.call(trigger: 'what is the price?', flow_state: family_only)
+
+        expect(continued).to have_attributes(status: :exact_child, family_code: 'BD', child_code: 'BD-4', source: :flow_state)
+        expect(unresolved.status).to eq(:no_catalog_match)
+
+        price_text = 'Harga synthetic variant tersedia.'
+        price_transition = {
+          schema_version: 'state_transition_v1', operation: :update, capability: 'price', handoff_required: false,
+          authoritative_identity: { family_code: continued.family_code, variant_code: continued.child_code,
+                                    source: 'marine_catalog' }.freeze
+        }.freeze
+        allow(exact_price_attempt).to receive(:call) do
+          resolved = resolver.call(trigger: 'what is the price?', flow_state: product_state)
+          expect(resolved).to have_attributes(status: :exact_child, family_code: 'BD', child_code: 'BD-4', source: :flow_state)
+          Marine::Backend::ExactPriceCustomerExecution::Result.new(
+            status: :deliverable, reason: :accepted, text: price_text, transition: price_transition
+          ).freeze
+        end
+        follow_up = create(:message, conversation: conversation, message_type: :incoming, content: 'what is the price?')
+
+        described_class.perform_now(conversation, assistant, follow_up.id)
+
+        expect(conversation.messages.outgoing.where(private: false).pluck(:content)).to eq([stock_text, price_text])
+        expect(product_state).to include('validated_family' => 'BD', 'validated_variant' => 'BD-4',
+                                         'current_intent' => 'price', 'version' => 2)
+        expect(usage_count).to eq(2)
+      end
+    end
+
     describe 'exact-price family+variant transition at finalize' do
       let(:exact_text) { 'Harga BD-4 adalah Rp 12.500 per yard.' }
 
