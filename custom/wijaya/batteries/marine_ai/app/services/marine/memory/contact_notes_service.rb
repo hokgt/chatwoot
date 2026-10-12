@@ -102,7 +102,7 @@ class Marine::Memory::ContactNotesService
   def idle?
     latest = conversation.messages.where(private: false, message_type: PUBLIC_TYPES)
                          .reorder(created_at: :desc, id: :desc).first
-    latest.present? && latest.created_at <= assistant.memory_idle_timeout_hours.hours.ago
+    latest.present? && latest.created_at <= assistant.memory_idle_duration.ago
   end
 
   def active_handoff?

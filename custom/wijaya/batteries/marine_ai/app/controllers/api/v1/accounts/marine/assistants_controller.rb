@@ -43,7 +43,7 @@ class Api::V1::Accounts::Marine::AssistantsController < Api::V1::Accounts::BaseC
   end
 
   def update
-    @assistant.update!(assistant_params)
+    @assistant.update!(update_params)
     render json: @assistant
   end
 
@@ -78,6 +78,32 @@ class Api::V1::Accounts::Marine::AssistantsController < Api::V1::Accounts::BaseC
                                                                     :resolution_message, :instructions, :temperature,
                                                                     :feature_faq, :feature_memory, :feature_contact_attributes,
                                                                     :language, :memory_idle_timeout_hours])
+  end
+
+  # The UI sends the complete assistant config on every Settings save, but strong params
+  # correctly drops the operator-only keys (they are never exposed or permitted). This small
+  # server-side preservation merge copies the PERSISTED operator key into the incoming
+  # permitted config only when it already exists, so a normal save cannot destroy an
+  # operator-set override. Incoming API attempts to create or change the key are dropped by
+  # the permit list and never merged: if the key does not already exist, nothing is added.
+  # Create is untouched (a new assistant cannot inherit or receive the key).
+  #
+  # Presence is checked with key?(:config), NOT blank?: an API payload sending `config: {}` (or
+  # nil) is a PRESENT key whose merge must still preserve the persisted operator override —
+  # blank? would return the params untouched and let the empty hash overwrite the whole config.
+  # When the config key is absent entirely, params are returned unchanged (config not updated).
+  OPERATOR_ONLY_CONFIG_KEYS = %w[memory_idle_timeout_test_minutes].freeze
+
+  def update_params
+    permitted = assistant_params
+    return permitted unless permitted.key?(:config)
+
+    persisted_config = @assistant.config.to_h
+    preserved = persisted_config.slice(*OPERATOR_ONLY_CONFIG_KEYS)
+    return permitted if preserved.empty?
+
+    permitted[:config] = permitted[:config].to_h.merge(preserved)
+    permitted
   end
 
   def playground_params

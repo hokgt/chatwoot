@@ -577,6 +577,7 @@ require_file custom/wijaya/batteries/marine_ai/patch/apply_patches.py
 require_file spec/custom/wijaya/batteries/marine_ai/memory/contact_notes_service_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/memory/checkpoint_job_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/memory/idle_summary_job_spec.rb
+require_file spec/custom/wijaya/batteries/marine_ai/memory/idle_timeout_override_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/memory/idle_memory_redesign_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/memory/signal_spec.rb
 require_file spec/custom/wijaya/batteries/marine_ai/memory/reader_spec.rb

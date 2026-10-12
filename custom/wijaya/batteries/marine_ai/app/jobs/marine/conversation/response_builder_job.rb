@@ -974,7 +974,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # this delayed job harmless: shared eligibility rechecks the latest revision and idle age.
   def schedule_idle_summary
     Marine::Memory::IdleSummaryJob
-      .set(wait: @assistant.memory_idle_timeout_hours.hours)
+      .set(wait: @assistant.memory_idle_duration)
       .perform_later(@conversation.id, @assistant.id, @trigger_message.id)
   end
 

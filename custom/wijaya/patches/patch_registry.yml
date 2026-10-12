@@ -1813,6 +1813,7 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/memory/checkpoint_job_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/memory/idle_summary_job_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/memory/idle_memory_redesign_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/memory/idle_timeout_override_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/memory/signal_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/memory/reader_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/memory/schedule_spec.rb

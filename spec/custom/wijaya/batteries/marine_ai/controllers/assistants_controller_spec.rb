@@ -291,6 +291,78 @@ RSpec.describe 'Api::V1::Accounts::Marine::Assistants', type: :request do
         expect(response).to have_http_status(:success)
         expect(assistant.reload.config['language']).to eq('id')
       end
+
+      # Operator-only Development override key memory_idle_timeout_test_minutes: never exposed or
+      # permitted. The API must never create it, never change it, and must preserve an
+      # operator-set value across normal Settings saves.
+      it 'cannot create the operator-only idle override through the API' do
+        put "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}",
+            params: { assistant: { config: { language: 'id', memory_idle_timeout_test_minutes: 5 } } },
+            headers: admin.create_new_auth_token, as: :json
+
+        expect(response).to have_http_status(:success)
+        reloaded = assistant.reload
+        expect(reloaded.config).not_to have_key('memory_idle_timeout_test_minutes')
+        expect(reloaded.memory_idle_duration).to eq(2.hours)
+      end
+
+      it 'cannot change an existing operator-only idle override through the API' do
+        assistant.update!(config: assistant.config.merge('memory_idle_timeout_test_minutes' => 60))
+
+        put "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}",
+            params: { assistant: { config: { language: 'id', memory_idle_timeout_test_minutes: 5 } } },
+            headers: admin.create_new_auth_token, as: :json
+
+        expect(response).to have_http_status(:success)
+        reloaded = assistant.reload
+        expect(reloaded.config['memory_idle_timeout_test_minutes']).to eq(60)
+        expect(reloaded.memory_idle_duration).to eq(60.minutes)
+        expect(reloaded.config['language']).to eq('id')
+      end
+
+      it 'preserves an existing operator-only idle override when unrelated permitted settings update' do
+        assistant.update!(config: assistant.config.merge('memory_idle_timeout_test_minutes' => 5))
+
+        put "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}",
+            params: { assistant: { config: { language: 'en', memory_idle_timeout_hours: '3' } } },
+            headers: admin.create_new_auth_token, as: :json
+
+        expect(response).to have_http_status(:success)
+        reloaded = assistant.reload
+        expect(reloaded.config['memory_idle_timeout_test_minutes']).to eq(5)
+        expect(reloaded.config['memory_idle_timeout_hours']).to eq('3')
+        expect(reloaded.memory_idle_duration).to eq(5.minutes)
+      end
+
+      # Regression: `config: {}` / `config: nil` is a PRESENT (but empty) config key, not an
+      # absent one. An empty-but-present config must still preserve the persisted operator-only
+      # override — the old blank? guard returned the params untouched and let the empty hash
+      # overwrite the whole config, silently deleting the operator override.
+      it 'preserves an existing operator-only idle override when config is sent as an empty hash' do
+        assistant.update!(config: assistant.config.merge('memory_idle_timeout_test_minutes' => 5))
+
+        put "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}",
+            params: { assistant: { config: {} } },
+            headers: admin.create_new_auth_token, as: :json
+
+        expect(response).to have_http_status(:success)
+        reloaded = assistant.reload
+        expect(reloaded.config['memory_idle_timeout_test_minutes']).to eq(5)
+        expect(reloaded.memory_idle_duration).to eq(5.minutes)
+      end
+
+      it 'preserves an existing operator-only idle override when config is sent as nil' do
+        assistant.update!(config: assistant.config.merge('memory_idle_timeout_test_minutes' => 5))
+
+        put "/api/v1/accounts/#{account.id}/marine/assistants/#{assistant.id}",
+            params: { assistant: { config: nil } },
+            headers: admin.create_new_auth_token, as: :json
+
+        expect(response).to have_http_status(:success)
+        reloaded = assistant.reload
+        expect(reloaded.config['memory_idle_timeout_test_minutes']).to eq(5)
+        expect(reloaded.memory_idle_duration).to eq(5.minutes)
+      end
     end
 
     context 'when a plain agent reads the shared assistant show (must stay open)' do
