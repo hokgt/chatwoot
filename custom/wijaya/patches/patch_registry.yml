@@ -1646,6 +1646,17 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/services/marine/memory/reader.rb
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/memory/idle_summary_job.rb
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/memory/checkpoint_job.rb
+      # Trusted-memory re-engagement (returning customer, fresh native messaging window, pure
+      # greeting, single clear remembered topic): structured pure-greeting classifier, trusted
+      # topic projection, provider generator, separate semantic verifier, and the fail-closed
+      # composer at the Agent::Runner presentation seam (WIJAYA_CUSTOM memory-reengagement
+      # marker). Reader gains trusted_note_entries (same provenance as advisory_envelope);
+      # ContextBuilder exposes the fresh-window flag on its closed Result. No core edits.
+      - custom/wijaya/batteries/marine_ai/app/services/marine/memory/reengagement/greeting_classifier.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/memory/reengagement/topic_extractor.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/memory/reengagement/generator.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/memory/reengagement/verifier.rb
+      - custom/wijaya/batteries/marine_ai/app/services/marine/memory/reengagement/composer.rb
       - custom/wijaya/batteries/marine_ai/patch/apply_patches.py
       - custom/wijaya/batteries/marine_ai/app/models/marine/custom_tool.rb
       - custom/wijaya/batteries/marine_ai/app/models/concerns/marine/toolable.rb
@@ -1817,6 +1828,11 @@ patches:
       - spec/custom/wijaya/batteries/marine_ai/memory/signal_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/memory/reader_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/memory/schedule_spec.rb
+      # Trusted-memory re-engagement contract: composer eligibility/gates, structured
+      # envelope parsing, and the Agent::Runner fresh-window gating.
+      - spec/custom/wijaya/batteries/marine_ai/memory/reengagement_composer_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/memory/reengagement_contracts_spec.rb
+      - spec/custom/wijaya/batteries/marine_ai/memory/reengagement_runner_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/conversation/memory_context_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/hooks_spec.rb
       - spec/custom/wijaya/batteries/marine_ai/controllers/tasks_controller_spec.rb

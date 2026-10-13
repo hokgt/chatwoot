@@ -32,6 +32,9 @@ class Marine::Agent::Runner
   PATH_RETRIEVAL = 'retrieval'.freeze
   PATH_SCENARIO_RETRIEVAL = 'scenario_retrieval'.freeze
   PATH_PRODUCT = 'product'.freeze
+  # Trusted-memory re-engagement presentation path (returning customer, fresh window, pure
+  # greeting, one clear remembered topic, provider-generated + verified wording).
+  PATH_MEMORY_REENGAGEMENT = 'memory_reengagement'.freeze
 
   # Gate G — fail-closed FAQ/KB precedence over product orchestration. The untrusted LLM
   # intent extractor can wrongly classify a turn as product_related; that error must never
@@ -63,8 +66,7 @@ class Marine::Agent::Runner
     # never silently bypass the domain-boundary classifier for a later unrelated turn if this Runner
     # instance is ever reused (a fresh instance is created per call today; this keeps that invariant
     # explicit and safe regardless of caller).
-    @faq_precedence_hit = false
-    @faq_precedence_result = nil
+    reset_faq_precedence
     context = canonical_context
     history = context ? context.history : Array(message_history)
     trigger = context ? context.trigger : additional_message
@@ -77,11 +79,16 @@ class Marine::Agent::Runner
     orchestrated = pre_rag_payload(context, query, history)
     return orchestrated if orchestrated
 
+    # WIJAYA_CUSTOM_START: memory-reengagement
+    reengaged = memory_reengagement_payload(context)
+    return reengaged if reengaged
+
+    # WIJAYA_CUSTOM_END: memory-reengagement
+
     scenario = select_scenario(query, history)
-    tool_slugs = resolved_tool_slugs(scenario)
 
     payload = generated_response(context, history, trigger, advisory_memory)
-    enriched = preserve_playground_state(enrich(payload, scenario, tool_slugs))
+    enriched = preserve_playground_state(enrich(payload, scenario, resolved_tool_slugs(scenario)))
 
     log_result(enriched)
     enriched
@@ -90,6 +97,13 @@ class Marine::Agent::Runner
   end
 
   private
+
+  # Per-run Gate-G reset (see #run): a reused Runner instance must never inherit a prior
+  # turn's EXACT approved-FAQ hit into the domain-boundary bypass or the RAG reuse.
+  def reset_faq_precedence
+    @faq_precedence_hit = false
+    @faq_precedence_result = nil
+  end
 
   attr_reader :assistant, :conversation, :source, :state_token
 
@@ -101,6 +115,50 @@ class Marine::Agent::Runner
     return nil unless message && conversation
 
     Marine::Conversation::ContextBuilder.new(conversation: conversation, trigger_message: message).build
+  end
+
+  # The trusted-memory re-engagement payload (see the WIJAYA_CUSTOM seam in #run). Cheap
+  # structural gates first; the semantic work (pure-greeting proof, single-topic projection,
+  # catalog product revalidation, dynamic generation, and every safety gate) lives in the
+  # dedicated composer. Fail closed to nil on any error, preserving the generic path.
+  def memory_reengagement_payload(context)
+    return nil unless reengagement_eligible?(context)
+
+    result = Marine::Memory::Reengagement::Composer.new(account: product_account).compose(
+      conversation: conversation, trigger: context.trigger, configured_language: configured_reply_language
+    )
+    return nil if result.blank?
+
+    log_event('memory.reengagement', conversation_id: conversation_id, language: result.language)
+    {
+      'response' => result.text,
+      'action' => 'reply',
+      'agent_name' => assistant.name,
+      'source_type' => 'marine_memory_reengagement',
+      'orchestration_path' => PATH_MEMORY_REENGAGEMENT
+    }
+  rescue StandardError
+    nil
+  end
+
+  # The structural eligibility gates for trusted-memory re-engagement: trigger-bound with a
+  # canonical context, a FRESH native messaging window (returning customer; within-window
+  # repeats stay follow-ups, so re-engagement happens at most once per interaction window
+  # with no new persisted state), no exact approved-FAQ precedence, and no still-active
+  # product flow the remembered topic could conflict with.
+  def reengagement_eligible?(context)
+    context.present? && conversation.present? && context.opening? && context.fresh_window? &&
+      @faq_precedence_result.blank? && !active_product_flow?
+  end
+
+  # A still-active product flow means the customer is mid-flow; a remembered topic must not
+  # surface through the re-engagement path while that validated flow is live. Read-only
+  # planning snapshot; never mutated here.
+  def active_product_flow?
+    flow = product_flow
+    flow.is_a?(Hash) && flow['status'] == Marine::Catalog::ProductFlowStateStore::STATUS_ACTIVE
+  rescue StandardError
+    true
   end
 
   # Advisory memory is allowed only at the non-authoritative response-generation

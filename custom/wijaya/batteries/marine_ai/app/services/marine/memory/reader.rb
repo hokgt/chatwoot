@@ -17,6 +17,21 @@ class Marine::Memory::Reader
     @conversation = conversation
   end
 
+  # Structured trusted-note entries (newest first) for the trusted-memory re-engagement
+  # projection: per-note bounded content plus the note created_at, through the SAME
+  # trusted provenance query and Marker validation as #advisory_envelope. Advisory-only,
+  # never product authority; fails closed to an empty list.
+  def trusted_note_entries
+    return [] unless memory_enabled?
+
+    trusted_notes.filter_map do |message|
+      content = message.content.to_s.strip.first(MAX_NOTE_CHARS)
+      content.blank? ? nil : { content: content, created_at: message.created_at }
+    end
+  rescue StandardError
+    []
+  end
+
   def advisory_envelope
     return nil unless memory_enabled?
 
