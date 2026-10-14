@@ -1041,6 +1041,8 @@ patches:
       and Marine Terminal/Circuit human handoff without Chatwoot Hub, Abacus,
       premium license, enterprise plan, or captain_integration gates.
     custom_files:
+      # Current-state operational and architecture documentation for the Marine battery.
+      - docs/custom/marine-ai-current-system-architecture.md
       - custom/wijaya/batteries/marine_ai/loader.rb
       - custom/wijaya/batteries/marine_ai/app/models/marine/assistant.rb
       - custom/wijaya/batteries/marine_ai/app/models/marine/document.rb
