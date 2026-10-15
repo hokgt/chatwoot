@@ -107,6 +107,16 @@ cd "$REPO_ROOT"
 BASE_COMPOSE="${MARINE_DEPLOY_BASE_COMPOSE:-$REPO_ROOT/docker-compose.deploy.yaml}"
 CATALOG_OVERLAY="${MARINE_DEPLOY_CATALOG_OVERLAY:-$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml}"
 SOP_OVERLAY="${MARINE_DEPLOY_SOP_OVERLAY:-$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml}"
+SOP_SANDBOX_GATE="$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy/sop_sandbox_gate.sh"
+
+# Blocker 3 (final independent review): the immutable image ID of the SOP
+# derivative verified BEFORE recreation (distinct from the app image ID, matching
+# OCI provenance labels, and a nonempty embedded /app/.git_sha read from the ID
+# itself, never from the mutable tag). The pre-image sandbox gate and compose up
+# are both pinned to this exact ID (exported as MARINE_SOP_IMAGE, overriding any
+# operator-provided tag), so the gate, the recreation and every post-runtime
+# check run the SAME immutable image content — no tag-retarget TOCTOU remains.
+SOP_VERIFIED_IMAGE_ID=''
 
 # ---------------------------------------------------------------------------
 # Argument parsing — strict whitelist, no generic passthrough.
@@ -215,6 +225,12 @@ validate_overlay_files() {
     if grep -q 'marine_catalog_ro_password' "$SOP_OVERLAY" 2>/dev/null; then
       die "SOP worker overlay must not mount the catalog secret"
     fi
+    # Blocker 2: the runtime sandbox gate must be tracked in the repo, and the overlay
+    # must never disable the child sandbox via the test-only opt-out.
+    [[ -s "$SOP_SANDBOX_GATE" ]] || die "SOP sandbox runtime gate script is missing or empty"
+    if grep -q 'MARINE_SOP_SANDBOX_TEST_ONLY' "$SOP_OVERLAY"; then
+      die "SOP worker overlay must not set the sandbox test-only opt-out"
+    fi
   fi
   ok "compose overlays resolved (catalog mandatory$([[ "$WITH_SOP" -eq 1 ]] && echo ', sop enabled'))"
 }
@@ -301,23 +317,37 @@ preflight() {
 # 2) Image safety — images must already exist locally (no build).
 # ---------------------------------------------------------------------------
 validate_sop_image_provenance_before_recreate() {
-  local json="$1" image app_image expected_source expected_base image_id app_image_id image_source image_base image_role
+  local json="$1" image app_image expected_source expected_base image_id app_image_id image_source image_base image_role embedded_sha
   image="$(jq -r '.services["marine_sop_worker"].image // empty' <<<"$json")"
   app_image="$(jq -r '.services.rails.image // empty' <<<"$json")"
   expected_source="$(jq -r --arg k "$SOP_SOURCE_LABEL" '.services["marine_sop_worker"].labels[$k] // empty' <<<"$json")"
   expected_base="$(jq -r --arg k "$SOP_BASE_IMAGE_LABEL" '.services["marine_sop_worker"].labels[$k] // empty' <<<"$json")"
   image_id="$("$DOCKER" image inspect --format '{{.Id}}' "$image" 2>/dev/null || true)"
   app_image_id="$("$DOCKER" image inspect --format '{{.Id}}' "$app_image" 2>/dev/null || true)"
-  image_source="$("$DOCKER" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image" 2>/dev/null || true)"
-  image_base="$("$DOCKER" image inspect --format '{{ index .Config.Labels "com.wijaya.chatwoot.base-image" }}' "$image" 2>/dev/null || true)"
-  image_role="$("$DOCKER" image inspect --format '{{ index .Config.Labels "com.wijaya.chatwoot.role" }}' "$image" 2>/dev/null || true)"
+  # OCI source/base/role labels are inspected from the EXACT resolved
+  # immutable image ID ($image_id), never the mutable tag: after tag->ID
+  # resolution a retagged/aliased image cannot smuggle provenance past this
+  # gate.
+  image_source="$("$DOCKER" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_id" 2>/dev/null || true)"
+  image_base="$("$DOCKER" image inspect --format '{{ index .Config.Labels "com.wijaya.chatwoot.base-image" }}' "$image_id" 2>/dev/null || true)"
+  image_role="$("$DOCKER" image inspect --format '{{ index .Config.Labels "com.wijaya.chatwoot.role" }}' "$image_id" 2>/dev/null || true)"
 
   [[ -n "$image_id" && -n "$app_image_id" ]] || die "SOP/app image identity could not be resolved before recreation"
   [[ "$image_id" != "$app_image_id" ]] || die "marine_sop_worker image resolves to the plain app image ID"
   [[ "$image_source" == "$expected_source" ]] || die "SOP image source label does not match resolved Compose provenance"
   [[ "$image_base" == "$expected_base" ]] || die "SOP image base label does not match resolved Compose provenance"
   [[ "$image_role" == "$SOP_ROLE" ]] || die "SOP image role label does not identify the dedicated worker"
-  ok "SOP derivative image identity + OCI provenance verified before recreation"
+
+  # Blocker 3: read /app/.git_sha from the EXACT resolved immutable image ID
+  # (never the mutable tag) inside an ephemeral --network none container, and
+  # require it to be nonempty and byte-identical to the expected full SHA. Only
+  # then is the ID remembered as the verified ID later pinned for the
+  # pre-image gate + compose up + post-runtime checks.
+  embedded_sha="$("$DOCKER" run --rm --network none --entrypoint cat "$image_id" /app/.git_sha 2>/dev/null | tr -d '[:space:]' || true)"
+  [[ -n "$embedded_sha" ]] || die "SOP derivative image embeds no readable /app/.git_sha (provenance binding failed)"
+  [[ "$embedded_sha" == "$expected_source" ]] || die "SOP image embedded /app/.git_sha does not match the configured source revision"
+  SOP_VERIFIED_IMAGE_ID="$image_id"
+  ok "SOP derivative image identity + OCI labels + embedded .git_sha verified (immutable image ID bound)"
 }
 
 validate_images_present() {
@@ -331,6 +361,34 @@ validate_images_present() {
     validate_sop_image_provenance_before_recreate "$json"
   fi
   ok "target service images present locally"
+}
+
+# ---------------------------------------------------------------------------
+# 2b) Pre-image sandbox gate — must pass BEFORE any `compose up`.
+# ---------------------------------------------------------------------------
+# Blocker 2: the SAME tracked in-container gate script must pass inside an
+# EPHEMERAL container (`docker run --rm --network none`) of the EXACT target
+# SOP derivative image BEFORE any `compose up` recreates services. This proves
+# the fail-closed sandbox contract of the image that is ABOUT to be deployed,
+# not only the one already running. A failed pre-image gate aborts the deploy
+# with ZERO `compose up` invocations (proven by the mocked deploy tests).
+gate_sop_sandbox_pre_image() {
+  local json="$1" image raw verdict
+  [[ "$WITH_SOP" -eq 1 ]] || return 0
+  target_selected marine_sop_worker || return 0
+  image="$(jq -r '.services["marine_sop_worker"].image // empty' <<<"$json")"
+  [[ -n "$image" ]] || die "marine_sop_worker has no resolved image for the pre-image sandbox gate"
+  # Blocker 3: the gate must run the EXACT verified immutable image ID (the
+  # pinned config never resolves the mutable tag again after verification).
+  [[ -n "${SOP_VERIFIED_IMAGE_ID:-}" ]] || die "pre-image SOP sandbox gate requires the verified immutable image ID"
+  [[ "$image" == "$SOP_VERIFIED_IMAGE_ID" ]] \
+    || die "pre-image SOP sandbox gate is not bound to the verified immutable image ID"
+  [[ -s "$SOP_SANDBOX_GATE" ]] || die "SOP sandbox gate script is missing or empty"
+  raw="$("$DOCKER" run --rm --network none -i --entrypoint sh "$image" -s <"$SOP_SANDBOX_GATE" 2>/dev/null         || true)"
+  verdict="$(parse_sop_selftest_verdict "$raw")"
+  [[ -n "$verdict" ]] || die "pre-image SOP sandbox gate emitted no sentinel"
+  [[ "$verdict" == 'PASS' ]] || die "pre-image SOP sandbox gate failed on the exact target image (env allowlist / workspace isolation / decoy+symlink+socket denial / exec-target denial / real OCR parsers)"
+  ok "marine_sop_worker pre-image sandbox gate PASSED (ephemeral --network none container of the exact target image, before compose up)"
 }
 
 # ---------------------------------------------------------------------------
@@ -409,6 +467,67 @@ gate_sop_runtime_provenance() {
   ok "marine_sop_worker runtime source/image/overlay provenance and SOP binaries agree"
 }
 
+# Blocker 2 — runtime sandbox gate: prove the fail-closed Landlock+seccomp contract
+# inside the running worker. The tracked in-container script plants only synthetic
+# randomized canaries (cleaned up on exit) and prints a single anchored verdict
+# line; no paths, argv, env values or document content are ever surfaced. The
+# same gate already had to pass PRE-IMAGE (gate_sop_sandbox_pre_image) before
+# compose up; this post-start gate re-proves it inside the running container.
+gate_sop_sandbox_contract() {
+  [[ "$WITH_SOP" -eq 1 ]] || return 0
+  local cid raw verdict
+  cid="$(container_id marine_sop_worker)"
+  [[ -n "$cid" ]] || die "marine_sop_worker container not running for sandbox gate"
+  [[ -s "$SOP_SANDBOX_GATE" ]] || die "SOP sandbox runtime gate script is missing or empty"
+  raw="$("$DOCKER" exec -i "$cid" sh -s <"$SOP_SANDBOX_GATE" 2>/dev/null || true)"
+  verdict="$(parse_sop_selftest_verdict "$raw")"
+  [[ -n "$verdict" ]] || die "SOP sandbox gate emitted no sentinel"
+  [[ "$verdict" == 'PASS' ]] || die "SOP sandbox gate failed (env allowlist / workspace isolation / decoy+symlink+socket denial / exec-target denial / real OCR parsers)"
+  ok "marine_sop_worker child sandbox verified (exact env allowlist, decoy+symlink+socket+exec-target denial, real Poppler/Tesseract ind+eng)"
+}
+
+# Blocker 2 — parent health gate: the worker itself must still reach PostgreSQL, Redis
+# and the local ActiveStorage service (synthetic upload+delete probe with a RANDOMIZED
+# SecureRandom.hex key; the synthetic key is ALWAYS deleted in a fail-safe ensure block
+# and no key/path/content is ever printed). This is what justifies NOT isolating the
+# parent container's network.
+gate_sop_parent_health() {
+  [[ "$WITH_SOP" -eq 1 ]] || return 0
+  local cid raw verdict
+  cid="$(container_id marine_sop_worker)"
+  [[ -n "$cid" ]] || die "marine_sop_worker container not running for parent health gate"
+  raw="$("$DOCKER" exec "$cid" bundle exec rails runner '
+    m = "WIJAYA_SOP_PARENT"
+    require "stringio"
+    svc = nil
+    key = nil
+    begin
+      ActiveRecord::Base.connection.execute("SELECT 1")          # PostgreSQL
+      raise unless Sidekiq.redis { |r| r.ping } == "PONG"       # Redis
+      require "securerandom"
+      svc = ActiveStorage::Blob.service                          # local ActiveStorage RW
+      key = "marine-sop-gate-probe-#{SecureRandom.hex(16)}"
+      svc.upload(key, StringIO.new("gate"))
+      svc.delete(key)
+      key = nil
+      puts "#{m}:PASS"
+    rescue StandardError
+      puts "#{m}:FAIL"
+    ensure
+      # Fail-safe cleanup: a synthetic probe key is ALWAYS deleted (idempotent when
+      # absent); nothing about the key/path/content is ever printed.
+      begin
+        svc.delete(key) unless svc.nil? || key.nil?
+      rescue StandardError
+        nil
+      end
+    end' 2>/dev/null || true)"
+  verdict="$(parse_sop_parent_verdict "$raw")"
+  [[ -n "$verdict" ]] || die "SOP parent health gate emitted no sentinel"
+  [[ "$verdict" == 'PASS' ]] || die "marine_sop_worker parent cannot reach PostgreSQL/Redis/ActiveStorage"
+  ok "marine_sop_worker parent health verified (PostgreSQL + Redis + local ActiveStorage upload/delete)"
+}
+
 gate_password_file_and_mount() {
   local svc cid env_path dest_ro
   for svc in rails sidekiq; do
@@ -436,6 +555,32 @@ parse_catalog_gate_verdict() {
   line="$(grep -m1 -E "^${CATALOG_GATE_SENTINEL}:" <<<"$raw" | tr -d '[:space:]' || true)"
   [[ -n "$line" ]] || { printf ''; return 0; }
   case "${line#"${CATALOG_GATE_SENTINEL}":}" in
+    PASS) printf 'PASS' ;;
+    *)    printf 'FAIL' ;;
+  esac
+}
+
+# --- Pure sentinel parsers (no docker; unit-tested by the regression suite) ---------
+# Extract the SOP sandbox gate verdict: the in-container gate script prints exactly one
+# anchored WIJAYA_SOP_GATE line (PASS or FAIL:<token>); everything else is ignored. Echoes
+# 'PASS', 'FAIL' or '' when no sentinel line is present.
+parse_sop_selftest_verdict() {
+  local raw="$1" line
+  line="$(grep -m1 -E '^WIJAYA_SOP_GATE:' <<<"$raw" | tr -d '\r' || true)"
+  [[ -n "$line" ]] || { printf ''; return 0; }
+  case "${line#WIJAYA_SOP_GATE:}" in
+    PASS) printf 'PASS' ;;
+    *)    printf 'FAIL' ;;
+  esac
+}
+
+# Extract the SOP parent-health verdict (PostgreSQL + Redis + local ActiveStorage inside
+# the marine_sop_worker container). Same anchored-line contract as above.
+parse_sop_parent_verdict() {
+  local raw="$1" line
+  line="$(grep -m1 -E '^WIJAYA_SOP_PARENT:' <<<"$raw" | tr -d '\r' || true)"
+  [[ -n "$line" ]] || { printf ''; return 0; }
+  case "${line#WIJAYA_SOP_PARENT:}" in
     PASS) printf 'PASS' ;;
     *)    printf 'FAIL' ;;
   esac
@@ -576,6 +721,8 @@ health_gate() {
   local since="$1"
   gate_config_files_label
   target_selected marine_sop_worker && gate_sop_runtime_provenance
+  target_selected marine_sop_worker && gate_sop_sandbox_contract
+  target_selected marine_sop_worker && gate_sop_parent_health
 
   # A worker-only recreation must not be reported failed because an unrelated external
   # LLM/domain-boundary dependency is unhealthy. App behavior gates remain mandatory
@@ -608,6 +755,21 @@ main() {
   local json since
   json="$(resolve_config_json)"
   validate_images_present "$json"
+
+  # Blocker 3: bind recreation to the EXACT verified immutable image ID. Pinning
+  # MARINE_SOP_IMAGE (exported, so it overrides any operator-provided mutable tag
+  # for the overlay) and re-resolving the compose config makes the pre-image
+  # sandbox gate, `compose up` and every post-runtime check resolve the SAME
+  # immutable image content — no mutable tag is dereferenced again after this
+  # point, so no tag-retarget TOCTOU remains between gate and recreation.
+  if [[ "$WITH_SOP" -eq 1 ]] && target_selected marine_sop_worker; then
+    [[ -n "${SOP_VERIFIED_IMAGE_ID:-}" ]] || die "SOP image ID was not verified before pinning"
+    export MARINE_SOP_IMAGE="$SOP_VERIFIED_IMAGE_ID"
+    ok "marine_sop_worker pinned to the verified immutable image ID for the pre-image gate + recreation"
+    json="$(resolve_config_json)"
+  fi
+
+  gate_sop_sandbox_pre_image "$json"
   since="$(date +%s)"
   recreate_services
   health_gate "$since"

@@ -213,10 +213,17 @@ RSpec.describe 'Marine SOP extraction (real binaries)', type: :model do
 
   around do |example|
     skip 'Poppler/Tesseract (eng+ind) + ImageMagick not installed' unless binaries_present?
+    # Blocker 2: real-binary smoke runs under the explicit safe test contract so its
+    # behavior is deterministic (direct argv) in every environment. The SANDBOXED
+    # real-binary path is proven by the deploy gate inside the SOP derivative image
+    # (custom/wijaya/batteries/marine_ai/deploy/sop_sandbox_gate.sh).
+    ENV['MARINE_SOP_SANDBOX_TEST_ONLY'] = '1'
     Dir.mktmpdir('sop-smoke') do |dir|
       @dir = dir
       example.run
     end
+  ensure
+    ENV.delete('MARINE_SOP_SANDBOX_TEST_ONLY')
   end
 
   # --- fixture builders (argv only; fail loudly so the derived image never silently skips)

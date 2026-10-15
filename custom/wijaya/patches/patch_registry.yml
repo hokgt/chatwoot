@@ -1645,6 +1645,73 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/jobs/marine/documents/process_job.rb
       - custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing
       - custom/wijaya/batteries/marine_ai/deploy/install_sop_processing_dependencies.sh
+      # Blocker 2 — SOP/OCR sandbox hardening. CommandRunner now scrubs the child
+      # environment to a fixed allowlist (unsetenv_others + close_others; workspace-scoped
+      # HOME/TMPDIR/XDG_CACHE_HOME) and wraps every native parser in a fail-closed
+      # su-exec + Landlock/seccomp launcher compiled into the SOP derivative image; a
+      # missing marine_sop user / su-exec / launcher / allowlisted parser aborts the
+      # document BEFORE any workspace is created (never retried unsandboxed — the only
+      # opt-out is the explicit test contract MARINE_SOP_SANDBOX_TEST_ONLY=1 in the Rails
+      # test env). The launcher grants NO general /usr/bin read access (only the four
+      # exact parser read+execute rules); its read-only runtime trees are
+      # limited to /usr/lib, /lib, /etc/fonts, /usr/share/tessdata and
+      # /usr/share/fonts — NO broad /etc access (only the fontconfig runtime
+      # subtree /etc/fonts is readable). It also allowlists Tesseract tessdata at the real
+      # Alpine path /usr/share/tessdata (the running derivative image reports its
+      # languages there; /usr/share/tesseract-ocr does not exist); exec mode refuses any
+      # argv[3] that is not EXACTLY one of the four parsers (the musl loader stays
+      # executable for dynamic linking but is never an exec target). The worker overlay
+      # additionally blanks every integration secret the OCR-only marine_sop queue never
+      # uses (ACTIVE_STORAGE_SERVICE=local on this deployment, so the AWS/S3 blanks
+      # cannot affect the parent), and the parent health gate deletes its synthetic
+      # ActiveStorage probe key in a fail-safe ensure block (no key/path/content printed).
+      # The launcher's ENV_ALLOWLIST / EXECUTE_PATHS / EXEC_MODE_ALLOWLIST tables are
+      # cross-checked against CommandRunner by the command runner spec so the two sides
+      # cannot drift.
+      # Blocker 2 hardening round: the seccomp filter additionally denies
+      # io_uring_setup/enter/register, setsid and setpgid (all EPERM) — no io_uring
+      # side channel, no session/process-group escape — and the launcher selftest
+      # requires each of those syscalls to return EPERM. CommandRunner grant_read
+      # accepts ONLY regular files whose canonical fd target is beneath the private
+      # workspace (O_NOFOLLOW open, fstat regular check, /proc/self/fd canonical
+      # resolution), rejecting outside/symlink/nonregular with the stable extraction
+      # error; after the leader completes, the runner SIGKILLs any residual member
+      # of its original process group (ESRCH when none — zero latency). The argv[3]
+      # exec-mode allowlist only constrains the initial exec target: after parser
+      # compromise, loader execution of readable ELF files is NOT a hard executable
+      # boundary — the main containment is the scrubbed env, the deny-by-default
+      # Landlock fs policy, the complete network denial, and the seccomp
+      # process-escape/io_uring denial.
+      # Final independent-review round (Blocker 2): the worker parent keeps
+      # exactly CHOWN/SETUID/SETGID/KILL (cap_drop ALL + no-new-privileges
+      # stay) — KILL is required for CommandRunner terminate/sweep_residual_group
+      # to SIGKILL the su-exec-dropped child process group at the hard
+      # per-document deadline — while the CHILD runs with ZERO capabilities:
+      # the launcher fail-closes (exit 126, before any policy or exec) unless
+      # its own already-su-exec'd process has exactly zero effective AND
+      # permitted capabilities, verified with a direct capget(2) syscall
+      # (self-contained x86_64 UAPI; /proc capability values are never read or
+      # printed) in BOTH selftest and exec modes. The runtime/pre-image gate
+      # adds a secret-safe real identity-drop kill probe (root ruby:
+      # Process.spawn su-exec -> marine_sop -> /bin/sh with pgroup, a private
+      # IO.pipe readiness handshake on inherited fd 3 (one fixed byte written
+      # only AFTER the su-exec uid/gid drop, read via IO.select <=5s)
+      # required BEFORE Process.kill('-KILL') on the dropped group, requiring
+      # signaled success, all output
+      # suppressed) proving the parent's CAP_KILL over a privilege-dropped
+      # process group. CommandRunner requires 'fiddle' explicitly so the
+      # fd-backed fchown/fchmod grants never rely on Reline loading Fiddle
+      # incidentally. Provenance is now immutably bound:
+      # Dockerfile.sop-processing fails the build unless a nonempty embedded
+      # /app/.git_sha exactly equals the full SOURCE_REVISION BEFORE the OCI
+      # labels are accepted; deploy.sh reads /app/.git_sha from the exact
+      # resolved image ID (never the mutable tag), stores that verified ID,
+      # and pins/exports MARINE_SOP_IMAGE to the sha256 image ID so the
+      # pre-image gate, compose up and every post-runtime check run the SAME
+      # immutable image — no tag-retarget TOCTOU remains between gate and
+      # compose up.
+      - custom/wijaya/batteries/marine_ai/deploy/wijaya_sop_sandbox.c
+      - custom/wijaya/batteries/marine_ai/deploy/sop_sandbox_gate.sh
       # Battery overlays (kept out of base compose): the MANDATORY read-only catalog
       # secret mount for rails+sidekiq, and the OPTIONAL dedicated marine_sop_worker
       # service (isolated queue + SOP hardening, with the shared .env catalog-secret path
@@ -2322,10 +2389,39 @@ patches:
       mandatory whenever rails or normal sidekiq is selected. A static
       contract checker and a secret-safe domain-boundary dependency monitor guard the
       contract in CI and at deploy time.
+      Blocker 2 adds two SOP worker runtime gates: the in-container sandbox gate
+      (sop_sandbox_gate.sh — launcher selftest proving the exact parser env allowlist,
+      workspace isolation, decoy/symlink/socket denial, no broad /usr/bin read (probed
+      on a real /usr/bin file), exec-target denial for every non-parser target, and real
+      Poppler/Tesseract ind+eng through the Landlock+seccomp launcher) and the parent
+      health gate (PostgreSQL + Redis + local ActiveStorage upload/delete with fail-safe
+      synthetic-key cleanup), plus preflight/static checks that the overlay never
+      disables the child sandbox and the derivative Dockerfile compiles the tracked
+      launcher at the fixed allowlisted path.
+      Blocker 2 hardening round: the SAME tracked in-container gate must also pass
+      PRE-IMAGE, inside an ephemeral `docker run --rm --network none` container of
+      the EXACT target SOP derivative image, BEFORE any compose up (a failed
+      pre-image gate aborts the deploy with ZERO compose up invocations, proven by
+      the mocked deploy tests); the gate plants randomized exclusive mktemp canaries
+      under storage/config/tmp and cleans up exactly the created paths; and the
+      parent-health probe uses a randomized SecureRandom.hex ActiveStorage key with
+      fail-safe deletion (never a predictable per-pid key).
+      Final independent-review round: the SOP overlay parent keeps exactly
+      CHOWN/SETUID/SETGID/KILL (cap_drop ALL + no-new-privileges), the child
+      gets zero capabilities (launcher capget fail-closed check, exercised by
+      the gate's su-exec'd selftest, plus an in-gate root-ruby identity-drop
+      kill probe proving parent CAP_KILL over the dropped group), and
+      provenance is immutably bound: the derivative Dockerfile fails the build
+      unless the embedded /app/.git_sha exactly equals the full
+      SOURCE_REVISION before labels are accepted, and the canonical entrypoint
+      reads that embedded sha from the exact resolved image ID, then pins
+      MARINE_SOP_IMAGE to the verified immutable ID so the pre-image gate,
+      compose up and post-runtime checks all use the same image (no TOCTOU).
     custom_files:
       - custom/wijaya/deploy/deploy.sh
       - custom/wijaya/scripts/check_deploy_contract.sh
       - custom/wijaya/scripts/marine_domain_boundary_monitor.sh
+      - custom/wijaya/batteries/marine_ai/deploy/sop_sandbox_gate.sh
     verification:
       # Static contract check (invoked by root check_custom_patches.sh too).
       - bash custom/wijaya/scripts/check_deploy_contract.sh

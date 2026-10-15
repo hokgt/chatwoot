@@ -1,4 +1,4 @@
-# Marine AI — SOP processing runtime derivative image (Commit 1C).
+# Marine AI — SOP processing runtime derivative image (Commit 1C, Blocker 2).
 # ================================================================
 #
 # This image DERIVES FROM the immutable, already-built Chatwoot application image and
@@ -24,6 +24,23 @@ FROM ${BASE_IMAGE}
 # be the exact full SHA embedded in the base image at /app/.git_sha.
 ARG BASE_IMAGE
 ARG SOURCE_REVISION
+
+# Blocker 3 (final independent review) — immutable provenance binding: the build
+# FAILS CLOSED unless the /app/.git_sha baked into the exact pinned BASE_IMAGE is
+# nonempty and byte-identical to SOURCE_REVISION (itself required to be a full
+# 40-hex SHA). This runs BEFORE the labels below are accepted, so no image can
+# ever carry the org.opencontainers.image.revision provenance label without the
+# embedded source tree actually being that exact revision.
+RUN set -eu \
+ && case "${SOURCE_REVISION:-}" in \
+      ''|*[!0-9a-f]*) echo 'SOURCE_REVISION must be a full 40-hex source SHA' >&2; exit 1 ;; \
+      ????????????????????????????????????????) ;; \
+      *) echo 'SOURCE_REVISION must be a full 40-hex source SHA' >&2; exit 1 ;; \
+    esac \
+ && embedded="$(tr -d '[:space:]' </app/.git_sha)" \
+ && [ -n "$embedded" ] \
+ && [ "$embedded" = "$SOURCE_REVISION" ]
+
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
       com.wijaya.chatwoot.base-image="${BASE_IMAGE}" \
       com.wijaya.chatwoot.role="marine_sop_worker"
@@ -32,3 +49,19 @@ LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
 USER root
 
 RUN sh /app/custom/wijaya/batteries/marine_ai/deploy/install_sop_processing_dependencies.sh
+
+# Blocker 2 — compile the fail-closed Landlock + seccomp sandbox launcher used by
+# Marine::Documents::CommandRunner for EVERY native parser subprocess. The launcher
+# is a small self-contained C file (no kernel headers needed), statically linked so
+# it has no runtime library dependencies, installed at the fixed allowlisted path
+# CommandRunner expects (/usr/local/bin/wijaya-sop-sandbox). Build tooling is added
+# and removed in the SAME layer so the final image carries no compiler. Any compile
+# failure fails the image build (fail closed); the launcher source and its tables
+# (ENV_ALLOWLIST / EXECUTE_PATHS) are cross-checked against CommandRunner by the
+# command runner spec.
+RUN apk add --no-cache --virtual .wijaya-sandbox-build gcc musl-dev \
+ && cc -O2 -Wall -Werror -static \
+      -o /usr/local/bin/wijaya-sop-sandbox \
+      /app/custom/wijaya/batteries/marine_ai/deploy/wijaya_sop_sandbox.c \
+ && apk del .wijaya-sandbox-build \
+ && test -x /usr/local/bin/wijaya-sop-sandbox

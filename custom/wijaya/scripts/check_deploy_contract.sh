@@ -53,6 +53,9 @@ retired_reference_in_list() {
 CANONICAL='custom/wijaya/deploy/deploy.sh'
 CATALOG='custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml'
 SOP='custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml'
+SOP_DOCKERFILE='custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing'
+SOP_SANDBOX_C='custom/wijaya/batteries/marine_ai/deploy/wijaya_sop_sandbox.c'
+SOP_SANDBOX_GATE='custom/wijaya/batteries/marine_ai/deploy/sop_sandbox_gate.sh'
 BASE_NEEDLE='docker-compose.deploy.yaml'
 CATALOG_NEEDLE='docker-compose.marine-catalog.yml'
 CATALOG_ENV='MARINE_CATALOG_PG_PASSWORD_FILE'
@@ -118,6 +121,87 @@ else
     || err "SOP worker overlay must explicitly blank $CATALOG_ENV inherited from .env"
   if grep -q 'marine_catalog_ro_password' "$SOP"; then
     err "SOP worker overlay must NOT mount the catalog secret"
+  fi
+  # Blocker 2: the overlay must never disable the child sandbox or isolate the parent
+  # network (the worker legitimately needs DB/Redis/ActiveStorage connectivity).
+  if grep -q 'MARINE_SOP_SANDBOX_TEST_ONLY' "$SOP"; then
+    err "SOP worker overlay must NOT set the sandbox test-only opt-out"
+  fi
+  if grep -qE '^[[:space:]]*network_mode:' "$SOP"; then
+    err "SOP worker overlay must NOT change container networking"
+  fi
+  # Final review round: the parent keeps ONLY the capabilities it needs — KILL
+  # must be among them so CommandRunner can SIGKILL its su-exec-dropped child
+  # process group (hard deadline enforcement) — while the CHILD gets zero
+  # capabilities (su-exec clears them; the launcher verifies via capget).
+  grep -q -- '- KILL' "$SOP" \
+    || err "SOP worker overlay must retain KILL in cap_add (parent must SIGKILL its privilege-dropped child process group)"
+  grep -qE '^[[:space:]]*- ALL$' "$SOP" || err "SOP worker overlay must keep cap_drop ALL"
+  grep -q 'no-new-privileges:true' "$SOP" || err "SOP worker overlay must keep security_opt no-new-privileges:true"
+fi
+
+# 4b) Blocker 2 — SOP sandbox launcher contract (static, no Docker).
+# The derivative Dockerfile must compile the tracked Landlock+seccomp launcher at the
+# fixed path CommandRunner expects, and the tracked in-container runtime gate must
+# exist and emit the anchored verdict sentinel.
+if [[ ! -s "$SOP_SANDBOX_C" ]]; then
+  err "SOP sandbox launcher source missing: $SOP_SANDBOX_C"
+else
+  grep -q '__NR_socket' "$SOP_SANDBOX_C" || err "SOP sandbox launcher must deny socket syscalls"
+  grep -q '__NR_io_uring_setup' "$SOP_SANDBOX_C" || err "SOP sandbox launcher must deny io_uring syscalls (side-channel)"
+  grep -q '__NR_setsid' "$SOP_SANDBOX_C" || err "SOP sandbox launcher must deny session escape (setsid)"
+  grep -q '__NR_setpgid' "$SOP_SANDBOX_C" || err "SOP sandbox launcher must deny process-group escape (setpgid)"
+  grep -q 'landlock' "$SOP_SANDBOX_C" || err "SOP sandbox launcher must apply a Landlock policy"
+  grep -q 'EXEC_MODE_ALLOWLIST' "$SOP_SANDBOX_C" || err "SOP sandbox launcher must enforce the exact exec-mode argv target allowlist"
+  grep -q '__NR_capget' "$SOP_SANDBOX_C" \
+    || err "SOP sandbox launcher must fail closed on nonzero effective/permitted capabilities (direct capget before any policy/exec)"
+fi
+if [[ ! -s "$SOP_DOCKERFILE" ]]; then
+  err "SOP derivative Dockerfile missing: $SOP_DOCKERFILE"
+else
+  grep -q 'wijaya_sop_sandbox.c' "$SOP_DOCKERFILE" || err "SOP Dockerfile must compile the tracked sandbox launcher source"
+  grep -q '/usr/local/bin/wijaya-sop-sandbox' "$SOP_DOCKERFILE" || err "SOP Dockerfile must install the launcher at the fixed allowlisted path"
+  grep -q '/app/.git_sha' "$SOP_DOCKERFILE" \
+    || err "SOP Dockerfile must fail the build unless the embedded /app/.git_sha equals the full SOURCE_REVISION (before labels)"
+fi
+if [[ ! -s "$SOP_SANDBOX_GATE" ]]; then
+  err "SOP sandbox runtime gate script missing: $SOP_SANDBOX_GATE"
+else
+  grep -q 'WIJAYA_SOP_GATE' "$SOP_SANDBOX_GATE" || err "SOP sandbox gate must emit the tracked verdict sentinel"
+  grep -q 'WIJAYA_SOP_SELFTEST:PASS' "$SOP_SANDBOX_GATE" || err "SOP sandbox gate must require the launcher self-test verdict"
+  grep -q 'cleanup()' "$SOP_SANDBOX_GATE" || err "SOP sandbox gate must clean up its synthetic canaries"
+  grep -q 'mktemp /app/storage/.wijaya-sop-gate-canary' "$SOP_SANDBOX_GATE" \
+    || err "SOP sandbox gate canaries must be randomized exclusive mktemp paths"
+  grep -q 'kill-probe' "$SOP_SANDBOX_GATE" \
+    || err "SOP sandbox gate must prove parent CAP_KILL over a real su-exec-dropped marine_sop process group"
+  grep -q 'IO.pipe' "$SOP_SANDBOX_GATE" \
+    || err "SOP sandbox gate kill probe must wait on a private IO.pipe readiness handshake"
+  grep -q '>&3' "$SOP_SANDBOX_GATE" \
+    || err "SOP sandbox gate kill probe must prove the su-exec uid/gid drop (fixed byte on inherited fd 3) before killing"
+fi
+
+# 4c) Blocker 2 — pre-image SOP sandbox gate (predeploy): deploy.sh must run the SAME
+# tracked in-container gate inside an ephemeral --network none container of the EXACT
+# target SOP derivative image BEFORE any compose up (recreate_services).
+if [[ -f "$CANONICAL" ]]; then
+  grep -q 'run --rm --network none' "$CANONICAL" \
+    || err "canonical entrypoint must run the pre-image SOP sandbox gate in an ephemeral --network none container"
+  grep -q 'gate_sop_sandbox_pre_image' "$CANONICAL" \
+    || err "canonical entrypoint missing the pre-image SOP sandbox gate"
+  gate_line="$(grep -n 'gate_sop_sandbox_pre_image' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  recreate_line="$(grep -n 'recreate_services' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  if [[ -z "${gate_line:-}" || -z "${recreate_line:-}" || "$gate_line" -ge "$recreate_line" ]]; then
+    err "pre-image SOP sandbox gate must be invoked before recreate_services in the canonical entrypoint"
+  fi
+  # Final review round (Blocker 3): recreation must be pinned to the EXACT
+  # verified immutable image ID, before the gate and compose up — the mutable
+  # tag is never dereferenced again after verification (no TOCTOU).
+  grep -q 'SOP_VERIFIED_IMAGE_ID' "$CANONICAL" \
+    || err "canonical entrypoint must bind the verified immutable SOP image ID before recreation"
+  pin_line="$(grep -n 'export MARINE_SOP_IMAGE=' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  gate_call_line="$(grep -n 'gate_sop_sandbox_pre_image "\$json"' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  if [[ -z "${pin_line:-}" || -z "${gate_call_line:-}" || "$pin_line" -ge "$gate_call_line" ]]; then
+    err "canonical entrypoint must pin MARINE_SOP_IMAGE to the verified image ID BEFORE the pre-image SOP sandbox gate"
   fi
 fi
 

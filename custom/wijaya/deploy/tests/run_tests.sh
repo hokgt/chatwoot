@@ -20,6 +20,9 @@ CONTRACT_SH="$REPO_ROOT/custom/wijaya/scripts/check_deploy_contract.sh"
 BASE_COMPOSE="$REPO_ROOT/docker-compose.deploy.yaml"
 CATALOG_OVERLAY="$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml"
 SOP_OVERLAY="$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml"
+SOP_SANDBOX_GATE="$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy/sop_sandbox_gate.sh"
+SOP_SANDBOX_C="$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy/wijaya_sop_sandbox.c"
+SOP_DOCKERFILE="$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -56,15 +59,41 @@ if [[ "${1:-}" == "compose" ]]; then
     version) echo "Docker Compose version vFAKE"; exit 0 ;;
     config)
       if [[ "${FAKE_CONFIG_EMPTY:-0}" == "1" ]]; then exit 0; fi
-      cat "${FAKE_CONFIG_JSON_FILE:?}"; exit 0 ;;
-    up)      : "${FAKE_UP_MARKER:?}"; echo "up" >>"$FAKE_UP_MARKER"; exit 0 ;;
+      # Mirror real compose env substitution: once deploy.sh pins
+      # MARINE_SOP_IMAGE to the verified immutable image ID, the resolved
+      # config must show that ID for the SOP worker.
+      if [[ -n "${MARINE_SOP_IMAGE:-}" ]]; then
+        jq --arg img "$MARINE_SOP_IMAGE" '.services["marine_sop_worker"].image = $img' "${FAKE_CONFIG_JSON_FILE:?}"
+      else
+        cat "${FAKE_CONFIG_JSON_FILE:?}"
+      fi
+      exit 0 ;;
+    up)      : "${FAKE_UP_MARKER:?}"
+              printf 'up MARINE_SOP_IMAGE=%s\n' "${MARINE_SOP_IMAGE:-}" >>"$FAKE_UP_MARKER"
+              exit 0 ;;
     *) exit 0 ;;
   esac
+elif [[ "${1:-}" == "run" ]]; then
+  # docker run invocations from deploy.sh: the embedded /app/.git_sha provenance
+  # read (from the exact image ID) and the pre-image SOP sandbox gate. Both are
+  # recorded (exact argv) so tests can prove which image ref was used; only the
+  # configured embedded sha / gate verdict is ever emitted.
+  : "${FAKE_RUN_MARKER:?}"
+  printf '%s\n' "$*" >>"${FAKE_RUN_MARKER}"
+  case "$*" in
+    *'/app/.git_sha'*) printf '%s\n' "${FAKE_SOP_GIT_SHA:-}"; exit 0 ;;
+    *) printf '%s\n' "${FAKE_PRE_IMAGE_GATE_OUT:-WIJAYA_SOP_GATE:PASS}"; exit 0 ;;
+  esac
 elif [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
-  : "${FAKE_IMAGE_MARKER:?}"; echo "inspect" >>"$FAKE_IMAGE_MARKER"
+  : "${FAKE_IMAGE_MARKER:?}"
   if [[ "${3:-}" != "--format" ]]; then exit 0; fi
   fmt="${4:-}"; ref="${5:-}"
-  if [[ "$ref" == "${FAKE_SOP_REF:-}" ]]; then
+  # Record the exact resolved ref + format so tests can prove label inspects
+  # dereference the immutable image ID after tag->ID resolution, never the
+  # mutable tag.
+  printf 'inspect ref=%s fmt=%s\n' "$ref" "$fmt" >>"$FAKE_IMAGE_MARKER"
+  # Labels resolve identically from the mutable tag AND its resolved image ID.
+  if [[ "$ref" == "${FAKE_SOP_REF:-}" || "$ref" == "${FAKE_SOP_ID:-}" ]]; then
     case "$fmt" in
       *'.Id'*) echo "${FAKE_SOP_ID:-}" ;;
       *'org.opencontainers.image.revision'*) echo "${FAKE_SOP_SOURCE:-}" ;;
@@ -294,21 +323,162 @@ run_deploy_sop_check "$CFG_SOP_SHA"
   && ok "SOP preflight rejects a non-full source revision" \
   || { bad "short SOP source revision was not rejected"; cat "$WORK/out.log"; }
 
+# Pre-image sandbox gate (Blocker 2): the tracked in-container gate must pass inside an
+# ephemeral `docker run --rm --network none` container of the EXACT target SOP derivative
+# image BEFORE any compose up. A FAILED gate must abort --deploy with ZERO compose up calls.
+run_deploy_sop_deploy() { # <gate-output> <config-json> [<embedded-git-sha>]
+  # ${3-...} (no colon): an explicitly EMPTY third arg stays empty; only a
+  # missing one defaults to the correct full SHA.
+  local gate_out="$1" cfg="$2" git_sha="${3-$FULL_SHA}"
+  CALLN=$((CALLN+1)); UP_MARKER="$WORK/up.$CALLN"; IMAGE_MARKER="$WORK/img.$CALLN"
+  RUN_MARKER="$WORK/run.$CALLN"
+  rm -f "$UP_MARKER" "$IMAGE_MARKER" "$RUN_MARKER"
+  RC=0
+  env DOCKER="$FAKE_DOCKER" \
+      MARINE_DEPLOY_BASE_COMPOSE="$BASE_COMPOSE" \
+      MARINE_DEPLOY_CATALOG_OVERLAY="$CATALOG_OVERLAY" \
+      MARINE_DEPLOY_SOP_OVERLAY="$SOP_OVERLAY" \
+      FAKE_CONFIG_JSON_FILE="$cfg" FAKE_UP_MARKER="$UP_MARKER" FAKE_IMAGE_MARKER="$IMAGE_MARKER" \
+      FAKE_RUN_MARKER="$RUN_MARKER" FAKE_PRE_IMAGE_GATE_OUT="$gate_out" \
+      FAKE_SOP_REF='chatwoot-wijaya:test-sop' FAKE_APP_REF='hokgt-chatwoot:test' \
+      FAKE_SOP_ID='sha256:sop' FAKE_APP_ID='sha256:app' \
+      FAKE_SOP_SOURCE="$FULL_SHA" FAKE_SOP_BASE='hokgt-chatwoot:test' \
+      FAKE_SOP_ROLE='marine_sop_worker' \
+      FAKE_SOP_GIT_SHA="$git_sha" \
+      bash "$DEPLOY_SH" --deploy --with-sop-worker >"$WORK/out.log" 2>&1 || RC=$?
+}
+
+run_deploy_sop_deploy 'WIJAYA_SOP_GATE:FAIL:pre-image' "$CFG_SOP_OK"
+if [[ "$RC" != 0 && ! -f "$UP_MARKER" && -s "$RUN_MARKER" ]] && grep -q -- '--network none' "$RUN_MARKER"; then
+  ok "failed pre-image SOP sandbox gate aborts --deploy with ZERO compose up calls (ephemeral --network none run)"
+else
+  bad "pre-image gate failure case (rc=$RC, up=$([[ -f "$UP_MARKER" ]] && echo yes || echo no), run=$([[ -s "$RUN_MARKER" ]] && echo yes || echo no))"; cat "$WORK/out.log"
+fi
+
+run_deploy_sop_deploy 'WIJAYA_SOP_GATE:PASS' "$CFG_SOP_OK"
+if [[ -s "$RUN_MARKER" && -f "$UP_MARKER" ]]; then
+  ok "passing pre-image SOP sandbox gate lets compose up proceed (gate ran before recreation)"
+else
+  bad "pre-image gate pass case (rc=$RC, run=$([[ -s "$RUN_MARKER" ]] && echo yes || echo no), up=$([[ -f "$UP_MARKER" ]] && echo yes || echo no))"; cat "$WORK/out.log"
+fi
+
+# Blocker 3 (final review) — embedded provenance binding + immutable image-ID pinning.
+# The embedded /app/.git_sha must be read from the EXACT resolved image ID (never
+# the mutable tag), the pre-image gate must run that same ID, and compose up must
+# recreate with the SAME pinned ID (exported MARINE_SOP_IMAGE), so gate and
+# recreation cannot diverge (no tag-retarget TOCTOU).
+if grep -q -- '--entrypoint cat sha256:sop /app/.git_sha' "$RUN_MARKER" \
+   && grep -qE -- '--network none -i --entrypoint sh sha256:sop' "$RUN_MARKER" \
+   && ! grep -q -- 'chatwoot-wijaya:test-sop' "$RUN_MARKER"; then
+  ok "embedded .git_sha read + pre-image gate both run the exact resolved image ID, never the mutable tag"
+else
+  bad "image-ID binding of the embedded read / pre-image gate (run marker: $(head -c 300 "$RUN_MARKER" 2>/dev/null))"
+fi
+if grep -q '^up MARINE_SOP_IMAGE=sha256:sop$' "$UP_MARKER"; then
+  ok "compose up recreates marine_sop_worker with the SAME verified immutable image ID (exported MARINE_SOP_IMAGE)"
+else
+  bad "compose up did not pin the verified immutable image ID (up marker: $(head -c 200 "$UP_MARKER" 2>/dev/null))"
+fi
+
+# Mismatched embedded .git_sha must block --deploy BEFORE any compose up.
+run_deploy_sop_deploy 'WIJAYA_SOP_GATE:PASS' "$CFG_SOP_OK" '0000000000000000000000000000000000000000'
+if [[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'embedded /app/.git_sha does not match' "$WORK/out.log"; then
+  ok "mismatched embedded .git_sha blocks --deploy BEFORE compose up (image never reaches recreation)"
+else
+  bad "mismatched embedded .git_sha was not blocked (rc=$RC, up=$([[ -f "$UP_MARKER" ]] && echo yes || echo no))"; cat "$WORK/out.log"
+fi
+
+# An empty/unreadable embedded .git_sha must block the same way.
+run_deploy_sop_deploy 'WIJAYA_SOP_GATE:PASS' "$CFG_SOP_OK" ''
+if [[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'embeds no readable /app/.git_sha' "$WORK/out.log"; then
+  ok "empty/absent embedded .git_sha blocks --deploy BEFORE compose up"
+else
+  bad "empty embedded .git_sha was not blocked (rc=$RC, up=$([[ -f "$UP_MARKER" ]] && echo yes || echo no))"; cat "$WORK/out.log"
+fi
+
+# Parent kill capability + child zero-capability contract (final review round).
+if grep -q 'no-new-privileges:true' "$SOP_OVERLAY" && grep -qE '^[[:space:]]*- ALL$' "$SOP_OVERLAY"; then
+  ok "SOP worker overlay keeps cap_drop ALL + no-new-privileges"
+else
+  bad "SOP overlay lost cap_drop ALL or no-new-privileges"
+fi
+cap_add_block="$(awk '/^    cap_add:/{f=1;next} f && /^    [a-z_]+:/{f=0} f && /^[[:space:]]*#/{next} f{print $2}' "$SOP_OVERLAY")"
+[[ "$cap_add_block" == $'CHOWN\nSETUID\nSETGID\nKILL' ]] \
+  && ok "SOP overlay grants the parent exactly CHOWN/SETUID/SETGID/KILL (KILL keeps the dropped-group reaper working)" \
+  || bad "SOP overlay cap_add is not exactly CHOWN/SETUID/SETGID/KILL (got: $(printf '%s ' $cap_add_block))"
+grep -q '__NR_capget' "$SOP_SANDBOX_C" && grep -q 'require_zero_capabilities();' "$SOP_SANDBOX_C" \
+  && ok "launcher fail-closes on any nonzero effective/permitted capability (direct capget, no /proc reads)" \
+  || bad "launcher missing the zero-capability capget check"
+[[ "$(grep -c 'require_zero_capabilities();' "$SOP_SANDBOX_C")" == 2 ]] \
+  && ok "zero-capability check runs in BOTH selftest and exec modes before any policy/exec" \
+  || bad "zero-capability check call sites (expected 2, got $(grep -c 'require_zero_capabilities();' "$SOP_SANDBOX_C"))"
+grep -q 'pgroup: true' "$SOP_SANDBOX_GATE" && grep -q 'kill-probe' "$SOP_SANDBOX_GATE" \
+  && ok "sandbox gate proves parent CAP_KILL over a real su-exec-dropped marine_sop process group" \
+  || bad "sandbox gate missing the parent-kill privilege-drop probe"
+# The kill probe must WAIT on the private fd-3 readiness handshake (one fixed
+# byte written only after the su-exec uid/gid drop) BEFORE any kill: no race
+# between Process.spawn and Process.kill against a pre-drop child.
+hs_line="$(grep -n 'IO.select' "$SOP_SANDBOX_GATE" | head -1 | cut -d: -f1 || true)"
+kill_line="$(grep -n "Process.kill('-KILL', pid)" "$SOP_SANDBOX_GATE" | head -1 | cut -d: -f1 || true)"
+if grep -q 'IO.pipe' "$SOP_SANDBOX_GATE" && grep -q '>&3' "$SOP_SANDBOX_GATE" \
+   && grep -q 'exec /bin/sleep 30' "$SOP_SANDBOX_GATE" \
+   && [[ -n "${hs_line:-}" && -n "${kill_line:-}" && "$hs_line" -lt "$kill_line" ]]; then
+  ok "sandbox gate CAP_KILL probe waits on the private fd-3 post-drop readiness handshake BEFORE the kill (no pre-drop race)"
+else
+  bad "sandbox gate kill probe missing/after the readiness handshake (hs=$hs_line kill=$kill_line)"
+fi
+# The derivative Dockerfile must verify the embedded .git_sha BEFORE the labels.
+sha_line="$(grep -n '/app/.git_sha' "$SOP_DOCKERFILE" | head -1 | cut -d: -f1 || true)"
+label_line="$(grep -n '^LABEL ' "$SOP_DOCKERFILE" | head -1 | cut -d: -f1 || true)"
+if [[ -n "$sha_line" && -n "$label_line" && "$sha_line" -lt "$label_line" ]]; then
+  ok "Dockerfile.sop-processing fails the build unless embedded .git_sha equals the full SOURCE_REVISION, before labels"
+else
+  bad "Dockerfile embedded .git_sha verification ordering (sha=$sha_line label=$label_line)"
+fi
+
+# Static wiring: the pre-image gate must sit between image validation and recreate_services.
+pre_gate_line="$(grep -n 'gate_sop_sandbox_pre_image "$json"' "$DEPLOY_SH" | head -1 | cut -d: -f1 || true)"
+recreate_line="$(grep -n '^  recreate_services$' "$DEPLOY_SH" | head -1 | cut -d: -f1 || true)"
+if [[ -n "${pre_gate_line:-}" && -n "${recreate_line:-}" && "$pre_gate_line" -lt "$recreate_line" ]]; then
+  ok "pre-image SOP sandbox gate is wired BEFORE recreate_services (compose up) in main()"
+else
+  bad "pre-image SOP sandbox gate ordering in deploy.sh main()"
+fi
+grep -q 'run --rm --network none' "$DEPLOY_SH"   && ok "pre-image SOP sandbox gate uses an ephemeral --network none container of the target image"   || bad "pre-image SOP sandbox gate missing the --network none docker run"
+pin_line_static="$(grep -n 'export MARINE_SOP_IMAGE=' "$DEPLOY_SH" | head -1 | cut -d: -f1 || true)"
+if [[ -n "${pin_line_static:-}" && "$pin_line_static" -lt "$pre_gate_line" && "$pre_gate_line" -lt "$recreate_line" ]]; then
+  ok "verified image-ID pinning happens BEFORE the pre-image gate and compose up (no TOCTOU window)"
+else
+  bad "image-ID pin ordering in deploy.sh main() (pin=$pin_line_static gate=$pre_gate_line recreate=$recreate_line)"
+fi
+
 # Pre-recreation image identity gate: aliases of the plain app image must fail before up.
 ( export MARINE_DEPLOY_SOURCE_ONLY=1 DOCKER="$FAKE_DOCKER" FAKE_IMAGE_MARKER="$WORK/image-provenance"
   export FAKE_SOP_REF='chatwoot-wijaya:test-sop' FAKE_APP_REF='hokgt-chatwoot:test'
   export FAKE_SOP_ID='sha256:sop' FAKE_APP_ID='sha256:app' FAKE_SOP_SOURCE="$FULL_SHA"
   export FAKE_SOP_BASE='hokgt-chatwoot:test' FAKE_SOP_ROLE='marine_sop_worker'
+  export FAKE_RUN_MARKER="$WORK/run-provenance" FAKE_SOP_GIT_SHA="$FULL_SHA"
   source "$DEPLOY_SH" --check --with-sop-worker --service marine_sop_worker >/dev/null 2>&1
   validate_sop_image_provenance_before_recreate "$(cat "$CFG_SOP_OK")"
 ) && ok "SOP image pre-recreation gate accepts distinct ID + matching OCI provenance" \
   || bad "valid SOP image identity/provenance rejected"
+# Label inspects must dereference the EXACT resolved immutable image ID
+# (sha256:sop) — never the mutable tag — after tag->ID resolution.
+lbl_total="$(grep -c 'fmt=.*\.Config\.Labels' "$WORK/image-provenance" 2>/dev/null || true)"
+lbl_id="$(grep 'fmt=.*\.Config\.Labels' "$WORK/image-provenance" 2>/dev/null | grep -c '^inspect ref=sha256:sop ' || true)"
+lbl_tag="$(grep 'fmt=.*\.Config\.Labels' "$WORK/image-provenance" 2>/dev/null | grep -c '^inspect ref=chatwoot-wijaya:test-sop ' || true)"
+if [[ "${lbl_total:-0}" == 3 && "${lbl_id:-0}" == 3 && "${lbl_tag:-0}" == 0 ]]; then
+  ok "OCI/base/role label inspects resolve from the exact sha256:sop image ID, never the mutable tag"
+else
+  bad "label inspect ref binding (total=$lbl_total id=$lbl_id tag=$lbl_tag)"
+fi
 
 rc=0
 ( export MARINE_DEPLOY_SOURCE_ONLY=1 DOCKER="$FAKE_DOCKER" FAKE_IMAGE_MARKER="$WORK/image-alias"
   export FAKE_SOP_REF='chatwoot-wijaya:test-sop' FAKE_APP_REF='hokgt-chatwoot:test'
   export FAKE_SOP_ID='sha256:same' FAKE_APP_ID='sha256:same' FAKE_SOP_SOURCE="$FULL_SHA"
   export FAKE_SOP_BASE='hokgt-chatwoot:test' FAKE_SOP_ROLE='marine_sop_worker'
+  export FAKE_RUN_MARKER="$WORK/run-alias" FAKE_SOP_GIT_SHA="$FULL_SHA"
   source "$DEPLOY_SH" --check --with-sop-worker --service marine_sop_worker >/dev/null 2>&1
   validate_sop_image_provenance_before_recreate "$(cat "$CFG_SOP_OK")" >"$WORK/image-alias.log" 2>&1
 ) || rc=$?
@@ -461,6 +631,65 @@ printf 'nothing to see\n' >"$WORK/ref/clean/compose.txt"
   exit 0
 ) && ok "retired-reference scan flags plain refs, skips .hermes, passes when clean" \
   || bad "retired-reference scan (exit $?)"
+
+echo "== SOP sandbox gate (Blocker 2) =="
+
+# 14) The pure SOP verdict parsers must extract the anchored sentinel lines while
+#     ignoring boot noise, and treat FAIL tokens as failures.
+( export MARINE_DEPLOY_SOURCE_ONLY=1
+  source "$DEPLOY_SH" --check >/dev/null 2>&1
+  [[ "$(parse_sop_selftest_verdict "$(printf 'boot noise\nWIJAYA_SOP_GATE:PASS\n')")" == PASS ]] || exit 61
+  [[ "$(parse_sop_selftest_verdict "$(printf 'noise\nWIJAYA_SOP_GATE:FAIL:env-canary\nmore')")" == FAIL ]] || exit 62
+  [[ -z "$(parse_sop_selftest_verdict 'only noise, no sentinel')" ]] || exit 63
+  [[ "$(parse_sop_parent_verdict 'WIJAYA_SOP_PARENT:PASS')" == PASS ]] || exit 64
+  [[ "$(parse_sop_parent_verdict "$(printf 'x\nWIJAYA_SOP_PARENT:FAIL\n')")" == FAIL ]] || exit 65
+  [[ -z "$(parse_sop_parent_verdict 'nothing')" ]] || exit 66
+  exit 0
+) && ok "SOP sandbox/parent verdict parsers extract anchored sentinels and fail on FAIL tokens" \
+  || bad "SOP sandbox verdict parsers (exit $?)"
+
+# 15) The tracked in-container gate script must be syntactically valid POSIX sh and carry
+#     the sentinel + cleanup contract (static checks only; the script itself runs only
+#     inside the derivative container at deploy time).
+if sh -n "$SOP_SANDBOX_GATE" 2>/dev/null; then
+  ok "SOP sandbox gate script passes sh -n syntax check"
+else
+  bad "SOP sandbox gate script has shell syntax errors"
+fi
+grep -q 'WIJAYA_SOP_GATE:PASS' "$SOP_SANDBOX_GATE" \
+  && ok "SOP sandbox gate script emits the tracked PASS sentinel" \
+  || bad "SOP sandbox gate script missing the PASS sentinel"
+grep -q 'SENTINEL:FAIL:$1' "$SOP_SANDBOX_GATE" \
+  && grep -qE 'fail (launcher|su-exec|user|parser|selftest|env-canary|exec-target|kill-probe|pdfinfo|pdftotext|pdftoppm|tesseract)' "$SOP_SANDBOX_GATE" \
+  && ok "SOP sandbox gate script has stable per-check failure tokens" \
+  || bad "SOP sandbox gate script missing stable failure tokens"
+grep -q 'trap cleanup EXIT' "$SOP_SANDBOX_GATE" \
+  && ok "SOP sandbox gate script cleans up synthetic canaries on exit" \
+  || bad "SOP sandbox gate script missing canary cleanup trap"
+# Randomized exclusive mktemp canaries under storage/config/tmp (Blocker 2): no fixed
+# predictable shared paths; cleanup removes exactly the created paths.
+if grep -q 'mktemp /app/storage/.wijaya-sop-gate-canary' "$SOP_SANDBOX_GATE" \
+   && grep -q 'mktemp /app/config/.wijaya-sop-gate-canary' "$SOP_SANDBOX_GATE" \
+   && grep -q 'mktemp /tmp/.wijaya-sop-gate-canary' "$SOP_SANDBOX_GATE"; then
+  ok "SOP sandbox gate uses randomized exclusive mktemp canaries under storage/config/tmp"
+else
+  bad "SOP sandbox gate canaries are not randomized/exclusive mktemp paths"
+fi
+
+# 16) The SOP overlay must blank integration secrets and never disable the sandbox
+#     (static checks mirroring check_deploy_contract.sh, applied to the working tree).
+if grep -q 'MARINE_SOP_SANDBOX_TEST_ONLY' "$SOP_OVERLAY"; then
+  bad "SOP worker overlay sets the sandbox test-only opt-out"
+else
+  ok "SOP worker overlay never disables the child sandbox"
+fi
+blank_ok=1
+for k in FB_APP_SECRET STRIPE_SECRET_KEY WHATSAPP_WEB_CONNECTOR_HMAC_SECRET WIJAYA_ERP_API_SECRET MARINE_CATALOG_PG_PASSWORD_FILE; do
+  grep -qE "^[[:space:]]*- ${k}=[[:space:]]*$" "$SOP_OVERLAY" || blank_ok=0
+done
+[[ "$blank_ok" == 1 ]] \
+  && ok "SOP worker overlay blanks integration secrets the OCR worker never uses" \
+  || bad "SOP worker overlay is missing secret blankings"
 
 echo "== domain-boundary monitor =="
 

@@ -10,13 +10,24 @@
 # This overlay deliberately DOES NOT carry the Rails/Sidekiq catalog secret mount — that
 # lives in the mandatory docker-compose.marine-catalog.yml. The SOP worker needs shared
 # storage only, never the catalog secret.
+#
+# Blocker 2 (parent-side defense in depth): the worker still boots the full Rails app from
+# .env (SECRET_KEY_BASE, PostgreSQL, Redis, ActiveStorage and Rails runtime vars must
+# stay — the parent needs DB/Redis/local ActiveStorage functionality), but every
+# integration credential this worker demonstrably never uses is explicitly BLANKED
+# below: the marine_sop queue runs ONLY Marine::Documents OCR/extraction jobs, which
+# never call LLM providers, WhatsApp/Instagram/Facebook/Slack/Twitter, Stripe, SMTP,
+# AWS/S3, ERP or provisioning APIs. The PRIMARY child protection remains the
+# CommandRunner env scrub (unsetenv_others) + the wijaya-sop-sandbox Landlock/seccomp
+# launcher; these blankings bound what a fully compromised parent could exfiltrate.
 
 services:
   # Dedicated, resource-capped Sidekiq worker that ONLY drains the isolated marine_sop
   # queue at concurrency 1. It is the ONLY service carrying the SOP hardening
   # (no-new-privileges, all caps dropped, pids/mem/tmpfs caps); rails and normal sidekiq
   # stay behaviorally unchanged. The worker MUST use the dedicated derivative image;
-  # reusing CHATWOOT_IMAGE would silently drop the required OCR/Poppler runtime.
+  # reusing CHATWOOT_IMAGE would silently drop the required OCR/Poppler runtime AND the
+  # compiled sandbox launcher.
   marine_sop_worker:
     image: ${MARINE_SOP_IMAGE:?set MARINE_SOP_IMAGE to an immutable SOP derivative image}
     labels:
@@ -35,6 +46,30 @@ services:
       # .env is shared with Rails; explicitly scrub the catalog password-file path so
       # this worker cannot discover or request the catalog secret (no mount is present).
       - MARINE_CATALOG_PG_PASSWORD_FILE=
+      # Blocker 2: integration credentials this OCR-only worker never uses — blanked so
+      # they never even reach the parent worker process (values are empty, not just
+      # unused). Rails boot does not require any of them.
+      - FB_APP_SECRET=
+      - FB_VERIFY_TOKEN=
+      - IG_VERIFY_TOKEN=
+      - INSTAGRAM_APP_SECRET=
+      - INSTAGRAM_VERIFY_TOKEN=
+      - SLACK_CLIENT_SECRET=
+      - TWITTER_CONSUMER_SECRET=
+      - AZURE_APP_SECRET=
+      - GOOGLE_OAUTH_CLIENT_SECRET=
+      - STRIPE_SECRET_KEY=
+      - STRIPE_WEBHOOK_SECRET=
+      - MAILGUN_INGRESS_SIGNING_KEY=
+      - MANDRILL_INGRESS_API_KEY=
+      - SMTP_PASSWORD=
+      - RAILS_INBOUND_EMAIL_PASSWORD=
+      - AWS_ACCESS_KEY_ID=
+      - AWS_SECRET_ACCESS_KEY=
+      - WHATSAPP_WEB_CONNECTOR_HMAC_SECRET=
+      - WIJAYA_ERP_API_KEY=
+      - WIJAYA_ERP_API_SECRET=
+      - MARINE_PROVISIONING_PG_PASSWORD_FILE=
     command: ['bundle', 'exec', 'sidekiq', '-q', 'marine_sop', '-c', '1']
     restart: always
     security_opt:
@@ -42,9 +77,24 @@ services:
     cap_drop:
       - ALL
     cap_add:
+      # CHOWN: the parent chowns workspace files/dirs to the marine_sop group
+      # (grant_workspace_access / prepare_child_env_dirs / grant_read).
+      # SETUID/SETGID: su-exec performs the setgroups/setgid/setuid identity
+      # drop to marine_sop for every parser subprocess.
+      # KILL (final independent review): the parent MUST be able to SIGKILL the
+      # privilege-dropped child PROCESS GROUP — CommandRunner terminate /
+      # sweep_residual_group issue Process.kill('-KILL', leader_pid) after
+      # su-exec has dropped the child to marine_sop. Without CAP_KILL the hard
+      # per-document deadline could not be enforced on a hung parser or a
+      # pipe-holding descendant.
+      # The CHILD still runs with ZERO capabilities: su-exec's setuid away from
+      # root clears the effective/permitted sets, and the launcher additionally
+      # fail-closes unless its own (already-su-exec'd) process has exactly zero
+      # effective/permitted capabilities (direct capget check, no /proc reads).
       - CHOWN
       - SETUID
       - SETGID
+      - KILL
     pids_limit: 256
     mem_limit: 2g
     tmpfs:
