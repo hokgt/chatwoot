@@ -145,6 +145,12 @@ is_allowed_service() {
   return 1
 }
 
+target_selected() {
+  local wanted="$1" selected
+  for selected in "${TARGET_SERVICES[@]}"; do [[ "$selected" == "$wanted" ]] && return 0; done
+  return 1
+}
+
 # Determine the exact set of services to recreate.
 TARGET_SERVICES=('rails' 'sidekiq')
 [[ "$WITH_SOP" -eq 1 ]] && TARGET_SERVICES+=('marine_sop_worker')
@@ -326,9 +332,8 @@ gate_config_files_label() {
     labels="$("$DOCKER" inspect --format '{{ index .Config.Labels "com.docker.compose.project.config_files" }}' "$cid" 2>/dev/null || true)"
     grep -qF "$BASE_COMPOSE" <<<"$labels"    || die "$svc config_files label is missing the base compose file"
     grep -qF "$CATALOG_OVERLAY" <<<"$labels" || die "$svc config_files label is missing the mandatory catalog overlay"
-    if [[ "$WITH_SOP" -eq 1 ]]; then
-      grep -qF "$SOP_OVERLAY" <<<"$labels" || die "$svc config_files label is missing the SOP overlay"
-    fi
+    # Rails/normal Sidekiq do not require the optional SOP overlay in their own
+    # creation provenance; only the dedicated worker must carry that overlay label.
   done
   if [[ "$WITH_SOP" -eq 1 ]]; then
     cid="$(container_id marine_sop_worker)"
@@ -547,12 +552,20 @@ gate_deployment_window_logs() {
 health_gate() {
   local since="$1"
   gate_config_files_label
-  gate_sop_runtime_provenance
-  gate_password_file_and_mount
-  gate_catalog_reference
-  gate_domain_boundary_probe
-  gate_deployment_window_logs "$since"
-  gate_public_http
+  target_selected marine_sop_worker && gate_sop_runtime_provenance
+
+  # A worker-only recreation must not be reported failed because an unrelated external
+  # LLM/domain-boundary dependency is unhealthy. App behavior gates remain mandatory
+  # whenever rails or normal sidekiq is one of the services changed by this deployment.
+  if target_selected rails || target_selected sidekiq; then
+    gate_password_file_and_mount
+    gate_catalog_reference
+    gate_domain_boundary_probe
+    gate_deployment_window_logs "$since"
+    gate_public_http
+  else
+    ok "app behavior gates not applicable to isolated SOP worker recreation"
+  fi
   ok "post-deploy health gate PASSED"
 }
 

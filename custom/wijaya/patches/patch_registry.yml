@@ -2287,7 +2287,9 @@ patches:
       --force-recreate --no-build, runs a fail-fast preflight (resolved rails+sidekiq
       must carry the read-only catalog mount backed by a non-empty host file) and a
       post-deploy gate that reconciles the worker image labels, container labels,
-      `/app/.git_sha`, Compose config files, and OCR binaries. A static
+      `/app/.git_sha`, Compose config files, and OCR binaries. Isolated worker-only
+      recreation runs only worker/provenance gates; unrelated app/LLM health gates remain
+      mandatory whenever rails or normal sidekiq is selected. A static
       contract checker and a secret-safe domain-boundary dependency monitor guard the
       contract in CI and at deploy time.
     custom_files:

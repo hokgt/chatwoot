@@ -281,6 +281,16 @@ run_deploy_sop_check "$CFG_SOP_SHA"
   && ok "SOP preflight rejects a non-full source revision" \
   || { bad "short SOP source revision was not rejected"; cat "$WORK/out.log"; }
 
+# Target selection is exact: a worker-only deployment must not implicitly select the app.
+( export MARINE_DEPLOY_SOURCE_ONLY=1
+  source "$DEPLOY_SH" --check --with-sop-worker --service marine_sop_worker >/dev/null 2>&1
+  target_selected marine_sop_worker || exit 51
+  target_selected rails && exit 52
+  target_selected sidekiq && exit 53
+  exit 0
+) && ok "worker-only target selection excludes rails and normal sidekiq" \
+  || bad "worker-only target selection"
+
 echo "== deploy.sh sentinel parsers (unit) =="
 
 # The pure parsers are sourced (MARINE_DEPLOY_SOURCE_ONLY=1) so we can feed them raw text
