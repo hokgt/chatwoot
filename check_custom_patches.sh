@@ -131,9 +131,20 @@ for file in   app/services/whatsapp/incoming_message_base_service.rb   app/build
 done
 
 require_file custom/wijaya/batteries/custom_roles/hooks.rb
+require_file custom/wijaya/batteries/custom_roles/follow_up_provenance.rb
+require_file spec/custom/wijaya/batteries/custom_roles/follow_up_provenance_spec.rb
 require_file custom/wijaya/batteries/custom_roles/frontend/permissions.js
+# Battery-owned deterministic applicator for the Captain tasks_controller blocks
+# (driven by root apply_custom_patches.sh) + its round-trip unittest suite.
+require_file custom/wijaya/batteries/custom_roles/patch/apply_patches.py
+require_file custom/wijaya/batteries/custom_roles/patch/blocks.json
+require_file custom/wijaya/batteries/custom_roles/patch/test_apply_patches.py
+# The composer-task security fix adds exactly 4 START/END custom_roles_rbac
+# blocks to the native Captain tasks controller.
+require_marker_count app/controllers/api/v1/accounts/captain/tasks_controller.rb "WIJAYA_CUSTOM_START custom_roles_rbac" 4
+require_marker_count app/controllers/api/v1/accounts/captain/tasks_controller.rb "WIJAYA_CUSTOM_END custom_roles_rbac" 4
 
-for file in   app/builders/agent_builder.rb   app/controllers/api/v1/accounts/agents_controller.rb   app/controllers/api/v1/accounts/bulk_actions_controller.rb   app/controllers/api/v1/accounts/conversations/assignments_controller.rb   app/controllers/api/v1/accounts/conversations/base_controller.rb   app/controllers/api/v1/accounts/conversations_controller.rb   app/finders/conversation_finder.rb   app/javascript/dashboard/helper/permissionsHelper.js   app/javascript/dashboard/store/modules/conversations/helpers.js   app/javascript/dashboard/store/modules/customRole.js   app/javascript/dashboard/routes/dashboard/settings/customRoles/Index.vue   app/javascript/dashboard/routes/dashboard/settings/customRoles/component/CustomRoleModal.vue   app/javascript/dashboard/routes/dashboard/settings/customRoles/customRole.routes.js   app/models/account_user.rb   app/services/conversations/permission_filter_service.rb   enterprise/app/controllers/enterprise/api/v1/accounts/agents_controller.rb   enterprise/app/models/custom_role.rb   enterprise/app/models/enterprise/account_user.rb   enterprise/app/policies/enterprise/conversation_policy.rb   enterprise/app/services/enterprise/conversations/permission_filter_service.rb; do
+for file in   app/builders/agent_builder.rb   app/controllers/api/v1/accounts/agents_controller.rb   app/controllers/api/v1/accounts/bulk_actions_controller.rb   app/controllers/api/v1/accounts/captain/tasks_controller.rb   app/controllers/api/v1/accounts/conversations/assignments_controller.rb   app/controllers/api/v1/accounts/conversations/base_controller.rb   app/controllers/api/v1/accounts/conversations_controller.rb   app/finders/conversation_finder.rb   app/javascript/dashboard/helper/permissionsHelper.js   app/javascript/dashboard/store/modules/conversations/helpers.js   app/javascript/dashboard/store/modules/customRole.js   app/javascript/dashboard/routes/dashboard/settings/customRoles/Index.vue   app/javascript/dashboard/routes/dashboard/settings/customRoles/component/CustomRoleModal.vue   app/javascript/dashboard/routes/dashboard/settings/customRoles/customRole.routes.js   app/models/account_user.rb   app/services/conversations/permission_filter_service.rb   enterprise/app/controllers/enterprise/api/v1/accounts/agents_controller.rb   enterprise/app/models/custom_role.rb   enterprise/app/models/enterprise/account_user.rb   enterprise/app/policies/enterprise/conversation_policy.rb   enterprise/app/services/enterprise/conversations/permission_filter_service.rb; do
   require_marker "$file" "WIJAYA_CUSTOM_START custom_roles_rbac"
   require_marker "$file" "WIJAYA_CUSTOM_END custom_roles_rbac"
 done

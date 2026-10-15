@@ -217,6 +217,63 @@ zero business logic — all logic lives under `custom/wijaya/batteries/<feature>
 - **Necessity** — required: `perform_request` is the only point that chooses the delivery
   transport, and the webhook type is known only here (not inside SafeFetch).
 
+### 5c. `custom_roles_rbac` → `authorize_composer_conversation!` (direct require, not the dispatcher)
+
+- **Call sites** — `app/controllers/api/v1/accounts/captain/tasks_controller.rb`
+  (marker-wrapped `before_action :authorize_conversation_for_ai_task` + its private
+  method, with the `require` of the battery hooks INSIDE that first block so every
+  native-core line added by the fix stays marker-wrapped), and the Marine battery's
+  own `custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/tasks_controller.rb`
+  (battery file — no core marker) for `reply_suggestion`/`summarize`/`follow_up`.
+- **Purpose** — conversation-bound composer AI tasks must enforce the exact
+  conversation-show visibility (`ConversationsController#conversation` semantics)
+  BEFORE any service instantiation, transcript read, or LLM call:
+  blank/unknown/cross-account `conversation_display_id` → 404 (`ActiveRecord::RecordNotFound`),
+  custom-role agents → explicit 403 (`conversation_forbidden_response`, role-scoped via
+  `Enterprise::ConversationPolicy#show?`), everyone else → `Pundit::NotAuthorizedError` (401)
+  with administrator/agent-bot/inbox/team access identical to conversation show.
+- **Native default** — none: upstream resolved the conversation with account-only
+  scoping and no conversation authorization (a confirmed horizontal-authorization
+  bypass). This seam is deliberately fail-closed, which is why the callers require the
+  battery hooks directly instead of through the fail-open `Core::Hooks` dispatcher.
+- **Coverage** — Marine `reply_suggestion`/`summarize`/`follow_up` authorize; Marine
+  `rewrite`/`translate` stay context-free (a supplied display id is ignored — never
+  resolved, never authorized). Captain `summarize`/`reply_suggestion`/`label_suggestion`/
+  `follow_up` authorize; Captain `rewrite` authorizes only when a
+  `conversation_display_id` is supplied (upstream `improve` reads the conversation),
+  otherwise stays context-free.
+- **Reapply** — `custom/wijaya/batteries/custom_roles/patch/apply_patches.py`
+  (spec: sibling `blocks.json`, generated from the known-good tree and round-trip
+  verified against pristine upstream) restores the four Captain tasks_controller
+  blocks deterministically: exact unique line-aligned anchors, fail-loud on
+  missing/ambiguous/changed context, replaces-aware for the superseded upstream
+  default `follow_up_context` line, marker-count validated, atomic write,
+  idempotent (second run no diff). Root `apply_custom_patches.sh` runs it before
+  the other batteries and the global checker; `--root`/`--check` drive tests/CI.
+- **Provenance** — every success `follow_up_context` is signed with
+  `Rails.application.message_verifier` (`custom_roles` battery `FollowUpProvenance`;
+  account+conversation-scoped signing purpose, no hardcoded secret) and `follow_up`
+  verifies it fail-closed (concise 422) BEFORE the service: missing/invalid/tampered
+  tokens, other-account tokens, and conversation-bound tokens replayed against a
+  different authorized conversation are all rejected. The token is compact and
+  opaque — it signs only provenance metadata plus a SHA-256 digest of the canonical
+  context (never the raw transcript/context, deterministic recursive stringified
+  sorted-key canonicalization), and the client context is accepted only after its
+  digest matches the signed one in constant time, so any changed client field is
+  rejected as 422 before the service; legacy unsigned contexts fail closed.
+  Marine `rewrite`/`translate` and Captain `rewrite` without a supplied id issue
+  context-free (account-bound) tokens; a context-free follow-up still requires an
+  independently authorized current conversation. Captain tokens bind the authorized
+  canonical display id (`@wijaya_authorized_conversation`), never raw params, and
+  a malformed (non-object) `follow_up_context` JSON value fails closed as the
+  same concise 422 before any service.
+- **Risk** — low: the decision mirrors the native conversation show policy
+  (`ConversationPolicy#show?` with the exact `pundit_user` shape) and denials happen
+  before service instantiation. Covered by
+  `spec/custom/wijaya/batteries/marine_ai/controllers/tasks_controller_spec.rb`,
+  `spec/controllers/api/v1/accounts/captain/tasks_controller_spec.rb`, and
+  `spec/custom/wijaya/batteries/custom_roles/follow_up_provenance_spec.rb`.
+
 ---
 
 ## Frontend hooks

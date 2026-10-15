@@ -86,14 +86,37 @@ patches:
       Centralizes Wijaya custom role RBAC behavior for conversation visibility,
       assignment authorization, custom role validation, agent role assignment,
       and frontend role/permission UX while keeping Chatwoot core changes as
-      minimal hook calls.
+      minimal hook calls. Also owns the conversation authorization seam for
+      conversation-bound composer/copilot AI tasks (authorize_composer_conversation!)
+      so the Marine tasks battery controller and the native Captain tasks_controller
+      enforce exactly conversation-show visibility (404 blank/unknown/cross-account
+      display id, explicit 403 for custom-role agents, Pundit ConversationPolicy#show?
+      401 otherwise) before any service instantiation, transcript read, or LLM call;
+      context-free rewrite/translate never resolve a conversation. The battery also
+      owns FollowUpProvenance: every success follow_up_context is signed via
+      Rails.application.message_verifier (account+conversation-scoped purpose, no
+      hardcoded secret) and follow_up verifies it fail-closed (concise 422) before
+      any service; the compact token signs only metadata plus a SHA-256 digest of
+      the canonical context (never the raw transcript), and the client context is
+      accepted only after a constant-time digest match — any changed client field
+      fails closed as 422; legacy unsigned contexts fail closed. The verifier
+      accepts raw request params and fails closed (same 422) on malformed
+      non-object follow_up_context input, and Captain tokens bind the authorized
+      canonical display id, never raw params.
     custom_files:
       - custom/wijaya/batteries/custom_roles/hooks.rb
+      - custom/wijaya/batteries/custom_roles/follow_up_provenance.rb
+      # Battery-owned deterministic applicator that reattaches the Captain
+      # tasks_controller custom_roles_rbac blocks after an upstream pull
+      # (driven by root apply_custom_patches.sh, verified by check script).
+      - custom/wijaya/batteries/custom_roles/patch/apply_patches.py
+      - custom/wijaya/batteries/custom_roles/patch/blocks.json
       - custom/wijaya/batteries/custom_roles/frontend/permissions.js
     core_hook_touchpoints:
       - app/builders/agent_builder.rb
       - app/controllers/api/v1/accounts/agents_controller.rb
       - app/controllers/api/v1/accounts/bulk_actions_controller.rb
+      - app/controllers/api/v1/accounts/captain/tasks_controller.rb
       - app/controllers/api/v1/accounts/conversations/assignments_controller.rb
       - app/controllers/api/v1/accounts/conversations/base_controller.rb
       - app/controllers/api/v1/accounts/conversations_controller.rb
@@ -117,6 +140,9 @@ patches:
     tests:
       - custom/wijaya/batteries/custom_roles/frontend/specs/permissions.spec.js
       - spec/custom/wijaya/batteries/custom_roles/hooks_spec.rb
+      - spec/controllers/api/v1/accounts/captain/tasks_controller_spec.rb
+      - spec/custom/wijaya/batteries/custom_roles/follow_up_provenance_spec.rb
+      - custom/wijaya/batteries/custom_roles/patch/test_apply_patches.py
       - app/javascript/dashboard/store/modules/conversations/specs/helpers.spec.js
       - spec/controllers/api/v1/accounts/bulk_actions_controller_spec.rb
       - spec/controllers/api/v1/accounts/conversations/assignments_controller_spec.rb
@@ -1631,6 +1657,9 @@ patches:
       - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/preferences_controller.rb
       - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/llm_settings_controller.rb
       - custom/wijaya/batteries/marine_ai/app/policies/marine/assistant_policy.rb
+      # Marine composer tasks controller: conversation-bound actions (reply_suggestion,
+      # summarize, follow_up) authorize via custom_roles_rbac authorize_composer_conversation!
+      # before any Marine service is instantiated; rewrite/translate stay context-free.
       - custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/tasks_controller.rb
       - custom/wijaya/batteries/marine_ai/app/policies/marine/tasks_policy.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/copilot/base_service.rb
