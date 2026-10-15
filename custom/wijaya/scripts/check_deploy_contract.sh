@@ -107,8 +107,17 @@ if [[ ! -f "$SOP" ]]; then
   err "SOP worker overlay missing: $SOP"
 else
   grep -q 'marine_sop_worker' "$SOP" || err "SOP overlay does not define marine_sop_worker"
-  if grep -q "$CATALOG_ENV" "$SOP"; then
-    err "SOP worker overlay must NOT carry the catalog secret ($CATALOG_ENV)"
+  grep -q 'MARINE_SOP_IMAGE' "$SOP" || err "SOP overlay must use a dedicated MARINE_SOP_IMAGE"
+  grep -q 'MARINE_SOP_SOURCE_REVISION' "$SOP" || err "SOP overlay must declare the exact source revision"
+  grep -q 'com.wijaya.chatwoot.base-image' "$SOP" || err "SOP overlay must declare the base image provenance"
+  grep -q 'com.wijaya.chatwoot.overlay' "$SOP" || err "SOP overlay must declare its tracked overlay identity"
+  if grep -qE '^[[:space:]]*image:[[:space:]]*\$\{CHATWOOT_IMAGE' "$SOP"; then
+    err "SOP worker must not reuse CHATWOOT_IMAGE; use a dedicated derivative image"
+  fi
+  grep -qE "^[[:space:]]*-[[:space:]]*${CATALOG_ENV}=[[:space:]]*$" "$SOP" \
+    || err "SOP worker overlay must explicitly blank $CATALOG_ENV inherited from .env"
+  if grep -q 'marine_catalog_ro_password' "$SOP"; then
+    err "SOP worker overlay must NOT mount the catalog secret"
   fi
 fi
 

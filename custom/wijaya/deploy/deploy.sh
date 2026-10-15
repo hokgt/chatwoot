@@ -51,6 +51,12 @@ readonly EXPECTED_REMOTE='git@github.com:hokgt/chatwoot.git'
 readonly CATALOG_ENV_KEY='MARINE_CATALOG_PG_PASSWORD_FILE'
 readonly PUBLIC_HEALTH_URL='https://chatwoot.wijayacorp.com/'
 readonly ALLOWED_SERVICES=('rails' 'sidekiq' 'marine_sop_worker')
+readonly SOP_ROLE_LABEL='com.wijaya.chatwoot.role'
+readonly SOP_SOURCE_LABEL='org.opencontainers.image.revision'
+readonly SOP_BASE_IMAGE_LABEL='com.wijaya.chatwoot.base-image'
+readonly SOP_OVERLAY_LABEL='com.wijaya.chatwoot.overlay'
+readonly SOP_ROLE='marine_sop_worker'
+readonly SOP_OVERLAY_ID='custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml'
 
 # Unique, allowlisted sentinel markers. The in-container Rails runners emit exactly one
 # sentinel line each; the shell extracts ONLY that anchored line and ignores any Rails
@@ -196,9 +202,12 @@ validate_overlay_files() {
   [[ -s "$CATALOG_OVERLAY" ]] || die "mandatory catalog overlay is missing or empty"
   if [[ "$WITH_SOP" -eq 1 ]]; then
     [[ -s "$SOP_OVERLAY" ]] || die "SOP worker overlay is missing or empty"
-    # The optional SOP overlay must NOT carry the rails/sidekiq catalog mount.
-    if grep -q "$CATALOG_ENV_KEY" "$SOP_OVERLAY" 2>/dev/null; then
-      die "SOP worker overlay must not reference the catalog secret"
+    # The worker shares .env for app connectivity, so the overlay must explicitly
+    # scrub the catalog password-file path inherited from that file and must not mount it.
+    grep -qE "^[[:space:]]*-[[:space:]]*${CATALOG_ENV_KEY}=[[:space:]]*$" "$SOP_OVERLAY" \
+      || die "SOP worker overlay must explicitly blank $CATALOG_ENV_KEY inherited from .env"
+    if grep -q 'marine_catalog_ro_password' "$SOP_OVERLAY" 2>/dev/null; then
+      die "SOP worker overlay must not mount the catalog secret"
     fi
   fi
   ok "compose overlays resolved (catalog mandatory$([[ "$WITH_SOP" -eq 1 ]] && echo ', sop enabled'))"
@@ -240,6 +249,25 @@ validate_service_catalog_contract() {
   ok "$svc carries a read-only catalog mount backed by a non-empty host file"
 }
 
+validate_sop_config_contract() {
+  local json="$1" image app_image source base role overlay
+  image="$(jq -r '.services["marine_sop_worker"].image // empty' <<<"$json")"
+  app_image="$(jq -r '.services.rails.image // empty' <<<"$json")"
+  source="$(jq -r --arg k "$SOP_SOURCE_LABEL" '.services["marine_sop_worker"].labels[$k] // empty' <<<"$json")"
+  base="$(jq -r --arg k "$SOP_BASE_IMAGE_LABEL" '.services["marine_sop_worker"].labels[$k] // empty' <<<"$json")"
+  role="$(jq -r --arg k "$SOP_ROLE_LABEL" '.services["marine_sop_worker"].labels[$k] // empty' <<<"$json")"
+  overlay="$(jq -r --arg k "$SOP_OVERLAY_LABEL" '.services["marine_sop_worker"].labels[$k] // empty' <<<"$json")"
+
+  [[ -n "$image" ]] || die "marine_sop_worker has no resolved dedicated image"
+  [[ -n "$app_image" ]] || die "rails has no resolved image for SOP base provenance"
+  [[ "$image" != "$app_image" ]] || die "marine_sop_worker must use a dedicated derivative image, not the app image"
+  [[ "$source" =~ ^[0-9a-f]{40}$ ]] || die "marine_sop_worker source revision must be an exact full SHA"
+  [[ "$base" == "$app_image" ]] || die "marine_sop_worker base-image label does not match the resolved app image"
+  [[ "$role" == "$SOP_ROLE" ]] || die "marine_sop_worker role label is missing or invalid"
+  [[ "$overlay" == "$SOP_OVERLAY_ID" ]] || die "marine_sop_worker overlay label is not the tracked SOP overlay"
+  ok "marine_sop_worker resolved config has dedicated image + exact tracked provenance"
+}
+
 preflight() {
   validate_overlay_files
   local json
@@ -259,6 +287,7 @@ preflight() {
       (.services["marine_sop_worker"].environment[$k] // "")' <<<"$json")"
     [[ -z "$sop_mounts" ]] || die "marine_sop_worker must not carry the catalog secret"
     ok "marine_sop_worker is free of the catalog secret"
+    validate_sop_config_contract "$json"
   fi
 }
 
@@ -301,7 +330,55 @@ gate_config_files_label() {
       grep -qF "$SOP_OVERLAY" <<<"$labels" || die "$svc config_files label is missing the SOP overlay"
     fi
   done
-  ok "rails+sidekiq labelled with base + mandatory catalog overlay"
+  if [[ "$WITH_SOP" -eq 1 ]]; then
+    cid="$(container_id marine_sop_worker)"
+    [[ -n "$cid" ]] || die "marine_sop_worker container not running after recreation"
+    labels="$("$DOCKER" inspect --format '{{ index .Config.Labels "com.docker.compose.project.config_files" }}' "$cid" 2>/dev/null || true)"
+    grep -qF "$BASE_COMPOSE" <<<"$labels" || die "marine_sop_worker config_files label is missing the base compose file"
+    grep -qF "$CATALOG_OVERLAY" <<<"$labels" || die "marine_sop_worker config_files label is missing the mandatory catalog overlay"
+    grep -qF "$SOP_OVERLAY" <<<"$labels" || die "marine_sop_worker config_files label is missing the current SOP overlay"
+  fi
+  ok "runtime containers labelled with the tracked compose overlays"
+}
+
+gate_sop_runtime_provenance() {
+  [[ "$WITH_SOP" -eq 1 ]] || return 0
+  local json cid image expected_source expected_base container_image container_source container_base container_role container_overlay
+  local runtime_sha image_source image_base image_role container_image_id resolved_image_id langs
+  json="$(resolve_config_json)"
+  cid="$(container_id marine_sop_worker)"
+  [[ -n "$cid" ]] || die "marine_sop_worker container not running for provenance gate"
+  image="$(jq -r '.services["marine_sop_worker"].image // empty' <<<"$json")"
+  expected_source="$(jq -r --arg k "$SOP_SOURCE_LABEL" '.services["marine_sop_worker"].labels[$k] // empty' <<<"$json")"
+  expected_base="$(jq -r --arg k "$SOP_BASE_IMAGE_LABEL" '.services["marine_sop_worker"].labels[$k] // empty' <<<"$json")"
+
+  container_image="$("$DOCKER" inspect --format '{{.Config.Image}}' "$cid" 2>/dev/null || true)"
+  container_source="$("$DOCKER" inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$cid" 2>/dev/null || true)"
+  container_base="$("$DOCKER" inspect --format '{{ index .Config.Labels "com.wijaya.chatwoot.base-image" }}' "$cid" 2>/dev/null || true)"
+  container_role="$("$DOCKER" inspect --format '{{ index .Config.Labels "com.wijaya.chatwoot.role" }}' "$cid" 2>/dev/null || true)"
+  container_overlay="$("$DOCKER" inspect --format '{{ index .Config.Labels "com.wijaya.chatwoot.overlay" }}' "$cid" 2>/dev/null || true)"
+  runtime_sha="$("$DOCKER" exec "$cid" cat /app/.git_sha 2>/dev/null | tr -d '[:space:]' || true)"
+  image_source="$("$DOCKER" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image" 2>/dev/null || true)"
+  image_base="$("$DOCKER" image inspect --format '{{ index .Config.Labels "com.wijaya.chatwoot.base-image" }}' "$image" 2>/dev/null || true)"
+  image_role="$("$DOCKER" image inspect --format '{{ index .Config.Labels "com.wijaya.chatwoot.role" }}' "$image" 2>/dev/null || true)"
+  container_image_id="$("$DOCKER" inspect --format '{{.Image}}' "$cid" 2>/dev/null || true)"
+  resolved_image_id="$("$DOCKER" image inspect --format '{{.Id}}' "$image" 2>/dev/null || true)"
+
+  [[ "$container_image" == "$image" ]] || die "marine_sop_worker runtime image does not match resolved config"
+  [[ -n "$resolved_image_id" && "$container_image_id" == "$resolved_image_id" ]] || die "marine_sop_worker runtime image ID does not match the pinned image"
+  [[ "$runtime_sha" == "$expected_source" ]] || die "marine_sop_worker /app/.git_sha does not match configured source revision"
+  [[ "$image_source" == "$expected_source" && "$container_source" == "$expected_source" ]] || die "marine_sop_worker source revision labels disagree"
+  [[ "$image_base" == "$expected_base" && "$container_base" == "$expected_base" ]] || die "marine_sop_worker base-image provenance labels disagree"
+  [[ "$image_role" == "$SOP_ROLE" && "$container_role" == "$SOP_ROLE" ]] || die "marine_sop_worker role provenance labels disagree"
+  [[ "$container_overlay" == "$SOP_OVERLAY_ID" ]] || die "marine_sop_worker runtime overlay label is stale"
+
+  "$DOCKER" exec "$cid" sh -lc \
+    'for b in pdfinfo pdftotext pdftoppm pdfunite tesseract; do command -v "$b" >/dev/null || exit 1; done; command -v magick >/dev/null || command -v convert >/dev/null' \
+    || die "marine_sop_worker is missing a required SOP processing binary"
+  langs="$("$DOCKER" exec "$cid" tesseract --list-langs 2>/dev/null || true)"
+  grep -qx 'eng' <<<"$langs" || die "marine_sop_worker is missing Tesseract eng data"
+  grep -qx 'ind' <<<"$langs" || die "marine_sop_worker is missing Tesseract ind data"
+  ok "marine_sop_worker runtime source/image/overlay provenance and SOP binaries agree"
 }
 
 gate_password_file_and_mount() {
@@ -470,6 +547,7 @@ gate_deployment_window_logs() {
 health_gate() {
   local since="$1"
   gate_config_files_label
+  gate_sop_runtime_provenance
   gate_password_file_and_mount
   gate_catalog_reference
   gate_domain_boundary_probe

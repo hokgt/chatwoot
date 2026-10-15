@@ -727,9 +727,17 @@ require_file custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-cata
 require_marker custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml "MARINE_CATALOG_PG_PASSWORD_FILE"
 require_file custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml
 require_marker custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml "marine_sop_worker"
-# The optional SOP worker overlay must NOT carry the rails/sidekiq catalog secret.
-if grep -q "MARINE_CATALOG_PG_PASSWORD_FILE" custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml 2>/dev/null; then
-  echo "FORBIDDEN: SOP worker overlay must not carry the catalog secret (it lives in docker-compose.marine-catalog.yml)" >&2
+require_marker custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml "MARINE_SOP_IMAGE"
+require_marker custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml "MARINE_SOP_SOURCE_REVISION"
+require_marker custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing "org.opencontainers.image.revision"
+# The optional SOP worker shares .env, so it must explicitly scrub the catalog password-file
+# path and must never mount the rails/sidekiq catalog secret.
+if ! grep -qE '^[[:space:]]*-[[:space:]]*MARINE_CATALOG_PG_PASSWORD_FILE=[[:space:]]*$' custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml; then
+  echo "MISSING: SOP worker overlay must explicitly blank MARINE_CATALOG_PG_PASSWORD_FILE inherited from .env" >&2
+  missing=1
+fi
+if grep -q 'marine_catalog_ro_password' custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml 2>/dev/null; then
+  echo "FORBIDDEN: SOP worker overlay must not mount the catalog secret (it lives in docker-compose.marine-catalog.yml)" >&2
   missing=1
 fi
 # The base compose must NOT carry the mandatory Marine catalog secret mount anymore.

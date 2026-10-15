@@ -212,6 +212,75 @@ rc=0; env DOCKER="$FAKE_DOCKER" bash "$DEPLOY_SH" --check --service postgres >"$
 [[ "$rc" != "0" ]] && grep -q "unsupported service" "$WORK/out.log" \
   && ok "rejects unsupported service (postgres)" || bad "unsupported service not rejected"
 
+# SOP provenance fixtures use no secrets and exercise --check only.
+make_sop_config() {
+  local out="$1" image="$2" source="$3" base="$4" role="$5" overlay="$6"
+  cat >"$out" <<JSON
+{ "services": {
+    "rails": {
+      "image": "hokgt-chatwoot:test",
+      "environment": { "MARINE_CATALOG_PG_PASSWORD_FILE": "/run/secrets/marine_catalog_pg_password" },
+      "volumes": [ { "type": "bind", "source": "$SECRET_OK", "target": "/run/secrets/marine_catalog_pg_password", "read_only": true } ]
+    },
+    "sidekiq": {
+      "image": "hokgt-chatwoot:test",
+      "environment": { "MARINE_CATALOG_PG_PASSWORD_FILE": "/run/secrets/marine_catalog_pg_password" },
+      "volumes": [ { "type": "bind", "source": "$SECRET_OK", "target": "/run/secrets/marine_catalog_pg_password", "read_only": true } ]
+    },
+    "marine_sop_worker": {
+      "image": "$image", "environment": {}, "volumes": [],
+      "labels": {
+        "org.opencontainers.image.revision": "$source",
+        "com.wijaya.chatwoot.base-image": "$base",
+        "com.wijaya.chatwoot.role": "$role",
+        "com.wijaya.chatwoot.overlay": "$overlay"
+      }
+    }
+} }
+JSON
+}
+
+run_deploy_sop_check() {
+  local cfg="$1"
+  CALLN=$((CALLN+1)); UP_MARKER="$WORK/up.$CALLN"; IMAGE_MARKER="$WORK/img.$CALLN"
+  rm -f "$UP_MARKER" "$IMAGE_MARKER"; RC=0
+  env DOCKER="$FAKE_DOCKER" MARINE_DEPLOY_BASE_COMPOSE="$BASE_COMPOSE" \
+      MARINE_DEPLOY_CATALOG_OVERLAY="$CATALOG_OVERLAY" MARINE_DEPLOY_SOP_OVERLAY="$SOP_OVERLAY" \
+      FAKE_CONFIG_JSON_FILE="$cfg" FAKE_UP_MARKER="$UP_MARKER" FAKE_IMAGE_MARKER="$IMAGE_MARKER" \
+      bash "$DEPLOY_SH" --check --with-sop-worker >"$WORK/out.log" 2>&1 || RC=$?
+}
+
+FULL_SHA='0123456789abcdef0123456789abcdef01234567'
+SOP_OVERLAY_ID='custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml'
+OLD_SOP_OVERLAY_ID='custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-'""'sop.yml'
+CFG_SOP_OK="$WORK/cfg_sop_ok.json"
+make_sop_config "$CFG_SOP_OK" 'chatwoot-wijaya:test-sop' "$FULL_SHA" 'hokgt-chatwoot:test' 'marine_sop_worker' "$SOP_OVERLAY_ID"
+run_deploy_sop_check "$CFG_SOP_OK"
+[[ "$RC" == 0 && ! -f "$UP_MARKER" ]] \
+  && ok "SOP preflight accepts a dedicated image with exact source/base/overlay provenance" \
+  || { bad "valid SOP provenance rejected (rc=$RC)"; cat "$WORK/out.log"; }
+
+CFG_SOP_BASE="$WORK/cfg_sop_base.json"
+make_sop_config "$CFG_SOP_BASE" 'hokgt-chatwoot:test' "$FULL_SHA" 'hokgt-chatwoot:test' 'marine_sop_worker' "$SOP_OVERLAY_ID"
+run_deploy_sop_check "$CFG_SOP_BASE"
+[[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'dedicated derivative image' "$WORK/out.log" \
+  && ok "SOP preflight rejects worker accidentally using the base app image" \
+  || { bad "base-image reuse was not rejected"; cat "$WORK/out.log"; }
+
+CFG_SOP_OLD="$WORK/cfg_sop_old.json"
+make_sop_config "$CFG_SOP_OLD" 'chatwoot-wijaya:test-sop' "$FULL_SHA" 'hokgt-chatwoot:test' 'marine_sop_worker' "$OLD_SOP_OVERLAY_ID"
+run_deploy_sop_check "$CFG_SOP_OLD"
+[[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'tracked SOP overlay' "$WORK/out.log" \
+  && ok "SOP preflight rejects stale/retired overlay provenance" \
+  || { bad "stale SOP overlay provenance was not rejected"; cat "$WORK/out.log"; }
+
+CFG_SOP_SHA="$WORK/cfg_sop_sha.json"
+make_sop_config "$CFG_SOP_SHA" 'chatwoot-wijaya:test-sop' 'short-sha' 'hokgt-chatwoot:test' 'marine_sop_worker' "$SOP_OVERLAY_ID"
+run_deploy_sop_check "$CFG_SOP_SHA"
+[[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'exact full SHA' "$WORK/out.log" \
+  && ok "SOP preflight rejects a non-full source revision" \
+  || { bad "short SOP source revision was not rejected"; cat "$WORK/out.log"; }
+
 echo "== deploy.sh sentinel parsers (unit) =="
 
 # The pure parsers are sourced (MARINE_DEPLOY_SOURCE_ONLY=1) so we can feed them raw text

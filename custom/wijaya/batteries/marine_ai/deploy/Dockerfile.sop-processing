@@ -20,6 +20,14 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
+# Re-declare the pre-FROM arg so it is available to image labels. SOURCE_REVISION must
+# be the exact full SHA embedded in the base image at /app/.git_sha.
+ARG BASE_IMAGE
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      com.wijaya.chatwoot.base-image="${BASE_IMAGE}" \
+      com.wijaya.chatwoot.role="marine_sop_worker"
+
 # apk requires root; the Chatwoot base image runs as root and defines no USER.
 USER root
 

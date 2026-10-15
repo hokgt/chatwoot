@@ -1605,7 +1605,9 @@ patches:
       - custom/wijaya/batteries/marine_ai/docs/product_catalog_release_readiness.md
       # Commit 1C — SOP extraction + OCR foundation (safe command runner, PDF/image
       # extraction with page-level OCR fallback, SOP create service + async job, and the
-      # battery-owned OCR runtime derivative image).
+      # battery-owned OCR runtime derivative image). The derivative records the exact
+      # application source SHA/base image in OCI labels; the dedicated worker overlay adds
+      # matching container labels and must never fall back to the plain application image.
       - custom/wijaya/batteries/marine_ai/app/services/marine/documents/command_runner.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/documents/create_sop_service.rb
       - custom/wijaya/batteries/marine_ai/app/services/marine/documents/sop/extraction_service.rb
@@ -1619,7 +1621,8 @@ patches:
       - custom/wijaya/batteries/marine_ai/deploy/install_sop_processing_dependencies.sh
       # Battery overlays (kept out of base compose): the MANDATORY read-only catalog
       # secret mount for rails+sidekiq, and the OPTIONAL dedicated marine_sop_worker
-      # service (isolated queue + SOP hardening). Recreation goes through the canonical
+      # service (isolated queue + SOP hardening, with the shared .env catalog-secret path
+      # explicitly scrubbed). Recreation goes through the canonical
       # entrypoint custom/wijaya/deploy/deploy.sh — never a manual `docker compose up`.
       - custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml
       - custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml
@@ -2278,10 +2281,13 @@ patches:
       category=error on every non-product turn. deploy.sh always layers the base
       compose + the mandatory catalog overlay (docker-compose.marine-catalog.yml),
       optionally adds the SOP worker overlay (docker-compose.marine-sop-worker.yml),
-      preserves the pinned image (no build, no migrations), recreates only the
-      intended services with --no-deps --force-recreate --no-build, runs a
-      fail-fast preflight (resolved rails+sidekiq must carry the read-only catalog
-      mount backed by a non-empty host file) and a post-deploy health gate. A static
+      preserves pinned images (no build, no migrations), requires the optional SOP
+      worker to use a distinct derivative image with exact full source/base/overlay
+      provenance, recreates only the intended services with --no-deps
+      --force-recreate --no-build, runs a fail-fast preflight (resolved rails+sidekiq
+      must carry the read-only catalog mount backed by a non-empty host file) and a
+      post-deploy gate that reconciles the worker image labels, container labels,
+      `/app/.git_sha`, Compose config files, and OCR binaries. A static
       contract checker and a secret-safe domain-boundary dependency monitor guard the
       contract in CI and at deploy time.
     custom_files:
