@@ -20,6 +20,8 @@ wijaya_marine_memory_checkpoint_job:
   cron: '0 2 * * * Asia/Jakarta'
   class: 'Marine::Memory::CheckpointJob'
   queue: low
+  # Explicit because the Battery class may not be constantized when sidekiq-cron enqueues.
+  active_job: true
 # WIJAYA_CUSTOM_END marine_ai
 """
 

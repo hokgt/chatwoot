@@ -588,6 +588,7 @@ require_marker config/schedule.yml "WIJAYA_CUSTOM_END marine_ai"
 require_marker config/schedule.yml "wijaya_marine_memory_checkpoint_job:"
 require_marker config/schedule.yml "Asia/Jakarta"
 require_marker config/schedule.yml "class: 'Marine::Memory::CheckpointJob'"
+require_marker config/schedule.yml "active_job: true"
 require_file custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/tasks_controller.rb
 require_file custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/assistants_controller.rb
 require_file custom/wijaya/batteries/marine_ai/app/controllers/api/v1/accounts/marine/documents_controller.rb

@@ -1763,7 +1763,8 @@ patches:
       # seed/allowlist/localize Marine — the battery owns those via first_or_initialize
       # defaults and its own config/locales/en.yml (registered by the loader).
       # Routes consolidated into the wijaya_core registrar (config/routes.rb wijaya_routes marker).
-      # Marker-wrapped Sidekiq cron registration for the 02:00 Asia/Jakarta checkpoint.
+      # Marker-wrapped Sidekiq cron registration for the 02:00 Asia/Jakarta checkpoint;
+      # explicitly dispatches through ActiveJob even before the Battery class is constantized.
       - config/schedule.yml
       - app/services/message_templates/hook_execution_service.rb
       - app/views/api/v1/models/_inbox.json.jbuilder
