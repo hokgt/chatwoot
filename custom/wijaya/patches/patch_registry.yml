@@ -2286,7 +2286,8 @@ patches:
       provenance, recreates only the intended services with --no-deps
       --force-recreate --no-build, runs a fail-fast preflight (resolved rails+sidekiq
       must carry the read-only catalog mount backed by a non-empty host file) and a
-      post-deploy gate that reconciles the worker image labels, container labels,
+      pre-recreation gate that rejects app-image aliases by image ID and validates
+      derivative OCI labels, plus a post-deploy gate that reconciles image labels, container labels,
       `/app/.git_sha`, Compose config files, and OCR binaries. Isolated worker-only
       recreation runs only worker/provenance gates; unrelated app/LLM health gates remain
       mandatory whenever rails or normal sidekiq is selected. A static

@@ -61,7 +61,20 @@ if [[ "${1:-}" == "compose" ]]; then
     *) exit 0 ;;
   esac
 elif [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
-  : "${FAKE_IMAGE_MARKER:?}"; echo "inspect" >>"$FAKE_IMAGE_MARKER"; exit 0
+  : "${FAKE_IMAGE_MARKER:?}"; echo "inspect" >>"$FAKE_IMAGE_MARKER"
+  if [[ "${3:-}" != "--format" ]]; then exit 0; fi
+  fmt="${4:-}"; ref="${5:-}"
+  if [[ "$ref" == "${FAKE_SOP_REF:-}" ]]; then
+    case "$fmt" in
+      *'.Id'*) echo "${FAKE_SOP_ID:-}" ;;
+      *'org.opencontainers.image.revision'*) echo "${FAKE_SOP_SOURCE:-}" ;;
+      *'com.wijaya.chatwoot.base-image'*) echo "${FAKE_SOP_BASE:-}" ;;
+      *'com.wijaya.chatwoot.role'*) echo "${FAKE_SOP_ROLE:-}" ;;
+    esac
+  elif [[ "$ref" == "${FAKE_APP_REF:-}" ]]; then
+    case "$fmt" in *'.Id'*) echo "${FAKE_APP_ID:-}" ;; esac
+  fi
+  exit 0
 fi
 exit 0
 FAKE
@@ -280,6 +293,28 @@ run_deploy_sop_check "$CFG_SOP_SHA"
 [[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'exact full SHA' "$WORK/out.log" \
   && ok "SOP preflight rejects a non-full source revision" \
   || { bad "short SOP source revision was not rejected"; cat "$WORK/out.log"; }
+
+# Pre-recreation image identity gate: aliases of the plain app image must fail before up.
+( export MARINE_DEPLOY_SOURCE_ONLY=1 DOCKER="$FAKE_DOCKER" FAKE_IMAGE_MARKER="$WORK/image-provenance"
+  export FAKE_SOP_REF='chatwoot-wijaya:test-sop' FAKE_APP_REF='hokgt-chatwoot:test'
+  export FAKE_SOP_ID='sha256:sop' FAKE_APP_ID='sha256:app' FAKE_SOP_SOURCE="$FULL_SHA"
+  export FAKE_SOP_BASE='hokgt-chatwoot:test' FAKE_SOP_ROLE='marine_sop_worker'
+  source "$DEPLOY_SH" --check --with-sop-worker --service marine_sop_worker >/dev/null 2>&1
+  validate_sop_image_provenance_before_recreate "$(cat "$CFG_SOP_OK")"
+) && ok "SOP image pre-recreation gate accepts distinct ID + matching OCI provenance" \
+  || bad "valid SOP image identity/provenance rejected"
+
+rc=0
+( export MARINE_DEPLOY_SOURCE_ONLY=1 DOCKER="$FAKE_DOCKER" FAKE_IMAGE_MARKER="$WORK/image-alias"
+  export FAKE_SOP_REF='chatwoot-wijaya:test-sop' FAKE_APP_REF='hokgt-chatwoot:test'
+  export FAKE_SOP_ID='sha256:same' FAKE_APP_ID='sha256:same' FAKE_SOP_SOURCE="$FULL_SHA"
+  export FAKE_SOP_BASE='hokgt-chatwoot:test' FAKE_SOP_ROLE='marine_sop_worker'
+  source "$DEPLOY_SH" --check --with-sop-worker --service marine_sop_worker >/dev/null 2>&1
+  validate_sop_image_provenance_before_recreate "$(cat "$CFG_SOP_OK")" >"$WORK/image-alias.log" 2>&1
+) || rc=$?
+[[ "$rc" != 0 ]] && grep -q 'plain app image ID' "$WORK/image-alias.log" \
+  && ok "SOP image pre-recreation gate rejects a different tag aliasing the app image ID" \
+  || { bad "same-image-ID alias was not rejected before recreation"; cat "$WORK/image-alias.log"; }
 
 # Target selection is exact: a worker-only deployment must not implicitly select the app.
 ( export MARINE_DEPLOY_SOURCE_ONLY=1

@@ -300,6 +300,26 @@ preflight() {
 # ---------------------------------------------------------------------------
 # 2) Image safety — images must already exist locally (no build).
 # ---------------------------------------------------------------------------
+validate_sop_image_provenance_before_recreate() {
+  local json="$1" image app_image expected_source expected_base image_id app_image_id image_source image_base image_role
+  image="$(jq -r '.services["marine_sop_worker"].image // empty' <<<"$json")"
+  app_image="$(jq -r '.services.rails.image // empty' <<<"$json")"
+  expected_source="$(jq -r --arg k "$SOP_SOURCE_LABEL" '.services["marine_sop_worker"].labels[$k] // empty' <<<"$json")"
+  expected_base="$(jq -r --arg k "$SOP_BASE_IMAGE_LABEL" '.services["marine_sop_worker"].labels[$k] // empty' <<<"$json")"
+  image_id="$("$DOCKER" image inspect --format '{{.Id}}' "$image" 2>/dev/null || true)"
+  app_image_id="$("$DOCKER" image inspect --format '{{.Id}}' "$app_image" 2>/dev/null || true)"
+  image_source="$("$DOCKER" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image" 2>/dev/null || true)"
+  image_base="$("$DOCKER" image inspect --format '{{ index .Config.Labels "com.wijaya.chatwoot.base-image" }}' "$image" 2>/dev/null || true)"
+  image_role="$("$DOCKER" image inspect --format '{{ index .Config.Labels "com.wijaya.chatwoot.role" }}' "$image" 2>/dev/null || true)"
+
+  [[ -n "$image_id" && -n "$app_image_id" ]] || die "SOP/app image identity could not be resolved before recreation"
+  [[ "$image_id" != "$app_image_id" ]] || die "marine_sop_worker image resolves to the plain app image ID"
+  [[ "$image_source" == "$expected_source" ]] || die "SOP image source label does not match resolved Compose provenance"
+  [[ "$image_base" == "$expected_base" ]] || die "SOP image base label does not match resolved Compose provenance"
+  [[ "$image_role" == "$SOP_ROLE" ]] || die "SOP image role label does not identify the dedicated worker"
+  ok "SOP derivative image identity + OCI provenance verified before recreation"
+}
+
 validate_images_present() {
   local json="$1" svc image
   for svc in "${TARGET_SERVICES[@]}"; do
@@ -307,6 +327,9 @@ validate_images_present() {
     [[ -n "$image" ]] || die "$svc has no resolved image (refusing to build)"
     "$DOCKER" image inspect "$image" >/dev/null 2>&1 || die "$svc image is not present locally (refusing to build)"
   done
+  if [[ "$WITH_SOP" -eq 1 ]] && target_selected marine_sop_worker; then
+    validate_sop_image_provenance_before_recreate "$json"
+  fi
   ok "target service images present locally"
 }
 
