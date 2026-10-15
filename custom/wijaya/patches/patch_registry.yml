@@ -2406,6 +2406,17 @@ patches:
       under storage/config/tmp and cleans up exactly the created paths; and the
       parent-health probe uses a randomized SecureRandom.hex ActiveStorage key with
       fail-safe deletion (never a predictable per-pid key).
+      Pre-image isolation round (Blocker 2 fix): the ephemeral pre-image gate
+      container is fully self-contained — an isolated EMPTY tmpfs at
+      /app/storage (the derivative image ships no /app/storage; the runtime
+      storage_data volume and any host/customer data are NEVER mounted),
+      isolated tmpfs /tmp, the worker's exact security contract (cap_drop ALL +
+      cap_add CHOWN/SETUID/SETGID/KILL, no-new-privileges, pids-limit 256,
+      memory 2g), still --network none and still the exact immutable image ID.
+      The gate script itself runs its workspace writes (escape symlink, PDF,
+      output check, cleanup) through su-exec marine_sop and resolves su-exec by
+      absolute path, because the root gate process has no CAP_DAC_OVERRIDE and
+      the allowlisted env PATH=/usr/bin:/bin excludes /sbin.
       Final independent-review round: the SOP overlay parent keeps exactly
       CHOWN/SETUID/SETGID/KILL (cap_drop ALL + no-new-privileges), the child
       gets zero capabilities (launcher capget fail-closed check, exercised by

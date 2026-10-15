@@ -52,7 +52,7 @@ WS=
 
 cleanup() {
   rm -f "$STORAGE_CANARY" "$CONFIG_CANARY" "$TMP_CANARY" 2>/dev/null || :
-  if [ -n "$WS" ]; then rm -rf "$WS" 2>/dev/null || :; fi
+  if [ -n "$WS" ]; then su-exec marine_sop rm -rf "$WS" 2>/dev/null || :; fi
 }
 trap cleanup EXIT INT TERM
 
@@ -61,6 +61,11 @@ fail() { echo "$SENTINEL:FAIL:$1"; exit 1; }
 # --- 1) components ---------------------------------------------------------
 [ -x "$LAUNCHER" ] || fail launcher
 command -v su-exec >/dev/null 2>&1 || fail su-exec
+# Absolute path: the env -i invocations below run with an allowlisted
+# PATH=/usr/bin:/bin (the contract the CommandRunner enforces), which does
+# NOT contain su-exec (it lives in /sbin) — so every allowlisted-env
+# su-exec invocation must use the resolved absolute path.
+SU_EXEC="$(command -v su-exec)"
 id marine_sop >/dev/null 2>&1 || fail user
 for b in /usr/bin/pdfinfo /usr/bin/pdftotext /usr/bin/pdftoppm /usr/bin/tesseract; do
   [ -x "$b" ] || fail parser
@@ -78,13 +83,18 @@ su-exec marine_sop mkdir -p "$WS/tmp" "$WS/cache"
 STORAGE_CANARY="$(mktemp /app/storage/.wijaya-sop-gate-canary.XXXXXXXX)"
 CONFIG_CANARY="$(mktemp /app/config/.wijaya-sop-gate-canary.XXXXXXXX)"
 TMP_CANARY="$(mktemp /tmp/.wijaya-sop-gate-canary.XXXXXXXX)"
-ln -sfn "$CONFIG_CANARY" "$WS/escape-symlink"
+# The workspace is owned by marine_sop with mode 0700 (mktemp default) and
+# the gate process runs as root with NO CAP_DAC_OVERRIDE (cap_drop ALL), so
+# every write into the workspace — including this escape probe symlink and
+# the synthetic PDF below — MUST go through su-exec marine_sop, exactly like
+# the drops it is probing; root-by DAC override would bypass the contract.
+su-exec marine_sop ln -sfn "$CONFIG_CANARY" "$WS/escape-symlink"
 
 # --- 3) launcher self-test: policy + probes -------------------------------
 # env -i delivers ONLY allowlisted keys to the launcher (the same contract the Ruby
 # CommandRunner enforces via unsetenv_others). Probes must ALL be denied by Landlock.
 if ! env -i LANG=C LC_ALL=C PATH=/usr/bin:/bin HOME="$WS" TMPDIR="$WS/tmp" XDG_CACHE_HOME="$WS/cache" \
-     su-exec marine_sop "$LAUNCHER" --selftest "$WS" \
+     "$SU_EXEC" marine_sop "$LAUNCHER" --selftest "$WS" \
      "$STORAGE_CANARY" "$CONFIG_CANARY" "$TMP_CANARY" "$WS/escape-symlink" \
      /usr/bin/env /app /proc/self/status 2>/dev/null \
      | grep -qx 'WIJAYA_SOP_SELFTEST:PASS'; then
@@ -93,7 +103,7 @@ fi
 
 # --- 3b) non-allowlisted env key must fail closed -------------------------
 if env -i WIJAYA_ENV_CANARY=1 \
-     su-exec marine_sop "$LAUNCHER" --selftest "$WS" "$TMP_CANARY" >/dev/null 2>&1; then
+     "$SU_EXEC" marine_sop "$LAUNCHER" --selftest "$WS" "$TMP_CANARY" >/dev/null 2>&1; then
   fail env-canary
 fi
 
@@ -101,7 +111,7 @@ fi
 # The launcher's own argv[3] allowlist: EXACTLY the four parsers, never the
 # musl loader or anything else. /bin/sh stands in for every other executable.
 if env -i LANG=C LC_ALL=C PATH=/usr/bin:/bin HOME="$WS" TMPDIR="$WS/tmp" XDG_CACHE_HOME="$WS/cache" \
-     su-exec marine_sop "$LAUNCHER" "$WS" -- /bin/sh -c "exit 9" >/dev/null 2>&1; then
+     "$SU_EXEC" marine_sop "$LAUNCHER" "$WS" -- /bin/sh -c "exit 9" >/dev/null 2>&1; then
   fail exec-target
 fi
 
@@ -109,7 +119,7 @@ fi
 # Minimal single-page PDF with a Helvetica text run; Poppler tolerates the absent
 # xref (it reconstructs it), so no external PDF tooling is needed in the gate.
 PDF="$WS/doc.pdf"
-cat > "$PDF" <<'PDFEOF'
+su-exec marine_sop tee "$PDF" >/dev/null <<'PDFEOF'
 %PDF-1.4
 1 0 obj
 <</Type/Catalog/Pages 2 0 R>>
@@ -132,14 +142,14 @@ endobj
 trailer
 <</Root 1 0 R/Size 6>>
 PDFEOF
-chmod 0644 "$PDF"
+su-exec marine_sop chmod 0644 "$PDF"
 
 # Helper: run a parser under su-exec + the sandbox with the exact allowlisted env.
 # The launcher signature is <workspace> -- <binary> [args...]; every probe parser run
 # shares the gate's marine_sop-owned workspace.
 run_sandboxed() {
   env -i LANG=C LC_ALL=C PATH=/usr/bin:/bin HOME="$WS" TMPDIR="$WS/tmp" XDG_CACHE_HOME="$WS/cache" \
-    su-exec marine_sop "$LAUNCHER" "$WS" "$@" 2>/dev/null
+    "$SU_EXEC" marine_sop "$LAUNCHER" "$WS" "$@" 2>/dev/null
 }
 
 out="$(run_sandboxed -- /usr/bin/pdfinfo "$PDF")" || fail pdfinfo
@@ -149,7 +159,9 @@ out="$(run_sandboxed -- /usr/bin/pdftotext -layout "$PDF" -)" || fail pdftotext
 printf '%s\n' "$out" | grep -q 'ALPHA' || fail pdftotext
 
 run_sandboxed -- /usr/bin/pdftoppm -png -r 100 -singlefile "$PDF" "$WS/page" || fail pdftoppm
-[ -f "$WS/page.png" ] || fail pdftoppm
+# Checked AS marine_sop: the gate root process has no CAP_DAC_OVERRIDE
+# (cap_drop ALL), so it cannot traverse the marine_sop-owned 0700 workspace.
+su-exec marine_sop test -f "$WS/page.png" || fail pdftoppm
 
 run_sandboxed -- /usr/bin/tesseract "$WS/page.png" stdout -l ind+eng >/dev/null || fail tesseract
 

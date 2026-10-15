@@ -186,6 +186,31 @@ fi
 if [[ -f "$CANONICAL" ]]; then
   grep -q 'run --rm --network none' "$CANONICAL" \
     || err "canonical entrypoint must run the pre-image SOP sandbox gate in an ephemeral --network none container"
+  # Blocker 2 fix contract: the pre-image gate must be SELF-CONTAINED — an
+  # isolated EMPTY tmpfs at /app/storage (the derivative image has no /app/storage;
+  # never the runtime storage_data volume or host/customer data), isolated tmpfs
+  # /tmp, the worker's capability set (cap_drop ALL + CHOWN/SETUID/SETGID/KILL),
+  # no-new-privileges, and pids/memory bounds. It must never volume-mount
+  # /app/storage into the ephemeral gate container.
+  grep -qF -- '--tmpfs /app/storage:rw,nosuid,nodev' "$CANONICAL" \
+    || err "pre-image gate must mount an isolated empty tmpfs at /app/storage (never the runtime storage volume)"
+  grep -qF -- '--tmpfs /tmp:rw,nosuid,nodev,size=256m,mode=1777' "$CANONICAL" \
+    || err "pre-image gate must use an isolated tmpfs /tmp"
+  grep -qF -- '--cap-drop ALL' "$CANONICAL" \
+    || err "pre-image gate must drop all capabilities"
+  for c in CHOWN SETUID SETGID KILL; do
+    grep -qF -- "--cap-add $c" "$CANONICAL" \
+      || err "pre-image gate must mirror the worker capability set (--cap-add $c missing)"
+  done
+  grep -qF -- '--security-opt no-new-privileges' "$CANONICAL" \
+    || err "pre-image gate must set no-new-privileges"
+  grep -qF -- '--pids-limit 256' "$CANONICAL" \
+    || err "pre-image gate must set a pids bound"
+  grep -qF -- '--memory 2g' "$CANONICAL" \
+    || err "pre-image gate must set a memory bound"
+  if grep -nE -- 'run .*(-v |--volume )' "$CANONICAL" | grep -v -- '-v /dev/null'; then
+    err "pre-image gate must not volume-mount host/runtime storage (no -v/--volume in docker run)"
+  fi
   grep -q 'gate_sop_sandbox_pre_image' "$CANONICAL" \
     || err "canonical entrypoint missing the pre-image SOP sandbox gate"
   gate_line="$(grep -n 'gate_sop_sandbox_pre_image' "$CANONICAL" | head -1 | cut -d: -f1 || true)"

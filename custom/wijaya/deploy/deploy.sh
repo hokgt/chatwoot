@@ -384,7 +384,22 @@ gate_sop_sandbox_pre_image() {
   [[ "$image" == "$SOP_VERIFIED_IMAGE_ID" ]] \
     || die "pre-image SOP sandbox gate is not bound to the verified immutable image ID"
   [[ -s "$SOP_SANDBOX_GATE" ]] || die "SOP sandbox gate script is missing or empty"
-  raw="$("$DOCKER" run --rm --network none -i --entrypoint sh "$image" -s <"$SOP_SANDBOX_GATE" 2>/dev/null         || true)"
+  # Blocker 2 fix: the image itself has NO /app/storage (the worker gets it only
+  # from the storage_data volume at runtime), so the self-contained pre-image gate
+  # mounts an ISOLATED EMPTY tmpfs at /app/storage — never the host/runtime
+  # storage volume and never any customer data. The run mirrors the worker's
+  # security contract needed by the gate (root canaries + su-exec workspace +
+  # CAP_KILL over the dropped child): all caps dropped except
+  # CHOWN/SETUID/SETGID/KILL, no-new-privileges, isolated tmpfs /tmp, and
+  # pids/memory bounds. Still --network none, still the exact immutable image.
+  raw="$("$DOCKER" run --rm --network none -i --entrypoint sh \
+    --cap-drop ALL \
+    --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL \
+    --security-opt no-new-privileges \
+    --tmpfs /app/storage:rw,nosuid,nodev \
+    --tmpfs /tmp:rw,nosuid,nodev,size=256m,mode=1777 \
+    --pids-limit 256 --memory 2g \
+    "$image" -s <"$SOP_SANDBOX_GATE" 2>/dev/null || true)"
   verdict="$(parse_sop_selftest_verdict "$raw")"
   [[ -n "$verdict" ]] || die "pre-image SOP sandbox gate emitted no sentinel"
   [[ "$verdict" == 'PASS' ]] || die "pre-image SOP sandbox gate failed on the exact target image (env allowlist / workspace isolation / decoy+symlink+socket denial / exec-target denial / real OCR parsers)"

@@ -368,11 +368,31 @@ fi
 # recreate with the SAME pinned ID (exported MARINE_SOP_IMAGE), so gate and
 # recreation cannot diverge (no tag-retarget TOCTOU).
 if grep -q -- '--entrypoint cat sha256:sop /app/.git_sha' "$RUN_MARKER" \
-   && grep -qE -- '--network none -i --entrypoint sh sha256:sop' "$RUN_MARKER" \
+   && grep -qE -- '--network none -i --entrypoint sh .* sha256:sop -s' "$RUN_MARKER" \
    && ! grep -q -- 'chatwoot-wijaya:test-sop' "$RUN_MARKER"; then
   ok "embedded .git_sha read + pre-image gate both run the exact resolved image ID, never the mutable tag"
 else
   bad "image-ID binding of the embedded read / pre-image gate (run marker: $(head -c 300 "$RUN_MARKER" 2>/dev/null))"
+fi
+
+# Pre-image gate isolation contract (Blocker 2 fix): the ephemeral gate container
+# must be SELF-CONTAINED — /app/storage as an isolated EMPTY tmpfs (never the
+# runtime storage_data volume or any host/customer data), isolated tmpfs /tmp,
+# the worker's exact capability set, no-new-privileges, pids/memory bounds, and
+# NO volume mounts at all — while still running the exact immutable image.
+pre_gate_run="$(grep -- '--cap-drop ALL' "$RUN_MARKER" | head -1 || true)"
+missing_flag=0
+for f in '--cap-drop ALL' '--cap-add CHOWN' '--cap-add SETUID' '--cap-add SETGID' '--cap-add KILL' \
+         '--security-opt no-new-privileges' \
+         '--tmpfs /app/storage:rw,nosuid,nodev' \
+         '--tmpfs /tmp:rw,nosuid,nodev,size=256m,mode=1777' \
+         '--pids-limit 256' '--memory 2g'; do
+  grep -qF -- "$f" <<<"$pre_gate_run" || missing_flag=1
+done
+if [[ "$missing_flag" == 0 ]] && ! grep -qE -- ' (-v |--volume |storage_data)' <<<"$pre_gate_run"; then
+  ok "pre-image gate runs isolated: empty tmpfs /app/storage + tmpfs /tmp, cap_drop ALL + CHOWN/SETUID/SETGID/KILL, no-new-privileges, pids/mem bounds, no volume mounts"
+else
+  bad "pre-image gate isolation contract regressed (run: $(head -c 400 "$pre_gate_run" 2>/dev/null))"
 fi
 if grep -q '^up MARINE_SOP_IMAGE=sha256:sop$' "$UP_MARKER"; then
   ok "compose up recreates marine_sop_worker with the SAME verified immutable image ID (exported MARINE_SOP_IMAGE)"
@@ -445,6 +465,18 @@ else
   bad "pre-image SOP sandbox gate ordering in deploy.sh main()"
 fi
 grep -q 'run --rm --network none' "$DEPLOY_SH"   && ok "pre-image SOP sandbox gate uses an ephemeral --network none container of the target image"   || bad "pre-image SOP sandbox gate missing the --network none docker run"
+# Static isolation contract: the pre-image gate in deploy.sh must keep the isolated
+# tmpfs /app/storage (never a volume mount of runtime storage) and the worker's
+# security contract; it must never gain a -v/--volume bind of /app/storage.
+if grep -qF -- '--tmpfs /app/storage:rw,nosuid,nodev' "$DEPLOY_SH" \
+   && grep -qF -- '--cap-drop ALL' "$DEPLOY_SH" \
+   && grep -qF -- '--security-opt no-new-privileges' "$DEPLOY_SH" \
+   && grep -qF -- '--pids-limit 256' "$DEPLOY_SH" \
+   && ! grep -qE -- 'docker[^#]*run[^#]*(-v |--volume )' "$DEPLOY_SH"; then
+  ok "deploy.sh pre-image gate statically keeps tmpfs /app/storage isolation + worker security contract, no volume mounts"
+else
+  bad "deploy.sh pre-image gate static isolation contract regressed"
+fi
 pin_line_static="$(grep -n 'export MARINE_SOP_IMAGE=' "$DEPLOY_SH" | head -1 | cut -d: -f1 || true)"
 if [[ -n "${pin_line_static:-}" && "$pin_line_static" -lt "$pre_gate_line" && "$pre_gate_line" -lt "$recreate_line" ]]; then
   ok "verified image-ID pinning happens BEFORE the pre-image gate and compose up (no TOCTOU window)"
