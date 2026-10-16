@@ -233,6 +233,19 @@ require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijay
 require_file custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/backfill_job.rb
 require_file custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/backfill_operator.rb
 require_file custom/wijaya/batteries/deferred_auto_assignment/bin/historical_backfill.rb
+require_file custom/wijaya/batteries/deferred_auto_assignment/patch/apply_patches.py
+require_file custom/wijaya/batteries/deferred_auto_assignment/patch/test_apply_patches.py
+# The Battery applicator's check mode validates the complete Deferred schedule block byte-for-byte,
+# including cron/class/queue and boolean active_job: true; it does not depend on Marine's marker.
+if command -v python3 >/dev/null 2>&1; then
+  if ! python3 custom/wijaya/batteries/deferred_auto_assignment/patch/apply_patches.py --check >/dev/null; then
+    echo "INVALID: deferred_auto_assignment schedule block differs from its exact contract" >&2
+    missing=1
+  fi
+else
+  echo "MISSING command: python3 (required to verify deferred_auto_assignment schedule contract)" >&2
+  missing=1
+fi
 require_file db/migrate/20260905000000_create_wijaya_deferred_assignments.rb
 require_file db/migrate/20260912000000_create_wijaya_deferred_assignment_provenance.rb
 require_file db/migrate/20260912000001_enqueue_deferred_assignment_reconciliation.rb
@@ -255,6 +268,7 @@ require_file spec/custom/wijaya/deferred_auto_assignment/agent_deletion_bridge_s
 require_file spec/custom/wijaya/deferred_auto_assignment/agent_deletion_user_removal_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/historical_backfill_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/recovery_drainer_spec.rb
+require_file spec/custom/wijaya/deferred_auto_assignment/schedule_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/provenance_deletion_key_migration_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/run_intent_repair_migration_spec.rb
 require_file spec/custom/wijaya/deferred_auto_assignment/marker_cascade_counters_spec.rb

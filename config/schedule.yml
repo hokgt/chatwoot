@@ -89,6 +89,8 @@ wijaya_deferred_assignment_recovery_drainer_job:
   cron: '15 * * * *'
   class: 'Wijaya::Batteries::DeferredAutoAssignment::RecoveryDrainerJob'
   queue: scheduled_jobs
+  # Explicit because this Battery ApplicationJob may not be constantized when sidekiq-cron enqueues.
+  active_job: true
 # WIJAYA_CUSTOM_END deferred_auto_assignment
 
 # WIJAYA_CUSTOM_START marine_ai

@@ -481,7 +481,9 @@ patches:
       order still applies (old Sidekiq must not run the new job against an incomplete schema): stop
       old Sidekiq, backup, build the new image, migrate with the new image, start new rails/sidekiq
       (see BACKFILL.md). On this install the initial run scans ZERO legacy rows (the provenance table
-      is new); pre-feature deletions carry no provenance and are never guessed.
+      is new); pre-feature deletions carry no provenance and are never guessed. The cron entry sets
+      active_job: true explicitly, so sidekiq-cron dispatches through ActiveJob deterministically even
+      when the Battery class has not yet been constantized.
     custom_files:
       - custom/wijaya/batteries/deferred_auto_assignment/loader.rb
       - custom/wijaya/batteries/deferred_auto_assignment/conversation_extensions.rb
@@ -508,6 +510,8 @@ patches:
       - custom/wijaya/batteries/deferred_auto_assignment/app/jobs/wijaya/batteries/deferred_auto_assignment/backfill_job.rb
       - custom/wijaya/batteries/deferred_auto_assignment/app/services/wijaya/batteries/deferred_auto_assignment/backfill_operator.rb
       - custom/wijaya/batteries/deferred_auto_assignment/bin/historical_backfill.rb
+      - custom/wijaya/batteries/deferred_auto_assignment/patch/apply_patches.py
+      - custom/wijaya/batteries/deferred_auto_assignment/patch/test_apply_patches.py
       - db/migrate/20260905000000_create_wijaya_deferred_assignments.rb
       - db/migrate/20260912000000_create_wijaya_deferred_assignment_provenance.rb
       - db/migrate/20260912000001_enqueue_deferred_assignment_reconciliation.rb
@@ -556,7 +560,8 @@ patches:
       - app/jobs/agents/destroy_job.rb
       # Generated schema touchpoint for the marker table.
       - db/schema.rb
-      # Low-frequency crash-gap recovery drainer cron entry (provenance-scoped, self-gating).
+      # Low-frequency crash-gap recovery drainer cron entry (provenance-scoped, self-gating), with
+      # explicit ActiveJob dispatch independent of Battery class load order.
       - config/schedule.yml
     loader_touchpoints:
       # Feature loader self-registers with the generic core loader, pushes the battery app/
@@ -578,6 +583,7 @@ patches:
       - spec/custom/wijaya/deferred_auto_assignment/provenance_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/reconciliation_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/recovery_drainer_spec.rb
+      - spec/custom/wijaya/deferred_auto_assignment/schedule_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/run_intent_repair_migration_spec.rb
       - spec/custom/wijaya/deferred_auto_assignment/marker_cascade_counters_spec.rb
 

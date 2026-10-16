@@ -20,12 +20,14 @@ cd "$ROOT"
 # battery's files/markers via the global checker. If all blocks are already present the
 # applicator is a no-op and leaves no diff.
 #
-# The marine_ai battery also owns a deterministic applicator for its one marker-wrapped
-# Sidekiq schedule entry. Both applicators are no-ops when their exact blocks exist.
+# The deferred_auto_assignment and marine_ai batteries own deterministic applicators for their
+# marker-wrapped Sidekiq schedule entries. Deferred must run first because Marine inserts after its
+# end marker. All applicators are no-ops when their exact blocks exist.
 if command -v python3 >/dev/null 2>&1; then
   python3 "$ROOT/custom/wijaya/batteries/proxy_https/patch/apply_patches.py"
   python3 "$ROOT/custom/wijaya/batteries/custom_roles/patch/apply_patches.py"
   python3 "$ROOT/custom/wijaya/batteries/whatsapp_web_inbox/patch/apply_patches.py"
+  python3 "$ROOT/custom/wijaya/batteries/deferred_auto_assignment/patch/apply_patches.py"
   python3 "$ROOT/custom/wijaya/batteries/marine_ai/patch/apply_patches.py"
 else
   echo "WARN: python3 not found — skipping custom hook applicators; verifying only." >&2
