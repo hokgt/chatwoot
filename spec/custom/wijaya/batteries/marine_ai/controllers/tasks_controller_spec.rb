@@ -176,7 +176,7 @@ RSpec.describe 'Marine Tasks API', type: :request do
       expect(response.parsed_body['message']).to eq('Suggested reply')
     end
 
-    describe 'custom roles' do
+    describe 'custom roles', :enterprise do
       let(:custom_agent) { create(:user, account: account, role: :agent) }
 
       before do

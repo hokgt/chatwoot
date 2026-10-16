@@ -52,11 +52,17 @@ RSpec.describe 'Marine namespace lexical resolution' do
       blob = instance_double(ActiveStorage::Blob, content_type: 'text/plain')
       allow(blob).to receive(:download).and_yield('irrelevant'.b)
 
-      # Unsupported content type reaches the dispatch `else` branch, which raises
-      # `Errors::SopExtractionFailedError` — but only after `CommandRunner.open`
-      # (a bare parent-namespace reference) has already resolved and run.
-      expect { described_class.new(blob: blob).call }
-        .to raise_error(Marine::Documents::Errors::SopExtractionFailedError)
+      Dir.mktmpdir do |dir|
+        source = File.join(dir, 'source')
+        runner = instance_double(Marine::Documents::CommandRunner, workspace_path: source, grant_read: source)
+        allow(Marine::Documents::CommandRunner).to receive(:open).and_yield(runner)
+
+        # Unsupported content type reaches the dispatch `else` branch and raises the
+        # intended sanitized error. The high-level runner boundary is isolated here so
+        # this namespace test does not depend on sandbox capabilities.
+        expect { described_class.new(blob: blob).call }
+          .to raise_error(Marine::Documents::Errors::SopExtractionFailedError)
+      end
     end
   end
 

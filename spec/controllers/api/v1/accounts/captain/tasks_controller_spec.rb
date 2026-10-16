@@ -109,7 +109,7 @@ RSpec.describe 'Captain Tasks API', type: :request do
       expect(response.parsed_body['message']).to eq('Summary')
     end
 
-    describe 'custom roles' do
+    describe 'custom roles', :enterprise do
       let(:custom_agent) { create(:user, account: account, role: :agent) }
 
       before do
@@ -427,7 +427,7 @@ RSpec.describe 'Captain Tasks API', type: :request do
       expect(response.parsed_body['message']).to eq('Shorter reply')
     end
 
-    it 'returns forbidden for a restrictive custom role without invoking the service' do
+    it 'returns forbidden for a restrictive custom role without invoking the service', :enterprise do
       custom_agent = create(:user, account: account, role: :agent)
       create(:inbox_member, user: custom_agent, inbox: conversation.inbox)
       custom_role = create(:custom_role, account: account, permissions: ['conversation_participating_manage'])

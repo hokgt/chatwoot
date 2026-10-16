@@ -24,8 +24,6 @@
 # NO state: no create/update/save, no message, no reply/routing/handoff, no product-flow state, no
 # cache/metric/log/publish/notify.
 class Marine::Backend::Model2ShadowExecution
-  Coordinator = Marine::Backend::AuthorityCoordinator
-  ExecutionPolicy = Marine::Backend::ExecutionPolicy
   EVIDENCE_VERSION = 'marine_evidence_v2'.freeze
   # The Step-3 price-only slice generates ONLY an exact price answer: the accepted packet's response
   # goals must be EXACTLY [answer_price] and its facts EXACTLY the single :price fact.
@@ -136,10 +134,10 @@ class Marine::Backend::Model2ShadowExecution
   # reach Model 2. Any other outcome type / reason / a nil packet fails closed to skipped.
   def accepted_exact_price?
     result = @authority_result
-    result.is_a?(Coordinator::Result) &&
-      result.outcome_type == Coordinator::OUTCOME_EVIDENCE_PACKET &&
-      result.reason == Coordinator::REASON_ACCEPTED &&
-      ExecutionPolicy.authorized?(result.intents) &&
+    result.is_a?(Marine::Backend::AuthorityCoordinator::Result) &&
+      result.outcome_type == Marine::Backend::AuthorityCoordinator::OUTCOME_EVIDENCE_PACKET &&
+      result.reason == Marine::Backend::AuthorityCoordinator::REASON_ACCEPTED &&
+      Marine::Backend::ExecutionPolicy.authorized?(result.intents) &&
       result.evidence_packet?
   end
 
@@ -184,7 +182,7 @@ class Marine::Backend::Model2ShadowExecution
     result.respond_to?(:detail) ? result.detail : nil
   end
 
-  def accepted(reason) = Result.new(status: STATUS_ACCEPTED, reason: reason).freeze
-  def rejected(reason) = Result.new(status: STATUS_REJECTED, reason: reason).freeze
-  def skipped(reason) = Result.new(status: STATUS_SKIPPED, reason: reason).freeze
+  def accepted(reason) = Marine::Backend::Model2ShadowExecution::Result.new(status: STATUS_ACCEPTED, reason: reason).freeze
+  def rejected(reason) = Marine::Backend::Model2ShadowExecution::Result.new(status: STATUS_REJECTED, reason: reason).freeze
+  def skipped(reason) = Marine::Backend::Model2ShadowExecution::Result.new(status: STATUS_SKIPPED, reason: reason).freeze
 end

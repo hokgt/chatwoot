@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'rails_helper'
+require 'timeout'
 
 # Langkah 3 (Evidence Packet -> Model 2 SHADOW) — the DEFAULT-OFF, NON-DELIVERING execution. It runs
 # Model 2 ONLY for an accepted exact-price evidence packet, reusing the Phase 2A Authority Result; it
@@ -270,6 +271,58 @@ RSpec.describe Marine::Backend::Model2ShadowExecution do
         expect(result.status).to eq(described_class::STATUS_REJECTED)
         expect(result.reason).to eq(expected_reason)
       end
+    end
+  end
+
+  describe 'reload-safe dependency resolution' do
+    it 'accepts a current authority result through a stale execution class' do
+      skip 'fork-based isolation requires a platform with fork' unless Process.respond_to?(:fork)
+
+      reader, writer = IO.pipe
+      pid = fork do
+        reader.close
+        outcome = begin
+          stale_execution = described_class
+          Rails.application.reloader.reload!
+          result = Marine::Backend::AuthorityCoordinator::Result.new(
+            outcome_type: Marine::Backend::AuthorityCoordinator::OUTCOME_EVIDENCE_PACKET,
+            reason: Marine::Backend::AuthorityCoordinator::REASON_ACCEPTED,
+            scenario_key: 'scenario_5', intents: %w[price].freeze, source: :catalog,
+            evidence_packet: {}.freeze
+          ).freeze
+          execution = stale_execution.allocate
+          execution.instance_variable_set(:@authority_result, result)
+          relationship_current = execution.send(:accepted_exact_price?)
+          output_current = execution.send(:accepted, :deliverable_wording).is_a?(
+            Marine::Backend::Model2ShadowExecution::Result
+          )
+          relationship_current && output_current ? 'ok' : 'stale-dependency'
+        rescue NameError => e
+          "name-error: #{e.message}"
+        end
+        writer.write(outcome)
+        writer.close
+      end
+
+      writer.close
+      begin
+        outcome = Timeout.timeout(20) { reader.read }
+      ensure
+        reader.close unless reader.closed?
+        begin
+          unless Process.waitpid(pid, Process::WNOHANG)
+            Process.kill('TERM', pid)
+            Timeout.timeout(2) { Process.waitpid(pid) }
+          end
+        rescue Timeout::Error
+          Process.kill('KILL', pid)
+          Process.waitpid(pid)
+        rescue Errno::ECHILD, Errno::ESRCH
+          nil
+        end
+      end
+
+      expect(outcome).to eq('ok')
     end
   end
 

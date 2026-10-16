@@ -115,15 +115,15 @@ module Marine
       # `repositories` bundles the four Phase 1 read-only repositories under the keys
       # :family, :variant, :price, :stock (each defaulting to the real repository), so
       # dependency injection stays fully testable without a long parameter list.
-      # The real repository class each `repositories` key defaults to, so #initialize stays a flat
-      # assignment rather than a chain of `|| Class.new` fallbacks (one per repository).
-      REPOSITORY_DEFAULTS = {
-        family: Marine::Catalog::ProductFamilyRepository,
-        variant: Marine::Catalog::VariantRepository,
-        price: Marine::Catalog::PriceRepository,
-        price_range: Marine::Catalog::PriceRangeRepository,
-        stock: Marine::Catalog::StockRepository,
-        listing: Marine::Catalog::ProductListingRepository
+      # Resolve the real repository class by name at call time so a stale orchestrator retained across
+      # a Rails reload still constructs current repository classes rather than cached stale constants.
+      REPOSITORY_DEFAULT_NAMES = {
+        family: :ProductFamilyRepository,
+        variant: :VariantRepository,
+        price: :PriceRepository,
+        price_range: :PriceRangeRepository,
+        stock: :StockRepository,
+        listing: :ProductListingRepository
       }.freeze
 
       def initialize(intent_extractor: nil, repositories: {}, variant_resolver: nil, reply_renderer: nil)
@@ -283,7 +283,7 @@ module Marine
       # The active flow stores the bounded language resolution made while a prior customer turn was
       # current. The resolver validates this candidate; malformed or absent legacy state is ignored.
       def persisted_customer_language(flow)
-        return unless flow.is_a?(Hash) && flow['status'] == ProductFlowStateStore::STATUS_ACTIVE
+        return unless flow.is_a?(Hash) && flow['status'] == Marine::Catalog::ProductFlowStateStore::STATUS_ACTIVE
 
         flow['customer_language']
       end
@@ -293,7 +293,7 @@ module Marine
       # enables oldest-first compatibility reconstruction; inactive flows and active flows carrying the
       # field retain ordinary resolver behavior, including malformed-code fail-closed normalization.
       def legacy_active_flow_without_language?(flow)
-        flow.is_a?(Hash) && flow['status'] == ProductFlowStateStore::STATUS_ACTIVE && !flow.key?('customer_language')
+        flow.is_a?(Hash) && flow['status'] == Marine::Catalog::ProductFlowStateStore::STATUS_ACTIVE && !flow.key?('customer_language')
       end
 
       # The shared, battery-local collaborator that computes the bounded catalog-derived trusted tokens
@@ -326,7 +326,7 @@ module Marine
 
       # The injected repository for `key`, or a fresh instance of its real default.
       def repository(repositories, key)
-        repositories[key] || REPOSITORY_DEFAULTS.fetch(key).new
+        repositories[key] || Marine::Catalog.const_get(REPOSITORY_DEFAULT_NAMES.fetch(key), false).new
       end
 
       # A later runtime phase injects an account-aware extractor; the lazy default

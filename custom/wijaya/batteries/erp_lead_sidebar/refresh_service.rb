@@ -29,10 +29,9 @@ require 'erb'
 # It never returns secrets. When it overwrites, it mutates the draft in place
 # (fields updated, sync_status kept `synced`).
 # Declared under `module Wijaya::Batteries::ErpLeadSidebar` (matching the sibling
-# battery files) so ErpLeadSidebar stays in Module.nesting and the unqualified
-# `Config`/`PayloadBuilder` sibling references below resolve. A fully compacted
-# `class Wijaya::Batteries::ErpLeadSidebar::RefreshService` leaves only the leaf in
-# the nesting, so those references raise NameError at call time.
+# battery files) so Zeitwerk can autoload this file directly before the battery root
+# has loaded, while runtime dependencies below are resolved through the current
+# fully-qualified namespace after a Rails reload.
 module Wijaya::Batteries::ErpLeadSidebar
   class RefreshService
     def initialize(draft)
@@ -41,7 +40,7 @@ module Wijaya::Batteries::ErpLeadSidebar
     end
 
     def perform
-      return {} unless @draft.erp_lead_id.present? && Config.erp_configured?(@account)
+      return {} unless @draft.erp_lead_id.present? && Wijaya::Batteries::ErpLeadSidebar::Config.erp_configured?(@account)
 
       remote = fetch_remote_fields
       return fetch_failed_result if remote.nil?
@@ -130,12 +129,13 @@ module Wijaya::Batteries::ErpLeadSidebar
     # booleans so the UI reflects ERP for every known key.
     def map_fields(data)
       mapped = {}
-      PayloadBuilder::DIRECT_FIELDS.each do |field|
-        next if field == PayloadBuilder::MULTISELECT_FIELD
+      Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder::DIRECT_FIELDS.each do |field|
+        next if field == Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder::MULTISELECT_FIELD
 
         mapped[field] = data[field].nil? ? '' : data[field]
       end
-      mapped[PayloadBuilder::MULTISELECT_FIELD] = PayloadBuilder.requirement_names(data[PayloadBuilder::MULTISELECT_FIELD])
+      multiselect_field = Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder::MULTISELECT_FIELD
+      mapped[multiselect_field] = Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder.requirement_names(data[multiselect_field])
       checkbox_fields.each do |field|
         mapped[field] = truthy?(data[field])
       end
@@ -156,7 +156,8 @@ module Wijaya::Batteries::ErpLeadSidebar
     end
 
     def checkbox_fields
-      Config::MARKET_CUSTOMER_FIELDS + Config::JENIS_PAKAIAN_FIELDS
+      Wijaya::Batteries::ErpLeadSidebar::Config::MARKET_CUSTOMER_FIELDS +
+        Wijaya::Batteries::ErpLeadSidebar::Config::JENIS_PAKAIAN_FIELDS
     end
 
     def truthy?(value)
@@ -164,16 +165,16 @@ module Wijaya::Batteries::ErpLeadSidebar
     end
 
     def request_get(uri)
-      SafeHttp.request(
+      Wijaya::Batteries::ErpLeadSidebar::SafeHttp.request(
         method: :get,
         uri: uri,
-        api_key: Config.erp_api_key(@account),
-        api_secret: Config.erp_api_secret(@account)
+        api_key: Wijaya::Batteries::ErpLeadSidebar::Config.erp_api_key(@account),
+        api_secret: Wijaya::Batteries::ErpLeadSidebar::Config.erp_api_secret(@account)
       )
     end
 
     def resource_uri(name)
-      base = "#{Config.erp_base_url(@account).chomp('/')}/api/resource/Lead/#{ERB::Util.url_encode(name)}"
+      base = "#{Wijaya::Batteries::ErpLeadSidebar::Config.erp_base_url(@account).chomp('/')}/api/resource/Lead/#{ERB::Util.url_encode(name)}"
       URI.parse(base)
     end
 

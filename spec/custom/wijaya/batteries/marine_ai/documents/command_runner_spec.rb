@@ -275,7 +275,7 @@ RSpec.describe Marine::Documents::CommandRunner do
 
   describe 'grant_read input hardening (Blocker 2)' do
     let(:sandbox) do
-      { binary: '/sbin/su-exec', user: 'marine_sop', uid: 100, gid: 101,
+      { binary: '/sbin/su-exec', user: 'marine_sop', uid: 100, gid: Process.gid,
         launcher: '/usr/local/bin/wijaya-sop-sandbox' }.freeze
     end
 
@@ -296,12 +296,16 @@ RSpec.describe Marine::Documents::CommandRunner do
         allow(File).to receive(:chown) { raise 'path-based File.chown called' }
         allow(File).to receive(:chmod) { raise 'path-based File.chmod called' }
 
-        expect(sandboxed_runner(dir).grant_read(file)).to eq(file)
+        runner = sandboxed_runner(dir)
+        expect(runner).to receive(:fchown_fd).with(kind_of(Integer), nil, Process.gid).and_call_original
+        expect(runner).to receive(:fchmod_fd).with(kind_of(Integer), 0o640).and_call_original
+
+        expect(runner.grant_read(file)).to eq(file)
 
         # The grant was applied to the open verified fd: the on-disk metadata
         # reflects the fchown/fchmod with no path-based call ever happening.
         st = File.stat(file)
-        expect(st.gid).to eq(101)
+        expect(st.gid).to eq(Process.gid)
         expect(st.mode & 0o7777).to eq(0o640)
       end
     end

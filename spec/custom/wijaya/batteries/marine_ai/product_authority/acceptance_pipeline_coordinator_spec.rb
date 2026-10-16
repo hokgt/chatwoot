@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'rails_helper'
+require 'timeout'
 
 # Fase 3A-2 — the acceptance-only pipeline coordinator. It folds ONE synthetic candidate plan through
 # the REAL Fase 3A-1 backend pipeline (adapter -> planner -> evidence packet builder) with INJECTED
@@ -254,6 +255,48 @@ RSpec.describe Marine::ProductAuthority::AcceptancePipelineCoordinator, type: :m
       %w[Presenter ResponseGenerator deliver assign ShadowMetricsStore Redis .save! .update! .create!].each do |token|
         expect(code).not_to include(token)
       end
+    end
+  end
+
+  describe 'reload-safe dependency resolution' do
+    it 'builds current default collaborators through a stale coordinator class' do
+      skip 'fork-based isolation requires a platform with fork' unless Process.respond_to?(:fork)
+
+      reader, writer = IO.pipe
+      pid = fork do
+        reader.close
+        outcome = begin
+          stale_coordinator = described_class
+          Rails.application.reloader.reload!
+          coordinator = stale_coordinator.new
+          current_adapter = coordinator.instance_variable_get(:@adapter)
+          current_adapter.is_a?(Marine::Backend::CandidatePlanToProductIntentAdapter) ? 'ok' : 'stale-adapter'
+        rescue NameError => e
+          "name-error: #{e.message}"
+        end
+        writer.write(outcome)
+        writer.close
+      end
+
+      writer.close
+      begin
+        outcome = Timeout.timeout(20) { reader.read }
+      ensure
+        reader.close unless reader.closed?
+        begin
+          unless Process.waitpid(pid, Process::WNOHANG)
+            Process.kill('TERM', pid)
+            Timeout.timeout(2) { Process.waitpid(pid) }
+          end
+        rescue Timeout::Error
+          Process.kill('KILL', pid)
+          Process.waitpid(pid)
+        rescue Errno::ECHILD, Errno::ESRCH
+          nil
+        end
+      end
+
+      expect(outcome).to eq('ok')
     end
   end
 

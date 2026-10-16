@@ -26,25 +26,21 @@
 # existing implementations — and thereby the planner's DEFAULT read-only repositories — for controlled
 # Development acceptance; a spec may inject in-memory fakes for deterministic, DB-free runs.
 class Marine::ProductAuthority::AcceptancePipelineCoordinator
-  CaseResult = Marine::ProductAuthority::AcceptanceCaseResult
-  Outcome = Marine::ProductAuthority::ProductOutcome
-  Adapter = Marine::Backend::CandidatePlanToProductIntentAdapter
-  Planner = Marine::Backend::ProductExecutionPlanner
-  EvidenceBuilder = Marine::Backend::EvidencePacketBuilder
-  CandidatePlan = Marine::Decision::CandidatePlan
-  InvalidCandidatePlan = Marine::Decision::Errors::InvalidCandidatePlan
-
   # Safe fallbacks so a malformed case id / surface / outcome can still produce a closed artifact
   # rather than raising.
   SAFE_CASE_ID = 'unknown_case'
   SAFE_SURFACE = 'evaluator'
-  SAFE_OUTCOME = { status: Outcome::STATUS_UNKNOWN, intents: [], slot_ops: [], response_goals: [] }.freeze
-  BLOCKED_OUTCOME = { status: Outcome::STATUS_BLOCKED, intents: [], slot_ops: [], response_goals: [] }.freeze
+  SAFE_OUTCOME = {
+    status: Marine::ProductAuthority::ProductOutcome::STATUS_UNKNOWN, intents: [], slot_ops: [], response_goals: []
+  }.freeze
+  BLOCKED_OUTCOME = {
+    status: Marine::ProductAuthority::ProductOutcome::STATUS_BLOCKED, intents: [], slot_ops: [], response_goals: []
+  }.freeze
 
   def initialize(adapter: nil, planner: nil, evidence_builder: nil)
-    @adapter = adapter || Adapter.new
-    @planner = planner || Planner.new
-    @evidence_builder = evidence_builder || EvidenceBuilder.new
+    @adapter = adapter || Marine::Backend::CandidatePlanToProductIntentAdapter.new
+    @planner = planner || Marine::Backend::ProductExecutionPlanner.new
+    @evidence_builder = evidence_builder || Marine::Backend::EvidencePacketBuilder.new
   end
 
   def self.run(**)
@@ -58,7 +54,7 @@ class Marine::ProductAuthority::AcceptancePipelineCoordinator
   # surface:               a controlled acceptance surface (conversation / playground / evaluator).
   # expected_outcome:      the expected normalized outcome { status, intents, slot_ops, response_goals }.
   def run(candidate_plan:, scenario_key:, quantity_inquiry:, case_id:, surface:, expected_outcome:) # rubocop:disable Metrics/ParameterLists -- a flat, named acceptance-case input contract
-    expected = CaseResult.normalize_outcome(expected_outcome)
+    expected = Marine::ProductAuthority::AcceptanceCaseResult.normalize_outcome(expected_outcome)
     return malformed_input(case_id, surface, expected) unless valid_inputs?(case_id, surface, quantity_inquiry, expected)
 
     plan = normalize_plan(candidate_plan)
@@ -75,7 +71,8 @@ class Marine::ProductAuthority::AcceptancePipelineCoordinator
   # The bounded prelude guard: a synthetic case id, a controlled surface, an exact boolean
   # quantity_inquiry signal, and a well-formed expected outcome. Anything else fails closed.
   def valid_inputs?(case_id, surface, quantity_inquiry, expected)
-    CaseResult.valid_case_id?(case_id) && CaseResult.valid_surface?(surface) &&
+    Marine::ProductAuthority::AcceptanceCaseResult.valid_case_id?(case_id) &&
+      Marine::ProductAuthority::AcceptanceCaseResult.valid_surface?(surface) &&
       [true, false].include?(quantity_inquiry) && !expected.nil?
   end
 
@@ -83,8 +80,8 @@ class Marine::ProductAuthority::AcceptancePipelineCoordinator
   # unknown-key / duplicate-slot plan fails closed to nil. A genuine normalized plan re-normalizes
   # to itself.
   def normalize_plan(candidate_plan)
-    CandidatePlan.normalize(candidate_plan)
-  rescue InvalidCandidatePlan
+    Marine::Decision::CandidatePlan.normalize(candidate_plan)
+  rescue Marine::Decision::Errors::InvalidCandidatePlan
     nil
   end
 
@@ -95,7 +92,7 @@ class Marine::ProductAuthority::AcceptancePipelineCoordinator
     adapter_result = @adapter.call(plan: plan, scenario_key: scenario_key)
     return adapter_blocked(case_id, surface, expected, adapter_result.reason) unless adapter_result.ok?
 
-    projection = Outcome.project(adapter_result.product_intent)
+    projection = Marine::ProductAuthority::ProductOutcome.project(adapter_result.product_intent)
     evidence_input = run_planner(adapter_result)
     return planner_errored(case_id, surface, expected, projection) if evidence_input.nil?
 
@@ -129,7 +126,8 @@ class Marine::ProductAuthority::AcceptancePipelineCoordinator
   def build_evidence(evidence_input)
     @evidence_builder.build(evidence_input: evidence_input)
     true
-  rescue EvidenceBuilder::InvalidEvidenceInputError, EvidenceBuilder::PacketTooLargeError
+  rescue Marine::Backend::EvidencePacketBuilder::InvalidEvidenceInputError,
+         Marine::Backend::EvidencePacketBuilder::PacketTooLargeError
     false
   end
 
@@ -150,29 +148,34 @@ class Marine::ProductAuthority::AcceptancePipelineCoordinator
   end
 
   def verdict(expected, actual, evidence_ok)
-    return [CaseResult::REASON_EVIDENCE_INVALID, false] unless evidence_ok
-    return [CaseResult::REASON_OUTCOME_MISMATCH, false] unless CaseResult.normalize_outcome(actual) == expected
+    return [Marine::ProductAuthority::AcceptanceCaseResult::REASON_EVIDENCE_INVALID, false] unless evidence_ok
+    unless Marine::ProductAuthority::AcceptanceCaseResult.normalize_outcome(actual) == expected
+      return [Marine::ProductAuthority::AcceptanceCaseResult::REASON_OUTCOME_MISMATCH, false]
+    end
 
-    [CaseResult::REASON_NONE, true]
+    [Marine::ProductAuthority::AcceptanceCaseResult::REASON_NONE, true]
   end
 
   def malformed_input(case_id, surface, expected)
     build(case_id, surface, expected || SAFE_OUTCOME, SAFE_OUTCOME,
           candidate_plan: 'skipped', exact_quantity: 'skipped', adapter: 'skipped', planner: 'skipped',
-          repository: 'skipped', evidence: 'skipped', reason: CaseResult::REASON_MALFORMED_INPUT, passed: false)
+          repository: 'skipped', evidence: 'skipped',
+          reason: Marine::ProductAuthority::AcceptanceCaseResult::REASON_MALFORMED_INPUT, passed: false)
   end
 
   def malformed_candidate_plan(case_id, surface, expected)
     build(case_id, surface, expected, BLOCKED_OUTCOME,
           candidate_plan: 'malformed', exact_quantity: 'skipped', adapter: 'skipped', planner: 'skipped',
-          repository: 'skipped', evidence: 'skipped', reason: CaseResult::REASON_MALFORMED_CANDIDATE_PLAN,
+          repository: 'skipped', evidence: 'skipped',
+          reason: Marine::ProductAuthority::AcceptanceCaseResult::REASON_MALFORMED_CANDIDATE_PLAN,
           passed: blocked_pass?(expected))
   end
 
   def exact_quantity_blocked(case_id, surface, expected)
     build(case_id, surface, expected, BLOCKED_OUTCOME,
           candidate_plan: 'valid', exact_quantity: 'blocked', adapter: 'skipped', planner: 'skipped',
-          repository: 'skipped', evidence: 'skipped', reason: CaseResult::EXACT_QUANTITY_REASON,
+          repository: 'skipped', evidence: 'skipped',
+          reason: Marine::ProductAuthority::AcceptanceCaseResult::EXACT_QUANTITY_REASON,
           passed: blocked_pass?(expected))
   end
 
@@ -181,11 +184,11 @@ class Marine::ProductAuthority::AcceptancePipelineCoordinator
   # to a generic internal_error and fails, even when the expected outcome was blocked — an
   # unrecognized authority signal can never be attested as a correct block.
   def adapter_blocked(case_id, surface, expected, reason)
-    known = CaseResult::ADAPTER_BLOCK_REASONS.include?(reason)
+    known = Marine::ProductAuthority::AcceptanceCaseResult::ADAPTER_BLOCK_REASONS.include?(reason)
     build(case_id, surface, expected, BLOCKED_OUTCOME,
           candidate_plan: 'valid', exact_quantity: 'clear', adapter: 'blocked', planner: 'skipped',
           repository: 'skipped', evidence: 'skipped',
-          reason: known ? reason : CaseResult::REASON_INTERNAL_ERROR,
+          reason: known ? reason : Marine::ProductAuthority::AcceptanceCaseResult::REASON_INTERNAL_ERROR,
           passed: known && blocked_pass?(expected))
   end
 
@@ -193,26 +196,28 @@ class Marine::ProductAuthority::AcceptancePipelineCoordinator
     actual = actual_outcome(projection, [])
     build(case_id, surface, expected, actual,
           candidate_plan: 'valid', exact_quantity: 'clear', adapter: 'accepted', planner: 'errored',
-          repository: 'errored', evidence: 'skipped', reason: CaseResult::REASON_PLANNER_ERROR, passed: false)
+          repository: 'errored', evidence: 'skipped',
+          reason: Marine::ProductAuthority::AcceptanceCaseResult::REASON_PLANNER_ERROR, passed: false)
   end
 
   def internal_error(case_id, surface, expected)
     build(case_id, surface, expected || SAFE_OUTCOME, SAFE_OUTCOME,
           candidate_plan: 'skipped', exact_quantity: 'skipped', adapter: 'skipped', planner: 'skipped',
-          repository: 'skipped', evidence: 'skipped', reason: CaseResult::REASON_INTERNAL_ERROR, passed: false)
+          repository: 'skipped', evidence: 'skipped',
+          reason: Marine::ProductAuthority::AcceptanceCaseResult::REASON_INTERNAL_ERROR, passed: false)
   end
 
   # A blocked-outcome case passes iff the caller expected exactly the blocked outcome.
   def blocked_pass?(expected)
-    CaseResult.normalize_outcome(BLOCKED_OUTCOME) == expected
+    Marine::ProductAuthority::AcceptanceCaseResult.normalize_outcome(BLOCKED_OUTCOME) == expected
   end
 
   # Sanitize the case id / surface to a safe fallback so the closed artifact can always be built, then
   # delegate to the fail-closed AcceptanceCaseResult.build.
   def build(case_id, surface, expected, actual, candidate_plan:, exact_quantity:, adapter:, planner:, repository:, evidence:, reason:, passed:) # rubocop:disable Metrics/ParameterLists -- a flat projection of validated parts into the closed CaseResult
-    CaseResult.build(
-      case_id: CaseResult.valid_case_id?(case_id) ? case_id : SAFE_CASE_ID,
-      surface: CaseResult.valid_surface?(surface) ? surface : SAFE_SURFACE,
+    Marine::ProductAuthority::AcceptanceCaseResult.build(
+      case_id: Marine::ProductAuthority::AcceptanceCaseResult.valid_case_id?(case_id) ? case_id : SAFE_CASE_ID,
+      surface: Marine::ProductAuthority::AcceptanceCaseResult.valid_surface?(surface) ? surface : SAFE_SURFACE,
       candidate_plan_status: candidate_plan,
       exact_quantity_status: exact_quantity,
       adapter_status: adapter,

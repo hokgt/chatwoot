@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'rails_helper'
+require 'timeout'
 
 RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
   subject(:orchestrator) do
@@ -1730,6 +1731,59 @@ RSpec.describe Marine::Catalog::ProductQueryOrchestrator do
 
       expect(plan[:reply]).to include(kind: :variant_info)
       expect(stock_repository).not_to have_received(:status_for)
+    end
+  end
+
+  describe 'reload-safe dependency resolution' do
+    it 'resolves current flow-state and default repository classes through a stale orchestrator' do
+      skip 'fork-based isolation requires a platform with fork' unless Process.respond_to?(:fork)
+
+      reader, writer = IO.pipe
+      pid = fork do
+        reader.close
+        outcome = begin
+          stale_orchestrator = described_class
+          Rails.application.reloader.reload!
+          orchestrator = stale_orchestrator.new
+          repositories_current = {
+            family_repository: Marine::Catalog::ProductFamilyRepository,
+            variant_repository: Marine::Catalog::VariantRepository,
+            price_repository: Marine::Catalog::PriceRepository,
+            price_range_repository: Marine::Catalog::PriceRangeRepository,
+            stock_repository: Marine::Catalog::StockRepository,
+            listing_repository: Marine::Catalog::ProductListingRepository
+          }.all? { |reader_name, klass| orchestrator.send(reader_name).is_a?(klass) }
+          language = orchestrator.send(
+            :persisted_customer_language,
+            { 'status' => Marine::Catalog::ProductFlowStateStore::STATUS_ACTIVE, 'customer_language' => 'id' }
+          )
+          repositories_current && language == 'id' ? 'ok' : "current=#{repositories_current} language=#{language.inspect}"
+        rescue NameError => e
+          "name-error: #{e.message}"
+        end
+        writer.write(outcome)
+        writer.close
+      end
+
+      writer.close
+      begin
+        outcome = Timeout.timeout(20) { reader.read }
+      ensure
+        reader.close unless reader.closed?
+        begin
+          unless Process.waitpid(pid, Process::WNOHANG)
+            Process.kill('TERM', pid)
+            Timeout.timeout(2) { Process.waitpid(pid) }
+          end
+        rescue Timeout::Error
+          Process.kill('KILL', pid)
+          Process.waitpid(pid)
+        rescue Errno::ECHILD, Errno::ESRCH
+          nil
+        end
+      end
+
+      expect(outcome).to eq('ok')
     end
   end
 end
