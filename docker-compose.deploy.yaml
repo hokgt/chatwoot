@@ -9,7 +9,7 @@ services:
         RAILS_ENV: production
         BUNDLE_WITHOUT: development:test
         RAILS_SERVE_STATIC_FILES: true
-    image: hokgt-chatwoot:devbot-3d40464c2f
+    image: chatwoot-wijaya:devbot-4a917ea89f
     env_file: .env
     volumes:
       - storage_data:/app/storage
