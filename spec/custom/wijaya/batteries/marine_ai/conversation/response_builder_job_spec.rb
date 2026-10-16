@@ -383,7 +383,8 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         allow(exact_price_attempt).to receive(:call).and_return(deliverable_transition_result(transition))
         allow_any_instance_of(described_class).to receive(:create_marine_reply).and_raise(ActiveRecord::RecordInvalid)
 
-        expect { described_class.perform_now(conversation, assistant, incoming.id) }.not_to raise_error
+        # Blocker 3: re-raised so Sidekiq applies the bounded retry policy.
+        expect { described_class.perform_now(conversation, assistant, incoming.id) }.to raise_error(ActiveRecord::RecordInvalid)
         expect(conversation.messages.outgoing.count).to eq(0)
         expect(product_state).to be_nil
         expect(usage_count).to eq(0)
@@ -753,7 +754,8 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         allow(exact_price_attempt).to receive(:call).and_return(exact_transition_result)
         allow_any_instance_of(described_class).to receive(:create_marine_reply).and_raise(ActiveRecord::RecordInvalid)
 
-        expect { described_class.perform_now(conversation, assistant, incoming.id) }.not_to raise_error
+        # Blocker 3: re-raised so Sidekiq applies the bounded retry policy.
+        expect { described_class.perform_now(conversation, assistant, incoming.id) }.to raise_error(ActiveRecord::RecordInvalid)
         expect(product_state).to be_nil
         expect(conversation.messages.outgoing).to be_empty
         expect(claim_status).to eq('processing')
@@ -1298,7 +1300,8 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       stub_reasoning(send_catalog_payload)
       allow_any_instance_of(Marine::Conversation::ProductMessageDeliveryService).to receive(:call).and_raise(ActiveRecord::RecordInvalid)
 
-      expect { described_class.perform_now(conversation, assistant, incoming.id) }.not_to raise_error
+      # Blocker 3: re-raised so Sidekiq applies the bounded retry policy.
+      expect { described_class.perform_now(conversation, assistant, incoming.id) }.to raise_error(ActiveRecord::RecordInvalid)
       expect(conversation.messages.outgoing.count).to eq(0)
       expect(product_state).to be_nil
       expect(usage_count).to eq(0)
@@ -1423,7 +1426,8 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
                                      operation: :update, changes: { 'validated_family' => 'IMP' }))
       allow_any_instance_of(described_class).to receive(:create_product_reply).and_raise(ActiveRecord::RecordInvalid)
 
-      expect { described_class.perform_now(conversation, assistant, incoming.id) }.not_to raise_error
+      # Blocker 3: re-raised so Sidekiq applies the bounded retry policy.
+      expect { described_class.perform_now(conversation, assistant, incoming.id) }.to raise_error(ActiveRecord::RecordInvalid)
       expect(product_state).to be_nil
       expect(usage_count).to eq(0)
       expect(claim_status).to eq('processing')
@@ -1438,7 +1442,8 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         raise ActiveRecord::RecordInvalid
       end
 
-      expect { described_class.perform_now(conversation, assistant, incoming.id) }.not_to raise_error
+      # Blocker 3: re-raised so Sidekiq applies the bounded retry policy.
+      expect { described_class.perform_now(conversation, assistant, incoming.id) }.to raise_error(ActiveRecord::RecordInvalid)
       expect(conversation.messages.where(private: true).count).to eq(0)
       expect(product_state).to be_nil
       expect(claim_status).to eq('processing')
@@ -2172,8 +2177,13 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
         )
         allow(Marine::Memory::Signal).to receive(:write!).and_raise(ActiveRecord::RecordInvalid)
 
+        # Blocker 3: the failure re-raises for the bounded Sidekiq retry; the inner matcher
+        # rescues it while the outer block still proves no idle summary was enqueued during
+        # the aborted run.
         expect do
-          described_class.perform_now(conversation, assistant, incoming.id)
+          expect do
+            described_class.perform_now(conversation, assistant, incoming.id)
+          end.to raise_error(ActiveRecord::RecordInvalid)
         end.not_to have_enqueued_job(Marine::Memory::IdleSummaryJob)
 
         expect(conversation.messages.outgoing.where(private: false)).to be_empty
@@ -2191,8 +2201,13 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
                        ))
         allow_any_instance_of(described_class).to receive(:create_product_reply).and_raise(ActiveRecord::RecordInvalid)
 
+        # Blocker 3: the failure re-raises for the bounded Sidekiq retry; the inner matcher
+        # rescues it while the outer block still proves no idle summary was enqueued during
+        # the aborted run.
         expect do
-          described_class.perform_now(conversation, assistant, incoming.id)
+          expect do
+            described_class.perform_now(conversation, assistant, incoming.id)
+          end.to raise_error(ActiveRecord::RecordInvalid)
         end.not_to have_enqueued_job(Marine::Memory::IdleSummaryJob)
 
         expect(conversation.messages.outgoing.where(private: false)).to be_empty
@@ -2240,6 +2255,110 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
           'status' => 'blocking', 'requested_capabilities' => %w[catalog_attachment price],
           'delivered_capabilities' => ['catalog_attachment'], 'public_reply_message_id' => reply.id
         )
+      end
+    end
+
+    # --- Release Blocker 3: bounded, claim-aware Sidekiq retry policy ----------------
+    #
+    # trigger_bound_perform re-raises unexpected trigger-bound failures after
+    # ChatwootExceptionTracker capture, so Sidekiq retries this job instead of
+    # permanently silencing the customer turn. Sidekiq 7.3.1 honors both knobs on this
+    # ActiveJob class (JobUtil#normalize_item merges the wrapped class's sidekiq_options
+    # into the JobWrapper payload; JobRetry#delay_for reads sidekiq_retry_in from the
+    # wrapped class), so the policy assertions stay at the configuration level — no
+    # Sidekiq retry internals are driven here.
+    describe 'bounded Sidekiq retry policy (Blocker 3)' do
+      it 'bounds the job to at most two retries' do
+        expect(described_class.get_sidekiq_options['retry']).to eq(2)
+      end
+
+      it 'delays every retry beyond the claim stale window so the retry reclaims the stale claim' do
+        stale_after = Marine::Conversation::ProcessingClaim::DEFAULT_STALE_AFTER
+        expect(described_class::RETRY_DELAY_SECONDS).to be > stale_after
+
+        retry_delay = described_class.sidekiq_retry_in_block.call
+        expect(retry_delay).to eq(described_class::RETRY_DELAY_SECONDS)
+        expect(retry_delay).to be > stale_after
+      end
+
+      it 're-raises an unexpected trigger-bound failure after capture, with no reply/usage and the claim processing' do
+        chat = instance_double(Marine::Llm::AssistantChatService)
+        allow(Marine::Llm::AssistantChatService).to receive(:new).and_return(chat)
+        allow(chat).to receive(:generate_response).and_raise(StandardError, 'transient provider outage')
+        tracker = instance_double(ChatwootExceptionTracker, capture_exception: nil)
+        expect(ChatwootExceptionTracker).to receive(:new)
+          .with(instance_of(StandardError), account: conversation.account).and_return(tracker)
+
+        expect { described_class.perform_now(conversation, assistant, incoming.id) }
+          .to raise_error(StandardError, 'transient provider outage')
+
+        expect(tracker).to have_received(:capture_exception)
+        expect(conversation.messages.outgoing.where(private: false)).to be_empty
+        expect(usage_count).to eq(0)
+        expect(claim_status).to eq('processing')
+      end
+
+      it 'reclaims the stale claim on the delayed replay and succeeds exactly once' do
+        attempts = 0
+        chat = instance_double(Marine::Llm::AssistantChatService)
+        allow(Marine::Llm::AssistantChatService).to receive(:new).and_return(chat)
+        allow(chat).to receive(:generate_response) do
+          attempts += 1
+          raise StandardError, 'transient provider outage' if attempts == 1
+
+          { 'response' => 'recovered reply', 'action' => 'reply' }
+        end
+
+        expect { described_class.perform_now(conversation, assistant, incoming.id) }
+          .to raise_error(StandardError, 'transient provider outage')
+
+        travel(described_class::RETRY_DELAY_SECONDS + 1) do
+          described_class.perform_now(conversation, assistant, incoming.id)
+        end
+
+        expect(attempts).to eq(2)
+        expect(conversation.messages.outgoing.where(private: false).count).to eq(1)
+        expect(usage_count).to eq(1)
+        expect(claim_status).to eq('completed')
+      end
+
+      it 'remains a no-op for an immediate duplicate while the claim is fresh' do
+        stub_reasoning('response' => 'recovered reply', 'action' => 'reply')
+        original = Marine::Conversation::ProcessingClaim.new(message: incoming).acquire!
+        expect(original).to be_owner
+
+        described_class.perform_now(conversation, assistant, incoming.id)
+
+        expect(conversation.messages.outgoing.where(private: false)).to be_empty
+        expect(usage_count).to eq(0)
+        expect(claim_status).to eq('processing')
+        expect(incoming.reload.additional_attributes.dig('wijaya_marine_ai', 'processing_claim_v1', 'claim_id'))
+          .to eq(original.claim['claim_id'])
+      end
+
+      it 'prevents stale Marine output when a newer incoming message lands before the delayed retry' do
+        attempts = 0
+        chat = instance_double(Marine::Llm::AssistantChatService)
+        allow(Marine::Llm::AssistantChatService).to receive(:new).and_return(chat)
+        allow(chat).to receive(:generate_response) do
+          attempts += 1
+          raise StandardError, 'transient provider outage' if attempts == 1
+
+          { 'response' => 'stale recovered reply', 'action' => 'reply' }
+        end
+
+        expect { described_class.perform_now(conversation, assistant, incoming.id) }
+          .to raise_error(StandardError, 'transient provider outage')
+
+        travel(described_class::RETRY_DELAY_SECONDS + 1) do
+          create(:message, conversation: conversation, message_type: :incoming, content: 'a newer customer turn')
+          described_class.perform_now(conversation, assistant, incoming.id)
+        end
+
+        expect(attempts).to eq(2)
+        expect(conversation.messages.outgoing.where(private: false)).to be_empty
+        expect(usage_count).to eq(0)
+        expect(claim_status).to eq('completed')
       end
     end
   end

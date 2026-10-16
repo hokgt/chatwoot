@@ -31,6 +31,23 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # message alone is too short/unknown to classify.
   MAX_LANGUAGE_CONTEXT = 5
 
+  # --- Release Blocker 3: bounded, claim-aware Sidekiq retry policy ---------------
+  #
+  # A trigger-bound failure re-raises (see trigger_bound_perform) so Sidekiq retries this
+  # job instead of swallowing it and permanently silencing the customer turn with its
+  # claim stuck in lifecycle 'processing'. Both knobs are job-specific: Sidekiq 7.3.1
+  # merges this ActiveJob class's sidekiq_options into the enqueued JobWrapper payload
+  # (JobUtil#normalize_item) and reads sidekiq_retry_in from the wrapped class
+  # (JobRetry#delay_for), so retry: 2 bounds a persistent failure to the initial run
+  # plus at most two retries. Every retry must land strictly AFTER the ProcessingClaim
+  # stale window — an in-window retry sees the still-fresh claim as a non-owner
+  # duplicate and exits as a no-op, losing recovery — hence the 10s margin over
+  # DEFAULT_STALE_AFTER (310s) so each delayed retry reclaims the stale claim instead.
+  RETRY_DELAY_SECONDS = Marine::Conversation::ProcessingClaim::DEFAULT_STALE_AFTER + 10
+
+  sidekiq_options retry: 2
+  sidekiq_retry_in { RETRY_DELAY_SECONDS }
+
   def perform(conversation, assistant, trigger_message_id = nil)
     @conversation = conversation
     @assistant = assistant
@@ -137,6 +154,11 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     # complete it and never emit a fallback here — that would risk a duplicate or a
     # complete-before-deliver crash window.
     ChatwootExceptionTracker.new(e, account: @conversation.account).capture_exception
+    # Re-raise so Sidekiq applies this job's bounded retry policy above (retry: 2,
+    # every retry delayed RETRY_DELAY_SECONDS beyond the claim stale window): the
+    # delayed retry reclaims the stale claim and completes the turn instead of the
+    # swallowed failure permanently silencing it (Blocker 3).
+    raise
   ensure
     Current.executed_by = nil
   end
