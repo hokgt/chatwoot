@@ -1035,14 +1035,15 @@ patches:
     name: Proxy-aware HTTPS enforcement
     battery: custom/wijaya/batteries/proxy_https
     description: >
-      Couples Rails HTTPS enforcement with trusted-proxy scheme normalization. When
-      FORCE_SSL is enabled, force_ssl and assume_ssl are both enabled before Rails
-      builds its middleware stack, so ActionDispatch::AssumeSSL runs before
-      ActionDispatch::SSL and prevents redirect loops behind the TLS terminator.
-      Disabled or unset FORCE_SSL leaves both settings off. The existing session
-      initializer independently keeps secure cookies tied to the same FORCE_SSL flag.
+      Couples Rails HTTPS enforcement with proxy-aware scheme normalization. When
+      FORCE_SSL is enabled, a fail-closed middleware preserves the original Cloudflare
+      visitor scheme before ActionDispatch::SSL runs: HTTPS reaches the app without a
+      redirect loop, while HTTP remains insecure and is redirected. Disabled or unset
+      FORCE_SSL preserves the upstream defaults. The existing session initializer keeps
+      secure cookies tied to the same FORCE_SSL flag.
     custom_files:
       - custom/wijaya/batteries/proxy_https/policy.rb
+      - custom/wijaya/batteries/proxy_https/proxy_scheme_middleware.rb
       - custom/wijaya/batteries/proxy_https/patch/apply_patches.py
       - custom/wijaya/batteries/proxy_https/patch/test_apply_patches.py
     core_hook_touchpoints:
@@ -1050,6 +1051,7 @@ patches:
       - docker-compose.deploy.yaml
     tests:
       - spec/custom/wijaya/batteries/proxy_https/policy_spec.rb
+      - spec/custom/wijaya/batteries/proxy_https/proxy_scheme_middleware_spec.rb
       - spec/config/session_store_spec.rb
 
   - id: test_database_safety
