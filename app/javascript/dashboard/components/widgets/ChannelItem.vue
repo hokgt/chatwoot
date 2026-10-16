@@ -1,6 +1,9 @@
 <script setup>
 import { computed } from 'vue';
 import ChannelSelector from '../ChannelSelector.vue';
+// WIJAYA_CUSTOM_START whatsapp_web_inbox
+import { isWhatsappWebChannelKey } from '@wijaya/whatsapp_web_inbox/frontend/channel/whatsappWebChannel';
+// WIJAYA_CUSTOM_END whatsapp_web_inbox
 
 const props = defineProps({
   channel: {
@@ -32,6 +35,11 @@ const isActive = computed(() => {
   if (Object.keys(props.enabledFeatures).length === 0) {
     return false;
   }
+  // WIJAYA_CUSTOM_START whatsapp_web_inbox
+  if (isWhatsappWebChannelKey(key)) {
+    return true;
+  }
+  // WIJAYA_CUSTOM_END whatsapp_web_inbox
   if (key === 'website') {
     return props.enabledFeatures.channel_website;
   }

@@ -31,6 +31,23 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # message alone is too short/unknown to classify.
   MAX_LANGUAGE_CONTEXT = 5
 
+  # --- Release Blocker 3: bounded, claim-aware Sidekiq retry policy ---------------
+  #
+  # A trigger-bound failure re-raises (see trigger_bound_perform) so Sidekiq retries this
+  # job instead of swallowing it and permanently silencing the customer turn with its
+  # claim stuck in lifecycle 'processing'. Both knobs are job-specific: Sidekiq 7.3.1
+  # merges this ActiveJob class's sidekiq_options into the enqueued JobWrapper payload
+  # (JobUtil#normalize_item) and reads sidekiq_retry_in from the wrapped class
+  # (JobRetry#delay_for), so retry: 2 bounds a persistent failure to the initial run
+  # plus at most two retries. Every retry must land strictly AFTER the ProcessingClaim
+  # stale window — an in-window retry sees the still-fresh claim as a non-owner
+  # duplicate and exits as a no-op, losing recovery — hence the 10s margin over
+  # DEFAULT_STALE_AFTER (310s) so each delayed retry reclaims the stale claim instead.
+  RETRY_DELAY_SECONDS = Marine::Conversation::ProcessingClaim::DEFAULT_STALE_AFTER + 10
+
+  sidekiq_options retry: 2
+  sidekiq_retry_in { RETRY_DELAY_SECONDS }
+
   def perform(conversation, assistant, trigger_message_id = nil)
     @conversation = conversation
     @assistant = assistant
@@ -76,7 +93,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     return chat.generate_response(message_history: collect_previous_messages) if trigger.nil?
 
     context = Marine::Conversation::ContextBuilder.new(conversation: @conversation, trigger_message: trigger).build
-    chat.generate_response(additional_message: context.trigger, message_history: context.history)
+    chat.generate_response(additional_message: context.trigger, message_history: context.history,
+                           advisory_memory: context.advisory_memory)
   end
 
   # The latest public incoming turn, chosen deterministically by (created_at, id) — the same
@@ -98,6 +116,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
   # --- Trigger-bound (3-arg) product/RAG path --------------------------------
 
+  # rubocop:disable Metrics/CyclomaticComplexity, Metrics/MethodLength -- Ordered claim/finalization gates are behavior-sensitive.
   def trigger_bound_perform
     message = trigger_message
     return unless message # not found / not incoming: stop safely, no claim, no output
@@ -108,30 +127,95 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     return unless acquired.owner? # duplicate / completed / competing fresh claim: no second output
 
     @claim_id = acquired.claim['claim_id']
-    return complete_no_output unless eligible? # takeover/resolved/snoozed BEFORE reasoning
+    unless eligible? # takeover/resolved/snoozed BEFORE reasoning
+      finalized = finalize_no_output
+      schedule_idle_summary if finalized
+      return
+    end
 
     Current.executed_by = @assistant
-    # No message_history is passed: the trigger-bound Agent::Runner derives the canonical
-    # prior history and separately bounded current trigger from the Conversation + this exact
-    # incoming Message (source:), so product-intent and RAG ground on the same context and the
-    # trigger is supplied exactly once.
-    @response = Marine::Llm::AssistantChatService.new(assistant: @assistant, conversation: @conversation,
-                                                      source: message).generate_response
+    # Phase 2/3 target activation attempts the Backend Evidence-v2 architecture first. It returns a
+    # delivery-compatible response only for a policy-authorized, repository-backed single target
+    # (exact price, bounded product listing, or bounded product_information) whose Evidence v2 wording
+    # passed every fact guard. Every other outcome runs this job's unchanged trigger-bound legacy
+    # service locally; no global cutover gate is opened.
+    @response = target_evidence_response(message) || generate_trigger_bound_legacy_response(message)
     # Phase 6 — precompute the deterministic localized fallback and (only if it survives BOTH
     # the deterministic protected-fact checker and the semantic validator) a natural-wording
     # candidate for eligible product replies, OUTSIDE the finalize row lock. Finalize still
     # rechecks eligibility/staleness and applies state/message/claim atomically.
     prepare_product_wording
     prepare_handoff_wording
-    finalize
+    finalized = finalize
+    schedule_idle_summary if finalized
   rescue StandardError => e
     # A failure anywhere in reasoning/finalization (including message-create) must
     # leave the claim untouched ('processing') so it is retryable/stale. Never
     # complete it and never emit a fallback here — that would risk a duplicate or a
     # complete-before-deliver crash window.
     ChatwootExceptionTracker.new(e, account: @conversation.account).capture_exception
+    # Re-raise so Sidekiq applies this job's bounded retry policy above (retry: 2,
+    # every retry delayed RETRY_DELAY_SECONDS beyond the claim stale window): the
+    # delayed retry reclaims the stale claim and completes the turn instead of the
+    # swallowed failure permanently silencing it (Blocker 3).
+    raise
   ensure
     Current.executed_by = nil
+  end
+
+  # Target execution is side-effect-free: this job remains the only delivery/claim owner. Rescue
+  # construction as well as execution so any target defect still reaches the required legacy path. The
+  # source_type/orchestration_path are GENERIC (a Backend Evidence-v2 target, not necessarily price),
+  # so a listing/information target is never mislabelled as a price.
+  # rubocop:enable Metrics/CyclomaticComplexity, Metrics/MethodLength
+
+  def target_evidence_response(message)
+    result = Marine::Backend::ExactPriceCustomerExecution.new(
+      account: @conversation.account, assistant: @assistant, conversation: @conversation, message: message
+    ).call
+    @backend_memory_result = result
+    # A price_range catalog ambiguity routes the existing safe handoff (no renderer, no state write);
+    # it is NOT nil, so the legacy service is NOT run for the superseded ambiguous turn.
+    return backend_handoff_response if result.handoff?
+    return backend_terminal_no_output_response if result.terminal_no_output?
+    return nil unless result.deliverable?
+
+    response = {
+      'response' => result.text,
+      'source_type' => 'marine_backend_evidence_v2',
+      'orchestration_path' => 'backend_evidence_target'
+    }
+    # Accepted exact-price and price_range targets carry closed proposed transitions that finalize applies
+    # atomically with the reply; every other capability carries none (its state is left untouched).
+    response['proposed_state_transition'] = result.transition if result.transition
+    response
+  rescue StandardError
+    nil
+  end
+
+  # The safe handoff response for a Backend ambiguity envelope. It carries NO product_plan (so no
+  # product renderer/wording runs) and NO custom message, so finalize routes the existing
+  # HandoffService with its generic, fact-free message — no visible text is derived from the ambiguity.
+  def backend_handoff_response
+    { 'action' => 'handoff', 'action_reason' => 'product_family_ambiguous',
+      'orchestration_path' => 'backend_evidence_target' }
+  end
+
+  def backend_terminal_no_output_response
+    { 'action' => 'terminal_no_output', 'orchestration_path' => 'backend_evidence_target' }
+  end
+
+  # No message_history is passed: the legacy trigger-bound Agent::Runner derives canonical prior
+  # history and the separately bounded trigger from this exact source message.
+  def backend_terminal_no_output?
+    @response.is_a?(Hash) && @response['action'] == 'terminal_no_output' &&
+      @response['orchestration_path'] == 'backend_evidence_target'
+  end
+
+  def generate_trigger_bound_legacy_response(message)
+    Marine::Llm::AssistantChatService.new(
+      assistant: @assistant, conversation: @conversation, source: message
+    ).generate_response
   end
 
   # Final gate under the freshest DB view, inside the Conversation row lock and its
@@ -154,12 +238,17 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       next complete_no_output unless eligible?
       next complete_no_output if newer_relevant_incoming?
 
-      if product_response?
+      if backend_terminal_no_output?
+        complete_claim
+      elsif product_response?
         finalize_product
       elsif handoff_response?
         process_handoff(@response['action_reason'])
         complete_claim
       else
+        # A Backend Evidence target may carry a closed price_range state transition: apply it (family
+        # state) BEFORE the reply, inside this transaction, so a create failure rolls the write back too.
+        apply_state_transition(@response['proposed_state_transition'])
         create_marine_reply
         increment_marine_usage
         complete_claim
@@ -175,9 +264,11 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # flow.
   def finalize_product
     plan = @response['product_plan']
-    # Bounded delivery-language the extractor read from the same customer turn; the
-    # localizer prefers it over local (CLD3) detection. Never influences selection.
+    # Bounded delivery-language the shared resolver decided for this turn; the localizer prefers it
+    # over local (CLD3) detection, and @product_language_resolved tells the localizer an
+    # authoritative decision exists so it never re-runs CLD3. Never influences selection.
     @product_language = plan[:language]
+    @product_language_resolved = language_resolved?(plan)
     apply_product_state(plan[:state])
 
     # A pure stock reply whose localized coded text could not be PROVEN in the customer's language
@@ -245,6 +336,9 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       document: document, content: content
     ).call
     mark_catalog_sent(document, message)
+    @public_reply_message_id = message.id
+    @catalog_attachment_delivered = true
+    message
   end
 
   # One catalog per flow: record the delivery markers only after the Message exists, as a
@@ -325,10 +419,93 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     end
   end
 
+  # Apply only a closed, consumer-validated Backend Evidence transition inside the finalization lock.
+  # price_range stores family only; exact price stores Catalog-derived family+variant plus the bounded
+  # current intent and clears stale clarification metadata. Same-family updates preserve catalog markers;
+  # starts clear all prior variant/catalog/clarification context. No fact/prose enters state.
+  def apply_state_transition(transition)
+    attrs = state_transition_attributes(transition)
+    return if attrs.nil?
+
+    store = Marine::Catalog::ProductFlowStateStore.new(conversation: @conversation)
+    operation = effective_state_transition_operation(transition, store)
+    operation == :start ? store.start!(attrs) : store.update!(attrs)
+  end
+
+  def state_transition_attributes(transition)
+    return nil unless valid_state_transition_envelope?(transition)
+
+    identity = transition[:authoritative_identity]
+    family = bounded_transition_code(identity[:family_code])
+    return nil if family.nil?
+    return { 'validated_family' => family } if %w[family_context price_range].include?(transition[:capability])
+
+    variant = bounded_transition_code(identity[:variant_code])
+    return nil if variant.nil?
+
+    {
+      'validated_family' => family,
+      'validated_variant' => variant,
+      'current_intent' => transition[:capability],
+      'expected_attributes' => [],
+      'clarification_kind' => nil,
+      'clarification_count' => nil,
+      'clarification_family_codes' => nil,
+      'requested_intents' => nil
+    }
+  end
+
+  def valid_state_transition_envelope?(transition)
+    return false unless transition.is_a?(Hash) && transition.frozen?
+    return false unless valid_state_transition_header?(transition)
+
+    valid_state_transition_identity?(transition[:authoritative_identity], transition[:capability])
+  end
+
+  def valid_state_transition_header?(transition)
+    transition.keys.sort == %i[authoritative_identity capability handoff_required operation schema_version] &&
+      transition[:schema_version] == 'state_transition_v1' &&
+      transition[:handoff_required] == false &&
+      %i[start update].include?(transition[:operation]) &&
+      %w[family_context price price_range stock].include?(transition[:capability])
+  end
+
+  def valid_state_transition_identity?(identity, capability)
+    identity.is_a?(Hash) && identity.frozen? &&
+      identity[:source] == 'marine_catalog' && identity.keys.sort == state_transition_identity_keys(capability)
+  end
+
+  def state_transition_identity_keys(capability)
+    return %i[family_code source variant_code] if %w[price stock].include?(capability)
+
+    %i[family_code source]
+  end
+
+  def bounded_transition_code(value)
+    return nil unless value.is_a?(String)
+
+    code = value.strip
+    code.empty? || code.bytesize > 120 ? nil : code
+  end
+
+  # Recompute operation symmetrically under the final Conversation lock. An active same-family flow is
+  # always refined in place (preserving its catalog marker); missing, expired, malformed, or switched-family
+  # state always starts clean. The proposal's operation is validated as contract data but never trusted here.
+  def effective_state_transition_operation(transition, store)
+    flow = store.current_for_planning
+    family = transition.dig(:authoritative_identity, :family_code).to_s.strip
+    return :update if flow.is_a?(Hash) &&
+                      flow['status'] == Marine::Catalog::ProductFlowStateStore::STATUS_ACTIVE &&
+                      flow['validated_family'].to_s.strip == family
+
+    :start
+  end
+
   # --- Message builders ------------------------------------------------------
 
+  # rubocop:disable Metrics/MethodLength -- Preserve the stable outgoing-message attribute contract.
   def create_marine_reply
-    @conversation.messages.create!(
+    message = @conversation.messages.create!(
       message_type: :outgoing,
       account_id: @conversation.account_id,
       inbox_id: @conversation.inbox_id,
@@ -347,6 +524,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
         orchestration_path: @response['orchestration_path']
       }.compact
     )
+    @public_reply_message_id = message.id
+    message
   end
 
   # Deterministic product TEXT only — no citations, confidence, or raw catalog facts
@@ -357,6 +536,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # again and no LLM/translation call is made under the finalize lock. The explicit flag (not
   # text truthiness) gates this so an eligible path never re-enters the localization path.
   # Ineligible product replies retain the existing deterministic localization path.
+  # rubocop:enable Metrics/MethodLength
+
   def create_product_reply(plan)
     return create_product_message_with(@prepared_product_text) if @product_wording_prepared
 
@@ -368,7 +549,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   end
 
   def create_product_message_with(final_text)
-    @conversation.messages.create!(
+    message = @conversation.messages.create!(
       message_type: :outgoing,
       account_id: @conversation.account_id,
       inbox_id: @conversation.inbox_id,
@@ -376,6 +557,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       content: final_text,
       additional_attributes: { source_type: 'marine_product', orchestration_path: 'product' }
     )
+    @public_reply_message_id = message.id
+    message
   end
 
   # --- Phase 6/7: fact-protected natural product wording (precomputed, lock-free) ---------
@@ -407,12 +590,50 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     return if plan[:action] == :handoff
 
     @product_language = plan[:language]
-    @product_wording_prepared = true
+    @product_language_resolved = language_resolved?(plan)
     descriptor = plan[:reply]
+    # A pure price_available reply is routed through the shared Marine::Catalog::PriceReplyComposer
+    # (the SAME dynamic price boundary the source-less PlaygroundPreview consumes). It builds its own
+    # locale-safe deterministic fallback and dynamic in-language line, so ReplyLocalizer/
+    # TranslateResponseService and the general GroundedProductWordingService are NOT invoked here.
+    return prepare_price_wording(descriptor) if price_reply_kind?(descriptor)
+
+    @product_wording_prepared = true
     fallback = localized_product_text(presenter.reply_text(plan), action: plan[:action], descriptor: descriptor)
     @prepared_product_text = naturalized_product_text(plan, descriptor, fallback)
   rescue StandardError
     @prepared_product_text = degraded_product_text(plan)
+  end
+
+  # Resolve a pure price reply through the shared composer, then map its Decision onto this
+  # conversation's delivery adapter: deliver the accepted DYNAMIC candidate or the deterministic
+  # same-language fallback, or record the fail-closed SILENT product handoff (no visible message —
+  # never a wrong- or unformatted price line). Runs BEFORE finalize's row lock (no provider call
+  # under the lock). @product_wording_prepared keeps finalize on the lock-free precomputed text.
+  def prepare_price_wording(descriptor)
+    @product_wording_prepared = true
+    context = Marine::Conversation::ContextBuilder.new(conversation: @conversation, trigger_message: @trigger_message).build
+    decision = price_composer.compose(
+      descriptor: descriptor, reply_language: @product_language,
+      customer_request: context.trigger, configured_language: configured_reply_language,
+      message_history: context.history, opening: context.opening?
+    )
+    if decision.silent_handoff?
+      @force_stock_language_handoff = true
+      @handoff_message = nil
+      @stock_handoff_silent = true
+      @prepared_product_text = nil
+    else
+      @prepared_product_text = decision.text
+    end
+  end
+
+  def price_reply_kind?(descriptor)
+    descriptor.is_a?(Hash) && descriptor[:kind] == Marine::Catalog::PriceReplyComposer::PRICE_KIND
+  end
+
+  def price_composer
+    @price_composer ||= Marine::Catalog::PriceReplyComposer.new(account: @conversation.account)
   end
 
   # Preparation failed before a validated localized reply existed. For a non-stock reply, deliver the
@@ -423,8 +644,11 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # wrong-language and no canned stock line is ever sent, on any target. No network call is made here
   # (localization already failed).
   def degraded_product_text(plan)
-    return presenter.reply_text(plan) unless stock_reply_kind?(plan[:reply])
+    return presenter.reply_text(plan) unless stock_reply_kind?(plan[:reply]) || price_reply_kind?(plan[:reply])
 
+    # Stock and price replies must NEVER degrade to a raw English/unformatted fact line: with no
+    # accepted candidate and no localizable message, fail closed to the shared SILENT factless
+    # handoff (internal transfer, no visible message) on any target.
     decision = stock_composer.degraded
     @force_stock_language_handoff = true
     @stock_handoff_silent = decision.silent
@@ -440,11 +664,33 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # Runs inside #prepare_product_wording's rescue, so any wording/localization failure still degrades
   # to the deterministic English text.
   def naturalized_product_text(plan, descriptor, fallback)
+    # WIJAYA_CUSTOM_START: dynamic-listing-wording
+    # Product Listing uses its own structured-fact composer: unlike generic naturalization it never
+    # sends fallback prose or customer history to generation, and it preserves this exact fallback on
+    # every rejected/unavailable outcome. Conversation remains the sole delivery owner.
+    return product_listing_text(descriptor, fallback) if product_listing_reply_kind?(descriptor)
+    # WIJAYA_CUSTOM_END: dynamic-listing-wording
     return stock_reply_text(descriptor, fallback) if stock_reply_kind?(descriptor)
     return fallback unless fact_protection.eligible?(action: plan[:action], descriptor: descriptor)
 
     wording_candidate(plan, descriptor, fallback) || fallback
   end
+
+  # WIJAYA_CUSTOM_START: dynamic-listing-wording
+  def product_listing_text(descriptor, fallback)
+    product_listing_composer.compose(
+      descriptor: descriptor, fallback: fallback, reply_language: @product_language
+    )
+  end
+
+  def product_listing_reply_kind?(descriptor)
+    descriptor.is_a?(Hash) && descriptor[:kind] == Marine::Catalog::ProductListingReplyComposer::LISTING_KIND
+  end
+
+  def product_listing_composer
+    @product_listing_composer ||= Marine::Catalog::ProductListingReplyComposer.new(account: @conversation.account)
+  end
+  # WIJAYA_CUSTOM_END: dynamic-listing-wording
 
   # Resolve a pure stock reply through the shared composer, then map its Decision onto this
   # conversation's delivery adapter: deliver the accepted DYNAMIC candidate, or record the fail-closed
@@ -496,6 +742,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # English.
   def prepare_catalog_wording(plan)
     @product_language = plan[:language]
+    @product_language_resolved = language_resolved?(plan)
     flow = predicted_catalog_flow(plan)
     document = catalog_selection(flow['validated_family'])
     outcome = catalog_outcome(plan, flow, document)
@@ -507,10 +754,61 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
 
   # The localized (and, for a DIRECT catalog caption, naturalized) text for the predicted outcome.
   def prepared_catalog_text(outcome, plan, flow, document)
+    return price_range_prepared_text(plan, outcome) if price_range_reply?(plan)
+    return catalog_offer_prepared_text(plan, outcome) if catalog_offer_reply?(plan)
+
     english = deterministic_catalog_text(outcome, plan, flow, document)
     return catalog_caption_text(plan, english) if outcome == CATALOG_DELIVER
 
     localized_product_text(english)
+  end
+
+  def price_range_reply?(plan)
+    plan.dig(:reply, :kind) == :price_range
+  end
+
+  def catalog_offer_reply?(plan)
+    plan.dig(:reply, :kind) == :catalog_offer
+  end
+
+  # The proactive nonnumeric catalog-offer caption, OUTCOME-TRUTHFUL: it claims the catalog is shared
+  # only when a native attachment is actually delivered this turn (CATALOG_DELIVER); otherwise it asks
+  # for the exact code without claiming attachment. Localized with the descriptor so the row-derived
+  # family label stays literal in any translation. No provider/network call and no partial/raw value.
+  def catalog_offer_prepared_text(plan, outcome)
+    descriptor = plan[:reply]
+    english = presenter.catalog_offer_text(descriptor, catalog_attached: outcome == CATALOG_DELIVER)
+    localized_product_text(english, action: plan[:action], descriptor: descriptor)
+  end
+
+  # The locale-safe, outcome-truthful family price RANGE caption via the shared composer (reusing the
+  # exact-price display policy). `catalog_attached` is the predicted delivery outcome, so the caption
+  # only points at the catalog when a native attachment is actually sent this turn. When the composer
+  # cannot produce a safe caption (unresolved/unsupported reply language or a malformed/unformattable
+  # range) it falls back to the existing safe catalog-free variant clarification — never a raw or
+  # wrong-language range. A missing trigger message (impossible on this trigger-bound path) also
+  # degrades to that safe clarification.
+  def price_range_prepared_text(plan, outcome)
+    return localized_catalog_assisted_clarification(plan) if @trigger_message.nil?
+
+    context = Marine::Conversation::ContextBuilder.new(conversation: @conversation, trigger_message: @trigger_message).build
+    decision = price_range_composer.compose(
+      descriptor: plan[:reply], reply_language: plan[:language],
+      customer_request: context.trigger, configured_language: configured_reply_language,
+      message_history: context.history, catalog_attached: outcome == CATALOG_DELIVER
+    )
+    decision.deliver? ? decision.text : localized_catalog_assisted_clarification(plan)
+  end
+
+  # The existing safe catalog-free variant clarification for a send_catalog plan, localized. With the
+  # :price_range reply removed, the shared presenter renders the deterministic clarify-variant text
+  # from the plan's expected_attributes — the exact pre-range catalog-assisted caption.
+  def localized_catalog_assisted_clarification(plan)
+    localized_product_text(presenter.reply_text(plan.merge(reply: nil)))
+  end
+
+  def price_range_composer
+    @price_range_composer ||= Marine::Catalog::PriceRangeReplyComposer.new(account: @conversation.account)
   end
 
   # The delivered catalog caption: the localized deterministic caption, and — for a DIRECT catalog
@@ -564,6 +862,7 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
     return unless @response['product_plan'][:action] == :handoff
 
     @product_language = @response['product_plan'][:language]
+    @product_language_resolved = language_resolved?(@response['product_plan'])
     ack = presenter.handoff_ack_text(@response['product_plan'][:handoff_category])
     fallback = localized_product_text(ack)
     @handoff_message = handoff_wording_candidate(fallback) || fallback
@@ -607,7 +906,8 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
       fallback_language: configured_reply_language,
       account: @conversation.account,
       action: action,
-      descriptor: descriptor
+      descriptor: descriptor,
+      language_resolved: @product_language_resolved
     ).call
   end
 
@@ -619,6 +919,16 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   # normalizes/validates the value.
   def configured_reply_language
     @assistant.config.to_h['language'] if @assistant.respond_to?(:config)
+  end
+
+  # Whether the shared ConversationLanguageResolver authoritatively decided this turn's delivery
+  # language upstream (any closed reason it records on the plan, INCLUDING an authoritative
+  # :unresolved where plan[:language] is absent). When true, the localizer must not re-run CLD3:
+  # it uses the resolved/configured language, else fails closed to the deterministic English
+  # source. A plan with no :language_resolution (a direct/legacy caller that never ran the
+  # resolver) reads as false so the legacy CLD3 fallback chain is preserved.
+  def language_resolved?(plan)
+    plan[:language_resolution].present?
   end
 
   # Bounded recent customer turns, newest first — a fallback language signal only used
@@ -664,14 +974,36 @@ class Marine::Conversation::ResponseBuilderJob < ApplicationJob
   end
 
   def complete_claim
-    @claim.complete!(claim_id: @claim_id)
+    completed = @claim.complete!(claim_id: @claim_id)
+    raise ActiveRecord::Rollback unless completed.completed? && completed.owner?
+
+    projection = Marine::Memory::SignalProjection.new(
+      response: @response, backend_result: @backend_memory_result,
+      public_reply_message_id: @public_reply_message_id,
+      catalog_attachment_delivered: @catalog_attachment_delivered == true
+    ).to_h
+    Marine::Memory::Signal.write!(message: @trigger_message, **projection)
+  end
+
+  # A pre-reasoning ineligible trigger is finalized under the same Conversation lock as
+  # every other no-output decision, so claim completion and the blocking signal commit atomically.
+  def finalize_no_output
+    @conversation.reload
+    @conversation.with_lock { complete_no_output }
+  end
+
+  # Enqueue only after the finalization transaction has committed. A newer public turn makes
+  # this delayed job harmless: shared eligibility rechecks the latest revision and idle age.
+  def schedule_idle_summary
+    Marine::Memory::IdleSummaryJob
+      .set(wait: @assistant.memory_idle_duration)
+      .perform_later(@conversation.id, @assistant.id, @trigger_message.id)
   end
 
   # Terminal no-output branch: record completion so a duplicate delivery of the same
   # incoming message never reprocesses, then stop.
   def complete_no_output
     complete_claim
-    nil
   end
 
   def increment_marine_usage

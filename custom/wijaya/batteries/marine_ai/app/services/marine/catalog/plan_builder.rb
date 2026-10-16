@@ -39,20 +39,33 @@ module Marine
                       'clarification_family_codes' => nil, 'requested_intents' => nil)
       end
 
-      # The optional :language key is bounded delivery metadata (the customer-language
-      # code the extractor read from the same turn). It rides alongside the plan for the
-      # runtime localizer and never influences family/child/catalog selection. It is
-      # omitted entirely when no usable code is available. The optional :handoff_category
+      # The optional :language key is bounded delivery metadata (the resolved customer-language
+      # code). It rides alongside the plan for the runtime localizer and never influences
+      # family/child/catalog selection. It is omitted entirely when no usable code is available. The
+      # optional :language_resolution key is the shared resolver's CLOSED reason (prior_customer /
+      # current_turn / configured / unresolved) recorded ONLY on the #process path, so it is present
+      # even for an authoritative :unresolved (where :language is absent) and absent for a direct
+      # caller that ran no resolver — letting the runtime tell an authoritative "no language" decision
+      # apart from the mere absence of any upstream decision (and gate CLD3 accordingly). The optional
+      # :handoff_category
       # key is the bounded, generic unsupported-request category (an explicit `category:`
       # override, else the per-turn @plan_handoff_category); it rides ONLY on a :handoff plan
       # and is delivery-only metadata for a request-aware acknowledgement — never a fact and
       # never a family/child/catalog influence.
       def build(action, reply: nil, operation: :none, changes: {}, category: nil)
-        plan = { action: action, reply: reply, state: { operation: operation, changes: changes } }
+        state_changes = persisted_language_changes(operation, changes)
+        plan = { action: action, reply: reply, state: { operation: operation, changes: state_changes } }
         plan[:language] = @plan_language if @plan_language
+        plan[:language_resolution] = @plan_language_resolution if @plan_language_resolution
         chosen_category = category || @plan_handoff_category
         plan[:handoff_category] = chosen_category if action == :handoff && chosen_category
         deep_freeze(plan)
+      end
+
+      def persisted_language_changes(operation, changes)
+        return changes if operation == :none || @plan_language.nil?
+
+        changes.merge('customer_language' => @plan_language)
       end
 
       def deep_freeze(value)

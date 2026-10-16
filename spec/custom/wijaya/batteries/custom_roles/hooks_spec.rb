@@ -121,4 +121,12 @@ RSpec.describe Wijaya::Batteries::CustomRoles::Hooks do
       expect(result).to be(true)
     end
   end
+
+  describe '.authorize_composer_conversation!' do
+    it 'returns nil without touching Current when a conversation is not required and the display id is blank' do
+      controller = instance_double(ActionController::Base, action_name: 'rewrite')
+
+      expect(described_class.authorize_composer_conversation!(controller: controller, display_id: '', required: false)).to be_nil
+    end
+  end
 end

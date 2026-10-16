@@ -57,14 +57,17 @@ RSpec.describe Marine::Charge::ResponseGenerator do
   end
 
   it 'delivers a normal approved answer (no false rejection)' do
+    # A benign, control-text-free reply with no material number is delivered — the confidentiality
+    # backstop does not over-block. (A number would need approved-KB grounding; that is the separate
+    # numeric-grounding guard, covered in response_generator_price_guard_spec.)
     allow(assistant).to receive(:config).and_return({ 'instructions' => 'You are Marine.' })
     allow(knowledge_base).to receive(:retrieve).and_return(empty_retrieval)
-    stub_rag_llm('Our office is at Jl. Real Address 123, Bandung.')
+    stub_rag_llm('Our office is on Jalan Sudirman in Bandung.')
 
     payload = generator.generate(additional_message: 'Where is the office?')
 
     expect(payload['action']).to eq('reply')
-    expect(payload['response']).to eq('Our office is at Jl. Real Address 123, Bandung.')
+    expect(payload['response']).to eq('Our office is on Jalan Sudirman in Bandung.')
   end
 
   it 'drops a reply that verbatim-copies the confidential control instructions (fails closed to handoff)' do

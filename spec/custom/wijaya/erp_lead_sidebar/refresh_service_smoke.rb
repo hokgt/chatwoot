@@ -29,9 +29,22 @@ module Wijaya
 
       class PayloadBuilder
         DIRECT_FIELDS = %w[
-          lead_owner first_name company_name whatsapp_no mobile_no status
+          first_name company_name whatsapp_no mobile_no status
           utm_source industry territory utm_campaign
+          product_requirement
         ].freeze
+
+        MULTISELECT_FIELD = 'product_requirement'
+
+        def self.requirement_names(value)
+          Array.wrap(value).filter_map do |row|
+            raw = row.is_a?(Hash) ? row.with_indifferent_access[MULTISELECT_FIELD] : row
+            next unless raw.is_a?(String)
+
+            name = raw.strip
+            name.empty? ? nil : name
+          end.uniq
+        end
       end
     end
   end

@@ -12,18 +12,29 @@ module Wijaya::Batteries::ErpLeadSidebar::Routes
         resources :erp_lead_drafts, only: %i[show update] do
           member do
             post :sync
+            # Dedicated validated Lead Owner set/reset (never a generic field allowlist).
+            post :owner
           end
           collection do
             get :options
           end
           # Manual Lead Activity form, nested under the draft (addressed by the
-          # conversation display_id). Only runtime options + a guarded insert.
+          # conversation display_id). Independent, lazily-loaded read endpoints for
+          # the Activity Master and the Person In Charge directory (each hits only
+          # its own ERP dependency), a lightweight ERP-free metadata endpoint for the
+          # default date, and a single guarded insert.
           resources :lead_activities, only: %i[create] do
             collection do
-              get :options
+              get :meta
+              get :activity_options
+              get :person_in_charge_options
             end
           end
         end
+        # Account-scoped Product Requirements master data for the ERP Lead
+        # "Product Requirement" Link field: bounded searchable list + guarded
+        # create. Not conversation-scoped (master data), any account agent may use it.
+        resources :product_requirements, only: %i[index create]
         # Account-scoped singleton ERPNext connection settings (admin-only).
         resource :erp_setting, only: %i[show update] do
           post :test

@@ -49,6 +49,7 @@ module Marine
       # singular `intent` key is not allowlisted, so it is dropped like any other
       # unknown key (no silent migration into original/current).
       STRING_FIELDS = %w[flow_id original_intent current_intent validated_family validated_variant].freeze
+      CUSTOMER_LANGUAGE_FIELD = 'customer_language'.freeze
       INTEGER_FIELDS = %w[origin_message_id last_relevant_message_id catalog_document_id catalog_message_id].freeze
       BOOLEAN_FIELDS = %w[catalog_sent].freeze
       # Bounded clarification metadata, validated/normalized separately (enum + range + bounded
@@ -63,8 +64,9 @@ module Marine
       # normalized to the supported-intent allowlist in canonical order and dropped when empty, so a
       # forged/oversized value never widens what the flow will fulfill and it never carries raw text.
       REQUESTED_INTENTS_FIELD = 'requested_intents'.freeze
-      FIELDS = (%W[version status expires_at expected_attributes #{REQUESTED_INTENTS_FIELD}] +
-                STRING_FIELDS + INTEGER_FIELDS + BOOLEAN_FIELDS + CLARIFICATION_FIELDS).freeze
+      FIELDS = (%W[version status expires_at expected_attributes #{REQUESTED_INTENTS_FIELD}
+                   #{CUSTOMER_LANGUAGE_FIELD}] +
+                 STRING_FIELDS + INTEGER_FIELDS + BOOLEAN_FIELDS + CLARIFICATION_FIELDS).freeze
       # version and flow_id are owned by the store; callers may set everything else.
       CALLER_FIELDS = (FIELDS - %w[version flow_id]).freeze
 
@@ -345,6 +347,9 @@ module Marine
       def optional_fields(source)
         fields = {}
         (STRING_FIELDS - %w[flow_id]).each { |k| fields[k] = bounded_string(source[k], MAX_STRING_LENGTH) }
+        fields[CUSTOMER_LANGUAGE_FIELD] = Marine::Catalog::ConversationLanguageResolver.normalize_code(
+          source[CUSTOMER_LANGUAGE_FIELD]
+        )
         INTEGER_FIELDS.each { |k| fields[k] = bounded_integer(source[k]) }
         BOOLEAN_FIELDS.each { |k| fields[k] = boolean(source[k]) if source.key?(k) }
         fields[REQUESTED_INTENTS_FIELD] = requested_intents(source[REQUESTED_INTENTS_FIELD]).presence

@@ -109,6 +109,30 @@ RSpec.describe Marine::Catalog::ReplyRenderer do
     end
   end
 
+  describe '#catalog_offer' do
+    it 'carries ONLY the bounded/cleaned validated family identity, deeply frozen' do
+      result = renderer.catalog_offer(code: 'FAM-1', name: 'Impeller')
+
+      expect(result).to eq(kind: :catalog_offer, family_code: 'FAM-1', family_name: 'Impeller')
+      expect(result).to be_frozen
+    end
+
+    it 'control-char-cleans and length-bounds the family scalars, dropping a blank/non-scalar one to nil' do
+      expect(renderer.catalog_offer(code: "FAM#{0.chr}1", name: "Imp\teller"))
+        .to eq(kind: :catalog_offer, family_code: 'FAM 1', family_name: 'Imp eller')
+      expect(renderer.catalog_offer(code: 'X' * 200, name: '   '))
+        .to eq(kind: :catalog_offer, family_code: 'X' * described_class::MAX_CODE_NAME_LENGTH, family_name: nil)
+      expect(renderer.catalog_offer(code: %w[not scalar], name: 'Impeller'))
+        .to eq(kind: :catalog_offer, family_code: nil, family_name: 'Impeller')
+    end
+
+    it 'carries no price, stock, attribute, or arbitrary field' do
+      result = renderer.catalog_offer(code: 'FAM-1', name: 'Impeller', price: '9', secret: 'x')
+
+      expect(result.keys).to contain_exactly(:kind, :family_code, :family_name)
+    end
+  end
+
   describe 'immutability and allowlist' do
     it 'deeply freezes every descriptor (including nested collections)' do
       result = renderer.clarify_family([{ code: 'FAM-1', name: 'Impeller' }])
@@ -127,10 +151,44 @@ RSpec.describe Marine::Catalog::ReplyRenderer do
         renderer.stock_available('C'), renderer.stock_empty('C'), renderer.stock_unavailable,
         renderer.clarify_family([]), renderer.clarify_variant([]),
         renderer.catalog(code: 'F', name: 'N'),
+        renderer.catalog_offer(code: 'F', name: 'N'),
+        renderer.price_range({ status: :available, min: '1', max: '2', currency: 'IDR', uom: 'yard' }, { code: 'F', name: 'N' }),
         renderer.catalog_unavailable, renderer.unsupported
       ]
 
       expect(emitted.map { |d| d[:kind] }.uniq).to all(satisfy { |k| described_class::KINDS.include?(k) })
+    end
+  end
+
+  describe '#price_range' do
+    it 'emits only the allowlisted range facts plus the family, deeply frozen' do
+      result = renderer.price_range(
+        { status: :available, min: '12500', max: '45000', currency: 'IDR', uom: 'yard' },
+        { code: 'FAM-1', name: 'Impeller' }
+      )
+
+      expect(result).to eq(kind: :price_range, family_code: 'FAM-1', family_name: 'Impeller',
+                           price_min: '12500', price_max: '45000', currency: 'IDR', uom: 'yard')
+      expect(result).to be_frozen
+    end
+
+    it 'bounds and control-char cleans every scalar at the trust boundary' do
+      result = renderer.price_range(
+        { status: :available, min: "12\t500", max: '45000', currency: 'IDR', uom: "ya\trd" },
+        { code: 'FAM-1', name: 'Impeller' }
+      )
+
+      expect(result[:price_min]).to eq('12 500')
+      expect(result[:uom]).to eq('ya rd')
+    end
+
+    it 'fails closed to nil when a REQUIRED range fact is blank or non-scalar (never customer text)' do
+      expect(renderer.price_range({ status: :available, min: '12500', max: '45000', currency: '  ', uom: 'yard' },
+                                  { code: 'FAM-1', name: 'Impeller' })).to be_nil
+      expect(renderer.price_range({ status: :available, min: nil, max: '45000', currency: 'IDR', uom: 'yard' },
+                                  { code: 'FAM-1', name: 'Impeller' })).to be_nil
+      expect(renderer.price_range({ status: :available, min: '12500', max: '45000', currency: 'IDR', uom: %w[a b] },
+                                  { code: 'FAM-1', name: 'Impeller' })).to be_nil
     end
   end
 end

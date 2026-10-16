@@ -116,6 +116,62 @@ RSpec.describe Marine::Catalog::PlaygroundPreview do
     end
   end
 
+  describe 'proactive nonnumeric catalog offer (never claims an attachment in the source-less preview)' do
+    it 'renders the catalog-offer caption with the row-derived family and the exact-code next step, no attachment claim' do
+      allow(orchestrator).to receive(:process).and_return(
+        plan(action: :send_catalog, operation: :start,
+             reply: renderer.catalog_offer(code: 'BD', name: 'Baby Doll'),
+             changes: { 'validated_family' => 'BD', 'current_intent' => 'price', 'expected_attributes' => %w[Shade] })
+      )
+
+      payload = preview.call(query: 'baby doll ada?', history: [])
+
+      expect(payload['response']).to eq(
+        'We carry Baby Doll in several variants, and the exact price depends on the variant you choose. ' \
+        "Which variant would you like? Please reply with the exact variant code and I'll confirm the exact price for you."
+      )
+      expect(payload['response']).not_to include('shown in the catalog')
+      expect(payload['response'].downcase).not_to include('shared')
+      expect(payload['response'].downcase).not_to include('shade')
+      expect(payload).not_to have_key('catalog_preview')
+      expect(payload['source_type']).to eq('marine_product')
+    end
+  end
+
+  # WIJAYA_CUSTOM_START: dynamic-listing-wording
+  describe 'public product-listing preview through the real composer' do
+    it 'returns the accepted dynamic candidate without persistence or delivery' do
+      descriptor = renderer.product_listing(
+        {
+          products: [{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }],
+          total_count: 2, complete: true, has_more: false
+        }
+      )
+      listing_plan = plan(action: :reply, reply: descriptor, language: 'id')
+      fallback = Marine::Catalog::ReplyPresenter.new.reply_text(listing_plan)
+      candidate = 'Pilihan kami mencakup Alpha (AAA) dan Bravo (BBB). Produk ini akan digunakan untuk kebutuhan apa ' \
+                  'agar saya dapat membantu merekomendasikan yang sesuai?'
+      composer = Marine::Catalog::ProductListingReplyComposer.new(
+        account: account, generator: ->(**) { candidate }, fact_verifier: ->(**) { true }
+      )
+      allow(Marine::Catalog::ProductListingReplyComposer).to receive(:new).and_return(composer)
+      allow(orchestrator).to receive(:process).and_return(listing_plan)
+      expect_any_instance_of(Marine::Catalog::ProductFlowStateStore).not_to receive(:start!)
+      expect_any_instance_of(Marine::Catalog::ProductFlowStateStore).not_to receive(:update!)
+      expect_any_instance_of(Marine::Catalog::ProductFlowStateStore).not_to receive(:reset!)
+      expect_any_instance_of(Marine::Catalog::ProductFlowStateStore).not_to receive(:expire!)
+      expect(Marine::Conversation::ProductMessageDeliveryService).not_to receive(:new)
+
+      payload = preview.call(query: 'produk apa saja?', history: [])
+
+      expect(payload['response']).to eq(candidate)
+      expect(payload['response']).not_to eq(fallback)
+      expect(payload['source_type']).to eq('marine_product')
+      expect(Marine::Catalog::ProductListingReplyComposer).to have_received(:new).once
+    end
+  end
+  # WIJAYA_CUSTOM_END: dynamic-listing-wording
+
   describe 'other product actions' do
     it 'renders a parent_info reply payload' do
       allow(orchestrator).to receive(:process)
@@ -207,7 +263,7 @@ RSpec.describe Marine::Catalog::PlaygroundPreview do
       expect(orchestrator).to have_received(:process).with(
         text: 'follow up',
         context: [{ role: 'user', content: 'earlier' }, { role: 'assistant', content: 'reply' }],
-        flow: {}, suppressed: false, knowledge_available: false
+        flow: {}, suppressed: false, knowledge_available: false, configured_language: 'id'
       )
     end
 

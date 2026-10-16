@@ -51,6 +51,15 @@ class AccountUser < ApplicationRecord
 
   validates :user_id, uniqueness: { scope: :account_id }
 
+  # WIJAYA_CUSTOM_START deferred_auto_assignment
+  # Transient (non-persisted) intent set by AgentsController#destroy so the orphaned-User
+  # deletion is serialized inside Agents::DestroyJob rather than raced by a sibling
+  # DeleteObjectJob. Unset (falsey) for every other AccountUser destruction — account
+  # teardown, platform APIs — which keep native semantics (no User deletion here).
+  attr_accessor :wijaya_delete_user_when_orphaned
+
+  # WIJAYA_CUSTOM_END deferred_auto_assignment
+
   def create_notification_setting
     setting = user.notification_settings.new(account_id: account.id)
     setting.selected_email_flags = [:email_conversation_assignment]
@@ -59,7 +68,11 @@ class AccountUser < ApplicationRecord
   end
 
   def remove_user_from_account
-    ::Agents::DestroyJob.perform_later(account, user)
+    # WIJAYA_CUSTOM_START deferred_auto_assignment
+    # Forward the controller's final user-deletion intent so the job (not a racing sibling)
+    # performs the orphaned-User deletion after provenance/unassignment/dispatch.
+    ::Agents::DestroyJob.perform_later(account, user, delete_user_when_orphaned: wijaya_delete_user_when_orphaned.present?)
+    # WIJAYA_CUSTOM_END deferred_auto_assignment
   end
 
   def permissions
