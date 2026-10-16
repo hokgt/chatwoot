@@ -1031,6 +1031,27 @@ patches:
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/CreateWhatsappWebInbox.spec.js
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/WhatsappWebConnectionPanel.spec.js
 
+  - id: proxy_https
+    name: Proxy-aware HTTPS enforcement
+    battery: custom/wijaya/batteries/proxy_https
+    description: >
+      Couples Rails HTTPS enforcement with trusted-proxy scheme normalization. When
+      FORCE_SSL is enabled, force_ssl and assume_ssl are both enabled before Rails
+      builds its middleware stack, so ActionDispatch::AssumeSSL runs before
+      ActionDispatch::SSL and prevents redirect loops behind the TLS terminator.
+      Disabled or unset FORCE_SSL leaves both settings off. The existing session
+      initializer independently keeps secure cookies tied to the same FORCE_SSL flag.
+    custom_files:
+      - custom/wijaya/batteries/proxy_https/policy.rb
+      - custom/wijaya/batteries/proxy_https/patch/apply_patches.py
+      - custom/wijaya/batteries/proxy_https/patch/test_apply_patches.py
+    core_hook_touchpoints:
+      - config/environments/production.rb
+      - docker-compose.deploy.yaml
+    tests:
+      - spec/custom/wijaya/batteries/proxy_https/policy_spec.rb
+      - spec/config/session_store_spec.rb
+
   - id: test_database_safety
     name: Containerized Test Database Isolation
     battery: custom/wijaya/batteries/test_database_safety

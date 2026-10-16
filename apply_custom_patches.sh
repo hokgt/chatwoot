@@ -23,6 +23,7 @@ cd "$ROOT"
 # The marine_ai battery also owns a deterministic applicator for its one marker-wrapped
 # Sidekiq schedule entry. Both applicators are no-ops when their exact blocks exist.
 if command -v python3 >/dev/null 2>&1; then
+  python3 "$ROOT/custom/wijaya/batteries/proxy_https/patch/apply_patches.py"
   python3 "$ROOT/custom/wijaya/batteries/custom_roles/patch/apply_patches.py"
   python3 "$ROOT/custom/wijaya/batteries/whatsapp_web_inbox/patch/apply_patches.py"
   python3 "$ROOT/custom/wijaya/batteries/marine_ai/patch/apply_patches.py"

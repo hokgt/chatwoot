@@ -497,6 +497,15 @@ if command -v python3 >/dev/null 2>&1; then
   fi
 fi
 
+# proxy_https
+require_file custom/wijaya/batteries/proxy_https/policy.rb
+require_file custom/wijaya/batteries/proxy_https/patch/apply_patches.py
+require_file custom/wijaya/batteries/proxy_https/patch/test_apply_patches.py
+require_file spec/custom/wijaya/batteries/proxy_https/policy_spec.rb
+require_marker_count config/environments/production.rb "WIJAYA_CUSTOM_START proxy_https" 1
+require_marker_count config/environments/production.rb "WIJAYA_CUSTOM_END proxy_https" 1
+require_marker_count docker-compose.deploy.yaml "- FORCE_SSL=true" 1
+
 # test_database_safety
 require_file custom/wijaya/batteries/test_database_safety/guard.rb
 require_file custom/wijaya/batteries/test_database_safety/bin/run_test_specs.sh
