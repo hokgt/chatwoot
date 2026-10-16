@@ -40,7 +40,7 @@ module Wijaya::Batteries::ErpLeadSidebar
     end
 
     def perform
-      return {} unless @draft.erp_lead_id.present? && Wijaya::Batteries::ErpLeadSidebar::Config.erp_configured?(@account)
+      return {} unless @draft.erp_lead_id.present? && ::Wijaya::Batteries::ErpLeadSidebar::Config.erp_configured?(@account)
 
       remote = fetch_remote_fields
       return fetch_failed_result if remote.nil?
@@ -129,13 +129,13 @@ module Wijaya::Batteries::ErpLeadSidebar
     # booleans so the UI reflects ERP for every known key.
     def map_fields(data)
       mapped = {}
-      Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder::DIRECT_FIELDS.each do |field|
-        next if field == Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder::MULTISELECT_FIELD
+      ::Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder::DIRECT_FIELDS.each do |field|
+        next if field == ::Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder::MULTISELECT_FIELD
 
         mapped[field] = data[field].nil? ? '' : data[field]
       end
-      multiselect_field = Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder::MULTISELECT_FIELD
-      mapped[multiselect_field] = Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder.requirement_names(data[multiselect_field])
+      multiselect_field = ::Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder::MULTISELECT_FIELD
+      mapped[multiselect_field] = ::Wijaya::Batteries::ErpLeadSidebar::PayloadBuilder.requirement_names(data[multiselect_field])
       checkbox_fields.each do |field|
         mapped[field] = truthy?(data[field])
       end
@@ -156,8 +156,8 @@ module Wijaya::Batteries::ErpLeadSidebar
     end
 
     def checkbox_fields
-      Wijaya::Batteries::ErpLeadSidebar::Config::MARKET_CUSTOMER_FIELDS +
-        Wijaya::Batteries::ErpLeadSidebar::Config::JENIS_PAKAIAN_FIELDS
+      ::Wijaya::Batteries::ErpLeadSidebar::Config::MARKET_CUSTOMER_FIELDS +
+        ::Wijaya::Batteries::ErpLeadSidebar::Config::JENIS_PAKAIAN_FIELDS
     end
 
     def truthy?(value)
@@ -165,16 +165,16 @@ module Wijaya::Batteries::ErpLeadSidebar
     end
 
     def request_get(uri)
-      Wijaya::Batteries::ErpLeadSidebar::SafeHttp.request(
+      ::Wijaya::Batteries::ErpLeadSidebar::SafeHttp.request(
         method: :get,
         uri: uri,
-        api_key: Wijaya::Batteries::ErpLeadSidebar::Config.erp_api_key(@account),
-        api_secret: Wijaya::Batteries::ErpLeadSidebar::Config.erp_api_secret(@account)
+        api_key: ::Wijaya::Batteries::ErpLeadSidebar::Config.erp_api_key(@account),
+        api_secret: ::Wijaya::Batteries::ErpLeadSidebar::Config.erp_api_secret(@account)
       )
     end
 
     def resource_uri(name)
-      base = "#{Wijaya::Batteries::ErpLeadSidebar::Config.erp_base_url(@account).chomp('/')}/api/resource/Lead/#{ERB::Util.url_encode(name)}"
+      base = "#{::Wijaya::Batteries::ErpLeadSidebar::Config.erp_base_url(@account).chomp('/')}/api/resource/Lead/#{ERB::Util.url_encode(name)}"
       URI.parse(base)
     end
 
