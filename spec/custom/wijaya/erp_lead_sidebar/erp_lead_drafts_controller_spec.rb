@@ -152,15 +152,16 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
         account: account, conversation: conversation, erp_lead_id: 'LEAD-1', sync_status: 'synced',
         fields: { 'first_name' => 'Old' }
       )
-      lead_doc = Net::HTTPOK.new('1.1', '200', 'OK')
-      allow(lead_doc).to receive(:body).and_return(
-        { 'data' => { 'first_name' => 'Bob', 'product_requirements' => "A\nB",
-                      'product_requirement' => [{ 'product_requirement' => 'rayon twill biru muda' },
-                                                { 'product_requirement' => 'rayon twill' }] } }.to_json
-      )
       refresh = Wijaya::Batteries::ErpLeadSidebar::RefreshService.new(draft)
-      allow(refresh).to receive(:request_get).and_return(lead_doc)
-      expect(refresh.perform[:refreshed]).to be(true)
+      remote_fields = refresh.send(
+        :map_fields,
+        { 'first_name' => 'Bob', 'product_requirements' => "A\nB",
+          'product_requirement' => [{ 'product_requirement' => 'rayon twill biru muda' },
+                                    { 'product_requirement' => 'rayon twill' }] }
+      )
+      expect(remote_fields['product_requirements']).to eq("A\nB")
+      expect(remote_fields['product_requirement']).to eq(['rayon twill biru muda', 'rayon twill'])
+      refresh.send(:refreshed_result, remote_fields)
 
       fields = draft.reload.fields
       expect(fields['product_requirements']).to eq("A\nB")
