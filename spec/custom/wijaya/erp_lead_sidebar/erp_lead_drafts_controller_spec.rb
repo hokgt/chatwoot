@@ -145,10 +145,10 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
       expect(draft.fields).not_to have_key('product_price')
     end
 
-    # Opening a linked draft reconciles from ERP; the Table MultiSelect child rows map
-    # back into the draft's array of names.
-    it 'maps product_requirements/product_requirement from the ERP Lead on refresh' do
-      Wijaya::ErpLeadDraft.create!(
+    # Refreshing a linked draft reconciles the ERP document; the Table MultiSelect child rows map
+    # back into the draft's array of names without depending on transport or request ordering.
+    it 'maps product_requirements/product_requirement through the refresh service' do
+      draft = Wijaya::ErpLeadDraft.create!(
         account: account, conversation: conversation, erp_lead_id: 'LEAD-1', sync_status: 'synced',
         fields: { 'first_name' => 'Old' }
       )
@@ -158,12 +158,11 @@ RSpec.describe 'Wijaya ERP Lead Drafts API', type: :request do
                       'product_requirement' => [{ 'product_requirement' => 'rayon twill biru muda' },
                                                 { 'product_requirement' => 'rayon twill' }] } }.to_json
       )
-      allow(Wijaya::Batteries::ErpLeadSidebar::SafeHttp).to receive(:request).and_return(lead_doc)
+      refresh = Wijaya::Batteries::ErpLeadSidebar::RefreshService.new(draft)
+      allow(refresh).to receive(:request_get).and_return(lead_doc)
+      expect(refresh.perform[:refreshed]).to be(true)
 
-      open_sidebar
-
-      expect(response).to have_http_status(:success)
-      fields = response.parsed_body['fields']
+      fields = draft.reload.fields
       expect(fields['product_requirements']).to eq("A\nB")
       expect(fields['product_requirement']).to eq(['rayon twill biru muda', 'rayon twill'])
     end
