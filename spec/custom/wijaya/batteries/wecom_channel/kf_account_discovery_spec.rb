@@ -26,7 +26,7 @@ RSpec.describe Wijaya::Batteries::WecomChannel::KfAccountDiscovery do
   end
 
   it 'no-ops when Open KF ID is already set' do
-    channel.update_column(:open_kfid, 'wk_existing')
+    channel.update!(open_kfid: 'wk_existing')
     expect(api).not_to receive(:kf_account_list)
 
     described_class.new(channel: channel).perform

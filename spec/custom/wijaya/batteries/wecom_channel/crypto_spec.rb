@@ -3,13 +3,13 @@
 require 'rails_helper'
 
 RSpec.describe Wijaya::Batteries::WecomChannel::Crypto do
+  subject(:crypto) { described_class.new(token: token, encoding_aes_key: encoding_aes_key, receive_id: corp_id) }
+
   # Inert, randomly generated key material — no real WeCom credentials. A WeCom
   # EncodingAESKey is a 43-char Base64 string decoding to 32 bytes.
   let(:encoding_aes_key) { Base64.strict_encode64(SecureRandom.random_bytes(32))[0, 43] }
   let(:token) { 'inert_token' }
   let(:corp_id) { 'ww_inert_corp' }
-
-  subject(:crypto) { described_class.new(token: token, encoding_aes_key: encoding_aes_key, receive_id: corp_id) }
 
   describe 'round-trip encrypt/decrypt' do
     it 'recovers the original plaintext' do
