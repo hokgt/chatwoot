@@ -230,6 +230,23 @@ Style/ClassAndModuleChildren:
     - 'custom/wijaya/batteries/ads_tracking/referral_parser.rb'
     - 'custom/wijaya/batteries/ads_tracking/referral_video_fetcher.rb'
     - 'custom/wijaya/batteries/development_version/hooks.rb'
+    # WIJAYA: wecom_channel battery. loader.rb and routes.rb are required directly
+    # before their Wijaya parent exists; the Zeitwerk-autoloaded services/jobs stay
+    # nested and uniform so each references its unqualified sibling constants
+    # (Crypto/ChannelResolver/ApiClient/SendOnWecomService/...) lexically.
+    - 'custom/wijaya/batteries/wecom_channel/loader.rb'
+    - 'custom/wijaya/batteries/wecom_channel/routes.rb'
+    - 'custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/crypto.rb'
+    - 'custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/channel_resolver.rb'
+    - 'custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/hooks.rb'
+    - 'custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/api_client.rb'
+    - 'custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/inbound_message_service.rb'
+    - 'custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/send_on_wecom_service.rb'
+    - 'custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/kf_account_discovery.rb'
+    - 'custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/inboxes_controller_extension.rb'
+    - 'custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/message_window_extension.rb'
+    - 'custom/wijaya/batteries/wecom_channel/app/jobs/wijaya/batteries/wecom_channel/sync_messages_job.rb'
+    - 'custom/wijaya/batteries/wecom_channel/app/jobs/wijaya/batteries/wecom_channel/autofill_kf_account_job.rb'
     # Standalone smoke scripts (run via bare `ruby`, not rspec) that create the
     # Wijaya parent chain themselves; compact declarations raise before Wijaya exists.
     - 'spec/custom/wijaya/erp_lead_sidebar/refresh_service_smoke.rb'

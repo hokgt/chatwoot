@@ -286,6 +286,18 @@ export default {
       }
       // WIJAYA_CUSTOM_END whatsapp_web_inbox
 
+      // WIJAYA_CUSTOM_START wecom_channel
+      if (this.isAWecomChannel) {
+        visibleToAllChannelTabs = [
+          ...visibleToAllChannelTabs,
+          {
+            key: 'configuration',
+            name: this.$t('INBOX_MGMT.TABS.CONFIGURATION'),
+          },
+        ];
+      }
+      // WIJAYA_CUSTOM_END wecom_channel
+
       return visibleToAllChannelTabs;
     },
     // WIJAYA_CUSTOM_START whatsapp_web_inbox

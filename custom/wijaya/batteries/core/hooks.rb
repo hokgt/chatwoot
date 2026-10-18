@@ -33,7 +33,8 @@ module Wijaya
           development_version: 'Wijaya::Batteries::DevelopmentVersion::Hooks',
           automatic_assignment_activity: 'Wijaya::Batteries::AutomaticAssignmentActivity::Hooks',
           deferred_auto_assignment: 'Wijaya::Batteries::DeferredAutoAssignment::Hooks',
-          whatsapp_web_inbox: 'Wijaya::Batteries::WhatsappWebInbox::Hooks'
+          whatsapp_web_inbox: 'Wijaya::Batteries::WhatsappWebInbox::Hooks',
+          wecom_channel: 'Wijaya::Batteries::WecomChannel::Hooks'
         }.freeze
 
         module_function

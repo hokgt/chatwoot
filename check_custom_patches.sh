@@ -511,6 +511,70 @@ if command -v python3 >/dev/null 2>&1; then
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# wecom_channel — native WeCom / WeChat Customer Service (微信客服) inbox channel.
+# All provider/business logic lives in the battery; a thin native Channel::Wecom
+# model + migration sit at standard paths (like every other native channel), and a
+# handful of removal-safe WIJAYA_CUSTOM marker blocks wire the native surface.
+# ---------------------------------------------------------------------------
+require_file custom/wijaya/batteries/wecom_channel/loader.rb
+require_file custom/wijaya/batteries/wecom_channel/routes.rb
+require_file custom/wijaya/batteries/wecom_channel/app/controllers/webhooks/wecom_controller.rb
+require_file custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/crypto.rb
+require_file custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/channel_resolver.rb
+require_file custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/api_client.rb
+require_file custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/inbound_message_service.rb
+require_file custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/send_on_wecom_service.rb
+require_file custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/kf_account_discovery.rb
+require_file custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/inboxes_controller_extension.rb
+require_file custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/message_window_extension.rb
+require_file custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/hooks.rb
+require_file custom/wijaya/batteries/wecom_channel/app/jobs/wijaya/batteries/wecom_channel/sync_messages_job.rb
+require_file custom/wijaya/batteries/wecom_channel/app/jobs/wijaya/batteries/wecom_channel/autofill_kf_account_job.rb
+require_file custom/wijaya/batteries/wecom_channel/frontend/channel/wecomChannel.js
+require_file custom/wijaya/batteries/wecom_channel/frontend/helpers/wecomInbox.js
+require_file custom/wijaya/batteries/wecom_channel/frontend/CreateWecomInbox.vue
+require_file custom/wijaya/batteries/wecom_channel/frontend/WecomConfigurationPanel.vue
+require_file custom/wijaya/batteries/wecom_channel/frontend/i18n/wecomInbox.json
+require_file custom/wijaya/batteries/wecom_channel/patch/apply_patches.py
+require_file custom/wijaya/batteries/wecom_channel/patch/blocks.json
+require_file custom/wijaya/batteries/wecom_channel/patch/test_apply_patches.py
+# Native model + migration (standard paths, like channel_tiktok) and the test factory.
+require_file app/models/channel/wecom.rb
+require_file db/migrate/20261018000000_create_channel_wecom.rb
+require_file spec/factories/channel/channel_wecom.rb
+# Feature registered in the generic dispatcher (send-reply + secret-configured hooks).
+require_marker custom/wijaya/batteries/core/hooks.rb "wecom_channel:"
+# Core marker touchpoints, each asserted at its EXACT block count (START and END).
+# Counts MUST match the applicator's blocks.json / apply_patches.py.
+while read -r wc_file wc_count; do
+  require_marker_count "$wc_file" "WIJAYA_CUSTOM_START wecom_channel" "$wc_count"
+  require_marker_count "$wc_file" "WIJAYA_CUSTOM_END wecom_channel" "$wc_count"
+done <<'WC_BLOCKS'
+config/routes.rb 1
+app/jobs/send_reply_job.rb 1
+app/models/account.rb 1
+app/services/conversations/message_window_service.rb 1
+app/controllers/api/v1/accounts/inboxes_controller.rb 1
+app/views/api/v1/models/_inbox.json.jbuilder 1
+app/javascript/dashboard/components-next/icon/provider.js 1
+app/javascript/dashboard/components/widgets/ChannelItem.vue 2
+app/javascript/dashboard/helper/inbox.js 3
+app/javascript/dashboard/i18n/locale/en/index.js 2
+app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue 2
+app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue 2
+app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue 1
+app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/ConfigurationPage.vue 3
+app/javascript/shared/mixins/inboxMixin.js 1
+WC_BLOCKS
+# Validate the applicator itself: in --check mode every hook block must sit at its anchor.
+if command -v python3 >/dev/null 2>&1; then
+  if ! python3 custom/wijaya/batteries/wecom_channel/patch/apply_patches.py --check >/dev/null; then
+    echo "wecom_channel patch applicator --check FAILED" >&2
+    missing=1
+  fi
+fi
+
 # proxy_https
 require_file custom/wijaya/batteries/proxy_https/policy.rb
 require_file custom/wijaya/batteries/proxy_https/proxy_scheme_middleware.rb

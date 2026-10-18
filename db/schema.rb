@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_10_02_000000) do
+ActiveRecord::Schema[7.1].define(version: 2026_10_18_000000) do
   # These extensions should be enabled to support this database
   enable_extension "pg_stat_statements"
   enable_extension "pg_trgm"
@@ -594,6 +594,20 @@ ActiveRecord::Schema[7.1].define(version: 2026_10_02_000000) do
     t.text "allowed_domains", default: ""
     t.index ["hmac_token"], name: "index_channel_web_widgets_on_hmac_token", unique: true
     t.index ["website_token"], name: "index_channel_web_widgets_on_website_token", unique: true
+  end
+
+  create_table "channel_wecom", force: :cascade do |t|
+    t.integer "account_id", null: false
+    t.string "corp_id", null: false
+    t.string "open_kfid"
+    t.text "secret"
+    t.text "token", null: false
+    t.text "encoding_aes_key", null: false
+    t.string "sync_cursor"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["corp_id"], name: "index_channel_wecom_on_corp_id"
+    t.index ["open_kfid"], name: "index_channel_wecom_on_open_kfid", unique: true, where: "(open_kfid IS NOT NULL)"
   end
 
   create_table "channel_whatsapp", force: :cascade do |t|

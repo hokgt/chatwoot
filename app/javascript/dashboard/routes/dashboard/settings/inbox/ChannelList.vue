@@ -10,6 +10,9 @@ import ChannelItem from 'dashboard/components/widgets/ChannelItem.vue';
 // WIJAYA_CUSTOM_START whatsapp_web_inbox
 import { buildWhatsappWebChannelCard } from '@wijaya/whatsapp_web_inbox/frontend/channel/whatsappWebChannel';
 // WIJAYA_CUSTOM_END whatsapp_web_inbox
+// WIJAYA_CUSTOM_START wecom_channel
+import { buildWecomChannelCard } from '@wijaya/wecom_channel/frontend/channel/wecomChannel';
+// WIJAYA_CUSTOM_END wecom_channel
 
 const { t } = useI18n();
 const router = useRouter();
@@ -108,6 +111,10 @@ const channelList = computed(() => {
   // WIJAYA_CUSTOM_START whatsapp_web_inbox
   channels.push(buildWhatsappWebChannelCard({ t }));
   // WIJAYA_CUSTOM_END whatsapp_web_inbox
+
+  // WIJAYA_CUSTOM_START wecom_channel
+  channels.push(buildWecomChannelCard({ t }));
+  // WIJAYA_CUSTOM_END wecom_channel
 
   return channels;
 });

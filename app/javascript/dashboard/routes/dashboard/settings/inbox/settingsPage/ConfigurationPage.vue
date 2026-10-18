@@ -12,6 +12,9 @@ import NextButton from 'dashboard/components-next/button/Button.vue';
 import TextArea from 'next/textarea/TextArea.vue';
 import WhatsappReauthorize from '../channels/whatsapp/Reauthorize.vue';
 import { sanitizeAllowedDomains } from 'dashboard/helper/URLHelper';
+// WIJAYA_CUSTOM_START wecom_channel
+import WecomConfigurationPanel from '@wijaya/wecom_channel/frontend/WecomConfigurationPanel.vue';
+// WIJAYA_CUSTOM_END wecom_channel
 
 export default {
   components: {
@@ -23,6 +26,9 @@ export default {
     NextButton,
     TextArea,
     WhatsappReauthorize,
+    // WIJAYA_CUSTOM_START wecom_channel
+    WecomConfigurationPanel,
+    // WIJAYA_CUSTOM_END wecom_channel
   },
   mixins: [inboxMixin],
   props: {
@@ -442,6 +448,11 @@ export default {
       class="hidden"
     />
   </div>
+  <!-- WIJAYA_CUSTOM_START wecom_channel -->
+  <div v-else-if="isAWecomChannel">
+    <WecomConfigurationPanel :inbox="inbox" />
+  </div>
+  <!-- WIJAYA_CUSTOM_END wecom_channel -->
 </template>
 
 <style lang="scss" scoped>

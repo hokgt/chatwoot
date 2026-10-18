@@ -1037,6 +1037,132 @@ patches:
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/CreateWhatsappWebInbox.spec.js
       - custom/wijaya/batteries/whatsapp_web_inbox/frontend/specs/WhatsappWebConnectionPanel.spec.js
 
+  - id: wecom_channel
+    name: WeCom / WeChat Customer Service (微信客服) Inbox
+    battery: custom/wijaya/batteries/wecom_channel
+    description: >
+      Native Channel::Wecom inbox for the standalone 微信客服 console (开发配置 →
+      企业内部接入). Staged, corp-scoped setup: an inbox is created with Corp ID + Token
+      + EncodingAESKey only (Secret and Open KF ID blank). The corp-scoped callback
+      GET /webhooks/wecom/:corp_id verifies msg_signature and decrypts echostr using
+      only Token + EncodingAESKey, so it works before any Secret exists. After
+      verification WeCom reveals the Secret (saved in the inbox Configuration panel);
+      when the Secret lands and Open KF ID is still blank a background job asks
+      kf/account/list and auto-fills Open KF ID iff the corp has exactly ONE KF
+      account (multiple accounts are never silently chosen — left for manual entry).
+      POST callbacks validate the signature, decrypt, and route the decrypted event
+      by its authoritative OpenKfId to the matching inbox WITHIN that Corp ID only
+      (never across corp/account boundaries), enqueuing a per-channel, mutex-serialized
+      kf/sync_msg pull that stores next_cursor and dedupes on msgid. Inbound
+      text/image/voice/video/file (via media/get + ActiveStorage), location/link as
+      readable text, unknown types as the exact placeholder; origin != 3 skipped.
+      Outbound text + media (after media/upload) via kf/send_msg; API errors mark the
+      Chatwoot message failed with the provider error. access_token is cached to
+      expiry and refreshed once on 40014/42001; WECOM_HTTP_PROXY is applied ONLY to
+      qyapi.weixin.qq.com. A 48-hour messaging window drives the reply-box warning.
+      All provider/business logic lives in the battery; signatures are verified in
+      constant time before decryption, receive_id (Corp ID) is constant-time checked,
+      XML is parsed without XXE, and credentials are stored with Active Record
+      Encryption and never logged or exposed over the API.
+    custom_files:
+      - custom/wijaya/batteries/wecom_channel/loader.rb
+      - custom/wijaya/batteries/wecom_channel/routes.rb
+      - custom/wijaya/batteries/wecom_channel/app/controllers/webhooks/wecom_controller.rb
+      - custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/crypto.rb
+      - custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/channel_resolver.rb
+      - custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/api_client.rb
+      - custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/inbound_message_service.rb
+      - custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/send_on_wecom_service.rb
+      - custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/kf_account_discovery.rb
+      - custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/inboxes_controller_extension.rb
+      - custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/message_window_extension.rb
+      - custom/wijaya/batteries/wecom_channel/app/services/wijaya/batteries/wecom_channel/hooks.rb
+      - custom/wijaya/batteries/wecom_channel/app/jobs/wijaya/batteries/wecom_channel/sync_messages_job.rb
+      - custom/wijaya/batteries/wecom_channel/app/jobs/wijaya/batteries/wecom_channel/autofill_kf_account_job.rb
+      - custom/wijaya/batteries/wecom_channel/frontend/channel/wecomChannel.js
+      - custom/wijaya/batteries/wecom_channel/frontend/helpers/wecomInbox.js
+      - custom/wijaya/batteries/wecom_channel/frontend/CreateWecomInbox.vue
+      - custom/wijaya/batteries/wecom_channel/frontend/WecomConfigurationPanel.vue
+      - custom/wijaya/batteries/wecom_channel/frontend/i18n/wecomInbox.json
+      - custom/wijaya/batteries/wecom_channel/patch/apply_patches.py
+      - custom/wijaya/batteries/wecom_channel/patch/blocks.json
+      - custom/wijaya/batteries/wecom_channel/patch/test_apply_patches.py
+    # Deterministic, idempotent, context-safe reapply of the core marker blocks after an
+    # upstream pull. Runs AFTER whatsapp_web_inbox in apply_custom_patches.sh because the
+    # WeCom frontend wizard splices sit beside that battery's marker neighbourhood.
+    applicator:
+      script: custom/wijaya/batteries/wecom_channel/patch/apply_patches.py
+      blocks: custom/wijaya/batteries/wecom_channel/patch/blocks.json
+      expected_marker_counts:
+        config/routes.rb: 1
+        app/jobs/send_reply_job.rb: 1
+        app/models/account.rb: 1
+        app/services/conversations/message_window_service.rb: 1
+        app/controllers/api/v1/accounts/inboxes_controller.rb: 1
+        app/views/api/v1/models/_inbox.json.jbuilder: 1
+        app/javascript/dashboard/components-next/icon/provider.js: 1
+        app/javascript/dashboard/components/widgets/ChannelItem.vue: 2
+        app/javascript/dashboard/helper/inbox.js: 3
+        app/javascript/dashboard/i18n/locale/en/index.js: 2
+        app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue: 2
+        app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue: 2
+        app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue: 1
+        app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/ConfigurationPage.vue: 3
+        app/javascript/shared/mixins/inboxMixin.js: 1
+    core_hook_touchpoints:
+      # Native model + migration at standard channel paths (like channel_tiktok); no
+      # WIJAYA markers (the drift checker forbids new marker-carrying files under app/).
+      - app/models/channel/wecom.rb
+      - db/migrate/20261018000000_create_channel_wecom.rb
+      # Generated schema touchpoint for the channel_wecom table.
+      - db/schema.rb
+      # Corp-scoped callback routes drawn by the battery route module.
+      - config/routes.rb
+      # Outbound send dispatch delegates (fail-open) to the battery send-reply hook.
+      - app/jobs/send_reply_job.rb
+      # Account association, inbox-builder prepend wiring, serializer fields, 48h window.
+      - app/models/account.rb
+      - app/controllers/api/v1/accounts/inboxes_controller.rb
+      - app/views/api/v1/models/_inbox.json.jbuilder
+      - app/services/conversations/message_window_service.rb
+      # Feature registered in the generic Hooks dispatcher (send_reply + secret_configured).
+      - custom/wijaya/batteries/core/hooks.rb
+      # Style/ClassAndModuleChildren excludes for the nested battery files; config, no marker.
+      - .rubocop.yml
+      # Frontend seams: Add-Inbox card, clickability gate, wizard mapping, inbox-settings
+      # Configuration panel, i18n spread, inbox type/icon maps, and the reply-window mixin.
+      - app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue
+      - app/javascript/dashboard/components/widgets/ChannelItem.vue
+      - app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue
+      - app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/ConfigurationPage.vue
+      - app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue
+      - app/javascript/dashboard/i18n/locale/en/index.js
+      - app/javascript/dashboard/helper/inbox.js
+      - app/javascript/dashboard/components-next/icon/provider.js
+      - app/javascript/shared/mixins/inboxMixin.js
+    loader_touchpoints:
+      # Battery autoload-path registration; the channel is a native Channel::Wecom
+      # (standard Channelable has_one :inbox), so there is no Inbox monkey-patch.
+      - custom/wijaya/batteries/wecom_channel/loader.rb
+    tests:
+      - spec/custom/wijaya/batteries/wecom_channel/crypto_spec.rb
+      - spec/custom/wijaya/batteries/wecom_channel/channel_wecom_spec.rb
+      - spec/custom/wijaya/batteries/wecom_channel/channel_resolver_spec.rb
+      - spec/custom/wijaya/batteries/wecom_channel/wecom_controller_spec.rb
+      - spec/custom/wijaya/batteries/wecom_channel/api_client_spec.rb
+      - spec/custom/wijaya/batteries/wecom_channel/inbound_message_service_spec.rb
+      - spec/custom/wijaya/batteries/wecom_channel/send_on_wecom_service_spec.rb
+      - spec/custom/wijaya/batteries/wecom_channel/sync_messages_job_spec.rb
+      - spec/custom/wijaya/batteries/wecom_channel/kf_account_discovery_spec.rb
+      - spec/custom/wijaya/batteries/wecom_channel/message_window_spec.rb
+      - spec/custom/wijaya/batteries/wecom_channel/inbox_creation_spec.rb
+      - spec/factories/channel/channel_wecom.rb
+      - custom/wijaya/batteries/wecom_channel/patch/test_apply_patches.py
+      - custom/wijaya/batteries/wecom_channel/frontend/specs/wecomChannel.spec.js
+      - custom/wijaya/batteries/wecom_channel/frontend/specs/CreateWecomInbox.spec.js
+      - custom/wijaya/batteries/wecom_channel/frontend/specs/WecomConfigurationPanel.spec.js
+      - custom/wijaya/batteries/wecom_channel/frontend/specs/isWecomInbox.spec.js
+
   - id: proxy_https
     name: Proxy-aware HTTPS enforcement
     battery: custom/wijaya/batteries/proxy_https

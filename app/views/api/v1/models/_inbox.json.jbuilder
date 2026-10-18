@@ -75,6 +75,14 @@ json.instagram_id resource.channel.try(:instagram_id) if resource.instagram?
 ## Tiktok Attributes
 json.reauthorization_required resource.channel.try(:reauthorization_required?) if resource.tiktok?
 
+## WIJAYA_CUSTOM_START wecom_channel
+## WeCom Attributes (corp_id/open_kfid only; secret/token/encoding_aes_key are never exposed)
+if resource.channel_type == 'Channel::Wecom'
+  json.corp_id resource.channel.try(:corp_id)
+  json.open_kfid resource.channel.try(:open_kfid)
+end
+## WIJAYA_CUSTOM_END wecom_channel
+
 ## Twilio Attributes
 json.messaging_service_sid resource.channel.try(:messaging_service_sid)
 json.phone_number resource.channel.try(:phone_number)

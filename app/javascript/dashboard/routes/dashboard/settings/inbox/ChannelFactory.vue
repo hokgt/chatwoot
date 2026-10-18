@@ -17,6 +17,10 @@ import Voice from './channels/Voice.vue';
 import WhatsappWebUnofficial from '@wijaya/whatsapp_web_inbox/frontend/CreateWhatsappWebInbox.vue';
 import { WHATSAPP_WEB_CHANNEL_KEY } from '@wijaya/whatsapp_web_inbox/frontend/channel/whatsappWebChannel';
 // WIJAYA_CUSTOM_END whatsapp_web_inbox
+// WIJAYA_CUSTOM_START wecom_channel
+import CreateWecomInbox from '@wijaya/wecom_channel/frontend/CreateWecomInbox.vue';
+import { WECOM_CHANNEL_KEY } from '@wijaya/wecom_channel/frontend/channel/wecomChannel';
+// WIJAYA_CUSTOM_END wecom_channel
 
 const channelViewList = {
   facebook: Facebook,
@@ -35,6 +39,9 @@ const channelViewList = {
   // WIJAYA_CUSTOM_START whatsapp_web_inbox
   [WHATSAPP_WEB_CHANNEL_KEY]: WhatsappWebUnofficial,
   // WIJAYA_CUSTOM_END whatsapp_web_inbox
+  // WIJAYA_CUSTOM_START wecom_channel
+  [WECOM_CHANNEL_KEY]: CreateWecomInbox,
+  // WIJAYA_CUSTOM_END wecom_channel
 };
 
 export default defineComponent({

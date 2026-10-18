@@ -4,6 +4,9 @@ import ChannelSelector from '../ChannelSelector.vue';
 // WIJAYA_CUSTOM_START whatsapp_web_inbox
 import { isWhatsappWebChannelKey } from '@wijaya/whatsapp_web_inbox/frontend/channel/whatsappWebChannel';
 // WIJAYA_CUSTOM_END whatsapp_web_inbox
+// WIJAYA_CUSTOM_START wecom_channel
+import { isWecomChannelKey } from '@wijaya/wecom_channel/frontend/channel/wecomChannel';
+// WIJAYA_CUSTOM_END wecom_channel
 
 const props = defineProps({
   channel: {
@@ -40,6 +43,11 @@ const isActive = computed(() => {
     return true;
   }
   // WIJAYA_CUSTOM_END whatsapp_web_inbox
+  // WIJAYA_CUSTOM_START wecom_channel
+  if (isWecomChannelKey(key)) {
+    return true;
+  }
+  // WIJAYA_CUSTOM_END wecom_channel
   if (key === 'website') {
     return props.enabledFeatures.channel_website;
   }
