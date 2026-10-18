@@ -212,6 +212,48 @@
           "block": "    // WIJAYA_CUSTOM_START wecom_channel\n    isAWecomChannel() {\n      return this.channelType === INBOX_TYPES.WECOM;\n    },\n    // WIJAYA_CUSTOM_END wecom_channel\n"
         }
       ]
+    },
+    {
+      "path": "app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "    showFileUpload() {\n",
+          "block": "      // WIJAYA_CUSTOM_START wecom_channel\n      if (this.isAWecomChannel) return true;\n      // WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/components/widgets/WootWriter/ReplyBottomPanel.vue",
+      "expected_blocks": 3,
+      "blocks": [
+        {
+          "anchor": "import { getAllowedFileTypesByChannel } from '@chatwoot/utils';\n",
+          "block": "// WIJAYA_CUSTOM_START wecom_channel\nimport { wecomAllowedFileTypes } from '@wijaya/wecom_channel/frontend/composer/wecomComposer';\n// WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "    showAudioRecorderButton() {\n      if (this.isEditorDisabled) return false;\n",
+          "block": "      // WIJAYA_CUSTOM_START wecom_channel\n      // WeCom supports image/video/file attachments only; no outbound voice/audio.\n      if (this.isAWecomChannel) return false;\n      // WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "    allowedFileTypes() {\n",
+          "block": "      // WIJAYA_CUSTOM_START wecom_channel\n      if (!this.isOnPrivateNote && this.isAWecomChannel) {\n        return wecomAllowedFileTypes();\n      }\n      // WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/shared/helpers/FileHelper.js",
+      "expected_blocks": 2,
+      "blocks": [
+        {
+          "anchor": "import { INBOX_TYPES } from 'dashboard/helper/inbox';\n",
+          "block": "// WIJAYA_CUSTOM_START wecom_channel\nimport { wecomFileTypeAllowance } from '@wijaya/wecom_channel/frontend/composer/wecomComposer';\n// WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "  if (!file || file.size === 0) return false;\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  const wecomAllowance = wecomFileTypeAllowance(file, options);\n  if (wecomAllowance !== undefined) return wecomAllowance;\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
     }
   ]
 }

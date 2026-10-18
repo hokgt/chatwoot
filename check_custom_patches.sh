@@ -533,6 +533,7 @@ require_file custom/wijaya/batteries/wecom_channel/app/jobs/wijaya/batteries/wec
 require_file custom/wijaya/batteries/wecom_channel/app/jobs/wijaya/batteries/wecom_channel/autofill_kf_account_job.rb
 require_file custom/wijaya/batteries/wecom_channel/frontend/channel/wecomChannel.js
 require_file custom/wijaya/batteries/wecom_channel/frontend/helpers/wecomInbox.js
+require_file custom/wijaya/batteries/wecom_channel/frontend/composer/wecomComposer.js
 require_file custom/wijaya/batteries/wecom_channel/frontend/CreateWecomInbox.vue
 require_file custom/wijaya/batteries/wecom_channel/frontend/WecomConfigurationPanel.vue
 require_file custom/wijaya/batteries/wecom_channel/frontend/i18n/wecomInbox.json
@@ -567,6 +568,9 @@ app/javascript/dashboard/routes/dashboard/settings/inbox/components/ChannelName.
 app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue 1
 app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/ConfigurationPage.vue 3
 app/javascript/shared/mixins/inboxMixin.js 1
+app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue 1
+app/javascript/dashboard/components/widgets/WootWriter/ReplyBottomPanel.vue 3
+app/javascript/shared/helpers/FileHelper.js 2
 WC_BLOCKS
 # Validate the applicator itself: in --check mode every hook block must sit at its anchor.
 if command -v python3 >/dev/null 2>&1; then

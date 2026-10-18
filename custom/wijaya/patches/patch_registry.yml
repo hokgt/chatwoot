@@ -1081,6 +1081,7 @@ patches:
       - custom/wijaya/batteries/wecom_channel/app/jobs/wijaya/batteries/wecom_channel/autofill_kf_account_job.rb
       - custom/wijaya/batteries/wecom_channel/frontend/channel/wecomChannel.js
       - custom/wijaya/batteries/wecom_channel/frontend/helpers/wecomInbox.js
+      - custom/wijaya/batteries/wecom_channel/frontend/composer/wecomComposer.js
       - custom/wijaya/batteries/wecom_channel/frontend/CreateWecomInbox.vue
       - custom/wijaya/batteries/wecom_channel/frontend/WecomConfigurationPanel.vue
       - custom/wijaya/batteries/wecom_channel/frontend/i18n/wecomInbox.json
@@ -1110,6 +1111,9 @@ patches:
         app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue: 1
         app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/ConfigurationPage.vue: 3
         app/javascript/shared/mixins/inboxMixin.js: 1
+        app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue: 1
+        app/javascript/dashboard/components/widgets/WootWriter/ReplyBottomPanel.vue: 3
+        app/javascript/shared/helpers/FileHelper.js: 2
     core_hook_touchpoints:
       # Native model + migration at standard channel paths (like channel_tiktok); no
       # WIJAYA markers (the drift checker forbids new marker-carrying files under app/).
@@ -1145,6 +1149,13 @@ patches:
       - app/javascript/dashboard/helper/inbox.js
       - app/javascript/dashboard/components-next/icon/provider.js
       - app/javascript/shared/mixins/inboxMixin.js
+      # Outbound attachment composer: enable the attach button + clipboard paste for
+      # WeCom replies (image/video/file only; no audio/voice recording). ReplyBox gates
+      # via inboxMixin's isAWecomChannel; ReplyBottomPanel/FileHelper delegate the
+      # allowed-type + paste-validation logic to the battery composer helper.
+      - app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue
+      - app/javascript/dashboard/components/widgets/WootWriter/ReplyBottomPanel.vue
+      - app/javascript/shared/helpers/FileHelper.js
     loader_touchpoints:
       # Battery autoload-path registration; the channel is a native Channel::Wecom
       # (standard Channelable has_one :inbox), so there is no Inbox monkey-patch.
@@ -1164,6 +1175,8 @@ patches:
       - spec/factories/channel/channel_wecom.rb
       - custom/wijaya/batteries/wecom_channel/patch/test_apply_patches.py
       - custom/wijaya/batteries/wecom_channel/frontend/specs/wecomChannel.spec.js
+      - custom/wijaya/batteries/wecom_channel/frontend/specs/wecomComposer.spec.js
+      - custom/wijaya/batteries/wecom_channel/frontend/specs/ReplyBottomPanelWecom.spec.js
       - custom/wijaya/batteries/wecom_channel/frontend/specs/CreateWecomInbox.spec.js
       - custom/wijaya/batteries/wecom_channel/frontend/specs/WecomConfigurationPanel.spec.js
       - custom/wijaya/batteries/wecom_channel/frontend/specs/isWecomInbox.spec.js
