@@ -132,8 +132,22 @@
       ]
     },
     {
-      "path": "app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue",
+      "path": "app/javascript/dashboard/routes/dashboard/settings/inbox/components/ChannelName.vue",
       "expected_blocks": 2,
+      "blocks": [
+        {
+          "anchor": "import { computed } from 'vue';\n",
+          "block": "// WIJAYA_CUSTOM_START wecom_channel\nimport { wecomReadableChannelName } from '@wijaya/wecom_channel/frontend/helpers/wecomInbox';\n// WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "const readableChannelName = computed(() => {\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  const wecomName = wecomReadableChannelName({\n    t,\n    channelType: props.channelType,\n  });\n  if (wecomName) return wecomName;\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue",
+      "expected_blocks": 6,
       "blocks": [
         {
           "anchor": "// WIJAYA_CUSTOM_END whatsapp_web_inbox\n",
@@ -142,6 +156,22 @@
         {
           "anchor": "  // WIJAYA_CUSTOM_END whatsapp_web_inbox\n\n",
           "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  channels.push(buildWecomChannelCard({ t }));\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "import { ref, computed, onMounted } from 'vue';\n",
+          "block": "// WIJAYA_CUSTOM_START wecom_channel\nimport { watch } from 'vue';\n// WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "const channelList = computed(() => {\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  if (!globalConfig.value) return [];\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "const initializeEnabledFeatures = async () => {\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  if (!currentAccount.value?.features) return;\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "onMounted(() => {\n  initializeEnabledFeatures();\n});\n",
+          "block": "// WIJAYA_CUSTOM_START wecom_channel\nwatch(() => currentAccount.value?.features, initializeEnabledFeatures);\n// WIJAYA_CUSTOM_END wecom_channel\n"
         }
       ]
     },

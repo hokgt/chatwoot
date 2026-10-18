@@ -9,4 +9,18 @@ export function isWecomInbox(inbox) {
   return inbox.channel_type === WECOM_CHANNEL_TYPE;
 }
 
+// Predicate keyed on the raw channel_type string (the native ChannelName row passes
+// props.channelType, not a serialized inbox).
+export function isWecomChannelType(channelType) {
+  return channelType === WECOM_CHANNEL_TYPE;
+}
+
+// Readable label for a WeCom inbox row, sourced from the battery i18n so the native
+// ChannelName i18nMap needs no WeCom entry. Returns undefined for other channels so
+// the native resolver keeps its existing behaviour.
+export function wecomReadableChannelName({ t, channelType }) {
+  if (!isWecomChannelType(channelType)) return undefined;
+  return t('WECOM_INBOX.CHANNEL.TITLE');
+}
+
 export default isWecomInbox;

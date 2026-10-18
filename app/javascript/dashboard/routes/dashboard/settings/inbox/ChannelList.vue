@@ -1,5 +1,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
+// WIJAYA_CUSTOM_START wecom_channel
+import { watch } from 'vue';
+// WIJAYA_CUSTOM_END wecom_channel
 import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 import { useMapGetter } from 'dashboard/composables/store';
@@ -27,6 +30,9 @@ const hasTiktokConfigured = computed(() => {
 });
 
 const channelList = computed(() => {
+  // WIJAYA_CUSTOM_START wecom_channel
+  if (!globalConfig.value) return [];
+  // WIJAYA_CUSTOM_END wecom_channel
   const { apiChannelName } = globalConfig.value;
   const channels = [
     {
@@ -120,6 +126,9 @@ const channelList = computed(() => {
 });
 
 const initializeEnabledFeatures = async () => {
+  // WIJAYA_CUSTOM_START wecom_channel
+  if (!currentAccount.value?.features) return;
+  // WIJAYA_CUSTOM_END wecom_channel
   enabledFeatures.value = currentAccount.value.features;
 };
 
@@ -134,6 +143,9 @@ const initChannelAuth = channel => {
 onMounted(() => {
   initializeEnabledFeatures();
 });
+// WIJAYA_CUSTOM_START wecom_channel
+watch(() => currentAccount.value?.features, initializeEnabledFeatures);
+// WIJAYA_CUSTOM_END wecom_channel
 </script>
 
 <template>

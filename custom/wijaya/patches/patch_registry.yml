@@ -1105,7 +1105,8 @@ patches:
         app/javascript/dashboard/helper/inbox.js: 3
         app/javascript/dashboard/i18n/locale/en/index.js: 2
         app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue: 2
-        app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue: 2
+        app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue: 6
+        app/javascript/dashboard/routes/dashboard/settings/inbox/components/ChannelName.vue: 2
         app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue: 1
         app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/ConfigurationPage.vue: 3
         app/javascript/shared/mixins/inboxMixin.js: 1
@@ -1131,7 +1132,11 @@ patches:
       - .rubocop.yml
       # Frontend seams: Add-Inbox card, clickability gate, wizard mapping, inbox-settings
       # Configuration panel, i18n spread, inbox type/icon maps, and the reply-window mixin.
+      # ChannelList also carries the direct-load hydration guards (globalConfig + account
+      # features) + reactive refresh; ChannelName resolves the inbox-row label from the
+      # battery i18n so the native i18nMap needs no WeCom entry.
       - app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue
+      - app/javascript/dashboard/routes/dashboard/settings/inbox/components/ChannelName.vue
       - app/javascript/dashboard/components/widgets/ChannelItem.vue
       - app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue
       - app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/ConfigurationPage.vue
@@ -1162,6 +1167,8 @@ patches:
       - custom/wijaya/batteries/wecom_channel/frontend/specs/CreateWecomInbox.spec.js
       - custom/wijaya/batteries/wecom_channel/frontend/specs/WecomConfigurationPanel.spec.js
       - custom/wijaya/batteries/wecom_channel/frontend/specs/isWecomInbox.spec.js
+      - custom/wijaya/batteries/wecom_channel/frontend/specs/ChannelName.spec.js
+      - custom/wijaya/batteries/wecom_channel/frontend/specs/ChannelListHydration.spec.js
 
   - id: proxy_https
     name: Proxy-aware HTTPS enforcement

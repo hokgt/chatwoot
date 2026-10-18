@@ -562,7 +562,8 @@ app/javascript/dashboard/components/widgets/ChannelItem.vue 2
 app/javascript/dashboard/helper/inbox.js 3
 app/javascript/dashboard/i18n/locale/en/index.js 2
 app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue 2
-app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue 2
+app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue 6
+app/javascript/dashboard/routes/dashboard/settings/inbox/components/ChannelName.vue 2
 app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue 1
 app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/ConfigurationPage.vue 3
 app/javascript/shared/mixins/inboxMixin.js 1
