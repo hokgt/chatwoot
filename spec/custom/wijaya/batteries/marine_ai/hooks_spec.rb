@@ -289,7 +289,9 @@ RSpec.describe Wijaya::Marine::Hooks do
     # Req 7 — the core private messaging_window is unavailable/raises: HandoffWindow fails closed
     # (treats the window as not expired), so the marker stays terminal and nothing is scheduled.
     it 'fails closed when the core messaging window computation raises: marker stays active, no schedule' do
-      allow_any_instance_of(Conversations::MessageWindowService).to receive(:messaging_window).and_raise(StandardError.new('boom'))
+      window_service = Conversations::MessageWindowService.new(conversation)
+      allow(window_service).to receive(:messaging_window).and_raise(StandardError.new('boom'))
+      allow(Conversations::MessageWindowService).to receive(:new).with(conversation).and_return(window_service)
       message = incoming_at(anchor + 50.hours)
       expect(Marine::Conversation::ResponseBuilderJob).not_to receive(:perform_later)
 
