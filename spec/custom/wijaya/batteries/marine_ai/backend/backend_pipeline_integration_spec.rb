@@ -208,7 +208,7 @@ RSpec.describe 'Marine::Backend Phase 6 unified customer orchestration', type: :
 
     it 'product_listing: Catalog-authorized code/name reaches a reply (no identity resolver, no RAG)' do
       stub_decision(normalized_plan(intents: %w[product_listing]))
-      @model2 = 'Berikut 2 dari 9 produk kami: BD (Santorini) dan AMZ (Amazon).'
+      @model2 = 'Berikut 2 dari 9 produk kami: Santorini dan Amazon.'
 
       result = execution.call
 
