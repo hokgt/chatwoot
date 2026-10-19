@@ -78,7 +78,8 @@ class Marine::Backend::PostGenerationFactValidator
     return reject(:malformed_candidate) unless valid_text?(candidate, max_candidate_bytes(packet))
     return reject(:packet_leak) if leaks_packet?(candidate)
     return reject(:control_leak) if leaks_control_instruction?(candidate, control_texts)
-    return reject(:missing_required_value) unless required_values(packet).all? { |value| present_as_literal?(candidate, value) }
+    return reject(:unauthorized_token) unless listing_codes_absent?(packet, candidate)
+    return reject(:missing_required_value) unless required_values_present?(packet, candidate)
     return reject(:unauthorized_token) unless tokens_within_inventory?(packet, candidate)
 
     Result.new(ok: true, reason: nil).freeze
@@ -129,6 +130,11 @@ class Marine::Backend::PostGenerationFactValidator
     @control_leak_inspector.leak?(reply: candidate, control_texts: CONTROL_TEXTS + Array(control_texts))
   end
 
+  # Every required value must appear unchanged as a literal in the candidate, else fail closed.
+  def required_values_present?(packet, candidate)
+    required_values(packet).all? { |value| present_as_literal?(candidate, value) }
+  end
+
   # Values that MUST appear unchanged: the validated variant code, and (when a price fact
   # exists) the immutable display amount / currency / UOM. Blank/absent values are skipped.
   def required_values(packet) # rubocop:disable Metrics/AbcSize -- flat extraction from mutually exclusive closed fact envelopes
@@ -145,7 +151,8 @@ class Marine::Backend::PostGenerationFactValidator
       display = range[:display] || {}
       values.push(display[:min], display[:max], display[:currency], display[:uom])
     end
-    values.concat(listing_required_values(dig(packet, :facts, :product_listing)))
+    values.concat(listing_required_values(dig(packet, :facts, :product_listing),
+                                          names_only: product_listing_response?(packet)))
     values.concat(offerings_required_values(dig(packet, :facts, :company_offerings)))
     values.compact.uniq
   end
@@ -161,20 +168,40 @@ class Marine::Backend::PostGenerationFactValidator
     values
   end
 
-  # For a product listing, EVERY authorized product's code AND its display name (when present) MUST
-  # appear literally — so an omitted product (missing code/name) or a renamed product (changed name)
+  # For a product listing, EVERY authorized product's display name MUST appear literally while its
+  # internal code remains hidden — so an omitted or renamed product
   # fails closed. When the page is NOT complete, the EXACT bounded-coverage counts (returned_count and,
   # when the packet carries it, total_count) must also appear literally, so an incomplete page can
   # never be presented as the whole catalogue with a silently-dropped or mutated count.
-  def listing_required_values(listing)
+  def listing_required_values(listing, names_only:)
     return [] unless listing.is_a?(Hash)
 
-    values = Array(listing[:products]).flat_map { |product| [product[:code], product[:name]] }
+    values = Array(listing[:products]).flat_map do |product|
+      names_only ? [product[:name]] : [product[:code], product[:name]]
+    end.compact
     unless listing[:complete] == true
       values << listing[:returned_count]&.to_s
       values << listing[:total_count]&.to_s
     end
     values
+  end
+
+  # Product-listing codes remain internal catalog identities. Reject them as visible literals unless
+  # a code is exactly equal to an authorized display name, where the required name cannot be hidden.
+  def listing_codes_absent?(packet, candidate)
+    return true unless product_listing_response?(packet)
+
+    listing = dig(packet, :facts, :product_listing)
+    return true unless listing.is_a?(Hash)
+
+    products = Array(listing[:products])
+    names = products.filter_map { |product| product[:name] }
+    codes = products.filter_map { |product| product[:code] }.reject { |code| names.include?(code) }
+    codes.none? { |code| present_as_literal?(candidate, code) }
+  end
+
+  def product_listing_response?(packet)
+    dig(packet, :response_goals) == ['answer_product_listing']
   end
 
   # Unicode-aware literal presence with alphanumeric boundaries, so a short code is not treated

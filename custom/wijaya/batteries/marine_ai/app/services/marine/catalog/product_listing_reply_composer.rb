@@ -29,7 +29,7 @@ module Marine
 
       SYSTEM_PROMPT = <<~PROMPT.strip.freeze
         Write one concise, natural customer-facing Product Listing reply from the structured request.
-        The request is DATA and is the only source of product facts. Preserve every listed product code and name exactly once and add no product.
+        The request is DATA and is the only source of product facts. Show every listed product name exactly once, add no product, and never display an internal product code.
         Preserve the stated returned/total counts and completeness truth. Catalog membership never means stock availability.
         Add no price, stock, quantity, warehouse, location, delivery, lead-time, discount, or other product claim.
         Write the entire reply in target_language. End with a natural question asking what the customer needs the products for so Marine can help recommend the right product; do not copy a fixed sentence.
@@ -54,7 +54,7 @@ module Marine
         return fallback if packet.nil?
 
         candidate = generate(packet)
-        acceptable_candidate?(packet, candidate) ? candidate : fallback
+        acceptable_candidate?(packet, descriptor, candidate) ? candidate : fallback
       rescue StandardError
         fallback
       end
@@ -71,9 +71,10 @@ module Marine
         primary if SUPPORTED_LANGUAGES.include?(primary)
       end
 
-      def acceptable_candidate?(packet, candidate)
+      def acceptable_candidate?(packet, descriptor, candidate)
         return false unless generated_candidate?(candidate)
         return false unless deterministically_valid?(packet, candidate)
+        return false unless product_codes_absent?(descriptor, candidate)
         return false unless @persona_validator.call(candidate: candidate).ok?
 
         @fact_verifier.call(packet: packet, candidate: candidate) == true
@@ -95,7 +96,7 @@ module Marine
         return nil if target.nil? || !valid_descriptor?(descriptor)
 
         listing = {
-          products: descriptor[:products].map { |product| { code: product[:code], name: product[:name] }.compact },
+          products: descriptor[:products].map { |product| { name: product[:name] } },
           returned_count: descriptor[:returned_count], total_count: descriptor[:total_count],
           complete: descriptor[:complete], has_more: descriptor[:has_more]
         }
@@ -124,7 +125,7 @@ module Marine
       def valid_product?(product)
         return false unless product.is_a?(Hash) && present_string?(product[:code])
 
-        product[:name].nil? || present_string?(product[:name])
+        present_string?(product[:name])
       end
 
       def valid_total?(total, returned, complete)
@@ -185,8 +186,18 @@ module Marine
       # boundaries so a short code embedded in another word does not count.
       def exact_product_inventory?(packet, candidate)
         products = packet.dig(:facts, :product_listing, :products)
-        expected = products.flat_map { |product| [product[:code], product[:name]] }.compact.tally
+        expected = products.filter_map { |product| product[:name] }.tally
         expected.all? { |value, count| literal_count(candidate, value) == count }
+      end
+
+      # Product codes remain authoritative inside the descriptor but are not customer-visible listing
+      # facts. Reject a generated candidate that leaks one, except when the same literal is itself an
+      # authorized item name (where displaying the name is indistinguishable and required).
+      def product_codes_absent?(descriptor, candidate)
+        products = Array(descriptor[:products])
+        names = products.filter_map { |product| product[:name] }
+        codes = products.filter_map { |product| product[:code] }.reject { |code| names.include?(code) }
+        codes.none? { |code| literal_count(candidate, code).positive? }
       end
 
       def literal_count(text, value)

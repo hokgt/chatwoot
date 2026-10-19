@@ -39,7 +39,8 @@ RSpec.describe Marine::Backend::ProductListingEvidenceRenderer do
   it 'appends the Indonesian needs question on a complete id listing' do
     text = renderer.call(packet: listing_packet(products: two_products, returned_count: 2, total_count: 2, complete: true))
 
-    expect(text).to include('AAA', 'BBB')
+    expect(text).to include('Alpha', 'Bravo')
+    expect(text).not_to include('AAA', 'BBB')
     expect(text).to end_with(described_class::FOLLOWUP_QUESTION['id'])
   end
 
@@ -56,6 +57,6 @@ RSpec.describe Marine::Backend::ProductListingEvidenceRenderer do
 
     lead = 'Berikut produk dalam katalog kami:'
     expect(text).to start_with(lead)
-    expect(text.index('AAA')).to be < text.index(described_class::FOLLOWUP_QUESTION['id'])
+    expect(text.index('Alpha')).to be < text.index(described_class::FOLLOWUP_QUESTION['id'])
   end
 end

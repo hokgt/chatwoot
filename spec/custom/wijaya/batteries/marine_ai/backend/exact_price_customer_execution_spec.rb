@@ -573,12 +573,13 @@ RSpec.describe Marine::Backend::ExactPriceCustomerExecution do
         account: account, assistant: assistant, conversation: conversation, message: message,
         decision_runner: decision_runner, scenario_adapter: scenario_adapter,
         authority_execution: authority_execution, presenter: Marine::Backend::EvidencePacketPresenter.new,
-        generator: ->(**) { 'Kami punya AAA (Alpha) dan BBB (Bravo), plus produk istimewa lainnya.' },
+        generator: ->(**) { 'Kami punya Alpha dan Bravo, plus produk istimewa lainnya.' },
         fact_verifier: ->(**) { false }, context_builder: context_builder
       ).call
 
       expect(result).to be_deliverable
-      expect(result.text).to include('AAA', 'Alpha', 'BBB', 'Bravo')
+      expect(result.text).to include('Alpha', 'Bravo')
+      expect(result.text).not_to include('AAA', 'BBB')
       expect(result.text).not_to include('produk istimewa lainnya')
     end
   end

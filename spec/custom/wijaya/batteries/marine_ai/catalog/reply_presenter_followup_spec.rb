@@ -20,7 +20,8 @@ RSpec.describe Marine::Catalog::ReplyPresenter do
       text = described_class.new.reply_text(scoped_plan)
 
       expect(text).to start_with('Here are the Kain products we currently offer:')
-      expect(text).to include('Katun (KAIN-01)')
+      expect(text).to include('Katun', 'Denim')
+      expect(text).not_to include('KAIN-01', 'KAIN-02')
       expect(text).to end_with(described_class::PRODUCT_LISTING_NEEDS_QUESTION)
     end
 

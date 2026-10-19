@@ -823,7 +823,7 @@ RSpec.describe Marine::Conversation::ResponseBuilderJob do
       )
       plan = { action: :reply, reply: descriptor }
       fallback = Marine::Catalog::ReplyPresenter.new.reply_text(plan)
-      candidate = 'Pilihan kami mencakup Alpha (AAA) dan Bravo (BBB). Produk ini akan digunakan untuk kebutuhan apa ' \
+      candidate = 'Pilihan kami mencakup Alpha dan Bravo. Produk ini akan digunakan untuk kebutuhan apa ' \
                   'agar saya dapat membantu merekomendasikan yang sesuai?'
       generator = ->(**) { candidate }
       fact_verifier = ->(**) { true }

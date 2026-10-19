@@ -635,11 +635,11 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
     # A candidate that passes the deterministic fact + persona gates but introduces a RAG-only product
     # the semantic verifier will reject. Used across the Step 17 discard/fallback cases below.
     def rag_only_candidate
-      'Kami punya AAA (Alpha), BBB (Bravo), dan produk istimewa lainnya.'
+      'Kami punya Alpha, Bravo, dan produk istimewa lainnya.'
     end
 
-    it 'delivers a listing reply that cites exactly the listed codes (verifier confirms)' do
-      result = presenter.call(packet: listing_packet, generator: generator('Kami punya AAA (Alpha) dan BBB (Bravo).'),
+    it 'delivers a listing reply that cites exactly the listed names without codes (verifier confirms)' do
+      result = presenter.call(packet: listing_packet, generator: generator('Kami punya Alpha dan Bravo.'),
                               customer_request: 'Produk apa saja?', fact_verifier: verifier_ok)
       expect(result.ok?).to be(true)
     end
@@ -649,8 +649,8 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
       expect(result).to have_attributes(ok: false, reason: :generation_failed, fallback: :handoff)
     end
 
-    it 'keeps the deterministic fact gate closed (:handoff) when a reply omits a listed product code' do
-      result = presenter.call(packet: listing_packet, generator: generator('Kami hanya punya AAA (Alpha).'),
+    it 'keeps the deterministic fact gate closed (:handoff) when a reply omits a listed product name' do
+      result = presenter.call(packet: listing_packet, generator: generator('Kami hanya punya Alpha.'),
                               customer_request: 'x', fact_verifier: verifier_ok)
       expect(result).to have_attributes(ok: false, reason: :fact_rejected, fallback: :handoff)
     end
@@ -663,7 +663,8 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
       result = presenter.call(packet: listing_packet, generator: generator(rag_only_candidate),
                               customer_request: 'x', fact_verifier: ->(**) { false })
       expect(result.ok?).to be(true)
-      expect(result.text).to include('AAA', 'Alpha', 'BBB', 'Bravo')
+      expect(result.text).to include('Alpha', 'Bravo')
+      expect(result.text).not_to include('AAA', 'BBB')
       expect(result.text).not_to include('produk istimewa lainnya')
     end
 
@@ -671,7 +672,8 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
       result = presenter.call(packet: listing_packet, generator: generator(rag_only_candidate),
                               customer_request: 'x', fact_verifier: ->(**) { raise 'boom' })
       expect(result.ok?).to be(true)
-      expect(result.text).to include('AAA', 'BBB')
+      expect(result.text).to include('Alpha', 'Bravo')
+      expect(result.text).not_to include('AAA', 'BBB')
       expect(result.text).not_to include('produk istimewa lainnya')
     end
 
@@ -680,7 +682,8 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
         result = presenter.call(packet: listing_packet, generator: generator(rag_only_candidate),
                                 customer_request: 'x', fact_verifier: unusable_verifier)
         expect(result.ok?).to be(true)
-        expect(result.text).to include('AAA', 'BBB')
+        expect(result.text).to include('Alpha', 'Bravo')
+        expect(result.text).not_to include('AAA', 'BBB')
         expect(result.text).not_to include('produk istimewa lainnya')
       end
     end
@@ -690,10 +693,10 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
       allow(spy_renderer).to receive(:call)
       presenter_with_spy = described_class.new(listing_renderer: spy_renderer)
 
-      result = presenter_with_spy.call(packet: listing_packet, generator: generator('Kami punya AAA (Alpha) dan BBB (Bravo).'),
+      result = presenter_with_spy.call(packet: listing_packet, generator: generator('Kami punya Alpha dan Bravo.'),
                                        customer_request: 'x', fact_verifier: verifier_ok)
       expect(result.ok?).to be(true)
-      expect(result.text).to eq('Kami punya AAA (Alpha) dan BBB (Bravo).')
+      expect(result.text).to eq('Kami punya Alpha dan Bravo.')
       expect(spy_renderer).not_to have_received(:call)
     end
 

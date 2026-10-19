@@ -36,8 +36,8 @@ module Marine
       # names no company, so it never turns a customer-supplied destination or quantity into a claim.
       HANDOFF_ACK_TEXT = "I'm sorry, I'm not able to confirm that for you directly. Let me bring in a colleague who can help you with this.".freeze
 
-      # The deterministic product-LISTING line: the dynamic template rows the descriptor carries, named
-      # and coded exactly as the catalog repository read them. It claims no price, no stock, and no
+      # The deterministic product-LISTING line: the dynamic template rows the descriptor carries,
+      # showing only each catalog item name (the authoritative code remains internal). It claims no price, no stock, and no
       # attachment, and stays truthful about completeness — a bounded page with more available says so.
       PRODUCT_LISTING_EMPTY_TEXT = "I'm sorry, we don't currently have any products listed.".freeze
       PRODUCT_LISTING_MORE_SUFFIX = ' More are available — let me know if you would like to see them.'.freeze
@@ -239,18 +239,13 @@ module Marine
         # WIJAYA_CUSTOM_END: listing-followup-question
       end
 
-      # One "Name (CODE)" listing line for a repository-derived template row (the bare name or
-      # code when the other is blank); nil — dropped — for a non-Hash or fully blank row.
+      # One item-name-only listing line for a repository-derived template row. The authoritative code
+      # deliberately remains internal; a missing name is dropped rather than exposing the code.
       def listing_line(product)
         return nil unless product.is_a?(Hash)
 
-        code = product[:code].to_s.strip
         name = product[:name].to_s.strip
-        return nil if code.empty? && name.empty?
-
-        return name if code.empty?
-
-        name.empty? ? code : "#{name} (#{code})"
+        name unless name.empty?
       end
 
       # The scoped (or broad) listing intro, naming only the exactly-resolved item group.

@@ -4,7 +4,8 @@ require 'rails_helper'
 
 # Step 17 — the deterministic product_listing Evidence renderer. It renders a bounded catalog
 # listing reply from a frozen marine_evidence_v2 answer_product_listing packet ALONE, through
-# controlled backend-owned localized templates. It reads only the listed products' code + name,
+# controlled backend-owned localized templates. It validates each listed product's code + name but
+# renders only the item name,
 # the returned/total counts, the complete flag, and the packet customer_language; it never reads
 # the raw request, calls a provider/RAG/repository, or adds description/stock/price/location/
 # delivery/qualitative claims. It fails closed (nil) on a non-listing, malformed, or
@@ -39,25 +40,24 @@ RSpec.describe Marine::Backend::ProductListingEvidenceRenderer do
   let(:two_products) { [{ code: 'AAA', name: 'Alpha' }, { code: 'BBB', name: 'Bravo' }] }
 
   describe 'exact Evidence-derived product set and counts' do
-    it 'cites exactly the listed codes and names, each literally, and nothing else product-like' do
+    it 'cites exactly the listed item names and keeps internal codes hidden' do
       text = renderer.call(packet: listing_packet(products: two_products, returned_count: 2, total_count: 2, complete: true))
 
-      expect(text).to include('AAA', 'Alpha', 'BBB', 'Bravo')
-      # Exactly the two authorized codes — no third code-like identifier is introduced.
-      expect(text.scan(/\b[A-Z]{3}\b/).sort).to eq(%w[AAA BBB])
+      expect(text).to include('Alpha', 'Bravo')
+      expect(text).not_to include('AAA', 'BBB')
     end
 
-    it 'renders a code-only product with no parenthetical name when the Evidence carries no name' do
+    it 'fails closed rather than exposing a code when the Evidence carries no item name' do
       text = renderer.call(packet: listing_packet(products: [{ code: 'AAA' }], returned_count: 1, total_count: 1, complete: true))
 
-      expect(text).to include('AAA')
-      expect(text).not_to include('(')
+      expect(text).to be_nil
     end
 
     it 'retains the exact returned_count and total_count on a bounded (incomplete) page' do
       text = renderer.call(packet: listing_packet(products: two_products, returned_count: 2, total_count: 9, complete: false))
 
-      expect(text).to include('2', '9', 'AAA', 'BBB')
+      expect(text).to include('2', '9', 'Alpha', 'Bravo')
+      expect(text).not_to include('AAA', 'BBB')
     end
   end
 
@@ -73,7 +73,8 @@ RSpec.describe Marine::Backend::ProductListingEvidenceRenderer do
       text = renderer.call(packet: listing_packet(products: two_products, returned_count: 2, total_count: nil, complete: false))
 
       expect(text).to include('sebagian')
-      expect(text).to include('AAA', 'BBB')
+      expect(text).to include('Alpha', 'Bravo')
+      expect(text).not_to include('AAA', 'BBB')
     end
   end
 
@@ -93,7 +94,8 @@ RSpec.describe Marine::Backend::ProductListingEvidenceRenderer do
       text = renderer.call(packet: listing_packet(products: two_products, returned_count: 2, total_count: 2, complete: true, language: 'en'))
 
       expect(text).to match(/catalog/i)
-      expect(text).to include('AAA', 'BBB')
+      expect(text).to include('Alpha', 'Bravo')
+      expect(text).not_to include('AAA', 'BBB')
     end
   end
 

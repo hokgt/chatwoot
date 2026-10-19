@@ -174,49 +174,54 @@ RSpec.describe Marine::Backend::PostGenerationFactValidator do
                     })
     end
 
-    it 'accepts a reply citing every listed code AND name and the exact returned/total counts' do
-      reply = 'Berikut 2 dari 9 produk kami: AAA (Alpha) dan BBB (Bravo). Beri tahu kriterianya.'
+    it 'accepts every listed name with exact counts while internal codes stay hidden' do
+      reply = 'Berikut 2 dari 9 produk kami: Alpha dan Bravo. Beri tahu kriterianya.'
       expect(validator.call(packet: listing_packet, candidate: reply).ok?).to be(true)
     end
 
-    it 'rejects a reply that omits a listed product (missing code/name)' do
-      expect(validator.call(packet: listing_packet, candidate: 'Berikut 2 dari 9: AAA (Alpha).').reason).to eq(:missing_required_value)
+    it 'rejects a reply that omits a listed product name' do
+      expect(validator.call(packet: listing_packet, candidate: 'Berikut 2 dari 9: Alpha.').reason).to eq(:missing_required_value)
     end
 
     it 'rejects a RENAMED product (the authorized name is absent)' do
-      renamed = 'Berikut 2 dari 9: AAA (Omega) dan BBB (Bravo).'
+      renamed = 'Berikut 2 dari 9: Omega dan Bravo.'
       expect(validator.call(packet: listing_packet, candidate: renamed).reason).to eq(:missing_required_value)
     end
 
+    it 'rejects an internal product code even when every authorized name is present' do
+      leaked = 'Berikut 2 dari 9: Alpha (AAA) dan Bravo.'
+      expect(validator.call(packet: listing_packet, candidate: leaked).reason).to eq(:unauthorized_token)
+    end
+
     it 'rejects a MUTATED total count (the true total is absent)' do
-      mutated = 'Berikut 2 dari 50 produk: AAA (Alpha) dan BBB (Bravo).'
+      mutated = 'Berikut 2 dari 50 produk: Alpha dan Bravo.'
       expect(validator.call(packet: listing_packet, candidate: mutated).reason).to eq(:missing_required_value)
     end
 
     it 'rejects a FALSE completeness claim with the bounded counts dropped' do
-      false_complete = 'Ini semua produk kami: AAA (Alpha) dan BBB (Bravo).'
+      false_complete = 'Ini semua produk kami: Alpha dan Bravo.'
       expect(validator.call(packet: listing_packet, candidate: false_complete).reason).to eq(:missing_required_value)
     end
 
     it 'rejects an unauthorized code-like identifier the packet does not carry' do
-      added = 'Berikut 2 dari 9: AAA (Alpha), BBB (Bravo), dan SKU9 (Gamma).'
+      added = 'Berikut 2 dari 9: Alpha, Bravo, dan SKU9 (Gamma).'
       expect(validator.call(packet: listing_packet, candidate: added).reason).to eq(:unauthorized_token)
     end
 
     it 'rejects an unauthorized numeric token the packet does not carry' do
-      added_number = 'Berikut 2 dari 9: AAA (Alpha) dan BBB (Bravo). Diskon 15%.'
+      added_number = 'Berikut 2 dari 9: Alpha dan Bravo. Diskon 15%.'
       expect(validator.call(packet: listing_packet, candidate: added_number).reason).to eq(:unauthorized_token)
     end
 
     it 'allows a long listing reply up to the listing ceiling but rejects beyond it' do
-      long_ok = "Berikut 2 dari 9: AAA (Alpha) dan BBB (Bravo). #{'a' * 5000}"
-      too_long = "Berikut 2 dari 9: AAA (Alpha) dan BBB (Bravo). #{'a' * 9000}"
+      long_ok = "Berikut 2 dari 9: Alpha dan Bravo. #{'a' * 5000}"
+      too_long = "Berikut 2 dari 9: Alpha dan Bravo. #{'a' * 9000}"
       expect(validator.call(packet: listing_packet, candidate: long_ok).ok?).to be(true)
       expect(validator.call(packet: listing_packet, candidate: too_long).reason).to eq(:malformed_candidate)
     end
 
     it 'rejects a listing structural-key leak' do
-      leak = 'Berikut 2 dari 9: AAA (Alpha) BBB (Bravo) returned_count'
+      leak = 'Berikut 2 dari 9: Alpha Bravo returned_count'
       expect(validator.call(packet: listing_packet, candidate: leak).reason).to eq(:packet_leak)
     end
 
@@ -232,8 +237,8 @@ RSpec.describe Marine::Backend::PostGenerationFactValidator do
                       })
       end
 
-      it 'accepts a reply that cites every code and name without a count' do
-        expect(validator.call(packet: listing_packet, candidate: 'Produk kami: AAA (Alpha) dan BBB (Bravo).').ok?).to be(true)
+      it 'accepts a reply that cites every name without a count or code' do
+        expect(validator.call(packet: listing_packet, candidate: 'Produk kami: Alpha dan Bravo.').ok?).to be(true)
       end
     end
   end

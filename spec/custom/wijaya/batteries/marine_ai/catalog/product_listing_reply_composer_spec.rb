@@ -15,11 +15,11 @@ RSpec.describe 'Marine product-listing dynamic wording' do
     }.freeze
   end
   let(:fallback) do
-    'Here are the products we currently offer: Alpha (AAA), Bravo (BBB).' \
+    'Here are the products we currently offer: Alpha, Bravo.' \
       "#{Marine::Catalog::ReplyPresenter::PRODUCT_LISTING_NEEDS_QUESTION}"
   end
   let(:natural_candidate) do
-    'Pilihan kami mencakup Alpha (AAA) dan Bravo (BBB). Produk ini akan digunakan untuk kebutuhan apa ' \
+    'Pilihan kami mencakup Alpha dan Bravo. Produk ini akan digunakan untuk kebutuhan apa ' \
       'agar saya dapat membantu merekomendasikan yang sesuai?'
   end
   let(:generator) { ->(**) { natural_candidate } }
@@ -62,17 +62,19 @@ RSpec.describe 'Marine product-listing dynamic wording' do
 
     expect(captured).to include(:system, :messages)
     prompt = captured.fetch(:messages).fetch(0).fetch(:content)
-    expect(prompt).to include('AAA', 'Alpha', 'BBB', 'Bravo', 'returned_count', 'total_count', 'complete', 'has_more',
+    expect(prompt).to include('Alpha', 'Bravo', 'returned_count', 'total_count', 'complete', 'has_more',
                               'target_language', 'ask_customer_intended_need')
+    expect(prompt).not_to include('AAA', 'BBB')
     expect(prompt).not_to include('SELECT', 'warehouse', 'credential', fallback)
   end
 
-  it 'requires every product code and name exactly once' do
+  it 'requires every product name exactly once and rejects internal item codes' do
     invalid = [
-      natural_candidate.sub('Bravo (BBB)', 'Bravo'),
-      natural_candidate.sub('Bravo (BBB)', 'Bravo (BBB), Bravo (BBB)'),
-      natural_candidate.sub('Bravo (BBB)', 'Charlie (CCC)'),
-      natural_candidate.sub('Alpha (AAA)', 'Bravo (AAA)')
+      natural_candidate.sub(' dan Bravo', ''),
+      natural_candidate.sub('Bravo', 'Bravo dan Bravo'),
+      natural_candidate.sub('Bravo', 'Charlie'),
+      natural_candidate.sub('Alpha', 'Bravo'),
+      natural_candidate.sub('Alpha', 'Alpha (AAA)')
     ]
 
     invalid.each do |candidate|
@@ -85,7 +87,7 @@ RSpec.describe 'Marine product-listing dynamic wording' do
 
   it 'preserves incomplete counts and rejects a false completeness claim through the semantic verifier' do
     incomplete = descriptor.merge(total_count: 9, complete: false, has_more: true).freeze
-    valid = 'Berikut 2 dari 9 produk: Alpha (AAA) dan Bravo (BBB). Akan digunakan untuk kebutuhan apa agar saya dapat merekomendasikan yang sesuai?'
+    valid = 'Berikut 2 dari 9 produk: Alpha dan Bravo. Akan digunakan untuk kebutuhan apa agar saya dapat merekomendasikan yang sesuai?'
     captured_packet = nil
     verifier = lambda do |packet:, **|
       captured_packet = packet
@@ -99,7 +101,7 @@ RSpec.describe 'Marine product-listing dynamic wording' do
       returned_count: 2, total_count: 9, complete: false, has_more: true
     )
 
-    false_more = 'Alpha (AAA) dan Bravo (BBB) adalah sebagian dari lebih banyak produk. Akan digunakan untuk kebutuhan apa?'
+    false_more = 'Alpha dan Bravo adalah sebagian dari lebih banyak produk. Akan digunakan untuk kebutuhan apa?'
     rejected = composer(generator: ->(**) { false_more }, fact_verifier: ->(**) { false }).compose(
       descriptor: descriptor, fallback: fallback, reply_language: 'id'
     )
@@ -112,7 +114,7 @@ RSpec.describe 'Marine product-listing dynamic wording' do
       "#{natural_candidate} Stoknya 50 unit.",
       "#{natural_candidate} Tersedia di gudang Jakarta.",
       "#{natural_candidate} Pengiriman besok.",
-      natural_candidate.sub('Bravo (BBB)', 'Bravo (BBB) dan Charlie (CCC)')
+      natural_candidate.sub('Bravo', 'Bravo dan Charlie')
     ]
 
     candidates.each do |candidate|

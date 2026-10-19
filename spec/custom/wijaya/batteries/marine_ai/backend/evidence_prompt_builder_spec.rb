@@ -131,6 +131,8 @@ RSpec.describe Marine::Backend::EvidencePromptBuilder do
     it 'instructs honest bounded-listing presentation (cite listed products, no false completeness claim)' do
       instruction = described_class::SYSTEM_INSTRUCTION
       expect(instruction).to match(/present exactly the products it lists and no others/)
+      expect(instruction).to match(/stating only each product's name exactly as given/)
+      expect(instruction).to match(/never display its internal code/)
       expect(instruction).to match(/do not claim it is the whole catalogue/)
       expect(instruction).to match(/explain each product individually, using only its own description/)
     end

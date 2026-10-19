@@ -149,7 +149,7 @@ RSpec.describe Marine::Catalog::PlaygroundPreview do
       )
       listing_plan = plan(action: :reply, reply: descriptor, language: 'id')
       fallback = Marine::Catalog::ReplyPresenter.new.reply_text(listing_plan)
-      candidate = 'Pilihan kami mencakup Alpha (AAA) dan Bravo (BBB). Produk ini akan digunakan untuk kebutuhan apa ' \
+      candidate = 'Pilihan kami mencakup Alpha dan Bravo. Produk ini akan digunakan untuk kebutuhan apa ' \
                   'agar saya dapat membantu merekomendasikan yang sesuai?'
       composer = Marine::Catalog::ProductListingReplyComposer.new(
         account: account, generator: ->(**) { candidate }, fact_verifier: ->(**) { true }

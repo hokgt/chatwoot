@@ -8,7 +8,7 @@
 # key product_listing; a product_information packet (or any other goal/fact) is out of scope and yields
 # nil so the presenter keeps that path's existing closed fallback.
 #
-# It reads ONLY controlled Evidence values — each listed product's code and optional display name, the
+# It reads ONLY controlled Evidence values — each listed product's internal code and required display name, the
 # returned_count / total_count, the complete flag, and the packet customer_language — and renders them
 # through backend-owned localized templates. It never reads the raw customer request/history, calls a
 # provider / RAG / repository, adds a product description, stock/status/quantity, price/discount,
@@ -65,7 +65,7 @@ class Marine::Backend::ProductListingEvidenceRenderer
       packet[:facts].key?(:product_listing)
   end
 
-  # A well-formed listing fact: a bounded, non-empty page of { code, name? } products, a returned_count
+  # A well-formed listing fact: a bounded, non-empty page of { code, name } products, a returned_count
   # that equals the page size, a boolean complete, and a total_count consistent with completeness
   # (equal to returned when complete; an Integer strictly greater, or omitted, when not).
   def valid_listing?(listing) # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity -- a flat sequence of independent fail-closed listing guards
@@ -81,8 +81,7 @@ class Marine::Backend::ProductListingEvidenceRenderer
   end
 
   def valid_product?(product)
-    product.is_a?(Hash) && present_string?(product[:code]) &&
-      (product[:name].nil? || present_string?(product[:name]))
+    product.is_a?(Hash) && present_string?(product[:code]) && present_string?(product[:name])
   end
 
   def valid_total?(total, returned, complete)
@@ -103,9 +102,10 @@ class Marine::Backend::ProductListingEvidenceRenderer
     # WIJAYA_CUSTOM_END: listing-followup-question
   end
 
-  # Exact code + optional display name, both literal — never a description or any other claim.
+  # Customer-visible listings show only the item name. The code remains internal authority and is
+  # validated above, but is never rendered as listing text.
   def product_label(product)
-    product[:name] ? "#{product[:code]} (#{product[:name]})" : product[:code]
+    product[:name]
   end
 
   def lead_sentence(listing, language)
