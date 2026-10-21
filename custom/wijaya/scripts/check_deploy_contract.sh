@@ -230,6 +230,29 @@ if [[ -f "$CANONICAL" ]]; then
   fi
 fi
 
+# 4d) G2 — app image provenance and TOCTOU closure. Require the exact runtime
+# invocation order and the dedicated app-only Compose interpolation variable.
+if [[ -f "$CANONICAL" ]]; then
+  grep -qE '^[[:space:]]{4}image:[[:space:]]+\$\{MARINE_DEPLOY_APP_IMAGE:-chatwoot-wijaya:devbot-[0-9a-f]{10}\}[[:space:]]*$' docker-compose.deploy.yaml \
+    || err "base deploy compose app image must use the exact dedicated immutable-image interpolation"
+  app_gate_call_line="$(grep -nE '^[[:space:]]{2}validate_app_image_provenance_before_recreate "\$json"$' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  app_pin_call_line="$(grep -nE '^[[:space:]]{4}pin_app_image_for_recreate$' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  app_json_bind_line="$(grep -nE '^[[:space:]]{4}json="\$APP_PINNED_CONFIG_JSON"$' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  app_recreate_call_line="$(grep -nE '^[[:space:]]{2}recreate_services$' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  if [[ -z "$app_gate_call_line" || -z "$app_pin_call_line" || -z "$app_json_bind_line" || -z "$app_recreate_call_line" \
+     || "$app_gate_call_line" -ge "$app_pin_call_line" || "$app_pin_call_line" -ge "$app_json_bind_line" \
+     || "$app_json_bind_line" -ge "$app_recreate_call_line" ]]; then
+    err "app provenance gate -> immutable pin -> pinned config -> recreate ordering is invalid"
+  fi
+  app_export_line="$(grep -nE '^[[:space:]]{2}export MARINE_DEPLOY_APP_IMAGE="\$APP_VERIFIED_IMAGE_ID"$' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  app_rerender_line="$(grep -nE '^[[:space:]]{2}APP_PINNED_CONFIG_JSON="\$\(resolve_config_json\)"$' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  app_assert_line="$(grep -n 'rendered image is not bound to the verified immutable app image ID' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  if [[ -z "$app_export_line" || -z "$app_rerender_line" || -z "$app_assert_line" \
+     || "$app_export_line" -ge "$app_rerender_line" || "$app_rerender_line" -ge "$app_assert_line" ]]; then
+    err "app pin helper must export the verified ID, re-render Compose, then assert selected service images"
+  fi
+fi
+
 # 5) No competing recreation/`up` entrypoint under custom/wijaya. Only the canonical
 #    entrypoint may force-recreate or run `docker compose up`. A checker that scanned only
 #    `--force-recreate` would miss a competing script doing a plain `docker compose ... up`

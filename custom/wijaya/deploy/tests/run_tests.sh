@@ -59,17 +59,27 @@ if [[ "${1:-}" == "compose" ]]; then
     version) echo "Docker Compose version vFAKE"; exit 0 ;;
     config)
       if [[ "${FAKE_CONFIG_EMPTY:-0}" == "1" ]]; then exit 0; fi
-      # Mirror real compose env substitution: once deploy.sh pins
-      # MARINE_SOP_IMAGE to the verified immutable image ID, the resolved
-      # config must show that ID for the SOP worker.
-      if [[ -n "${MARINE_SOP_IMAGE:-}" ]]; then
-        jq --arg img "$MARINE_SOP_IMAGE" '.services["marine_sop_worker"].image = $img' "${FAKE_CONFIG_JSON_FILE:?}"
-      else
-        cat "${FAKE_CONFIG_JSON_FILE:?}"
+      count=0
+      if [[ -n "${FAKE_CONFIG_COUNT_FILE:-}" ]]; then
+        count="$(cat "$FAKE_CONFIG_COUNT_FILE" 2>/dev/null || echo 0)"
+        count=$((count+1)); printf '%s\n' "$count" >"$FAKE_CONFIG_COUNT_FILE"
       fi
+      json="$(cat "${FAKE_CONFIG_JSON_FILE:?}")"
+      # Mirror Compose interpolation for the dedicated app-image pin. A negative
+      # fixture can deliberately ignore the pin to prove deploy.sh fails closed.
+      if [[ -n "${MARINE_DEPLOY_APP_IMAGE:-}" && "${FAKE_IGNORE_APP_PIN:-0}" != "1" ]]; then
+        json="$(jq --arg img "$MARINE_DEPLOY_APP_IMAGE" '.services.rails.image = $img | .services.sidekiq.image = $img' <<<"$json")"
+      elif [[ -n "${FAKE_TAG_CHANGED_IMAGE:-}" && "$count" -ge 3 ]]; then
+        json="$(jq --arg img "$FAKE_TAG_CHANGED_IMAGE" '.services.rails.image = $img | .services.sidekiq.image = $img' <<<"$json")"
+      fi
+      if [[ -n "${MARINE_SOP_IMAGE:-}" ]]; then
+        json="$(jq --arg img "$MARINE_SOP_IMAGE" '.services["marine_sop_worker"].image = $img' <<<"$json")"
+      fi
+      printf '%s\n' "$json"
       exit 0 ;;
     up)      : "${FAKE_UP_MARKER:?}"
-              printf 'up MARINE_SOP_IMAGE=%s\n' "${MARINE_SOP_IMAGE:-}" >>"$FAKE_UP_MARKER"
+              printf 'up MARINE_DEPLOY_APP_IMAGE=%s MARINE_SOP_IMAGE=%s argv=%s\n' \
+                "${MARINE_DEPLOY_APP_IMAGE:-}" "${MARINE_SOP_IMAGE:-}" "$*" >>"$FAKE_UP_MARKER"
               exit 0 ;;
     *) exit 0 ;;
   esac
@@ -80,8 +90,12 @@ elif [[ "${1:-}" == "run" ]]; then
   # configured embedded sha / gate verdict is ever emitted.
   : "${FAKE_RUN_MARKER:?}"
   printf '%s\n' "$*" >>"${FAKE_RUN_MARKER}"
+  # Distinguish the app /app/.git_sha read (G2, from the resolved app image ID) from
+  # the SOP read (from the SOP derivative image ID) by matching the exact image ID in
+  # argv — proving each gate reads the immutable ID it resolved, not a shared tag.
   case "$*" in
-    *'/app/.git_sha'*) printf '%s\n' "${FAKE_SOP_GIT_SHA:-}"; exit 0 ;;
+    *"${FAKE_SOP_ID:-__nosopid__}"*'/app/.git_sha'*) printf '%s\n' "${FAKE_SOP_GIT_SHA:-}"; exit 0 ;;
+    *'/app/.git_sha'*) printf '%s\n' "${FAKE_APP_GIT_SHA:-}"; exit 0 ;;
     *) printf '%s\n' "${FAKE_PRE_IMAGE_GATE_OUT:-WIJAYA_SOP_GATE:PASS}"; exit 0 ;;
   esac
 elif [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
@@ -100,6 +114,10 @@ elif [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
       *'com.wijaya.chatwoot.base-image'*) echo "${FAKE_SOP_BASE:-}" ;;
       *'com.wijaya.chatwoot.role'*) echo "${FAKE_SOP_ROLE:-}" ;;
     esac
+  elif [[ -n "${FAKE_RAILS_REF:-}" && "$ref" == "$FAKE_RAILS_REF" ]]; then
+    case "$fmt" in *'.Id'*) echo "${FAKE_RAILS_ID:-}" ;; esac
+  elif [[ -n "${FAKE_SIDEKIQ_REF:-}" && "$ref" == "$FAKE_SIDEKIQ_REF" ]]; then
+    case "$fmt" in *'.Id'*) echo "${FAKE_SIDEKIQ_ID:-}" ;; esac
   elif [[ "$ref" == "${FAKE_APP_REF:-}" ]]; then
     case "$fmt" in *'.Id'*) echo "${FAKE_APP_ID:-}" ;; esac
   fi
@@ -292,7 +310,7 @@ run_deploy_sop_check() {
       bash "$DEPLOY_SH" --check --with-sop-worker >"$WORK/out.log" 2>&1 || RC=$?
 }
 
-FULL_SHA='0123456789abcdef0123456789abcdef01234567'
+FULL_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 SOP_OVERLAY_ID='custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml'
 OLD_SOP_OVERLAY_ID='custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-'""'sop.yml'
 CFG_SOP_OK="$WORK/cfg_sop_ok.json"
@@ -341,10 +359,11 @@ run_deploy_sop_deploy() { # <gate-output> <config-json> [<embedded-git-sha>]
       FAKE_CONFIG_JSON_FILE="$cfg" FAKE_UP_MARKER="$UP_MARKER" FAKE_IMAGE_MARKER="$IMAGE_MARKER" \
       FAKE_RUN_MARKER="$RUN_MARKER" FAKE_PRE_IMAGE_GATE_OUT="$gate_out" \
       FAKE_SOP_REF='chatwoot-wijaya:test-sop' FAKE_APP_REF='hokgt-chatwoot:test' \
-      FAKE_SOP_ID='sha256:sop' FAKE_APP_ID='sha256:app' \
+      FAKE_SOP_ID='sha256:sop' FAKE_APP_ID='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
       FAKE_SOP_SOURCE="$FULL_SHA" FAKE_SOP_BASE='hokgt-chatwoot:test' \
       FAKE_SOP_ROLE='marine_sop_worker' \
       FAKE_SOP_GIT_SHA="$git_sha" \
+      FAKE_APP_GIT_SHA="$FULL_SHA" \
       bash "$DEPLOY_SH" --deploy --with-sop-worker >"$WORK/out.log" 2>&1 || RC=$?
 }
 
@@ -394,7 +413,7 @@ if [[ "$missing_flag" == 0 ]] && ! grep -qE -- ' (-v |--volume |storage_data)' <
 else
   bad "pre-image gate isolation contract regressed (run: $(head -c 400 "$pre_gate_run" 2>/dev/null))"
 fi
-if grep -q '^up MARINE_SOP_IMAGE=sha256:sop$' "$UP_MARKER"; then
+if grep -q 'MARINE_SOP_IMAGE=sha256:sop' "$UP_MARKER"; then
   ok "compose up recreates marine_sop_worker with the SAME verified immutable image ID (exported MARINE_SOP_IMAGE)"
 else
   bad "compose up did not pin the verified immutable image ID (up marker: $(head -c 200 "$UP_MARKER" 2>/dev/null))"
@@ -527,6 +546,136 @@ rc=0
   exit 0
 ) && ok "worker-only target selection excludes rails and normal sidekiq" \
   || bad "worker-only target selection"
+
+echo "== deploy.sh app-image provenance gate + immutable pin (G2) =="
+
+APP_FULL_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+APP_IMAGE_ID='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+APP_IMAGE_ID_B='sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+
+run_deploy_app() { # <embedded-sha> <default|rails|sidekiq> <config> [extra env...]
+  local embedded="$1" target="$2" cfg="$3"; shift 3
+  local deploy_args=(--deploy)
+  case "$target" in
+    default) ;;
+    rails|sidekiq) deploy_args+=(--service "$target") ;;
+    *) bad "invalid run_deploy_app target: $target"; return 1 ;;
+  esac
+  CALLN=$((CALLN+1)); UP_MARKER="$WORK/up.$CALLN"; IMAGE_MARKER="$WORK/img.$CALLN"; RUN_MARKER="$WORK/run.$CALLN"
+  CONFIG_COUNT_FILE="$WORK/config-count.$CALLN"
+  rm -f "$UP_MARKER" "$IMAGE_MARKER" "$RUN_MARKER" "$CONFIG_COUNT_FILE"; RC=0
+  env DOCKER="$FAKE_DOCKER" \
+      MARINE_DEPLOY_BASE_COMPOSE="$BASE_COMPOSE" \
+      MARINE_DEPLOY_CATALOG_OVERLAY="$CATALOG_OVERLAY" \
+      MARINE_DEPLOY_SOP_OVERLAY="$SOP_OVERLAY" \
+      FAKE_CONFIG_JSON_FILE="$cfg" FAKE_CONFIG_COUNT_FILE="$CONFIG_COUNT_FILE" \
+      FAKE_UP_MARKER="$UP_MARKER" FAKE_IMAGE_MARKER="$IMAGE_MARKER" FAKE_RUN_MARKER="$RUN_MARKER" \
+      FAKE_APP_REF='hokgt-chatwoot:test' FAKE_APP_ID="$APP_IMAGE_ID" FAKE_APP_GIT_SHA="$embedded" \
+      "$@" bash "$DEPLOY_SH" "${deploy_args[@]}" >"$WORK/out.log" 2>&1 || RC=$?
+}
+
+# Default deployment: BOTH selected services are independently verified, then the
+# exact ID is pinned into the re-rendered config used by fake compose up.
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK"
+app_reads="$(grep -c -- "--network none --entrypoint cat $APP_IMAGE_ID /app/.git_sha" "$RUN_MARKER" || true)"
+if [[ "$app_reads" == 2 && -f "$UP_MARKER" ]] \
+   && grep -q "MARINE_DEPLOY_APP_IMAGE=$APP_IMAGE_ID" "$UP_MARKER"; then
+  ok "default rails+sidekiq path verifies both services and recreates with the verified immutable ID"
+else
+  bad "default app pin case (rc=$RC reads=$app_reads up=$([[ -f "$UP_MARKER" ]] && echo yes || echo no))"; cat "$WORK/out.log"
+fi
+
+# Rails-only and Sidekiq-only each verify exactly the selected service and retain
+# the same immutable pin without requiring the unselected service.
+run_deploy_app "$APP_FULL_SHA" rails "$CFG_OK"
+rails_reads="$(grep -c -- "--network none --entrypoint cat $APP_IMAGE_ID /app/.git_sha" "$RUN_MARKER" || true)"
+[[ "$rails_reads" == 1 && -f "$UP_MARKER" ]] \
+  && grep -qE 'argv=.* up .* rails$' "$UP_MARKER" \
+  && ok "rails-only path verifies/pins Rails before its recreate" \
+  || { bad "rails-only app pin case (rc=$RC reads=$rails_reads)"; cat "$WORK/out.log"; }
+
+run_deploy_app "$APP_FULL_SHA" sidekiq "$CFG_OK"
+sidekiq_reads="$(grep -c -- "--network none --entrypoint cat $APP_IMAGE_ID /app/.git_sha" "$RUN_MARKER" || true)"
+[[ "$sidekiq_reads" == 1 && -f "$UP_MARKER" ]] \
+  && grep -qE 'argv=.* up .* sidekiq$' "$UP_MARKER" \
+  && ok "sidekiq-only path verifies/pins Sidekiq before its recreate" \
+  || { bad "sidekiq-only app pin case (rc=$RC reads=$sidekiq_reads)"; cat "$WORK/out.log"; }
+
+# Two selected services resolving to different immutable IDs must fail before up.
+CFG_APP_SPLIT="$WORK/cfg_app_split.json"
+jq '.services.rails.image = "rails:test" | .services.sidekiq.image = "sidekiq:test"' "$CFG_OK" >"$CFG_APP_SPLIT"
+run_deploy_app "$APP_FULL_SHA" default "$CFG_APP_SPLIT" \
+  FAKE_RAILS_REF='rails:test' FAKE_RAILS_ID="$APP_IMAGE_ID" \
+  FAKE_SIDEKIQ_REF='sidekiq:test' FAKE_SIDEKIQ_ID="$APP_IMAGE_ID_B"
+if [[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'resolve to different immutable image IDs' "$WORK/out.log"; then
+  ok "different Rails/Sidekiq immutable IDs fail BEFORE compose up"
+else
+  bad "different app IDs were not blocked (rc=$RC)"; cat "$WORK/out.log"
+fi
+
+# Simulate the mutable tag changing for the post-verification render. The dedicated
+# immutable pin must win, and fake up must still receive the originally verified ID.
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" \
+  FAKE_TAG_CHANGED_IMAGE='hokgt-chatwoot:retargeted-after-gate'
+if [[ -f "$UP_MARKER" ]] \
+   && grep -q "MARINE_DEPLOY_APP_IMAGE=$APP_IMAGE_ID" "$UP_MARKER" \
+   && ! grep -q 'retargeted-after-gate' "$UP_MARKER"; then
+  ok "tag retarget after verification cannot change the immutable image used for recreation"
+else
+  bad "tag-retarget TOCTOU case (rc=$RC)"; cat "$WORK/out.log"
+fi
+
+# If re-rendering ignores the exported pin, fail closed before compose up.
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" FAKE_IGNORE_APP_PIN=1
+if [[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'rendered image is not bound' "$WORK/out.log"; then
+  ok "rendered config that ignores the immutable app pin fails BEFORE compose up"
+else
+  bad "ignored app pin was not blocked (rc=$RC)"; cat "$WORK/out.log"
+fi
+
+# Existing fail-closed provenance outcomes remain covered.
+run_deploy_app '0000000000000000000000000000000000000000' default "$CFG_OK"
+[[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'does not match the expected target SHA' "$WORK/out.log" \
+  && ok "mismatched app .git_sha blocks --deploy BEFORE compose up" \
+  || { bad "app provenance mismatch case (rc=$RC)"; cat "$WORK/out.log"; }
+
+run_deploy_app '' default "$CFG_OK"
+[[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'embeds no readable /app/.git_sha' "$WORK/out.log" \
+  && ok "empty/absent app .git_sha blocks --deploy BEFORE compose up" \
+  || { bad "app provenance missing case (rc=$RC)"; cat "$WORK/out.log"; }
+
+# Malformed embedded provenance must not be normalized by whitespace stripping.
+run_deploy_app '3998c33fae bfb1ee5aca0a498deab738683f9ee7' default "$CFG_OK"
+[[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'embeds a malformed /app/.git_sha' "$WORK/out.log" \
+  && ok "whitespace-corrupted embedded app SHA fails closed BEFORE compose up" \
+  || { bad "malformed embedded SHA case (rc=$RC)"; cat "$WORK/out.log"; }
+
+# Bash command substitution must not normalize extra trailing newlines into a
+# valid SHA. The fake prints its normal newline in addition to this injected one.
+run_deploy_app "$APP_FULL_SHA"$'\n' default "$CFG_OK"
+[[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'embeds a malformed /app/.git_sha' "$WORK/out.log" \
+  && ok "extra trailing newline in embedded app SHA fails closed BEFORE compose up" \
+  || { bad "extra trailing newline case (rc=$RC)"; cat "$WORK/out.log"; }
+
+# The target is bound to repository HEAD and malformed/unavailable values still fail
+# closed at the function boundary (source-only unit; no Docker call is reached).
+rc=0
+( export MARINE_DEPLOY_SOURCE_ONLY=1
+  source "$DEPLOY_SH" --check >/dev/null 2>&1
+  APP_EXPECTED_GIT_SHA='not-a-valid-sha'
+  validate_app_image_provenance_before_recreate '{}' >"$WORK/invalid-target.log" 2>&1
+) || rc=$?
+[[ "$rc" != 0 ]] && grep -q 'requires a resolvable repository HEAD' "$WORK/invalid-target.log" \
+  && ok "invalid repository target SHA fails closed before any image operation" \
+  || { bad "invalid repository target SHA case (rc=$rc)"; cat "$WORK/invalid-target.log"; }
+
+# Run the complete static contract, which enforces gate -> immutable pin ->
+# re-render/assert -> recreate ordering and the single-entrypoint anti-bypass rule.
+if bash "$CONTRACT_SH" >"$WORK/contract.log" 2>&1; then
+  ok "static deploy contract enforces app pin ordering and anti-bypass rules"
+else
+  bad "static deploy contract failed"; cat "$WORK/contract.log"
+fi
 
 echo "== deploy.sh sentinel parsers (unit) =="
 

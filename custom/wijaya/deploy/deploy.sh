@@ -117,6 +117,14 @@ SOP_SANDBOX_GATE="$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy/sop_sandbo
 # operator-provided tag), so the gate, the recreation and every post-runtime
 # check run the SAME immutable image content — no tag-retarget TOCTOU remains.
 SOP_VERIFIED_IMAGE_ID=''
+APP_VERIFIED_IMAGE_ID=''
+APP_PINNED_CONFIG_JSON=''
+
+# G2: the deployed app image MUST embed the exact checked-out repository HEAD.
+# This is intentionally not operator-overridable: allowing a separately supplied
+# target SHA would let a stale image validate against a value unrelated to the
+# checkout being deployed.
+APP_EXPECTED_GIT_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
 
 # ---------------------------------------------------------------------------
 # Argument parsing — strict whitelist, no generic passthrough.
@@ -361,6 +369,75 @@ validate_images_present() {
     validate_sop_image_provenance_before_recreate "$json"
   fi
   ok "target service images present locally"
+}
+
+# G2: fail-closed app-image provenance gate. For each SELECTED request-serving
+# service (rails, sidekiq) resolve its configured image to an immutable image ID
+# ONCE and read /app/.git_sha from that EXACT ID (never the mutable tag again) in
+# an ephemeral --network none container — the same safe preflight pattern the SOP
+# provenance check uses. The embedded SHA must be nonempty and byte-identical to
+# the expected 40-lowercase-hex target commit. Any missing / mismatched / unreadable
+# SHA aborts BEFORE compose up. The verified ID is retained and then injected through
+# the dedicated app-image Compose variable; the re-rendered config must resolve every
+# selected app service to that exact ID, so recreation never dereferences the tag again.
+validate_app_image_provenance_before_recreate() {
+  local json="$1" svc image image_id embedded_sha selected=0
+  APP_VERIFIED_IMAGE_ID=''
+  [[ "$APP_EXPECTED_GIT_SHA" =~ ^[0-9a-f]{40}$ ]] \
+    || die "app image provenance gate requires a resolvable repository HEAD with an exact 40-lowercase-hex SHA"
+  for svc in rails sidekiq; do
+    target_selected "$svc" || continue
+    selected=1
+    image="$(jq -r --arg s "$svc" '.services[$s].image // empty' <<<"$json")"
+    [[ -n "$image" ]] || die "$svc has no resolved image for the app provenance gate"
+    image_id="$("$DOCKER" image inspect --format '{{.Id}}' "$image" 2>/dev/null || true)"
+    [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] \
+      || die "$svc app image identity could not be resolved to an immutable sha256 ID before recreation"
+    if [[ -n "$APP_VERIFIED_IMAGE_ID" && "$image_id" != "$APP_VERIFIED_IMAGE_ID" ]]; then
+      die "selected rails and sidekiq app images resolve to different immutable image IDs"
+    fi
+    # Append a non-newline sentinel before command substitution so Bash cannot
+    # silently discard trailing newlines from the file. Accept exactly the image
+    # build contract: 40 lowercase hex bytes followed by one newline.
+    embedded_capture="$(
+      "$DOCKER" run --rm --network none --entrypoint cat "$image_id" /app/.git_sha 2>/dev/null
+      printf '\036%s' "$?"
+    )"
+    embedded_run_rc="${embedded_capture##*$'\036'}"
+    embedded_raw="${embedded_capture%$'\036'*}"
+    [[ "$embedded_run_rc" == '0' && -n "$embedded_raw" && "$embedded_raw" != $'\n' ]] \
+      || die "$svc app image embeds no readable /app/.git_sha (provenance binding failed)"
+    embedded_sha="${embedded_raw%$'\n'}"
+    [[ "$embedded_raw" == "$embedded_sha"$'\n' && "$embedded_sha" =~ ^[0-9a-f]{40}$ ]] \
+      || die "$svc app image embeds a malformed /app/.git_sha (expected exact 40-lowercase-hex plus one newline)"
+    [[ "$embedded_sha" == "$APP_EXPECTED_GIT_SHA" ]] \
+      || die "$svc app image embedded /app/.git_sha does not match the expected target SHA"
+    APP_VERIFIED_IMAGE_ID="$image_id"
+    ok "$svc app image embedded .git_sha verified against the target SHA (immutable image ID bound)"
+  done
+  [[ "$selected" -eq 0 || -n "$APP_VERIFIED_IMAGE_ID" ]] \
+    || die "selected app services produced no verified immutable image ID"
+}
+
+# Bind Compose recreation to the exact app image ID verified above. The dedicated
+# interpolation variable affects only the base app image; CHATWOOT_IMAGE remains
+# unchanged because the SOP overlay uses it as a provenance label value.
+pin_app_image_for_recreate() {
+  local svc rendered
+  [[ "$APP_VERIFIED_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]] \
+    || die "app image pin requires a verified immutable sha256 image ID"
+  export MARINE_DEPLOY_APP_IMAGE="$APP_VERIFIED_IMAGE_ID"
+  APP_PINNED_CONFIG_JSON="$(resolve_config_json)"
+  [[ -n "$APP_PINNED_CONFIG_JSON" ]] || die "resolved compose config is empty after app image pinning"
+  jq -e . >/dev/null 2>&1 <<<"$APP_PINNED_CONFIG_JSON" \
+    || die "resolved compose config is invalid after app image pinning"
+  for svc in rails sidekiq; do
+    target_selected "$svc" || continue
+    rendered="$(jq -r --arg s "$svc" '.services[$s].image // empty' <<<"$APP_PINNED_CONFIG_JSON")"
+    [[ "$rendered" == "$APP_VERIFIED_IMAGE_ID" ]] \
+      || die "$svc rendered image is not bound to the verified immutable app image ID"
+  done
+  ok "selected app services pinned to the verified immutable image ID"
 }
 
 # ---------------------------------------------------------------------------
@@ -770,6 +847,14 @@ main() {
   local json since
   json="$(resolve_config_json)"
   validate_images_present "$json"
+
+  # G2: verify the selected rails/sidekiq images embed the expected target commit
+  # at /app/.git_sha (read from the resolved immutable image ID) BEFORE any recreate.
+  validate_app_image_provenance_before_recreate "$json"
+  if target_selected rails || target_selected sidekiq; then
+    pin_app_image_for_recreate
+    json="$APP_PINNED_CONFIG_JSON"
+  fi
 
   # Blocker 3: bind recreation to the EXACT verified immutable image ID. Pinning
   # MARINE_SOP_IMAGE (exported, so it overrides any operator-provided mutable tag
