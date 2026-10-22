@@ -160,6 +160,13 @@ RSpec.describe Marine::Backend::EvidenceFactVerifier do
       expect(prompt).to match(/returned.*total count other than those given/)
     end
 
+    # G4 — a listing/information answer's customer-visible identity is the NAME only; the internal code
+    # is for authority binding, not display, so the rubric must not require codes to appear.
+    it 'treats listing/information identity as name-only and does not require internal codes to appear' do
+      expect(prompt).to match(/presented to the customer by name/)
+      expect(prompt).to match(/internal product code is NOT a customer-visible fact and need not appear/)
+    end
+
     it 'keeps the verdict contract at exactly the six required boolean fields' do
       expect(described_class::REQUIRED_KEYS).to contain_exactly(
         'all_facts_preserved', 'no_unsupported_facts_added', 'no_contradiction',

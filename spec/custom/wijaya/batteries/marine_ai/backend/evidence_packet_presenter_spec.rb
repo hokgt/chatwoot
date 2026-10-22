@@ -701,7 +701,7 @@ RSpec.describe Marine::Backend::EvidencePacketPresenter do
     end
 
     it 'keeps product_information semantic rejection closed (:handoff) and never renders listing text' do
-      result = presenter.call(packet: information_packet, generator: generator('AAA (Alpha): kain marine premium.'),
+      result = presenter.call(packet: information_packet, generator: generator('Alpha: kain marine premium.'),
                               customer_request: 'x', fact_verifier: ->(**) { false })
       expect(result).to have_attributes(ok: false, reason: :fact_unverified, fallback: :handoff)
     end

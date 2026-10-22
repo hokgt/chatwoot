@@ -226,7 +226,7 @@ RSpec.describe 'Marine::Backend Phase 6 unified customer orchestration', type: :
 
     it 'product_information: identity/set from Catalog, description only from RAG for a listed code' do
       stub_decision(normalized_plan(intents: %w[product_information]))
-      @model2 = 'Berikut 1 dari 9 produk: BD (Santorini) — A premium marine fabric.'
+      @model2 = 'Berikut 1 dari 9 produk: Santorini — A premium marine fabric.'
 
       result = execution.call
 
@@ -254,7 +254,7 @@ RSpec.describe 'Marine::Backend Phase 6 unified customer orchestration', type: :
       )
       allow(@listing_repository).to receive(:exact_top_level).with('BD').and_return(code: 'BD', name: 'Baby Doll')
       stub_decision(normalized_plan(intents: %w[product_information], ops: [product_op('Baby Doll')]))
-      @model2 = 'BD (Baby Doll): A premium marine fabric.'
+      @model2 = 'Baby Doll: A premium marine fabric.'
 
       result = execution.call
 

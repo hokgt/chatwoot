@@ -142,6 +142,15 @@ RSpec.describe Marine::Backend::EvidencePromptBuilder do
       expect(built[:system]).to include('AAA')
       expect(built[:system]).to include('catalog_listing_repository')
     end
+
+    # G4 — the generic "state the validated product's code" rule must carve out a product listing /
+    # product information answer, where the customer-visible identity is the NAME only and the internal
+    # code is never shown; otherwise it contradicts the name-only product-listing rule.
+    it 'carves the generic product-code rule out of a listing/information answer (name only, no code)' do
+      instruction = described_class::SYSTEM_INSTRUCTION
+      expect(instruction).to match(/product listing or product information answer/)
+      expect(instruction).to match(/present each product by its name only and never show an internal code/)
+    end
   end
 
   # Checkpoint A — a v3 answer_price_range packet carries its presentation_policy as a SEPARATE trusted

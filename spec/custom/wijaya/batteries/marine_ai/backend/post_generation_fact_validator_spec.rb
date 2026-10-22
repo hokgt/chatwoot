@@ -243,6 +243,71 @@ RSpec.describe Marine::Backend::PostGenerationFactValidator do
     end
   end
 
+  # G4 — the production-shaped EXACT-SCOPED answer_product_listing packet carries BOTH a
+  # validated_slots.product (the resolved scope family: code + name) and facts.product_listing (the
+  # single scoped product). The customer-visible reply must show the authorized NAME only; the internal
+  # scope/product code stays in the packet for authority binding but must never appear and is never a
+  # required literal. This targets the combined production packet, not an independent clause.
+  describe 'exact-scoped answer_product_listing (validated_slots.product + facts.product_listing)' do
+    let(:scoped_listing_packet) do
+      builder.build(evidence_input: {
+                      scenario: { key: 'scenario_9' }, intents: %w[product_listing], customer_language: 'id',
+                      response_goals: %w[answer_product_listing],
+                      validated_slots: { product: { code: 'SKU-ALPHA', name: 'Alpha', source: 'marine_catalog' } },
+                      facts: { product_listing: { products: [{ code: 'SKU-ALPHA', name: 'Alpha' }],
+                                                  returned_count: 1, total_count: 1, complete: true,
+                                                  source: 'catalog_listing_repository', checked_at: '2026-09-30T12:00:00Z' } },
+                      missing_slots: [], variant_candidates: []
+                    })
+    end
+
+    it 'accepts the authorized product name without the internal code' do
+      expect(validator.call(packet: scoped_listing_packet, candidate: 'Produk kami: Alpha.').ok?).to be(true)
+    end
+
+    it 'rejects the internal scope/product code leaking into the reply' do
+      expect(validator.call(packet: scoped_listing_packet, candidate: 'Produk kami: Alpha (SKU-ALPHA).').reason)
+        .to eq(:unauthorized_token)
+    end
+
+    it 'still rejects a renamed product (the authorized name is absent)' do
+      expect(validator.call(packet: scoped_listing_packet, candidate: 'Produk kami: Omega.').reason)
+        .to eq(:missing_required_value)
+    end
+  end
+
+  # G4 — answer_product_information shares facts.product_listing (each product carries an approved
+  # description). The customer-visible reply shows the authorized NAME and may use the approved
+  # DESCRIPTION, never the internal code; the code stays in the packet for authority binding but must
+  # not appear and is never a required literal.
+  describe 'answer_product_information (name + approved description, no internal code)' do
+    let(:information_packet) do
+      builder.build(evidence_input: {
+                      scenario: { key: 'scenario_9' }, intents: %w[product_information], customer_language: 'id',
+                      response_goals: %w[answer_product_information],
+                      validated_slots: { product: { code: 'SKU-ALPHA', name: 'Alpha', source: 'marine_catalog' } },
+                      facts: { product_listing: { products: [{ code: 'SKU-ALPHA', name: 'Alpha', description: 'Kain katun lembut.' }],
+                                                  returned_count: 1, total_count: 1, complete: true,
+                                                  source: 'catalog_listing_repository', checked_at: '2026-09-30T12:00:00Z' } },
+                      missing_slots: [], variant_candidates: []
+                    })
+    end
+
+    it 'accepts the authorized name and description without the internal code' do
+      expect(validator.call(packet: information_packet, candidate: 'Alpha adalah kain katun lembut.').ok?).to be(true)
+    end
+
+    it 'rejects the internal product code leaking into the reply' do
+      expect(validator.call(packet: information_packet, candidate: 'Alpha (SKU-ALPHA) adalah kain katun lembut.').reason)
+        .to eq(:unauthorized_token)
+    end
+
+    it 'still rejects a renamed product (the authorized name is absent)' do
+      expect(validator.call(packet: information_packet, candidate: 'Omega adalah kain katun lembut.').reason)
+        .to eq(:missing_required_value)
+    end
+  end
+
   describe 'price_range (Phase 5 — both display endpoints required, no out-of-range amount)' do
     let(:range_packet) do
       builder.build(evidence_input: {

@@ -139,7 +139,10 @@ class Marine::Backend::PostGenerationFactValidator
   # exists) the immutable display amount / currency / UOM. Blank/absent values are skipped.
   def required_values(packet) # rubocop:disable Metrics/AbcSize -- flat extraction from mutually exclusive closed fact envelopes
     values = []
-    values << dig(packet, :validated_slots, :product, :code)
+    # The validated product code is a required literal for a transactional answer (price/stock/
+    # price_range), but in a listing/information answer it is only the internal scope identity — the
+    # customer-visible identity is the product NAME, so the code must not be required (nor shown).
+    values << dig(packet, :validated_slots, :product, :code) unless listing_or_information_response?(packet)
     values << dig(packet, :validated_slots, :variant, :code)
     price = dig(packet, :facts, :price)
     if price.is_a?(Hash)
@@ -152,7 +155,7 @@ class Marine::Backend::PostGenerationFactValidator
       values.push(display[:min], display[:max], display[:currency], display[:uom])
     end
     values.concat(listing_required_values(dig(packet, :facts, :product_listing),
-                                          names_only: product_listing_response?(packet)))
+                                          names_only: listing_or_information_response?(packet)))
     values.concat(offerings_required_values(dig(packet, :facts, :company_offerings)))
     values.compact.uniq
   end
@@ -189,7 +192,7 @@ class Marine::Backend::PostGenerationFactValidator
   # Product-listing codes remain internal catalog identities. Reject them as visible literals unless
   # a code is exactly equal to an authorized display name, where the required name cannot be hidden.
   def listing_codes_absent?(packet, candidate)
-    return true unless product_listing_response?(packet)
+    return true unless listing_or_information_response?(packet)
 
     listing = dig(packet, :facts, :product_listing)
     return true unless listing.is_a?(Hash)
@@ -200,8 +203,12 @@ class Marine::Backend::PostGenerationFactValidator
     codes.none? { |code| present_as_literal?(candidate, code) }
   end
 
-  def product_listing_response?(packet)
-    dig(packet, :response_goals) == ['answer_product_listing']
+  # A customer-visible catalog listing answer — product_listing OR product_information. Both share
+  # facts.product_listing and present products by NAME only; the internal product code is authority-
+  # binding Evidence, never a customer-visible fact, so it is neither required nor allowed to appear.
+  def listing_or_information_response?(packet)
+    goals = dig(packet, :response_goals)
+    goals == ['answer_product_listing'] || goals == ['answer_product_information']
   end
 
   # Unicode-aware literal presence with alphanumeric boundaries, so a short code is not treated
