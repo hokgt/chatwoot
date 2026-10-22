@@ -51,6 +51,12 @@ import wijayaMetaAdsRouting from '@wijaya/meta_ads_team_routing/frontend/i18n/wi
 // WIJAYA_CUSTOM_START erp_lead_sidebar
 import wijayaErpSettings from '@wijaya/erp_lead_sidebar/frontend/i18n/wijayaErpSettings.json';
 // WIJAYA_CUSTOM_END erp_lead_sidebar
+// WIJAYA_CUSTOM_START whatsapp_web_inbox
+import whatsappWebInbox from '@wijaya/whatsapp_web_inbox/frontend/i18n/whatsappWebInbox.json';
+// WIJAYA_CUSTOM_END whatsapp_web_inbox
+// WIJAYA_CUSTOM_START wecom_channel
+import wecomInbox from '@wijaya/wecom_channel/frontend/i18n/wecomInbox.json';
+// WIJAYA_CUSTOM_END wecom_channel
 
 export default {
   ...advancedFilters,
@@ -106,4 +112,10 @@ export default {
   // WIJAYA_CUSTOM_START erp_lead_sidebar
   ...wijayaErpSettings,
   // WIJAYA_CUSTOM_END erp_lead_sidebar
+  // WIJAYA_CUSTOM_START whatsapp_web_inbox
+  ...whatsappWebInbox,
+  // WIJAYA_CUSTOM_END whatsapp_web_inbox
+  // WIJAYA_CUSTOM_START wecom_channel
+  ...wecomInbox,
+  // WIJAYA_CUSTOM_END wecom_channel
 };

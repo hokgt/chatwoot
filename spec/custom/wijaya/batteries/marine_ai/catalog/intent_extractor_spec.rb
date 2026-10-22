@@ -19,7 +19,7 @@ RSpec.describe Marine::Catalog::IntentExtractor do
   # The exact, complete set of contract keys — the result must never drift from it.
   CONTRACT_KEYS = %i[
     product_related intent requested_intents family_mention explicit_child_code attribute_candidates
-    requires_exact_variant clarification_reply family_changed intent_changed intent_scope
+    requires_exact_variant clarification_reply family_changed intent_changed intent_scope listing_scope
     multiple_numeric_candidates quantity_inquiry unsupported_request confidence customer_language reason
   ].freeze
 
@@ -54,6 +54,72 @@ RSpec.describe Marine::Catalog::IntentExtractor do
         expect(result[:intent]).to eq(intent)
         expect(result[:reason]).to eq('extracted')
       end
+    end
+  end
+
+  describe 'product_overview intent (broad informational)' do
+    it 'accepts and normalizes the allowlisted product_overview intent' do
+      stub_llm(message: '{"product_related": true, "intent": "product_overview"}')
+
+      result = extract(text: 'What products does Textilindo sell?')
+
+      expect(result[:product_related]).to be(true)
+      expect(result[:intent]).to eq('product_overview')
+      expect(result[:reason]).to eq('extracted')
+    end
+
+    it 'keeps product_overview out of the transactional requested-intent set (informational, never combinable)' do
+      stub_llm(message: '{"product_related": true, "intent": "product_overview", "intents": ["product_overview"]}')
+
+      # SUPPORTED_PRODUCT_INTENTS drives requested_intents; product_overview is not a member, so it
+      # never enters the price/stock combinable machinery.
+      expect(extract[:requested_intents]).to eq([])
+    end
+
+    it 'documents the overview-vs-document contract with examples in the system prompt (no Ruby phrase list)' do
+      stub_llm(message: llm_json(intent: 'product_overview'))
+
+      extract(text: 'What is your product range?')
+
+      system = captured_prompts.last[:system]
+      expect(system).to include('product_overview')
+      expect(system).to include('What products does Textilindo sell?')
+      expect(system).to include('What is your product')
+    end
+  end
+
+  describe 'explicit catalog-document requests classify as catalog (artifact-first contract)' do
+    # The extractor is a pass-through for the LLM's chosen intent; the fix lives in the SYSTEM_PROMPT.
+    # These examples assert the prompt states the artifact-first, family-optional rule (no Ruby keyword
+    # heuristic) AND that an emitted "catalog" intent survives normalization for a family-less request.
+    it 'documents the artifact-first, family-optional catalog rule before the broad overview examples' do
+      stub_llm(message: llm_json(intent: 'catalog'))
+
+      extract(text: 'Can you send me your product catalog?')
+
+      system = captured_prompts.last[:system]
+      # Artifact rule is stated and precedes the product_overview examples the model would otherwise
+      # over-match a global "send me your catalog" ask onto.
+      artifact_idx = system.index('WHETHER OR NOT a product family is named')
+      overview_idx = system.index('What products does Textilindo sell?')
+      expect(artifact_idx).not_to be_nil
+      expect(overview_idx).not_to be_nil
+      expect(artifact_idx).to be < overview_idx
+      # The document-request examples (incl. the Indonesian equivalent) are represented semantically.
+      expect(system).to include('Can you send me your product catalog?')
+      expect(system).to include('Bisa kirim katalog produknya?')
+      # "product catalog" must not be treated as automatically product_overview.
+      expect(system).to include('NOT automatically "product_overview"')
+    end
+
+    it 'preserves an emitted catalog intent for a global document request with no family named' do
+      stub_llm(message: llm_json(intent: 'catalog', family_mention: nil))
+
+      result = extract(text: 'Can you send me your product catalog?')
+
+      expect(result[:intent]).to eq('catalog')
+      expect(result[:family_mention]).to be_nil
+      expect(result[:reason]).to eq('extracted')
     end
   end
 

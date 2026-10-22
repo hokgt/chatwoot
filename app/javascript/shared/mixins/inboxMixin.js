@@ -134,6 +134,11 @@ export default {
     isATiktokChannel() {
       return this.channelType === INBOX_TYPES.TIKTOK;
     },
+    // WIJAYA_CUSTOM_START wecom_channel
+    isAWecomChannel() {
+      return this.channelType === INBOX_TYPES.WECOM;
+    },
+    // WIJAYA_CUSTOM_END wecom_channel
   },
   methods: {
     inboxHasFeature(feature) {

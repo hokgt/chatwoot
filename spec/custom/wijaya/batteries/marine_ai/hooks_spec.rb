@@ -3,39 +3,6 @@
 require 'rails_helper'
 
 RSpec.describe Wijaya::Marine::Hooks do
-  describe '.after_conversation_resolved' do
-    let(:assistant) { double('assistant', feature_memory: true) }
-    let(:inbox) { double('inbox', marine_assistant: assistant) }
-    let(:account) { double('account') }
-    let(:conversation) { double('conversation', inbox: inbox, account: account) }
-
-    it 'enqueues the job when the inbox is Marine-linked and feature_memory is enabled' do
-      expect(Marine::Memory::GenerateContactNotesJob).to receive(:perform_later).with(conversation)
-
-      described_class.after_conversation_resolved(conversation)
-    end
-
-    it 'does not enqueue when the inbox has no Marine assistant' do
-      allow(inbox).to receive(:marine_assistant).and_return(nil)
-      expect(Marine::Memory::GenerateContactNotesJob).not_to receive(:perform_later)
-
-      described_class.after_conversation_resolved(conversation)
-    end
-
-    it 'does not enqueue when feature_memory is disabled' do
-      allow(assistant).to receive(:feature_memory).and_return(nil)
-      expect(Marine::Memory::GenerateContactNotesJob).not_to receive(:perform_later)
-
-      described_class.after_conversation_resolved(conversation)
-    end
-
-    it 'is a safe no-op for a nil conversation' do
-      expect(Marine::Memory::GenerateContactNotesJob).not_to receive(:perform_later)
-
-      expect { described_class.after_conversation_resolved(nil) }.not_to raise_error
-    end
-  end
-
   describe '.inbox_marine_assistant_id' do
     it 'returns the linked assistant id' do
       inbox = double('inbox', marine_assistant: double('assistant', id: 42))
@@ -79,11 +46,70 @@ RSpec.describe Wijaya::Marine::Hooks do
       allow(messages).to receive(:any?).and_return(false)
     end
 
-    it 'claims (returns true) and schedules the response bound to the exact incoming message id' do
+    it 'claims (returns true) and schedules the response bound to the exact incoming message id when the primary enqueue is verified' do
       message = double('message', incoming?: true, id: 4242, attachments: double(blank?: true))
-      expect(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later).with(conversation, assistant, 4242)
+      verified_job = double('job', successfully_enqueued?: true, provider_job_id: 'JID-1')
+      allow(Marine::Decision::ShadowEnqueuer).to receive(:enqueue)
+      allow(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue)
+      expect(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later)
+        .with(conversation, assistant, 4242).and_return(verified_job)
 
       expect(described_class.claim_message_templates!(conversation: conversation, inbox: inbox, message: message)).to be(true)
+    end
+
+    # Gap 1 — a definitive enqueue failure must NOT claim suppression, so the native welcome/OOO/
+    # email-collect eligibility can run instead of leaving the conversation with no reply.
+    it 'does not claim (false) when perform_later halts (returns false)' do
+      message = double('message', incoming?: true, id: 7, attachments: double(blank?: true))
+      expect(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later)
+        .with(conversation, assistant, 7).and_return(false)
+
+      expect(described_class.claim_message_templates!(conversation: conversation, inbox: inbox, message: message)).to be(false)
+    end
+
+    it 'does not claim (false) when the primary job is not successfully_enqueued?' do
+      message = double('message', incoming?: true, id: 8, attachments: double(blank?: true))
+      allow(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later)
+        .and_return(double('job', successfully_enqueued?: false))
+
+      expect(described_class.claim_message_templates!(conversation: conversation, inbox: inbox, message: message)).to be(false)
+    end
+
+    # successfully_enqueued? is true here, so the (unchanged) shadow gating fires — but the stricter
+    # claim check still returns false because enqueue_error is present. Stub the shadows to isolate
+    # the claim decision.
+    it 'does not claim (false) when the primary job carries a non-nil enqueue_error' do
+      message = double('message', incoming?: true, id: 9, attachments: double(blank?: true))
+      allow(Marine::Decision::ShadowEnqueuer).to receive(:enqueue)
+      allow(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue)
+      allow(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later)
+        .and_return(double('job', successfully_enqueued?: true, provider_job_id: 'JID', enqueue_error: 'adapter down'))
+
+      expect(described_class.claim_message_templates!(conversation: conversation, inbox: inbox, message: message)).to be(false)
+    end
+
+    # Sidekiq-backed ActiveJob: successfully_enqueued? is not proof without a JID (provider_job_id).
+    # successfully_enqueued? is true so the shadow still fires; the claim check fails on the blank JID.
+    it 'does not claim (false) for a Sidekiq-backed job that is successfully_enqueued? but has no provider JID' do
+      message = double('message', incoming?: true, id: 10, attachments: double(blank?: true))
+      allow(Marine::Decision::ShadowEnqueuer).to receive(:enqueue)
+      allow(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue)
+      allow(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later)
+        .and_return(double('job', successfully_enqueued?: true, provider_job_id: nil, enqueue_error: nil))
+
+      expect(described_class.claim_message_templates!(conversation: conversation, inbox: inbox, message: message)).to be(false)
+    end
+
+    # Ambiguous outcome — broker acceptance cannot be known. Keep suppression (avoid duplicate
+    # native + Marine replies) and record the sanitized exception through the existing tracker.
+    it 'keeps suppression (true) and records the sanitized exception when the enqueue raises' do
+      message = double('message', incoming?: true, id: 11, attachments: double(blank?: true))
+      allow(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later).and_raise(StandardError.new('broker timeout'))
+      tracker = instance_double(ChatwootExceptionTracker, capture_exception: true)
+      expect(ChatwootExceptionTracker).to receive(:new).with(instance_of(StandardError), account: conversation.account).and_return(tracker)
+
+      expect(described_class.claim_message_templates!(conversation: conversation, inbox: inbox, message: message)).to be(true)
+      expect(tracker).to have_received(:capture_exception)
     end
 
     it 'does not claim for a non-Marine inbox (native templates run)' do
@@ -99,6 +125,74 @@ RSpec.describe Wijaya::Marine::Hooks do
       expect(Marine::Conversation::ResponseBuilderJob).not_to receive(:perform_later)
 
       expect(described_class.claim_message_templates!(conversation: conversation, inbox: inbox, message: message)).to be(true)
+    end
+  end
+
+  # Gap 1 integration — through the real MessageTemplates::HookExecutionService seam. A definitive
+  # primary-enqueue failure makes the claim false, so an eligible NATIVE template (Greeting) runs;
+  # a verified enqueue keeps it suppressed.
+  describe 'native template fallback through MessageTemplates::HookExecutionService' do
+    let(:account) { create(:account) }
+    let(:inbox) { create(:inbox, account: account, greeting_enabled: true, greeting_message: 'Hi there') }
+    let(:assistant) { create(:marine_assistant, account: account) }
+    let(:conversation) { create(:conversation, account: account, inbox: inbox) }
+
+    before { MarineInbox.create!(inbox: inbox, marine_assistant: assistant) }
+
+    def deliver_incoming
+      create(:message, conversation: conversation, account: account, inbox: inbox,
+                       message_type: :incoming, sender: create(:contact, account: account))
+    end
+
+    it 'runs the native Greeting template when the primary Marine enqueue definitively fails' do
+      allow(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later).and_return(false)
+      greeting = instance_double(MessageTemplates::Template::Greeting, perform: true)
+      allow(MessageTemplates::Template::Greeting).to receive(:new).and_return(greeting)
+
+      deliver_incoming
+
+      expect(MessageTemplates::Template::Greeting).to have_received(:new).with(conversation: conversation)
+      expect(greeting).to have_received(:perform)
+    end
+
+    it 'suppresses the native Greeting template when the primary Marine enqueue is verified' do
+      allow(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later)
+        .and_return(double('job', successfully_enqueued?: true, provider_job_id: 'JID-1'))
+      allow(Marine::Decision::ShadowEnqueuer).to receive(:enqueue)
+      allow(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue)
+      allow(MessageTemplates::Template::Greeting).to receive(:new)
+
+      deliver_incoming
+
+      expect(MessageTemplates::Template::Greeting).not_to have_received(:new)
+    end
+
+    # Concern 3 — intentional silence (active handoff) must NOT re-activate native templates. The
+    # claim stays true (suppress) even though no Marine response is scheduled, so Greeting is kept
+    # suppressed for the duration of the human handoff.
+    it 'suppresses the native Greeting template while a handoff is active (no native re-activation)' do
+      Marine::Circuit::HandoffStateStore.new(conversation: conversation.reload).activate!(message_ids: [])
+      allow(MessageTemplates::Template::Greeting).to receive(:new)
+      expect(Marine::Conversation::ResponseBuilderJob).not_to receive(:perform_later)
+
+      deliver_incoming
+
+      expect(MessageTemplates::Template::Greeting).not_to have_received(:new)
+    end
+
+    # Concern 3 — an ambiguous enqueue outcome (perform_later raises) leaves broker acceptance
+    # unknown. Suppression is kept so a native Greeting never runs alongside a possibly-enqueued
+    # Marine reply, and the sanitized exception is recorded through the existing tracker.
+    it 'suppresses the native Greeting template and records the exception when the primary enqueue raises' do
+      allow(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later).and_raise(StandardError.new('broker timeout'))
+      tracker = instance_double(ChatwootExceptionTracker, capture_exception: true)
+      allow(ChatwootExceptionTracker).to receive(:new).and_return(tracker)
+      allow(MessageTemplates::Template::Greeting).to receive(:new)
+
+      deliver_incoming
+
+      expect(MessageTemplates::Template::Greeting).not_to have_received(:new)
+      expect(tracker).to have_received(:capture_exception)
     end
   end
 
@@ -322,7 +416,9 @@ RSpec.describe Wijaya::Marine::Hooks do
     # Req 7 — the core private messaging_window is unavailable/raises: HandoffWindow fails closed
     # (treats the window as not expired), so the marker stays terminal and nothing is scheduled.
     it 'fails closed when the core messaging window computation raises: marker stays active, no schedule' do
-      allow_any_instance_of(Conversations::MessageWindowService).to receive(:messaging_window).and_raise(StandardError.new('boom'))
+      window_service = Conversations::MessageWindowService.new(conversation)
+      allow(window_service).to receive(:messaging_window).and_raise(StandardError.new('boom'))
+      allow(Conversations::MessageWindowService).to receive(:new).with(conversation).and_return(window_service)
       message = incoming_at(anchor + 50.hours)
       expect(Marine::Conversation::ResponseBuilderJob).not_to receive(:perform_later)
 
@@ -360,6 +456,114 @@ RSpec.describe Wijaya::Marine::Hooks do
       relative = callers.map { |file| Pathname.new(file).relative_path_from(Rails.root).to_s }
 
       expect(relative).to contain_exactly('custom/wijaya/batteries/marine_ai/app/services/wijaya/marine/hooks.rb')
+    end
+  end
+
+  # Phase 2 / Stage 4 — the DEFAULT-OFF asynchronous Decision shadow is fired ONLY after the
+  # normal Marine response was scheduled, and its (discarded) result never changes the normal
+  # scheduling args/order/delay or this method's return value.
+  describe '.schedule_marine_response shadow integration' do
+    let(:assistant) { double('assistant') }
+    let(:inbox) { double('inbox', marine_assistant: assistant) }
+    let(:conversation) { double('conversation', inbox: inbox) }
+    let(:message) { double('message', id: 4242, attachments: double(blank?: true)) }
+
+    it 'schedules the normal response FIRST, then fires the shadow enqueuer' do
+      ordered = []
+      allow(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later) { ordered << :response }
+      allow(Marine::Decision::ShadowEnqueuer).to receive(:enqueue) do
+        ordered << :shadow
+        true
+      end
+      allow(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue) do
+        ordered << :product_shadow
+        true
+      end
+
+      described_class.schedule_marine_response(conversation, message)
+      expect(ordered).to eq(%i[response shadow product_shadow])
+    end
+
+    it 'passes the exact ResponseBuilderJob args and returns the scheduled job, not the shadow result' do
+      job = double('job')
+      allow(Marine::Decision::ShadowEnqueuer).to receive(:enqueue).and_return(false)
+      allow(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue).and_return(false)
+      expect(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later)
+        .with(conversation, assistant, 4242).and_return(job)
+
+      expect(described_class.schedule_marine_response(conversation, message)).to eq(job)
+    end
+
+    it 'preserves the 2s attachment delay and still shadows the same conversation/message' do
+      allow(message).to receive(:attachments).and_return(double(blank?: false))
+      set_double = double('set')
+      expect(Marine::Conversation::ResponseBuilderJob).to receive(:set).with(wait: 2.seconds).and_return(set_double)
+      expect(set_double).to receive(:perform_later).with(conversation, assistant, 4242).and_return(double('job'))
+      expect(Marine::Decision::ShadowEnqueuer).to receive(:enqueue).with(conversation: conversation, message: message)
+      expect(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue).with(conversation: conversation, message: message)
+
+      described_class.schedule_marine_response(conversation, message)
+    end
+
+    it 'does not shadow when Marine never schedules a response (handoff active / ineligible)' do
+      messages = double('messages')
+      allow(messages).to receive_messages(outgoing: messages, where: messages, empty?: true, any?: false)
+      handoff = { 'wijaya_marine_ai' => { 'handoff_v1' => { 'version' => 1, 'status' => 'active',
+                                                            'announced_at' => '2026-01-01T00:00:00Z', 'message_ids' => [] } } }
+      convo = double('conversation', resolved?: false, snoozed?: false, messages: messages, inbox: inbox,
+                                     account: double('account'), additional_attributes: handoff)
+      allow(inbox).to receive(:channel_type).and_return('Channel::WebWidget')
+      msg = double('message', incoming?: true)
+
+      expect(Marine::Conversation::ResponseBuilderJob).not_to receive(:perform_later)
+      expect(Marine::Decision::ShadowEnqueuer).not_to receive(:enqueue)
+      expect(Marine::ProductAuthority::ShadowEnqueuer).not_to receive(:enqueue)
+      described_class.claim_message_templates!(conversation: convo, inbox: inbox, message: msg)
+    end
+  end
+
+  # Phase 2 / Stage 4 — the shadow fires ONLY when the primary ResponseBuilderJob enqueue
+  # genuinely succeeded. A halted (false/nil) enqueue, an unsuccessful job, or a job carrying an
+  # enqueue_error must NOT fire the shadow, and the method must still return the exact primary
+  # object unchanged.
+  describe '.schedule_marine_response primary-enqueue success gating' do
+    let(:assistant) { double('assistant') }
+    let(:inbox) { double('inbox', marine_assistant: assistant) }
+    let(:conversation) { double('conversation', inbox: inbox) }
+    let(:message) { double('message', id: 4242, attachments: double(blank?: true)) }
+
+    def expect_primary_returned(primary)
+      allow(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later).and_return(primary)
+      expect(described_class.schedule_marine_response(conversation, message)).to be(primary)
+    end
+
+    it 'does not shadow and returns the primary result when perform_later returns false' do
+      expect(Marine::Decision::ShadowEnqueuer).not_to receive(:enqueue)
+      expect_primary_returned(false)
+    end
+
+    it 'does not shadow and returns nil when perform_later returns nil' do
+      expect(Marine::Decision::ShadowEnqueuer).not_to receive(:enqueue)
+      expect_primary_returned(nil)
+    end
+
+    it 'does not shadow and returns the job when it is not successfully_enqueued?' do
+      expect(Marine::Decision::ShadowEnqueuer).not_to receive(:enqueue)
+      expect_primary_returned(double('job', successfully_enqueued?: false))
+    end
+
+    it 'does not shadow and returns the job when it carries a non-nil enqueue_error' do
+      expect(Marine::Decision::ShadowEnqueuer).not_to receive(:enqueue)
+      expect_primary_returned(double('job', enqueue_error: 'adapter down'))
+    end
+
+    it 'fires the shadow after a successfully_enqueued? job and returns that job' do
+      job = double('job', successfully_enqueued?: true)
+      allow(Marine::Conversation::ResponseBuilderJob).to receive(:perform_later).and_return(job)
+      expect(Marine::Decision::ShadowEnqueuer).to receive(:enqueue).with(conversation: conversation, message: message)
+      expect(Marine::ProductAuthority::ShadowEnqueuer).to receive(:enqueue).with(conversation: conversation, message: message)
+
+      expect(described_class.schedule_marine_response(conversation, message)).to be(job)
     end
   end
 end

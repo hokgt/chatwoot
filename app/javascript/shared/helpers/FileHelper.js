@@ -1,5 +1,8 @@
 import { getAllowedFileTypesByChannel } from '@chatwoot/utils';
 import { INBOX_TYPES } from 'dashboard/helper/inbox';
+// WIJAYA_CUSTOM_START wecom_channel
+import { wecomFileTypeAllowance } from '@wijaya/wecom_channel/frontend/composer/wecomComposer';
+// WIJAYA_CUSTOM_END wecom_channel
 
 export const DEFAULT_MAXIMUM_FILE_UPLOAD_SIZE = 40;
 
@@ -48,6 +51,10 @@ export const resolveMaximumFileUploadSize = value => {
  */
 export const isFileTypeAllowedForChannel = (file, options = {}) => {
   if (!file || file.size === 0) return false;
+  // WIJAYA_CUSTOM_START wecom_channel
+  const wecomAllowance = wecomFileTypeAllowance(file, options);
+  if (wecomAllowance !== undefined) return wecomAllowance;
+  // WIJAYA_CUSTOM_END wecom_channel
 
   const {
     channelType: originalChannelType,

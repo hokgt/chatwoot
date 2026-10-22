@@ -8,29 +8,52 @@ class Api::V1::Accounts::Wijaya::LeadActivitiesController < Api::V1::Accounts::B
   before_action :authorize_conversation
   before_action :set_draft
 
-  # Runtime Lead Activity Master options + the account-timezone default date +
-  # the selectable ERP Users for the manual Person In Charge picker. Fetched only
-  # when the Activity view opens and only for a linked draft.
-  def options
+  # Lightweight Activity form metadata: the account-timezone default date only.
+  # Deliberately issues NO ERP request (it is a pure Time.zone computation), so it
+  # is safe to call on Activity-form mount without any ERP round-trip. Still gated
+  # on configuration + a linked ERP Lead, exactly like the option endpoints.
+  def meta
     return render_unconfigured unless erp_configured?
-    return render_lead_required if @draft.nil? || @draft.erp_lead_id.to_s.strip.empty?
+    return render_lead_required if lead_missing?
 
-    service = ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService.new(Current.account)
-    names = service.fetch_names
-    default_date = service.default_date
-    pic = person_in_charge_options
-    render json: {
-      options: names, default_date: default_date,
-      person_in_charge_options: pic[:options], person_in_charge_available: pic[:available]
-    }
-  rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError
+    default_date = ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService.new(Current.account).default_date
+    render json: { default_date: default_date }
+  end
+
+  # Runtime Lead Activity Master options. Fetched lazily, only when the Activity
+  # Type / Follow Up Activity dropdown opens, and only for a configured, linked
+  # draft. Calls ONLY the Lead Activity Master source (never the User directory).
+  # A malformed upstream body is a bad gateway, never a misleading empty list.
+  def activity_options
+    return render_unconfigured unless erp_configured?
+    return render_lead_required if lead_missing?
+
+    names = ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityOptionsService.new(Current.account).fetch_activity_names
+    render json: { options: names }
+  rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError => e
     # Never surface the raw ERPNext response/exception to the agent.
+    log_dependency_failure('lead_activity_master', e)
     render json: { error: 'Lead Activity options are currently unavailable.', options: [] }, status: :bad_gateway
+  end
+
+  # Selectable ERP Users for the manual Person In Charge picker. Fetched lazily,
+  # only when the PIC dropdown opens. Calls ONLY the User directory (never the
+  # Lead Activity Master source). A directory outage is a sanitized bad gateway so
+  # the client can offer Retry; a blank Person In Charge is always submittable.
+  def person_in_charge_options
+    return render_unconfigured unless erp_configured?
+    return render_lead_required if lead_missing?
+
+    options = ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory.fetch_options(Current.account)
+    render json: { options: options }
+  rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError => e
+    log_dependency_failure('erp_user_directory', e)
+    render json: { error: 'The ERP user list is currently unavailable.', options: [] }, status: :bad_gateway
   end
 
   def create
     return render_unconfigured unless erp_configured?
-    return render_lead_required if @draft.nil? || @draft.erp_lead_id.to_s.strip.empty?
+    return render_lead_required if lead_missing?
 
     result = ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityService.new(
       draft: @draft, agent: Current.user, params: activity_params
@@ -56,20 +79,15 @@ class Api::V1::Accounts::Wijaya::LeadActivitiesController < Api::V1::Accounts::B
     authorize @conversation, :show?
   end
 
-  # Selectable ERP Users for the manual Person In Charge picker. A directory
-  # outage never destroys the (otherwise valid) Lead Activity options: it
-  # degrades to an empty, optional list flagged unavailable so the agent can
-  # still submit with a blank Person In Charge.
-  def person_in_charge_options
-    options = ::Wijaya::Batteries::ErpLeadSidebar::LeadActivityPersonDirectory.fetch_options(Current.account)
-    { options: options, available: true }
-  rescue ::Wijaya::Batteries::ErpLeadSidebar::SyncError
-    { options: [], available: false }
-  end
-
   # Find the existing draft only; a Lead Activity must never create a draft.
   def set_draft
     @draft = ::Wijaya::ErpLeadDraft.find_by(account: Current.account, conversation: @conversation)
+  end
+
+  # A draft with a linked ERP Lead is required for every endpoint (a Lead Activity
+  # is always recorded against an existing Lead); no draft is ever created here.
+  def lead_missing?
+    @draft.nil? || @draft.erp_lead_id.to_s.strip.empty?
   end
 
   def erp_configured?
@@ -82,6 +100,45 @@ class Api::V1::Accounts::Wijaya::LeadActivitiesController < Api::V1::Accounts::B
 
   def render_lead_required
     render json: { error: 'Create or link an ERP Lead before adding an activity.' }, status: :unprocessable_entity
+  end
+
+  # Emit one structured, sanitized diagnostic when a Lead Activity dependency
+  # fetch fails as a 502. It identifies the specific dependency (`source`) and a
+  # safe reason category derived ONLY from our own typed error classes — never the
+  # upstream body, exception message, URL, or credentials. Best-effort: a logging
+  # failure must never affect the sanitized response. The API response is unchanged.
+  def log_dependency_failure(source, error)
+    Rails.logger.error(
+      {
+        event: 'wijaya.erp_lead_sidebar.lead_activity_dependency_failure',
+        account_id: Current.account&.id,
+        conversation_id: @conversation&.id,
+        conversation_display_id: @conversation&.display_id,
+        source: source,
+        reason: sync_error_reason(error),
+        upstream_status: upstream_status_for(error),
+        exception_class: error.class.name
+      }.compact
+    )
+  rescue StandardError
+    nil
+  end
+
+  # Map a rescued SyncError to a safe, allowlisted reason category using only the
+  # typed error class (order matters: TimeoutError is a subclass of Error).
+  def sync_error_reason(error)
+    case error
+    when ::Wijaya::Batteries::ErpLeadSidebar::SafeHttp::TimeoutError then :timeout
+    when ::Wijaya::Batteries::ErpLeadSidebar::SafeHttp::Error then :transport_error
+    when ::Wijaya::Batteries::ErpLeadSidebar::MalformedResponseError then :malformed_response
+    when ::Wijaya::Batteries::ErpLeadSidebar::UpstreamHttpError then :upstream_http_error
+    else :sync_error
+    end
+  end
+
+  # The upstream HTTP status code, present only for a non-2xx upstream response.
+  def upstream_status_for(error)
+    error.status if error.is_a?(::Wijaya::Batteries::ErpLeadSidebar::UpstreamHttpError)
   end
 
   # Strong params: the structural keys (doctype/parenttype/parent/parentfield)

@@ -2,7 +2,13 @@
 import { reactive, computed, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useVuelidate } from '@vuelidate/core';
-import { required, minLength } from '@vuelidate/validators';
+import {
+  required,
+  minLength,
+  minValue,
+  maxValue,
+  integer,
+} from '@vuelidate/validators';
 
 import Input from 'dashboard/components-next/input/Input.vue';
 import Button from 'dashboard/components-next/button/Button.vue';
@@ -23,6 +29,7 @@ const initialState = {
   name: '',
   description: '',
   productName: '',
+  memoryIdleTimeoutHours: 2,
   features: {
     conversationFaqs: false,
     memories: false,
@@ -36,6 +43,12 @@ const validationRules = {
   name: { required, minLength: minLength(1) },
   description: { required, minLength: minLength(1) },
   productName: { required, minLength: minLength(1) },
+  memoryIdleTimeoutHours: {
+    required,
+    integer,
+    minValue: minValue(1),
+    maxValue: maxValue(24),
+  },
 };
 
 const v$ = useVuelidate(validationRules, state);
@@ -48,6 +61,7 @@ const formErrors = computed(() => ({
   name: getErrorMessage('name'),
   description: getErrorMessage('description'),
   productName: getErrorMessage('productName'),
+  memoryIdleTimeoutHours: getErrorMessage('memoryIdleTimeoutHours'),
 }));
 
 const updateStateFromAssistant = assistant => {
@@ -55,6 +69,9 @@ const updateStateFromAssistant = assistant => {
   state.name = assistant.name;
   state.description = assistant.description;
   state.productName = config.product_name;
+  const timeout = Number(config.memory_idle_timeout_hours);
+  state.memoryIdleTimeoutHours =
+    Number.isInteger(timeout) && timeout >= 1 && timeout <= 24 ? timeout : 2;
   state.features = {
     conversationFaqs: config.feature_faq || false,
     memories: config.feature_memory || false,
@@ -67,6 +84,7 @@ const handleBasicInfoUpdate = async () => {
     v$.value.name.$validate(),
     v$.value.description.$validate(),
     v$.value.productName.$validate(),
+    v$.value.memoryIdleTimeoutHours.$validate(),
   ]).then(results => results.every(Boolean));
   if (!result) return;
 
@@ -79,6 +97,7 @@ const handleBasicInfoUpdate = async () => {
       feature_faq: state.features.conversationFaqs,
       feature_memory: state.features.memories,
       feature_contact_attributes: state.features.contactAttributes,
+      memory_idle_timeout_hours: Number(state.memoryIdleTimeoutHours),
     },
   };
 
@@ -119,6 +138,22 @@ watch(
       :message="formErrors.description"
       :message-type="formErrors.description ? 'error' : 'info'"
       class="z-0"
+    />
+
+    <Input
+      v-model="state.memoryIdleTimeoutHours"
+      type="number"
+      min="1"
+      max="24"
+      :label="t('MARINE_AI.ASSISTANTS.FORM.MEMORY_IDLE_TIMEOUT.LABEL')"
+      :placeholder="
+        t('MARINE_AI.ASSISTANTS.FORM.MEMORY_IDLE_TIMEOUT.PLACEHOLDER')
+      "
+      :message="
+        formErrors.memoryIdleTimeoutHours ||
+        t('MARINE_AI.ASSISTANTS.FORM.MEMORY_IDLE_TIMEOUT.HELP')
+      "
+      :message-type="formErrors.memoryIdleTimeoutHours ? 'error' : 'info'"
     />
 
     <div class="flex flex-col gap-2">

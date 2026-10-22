@@ -7,6 +7,9 @@ import * as ActiveStorage from 'activestorage';
 import inboxMixin from 'shared/mixins/inboxMixin';
 import { FEATURE_FLAGS } from 'dashboard/featureFlags';
 import { getAllowedFileTypesByChannel } from '@chatwoot/utils';
+// WIJAYA_CUSTOM_START wecom_channel
+import { wecomAllowedFileTypes } from '@wijaya/wecom_channel/frontend/composer/wecomComposer';
+// WIJAYA_CUSTOM_END wecom_channel
 import VideoCallButton from '../VideoCallButton.vue';
 import { INBOX_TYPES } from 'dashboard/helper/inbox';
 import { mapGetters } from 'vuex';
@@ -182,6 +185,10 @@ export default {
     },
     showAudioRecorderButton() {
       if (this.isEditorDisabled) return false;
+      // WIJAYA_CUSTOM_START wecom_channel
+      // WeCom supports image/video/file attachments only; no outbound voice/audio.
+      if (this.isAWecomChannel) return false;
+      // WIJAYA_CUSTOM_END wecom_channel
       if (this.isALineChannel || this.isATiktokChannel) {
         return false;
       }
@@ -206,6 +213,11 @@ export default {
       return this.conversationType === 'instagram_direct_message';
     },
     allowedFileTypes() {
+      // WIJAYA_CUSTOM_START wecom_channel
+      if (!this.isOnPrivateNote && this.isAWecomChannel) {
+        return wecomAllowedFileTypes();
+      }
+      // WIJAYA_CUSTOM_END wecom_channel
       if (this.isOnPrivateNote) {
         return getAllowedFileTypesByChannel();
       }

@@ -1,15 +1,24 @@
-## github action to check deployment success
-## curl the deployment url and check for 200 status
-## deployment url will be of the form chatwoot-pr-<pr_number>.herokuapp.com
+# Deploy Check — validates that the self-hosted Development target is running the
+# EXACT commit under review, and is healthy.
+#
+# OPERATOR CONTRACT: this workflow NEVER deploys and needs no SSH/secrets. The
+# shared self-hosted Development target is deployed out-of-band (manually) by the
+# operator; this job only polls the externally deployed candidate and validates
+# it. Configure the base URL as the non-secret repository variable
+# vars.DEPLOY_CHECK_BASE_URL (https://...). The check cannot pass against a
+# healthy target running a different SHA. Logic lives in
+# .github/scripts/deploy_check.sh.
 name: Deploy Check
 
 on:
   pull_request:
 
-# If two pushes happen within a short time in the same PR, cancel the run of the oldest push
+# Single shared Development target -> serialize validations globally (not per PR)
+# so runs never overlap. cancel-in-progress is false so a newer PR cannot cancel
+# a validation already in flight against the shared target.
 concurrency:
-  group: pr-${{ github.workflow }}-${{ github.head_ref }}
-  cancel-in-progress: true
+  group: deploy-check-shared-development-target
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -19,35 +28,10 @@ jobs:
     name: Check Deployment
     runs-on: ubuntu-latest
     steps:
-      - name: Install jq
-        run: sudo apt-get install -y jq
-      - name: Print Deployment URL
-        run: echo "https://chatwoot-pr-${{ github.event.pull_request.number }}.herokuapp.com"
-      - name: Check Deployment Status
-        run: |
-          max_attempts=10
-          attempt=1
-          status_code=0
-          echo "Waiting for review app to be deployed/redeployed, trying in  10 minutes..."
-          sleep 600
-          while [ $attempt -le $max_attempts ]; do
-            response=$(curl -s -o /dev/null -w "%{http_code}" https://chatwoot-pr-${{ github.event.pull_request.number }}.herokuapp.com/api)
-            status_code=$(echo $response | head -n   1)
-            if [ $status_code -eq   200 ]; then
-              body=$(curl -s https://chatwoot-pr-${{ github.event.pull_request.number }}.herokuapp.com/api)
-              if echo "$body" | jq -e '.version and .timestamp and .queue_services == "ok" and .data_services == "ok"' > /dev/null; then
-                echo "Deployment successful"
-                exit 0
-              else
-                echo "Deployment status unknown, retrying in   3 minutes..."
-                sleep 180
-              fi
-            else
-              echo "Waiting for review app to be ready, retrying in  3 minutes..."
-              sleep 180
-              attempt=$((attempt +  1))
-            fi
-          done
-          echo "Deployment failed after $max_attempts attempts"
-          exit  1
-          fi
+      - name: Checkout deploy check script
+        uses: actions/checkout@v4
+      - name: Validate deployed SHA and health
+        env:
+          DEPLOY_CHECK_BASE_URL: ${{ vars.DEPLOY_CHECK_BASE_URL }}
+          DEPLOY_CHECK_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash .github/scripts/deploy_check.sh

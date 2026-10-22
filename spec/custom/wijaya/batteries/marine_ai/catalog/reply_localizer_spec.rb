@@ -42,9 +42,11 @@ RSpec.describe Marine::Catalog::ReplyLocalizer do
     validator
   end
 
-  def localize(text: english_text, trigger: 'mau lihat katalog', provider_language: nil, action: nil, descriptor: nil)
+  def localize(text: english_text, trigger: 'mau lihat katalog', provider_language: nil, action: nil, descriptor: nil, # rubocop:disable Metrics/ParameterLists
+               fallback_language: nil, language_resolved: false)
     described_class.new(text: text, trigger_text: trigger, provider_language: provider_language,
-                        action: action, descriptor: descriptor).call
+                        fallback_language: fallback_language, action: action, descriptor: descriptor,
+                        language_resolved: language_resolved).call
   end
 
   describe 'language selection (unchanged, never invokes a validator)' do
@@ -181,8 +183,93 @@ RSpec.describe Marine::Catalog::ReplyLocalizer do
       expect(captured_target(provider_language: nil, fallback_language: 'not a code')).to eq('hi-latn')
     end
 
-    it 'trusts the CLD3 result only when no configured language exists (the pre-fix hazard)' do
-      expect(captured_target(provider_language: nil, fallback_language: nil)).to eq('hi-latn')
+    it 'trusts the CLD3 result ONLY when no configured language AND no upstream decision exist' do
+      # language_resolved defaults false here: no authority decided the language, so the legacy
+      # CLD3 fallback chain is the only remaining signal. CLD3 is allowed EXCLUSIVELY in this case.
+      expect(captured_target(provider_language: nil, fallback_language: nil, language_resolved: false)).to eq('hi-latn')
+    end
+  end
+
+  # Bug 3 — once the shared ConversationLanguageResolver has AUTHORITATIVELY decided this turn's
+  # delivery language (any closed reason, including a fail-closed "no language"), ReplyLocalizer must
+  # NOT re-run CLD3: the configured language is the only remaining fallback, and with none the reply
+  # fails closed to the deterministic English source unchanged. `language_resolved: true` carries that
+  # upstream decision across the boundary. CLD3 remains allowed ONLY when language_resolved is false.
+  describe 'authoritative upstream resolution (language_resolved: true) never re-runs CLD3' do
+    it 'targets the configured fallback and never calls CLD3 when the provider language is nil (resolver unresolved + configured id)' do
+      expect(Marine::Llm::LanguageDetector).not_to receive(:new)
+      stub_translation('Ini katalog produk untuk Widget Base.')
+      stub_semantic(true)
+
+      expect(localize(provider_language: nil, fallback_language: 'id', language_resolved: true))
+        .to eq('Ini katalog produk untuk Widget Base.')
+    end
+
+    it 'returns the English source unchanged and never calls CLD3 when no configured language exists (unresolved + no config)' do
+      expect(Marine::Llm::LanguageDetector).not_to receive(:new)
+      expect(Marine::Llm::TranslateResponseService).not_to receive(:new)
+      expect(Marine::Charge::FactPreservationValidator).not_to receive(:new)
+
+      expect(localize(provider_language: nil, fallback_language: nil, language_resolved: true)).to eq(english_text)
+    end
+
+    it 'uses the resolved id delivered via the configured contract when the provider language is nil at the boundary' do
+      allow(Marine::Llm::LanguageDetector).to receive(:new) # even if present, must be ignored
+      target = nil
+      translator = instance_double(Marine::Llm::TranslateResponseService, call: { ok: true, text: 'x', translated: true })
+      allow(Marine::Llm::TranslateResponseService).to receive(:new) do |args|
+        target = args[:target_language]
+        translator
+      end
+      stub_semantic(true)
+
+      described_class.new(text: english_text, trigger_text: 'kirim katalog',
+                          provider_language: nil, fallback_language: 'id', language_resolved: true).call
+      expect(target).to eq('id')
+      expect(Marine::Llm::LanguageDetector).not_to have_received(:new)
+    end
+
+    it 'still prefers the per-turn provider language over the configured fallback when resolved' do
+      expect(Marine::Llm::LanguageDetector).not_to receive(:new)
+      stub_translation('Ini katalog produk untuk Widget Base.')
+      stub_semantic(true)
+
+      target = nil
+      allow(Marine::Llm::TranslateResponseService).to receive(:new) do |args|
+        target = args[:target_language]
+        instance_double(Marine::Llm::TranslateResponseService, call: { ok: true, text: 'x', translated: true })
+      end
+      described_class.new(text: english_text, trigger_text: 'halo', provider_language: 'de',
+                          fallback_language: 'id', language_resolved: true).call
+      expect(target).to eq('de')
+    end
+
+    # Bug 3 — the delivery end of the reported literal turn. `baby doll ada` is the exact customer
+    # message the product flow resolved upstream; the localizer must deliver in the resolved language
+    # WITHOUT ever classifying that short product-only trigger with CLD3. The job passes the resolver's
+    # outcome as provider_language (the resolved code, or nil for an authoritative :unresolved).
+    it 'targets the resolved id for the literal "baby doll ada" turn and never classifies it with CLD3 (:configured id)' do
+      expect(Marine::Llm::LanguageDetector).not_to receive(:new)
+      stub_semantic(true)
+      target = nil
+      allow(Marine::Llm::TranslateResponseService).to receive(:new) do |args|
+        target = args[:target_language]
+        instance_double(Marine::Llm::TranslateResponseService, call: { ok: true, text: 'x', translated: true })
+      end
+
+      described_class.new(text: english_text, trigger_text: 'baby doll ada',
+                          provider_language: 'id', fallback_language: 'id', language_resolved: true).call
+
+      expect(target).to eq('id')
+    end
+
+    it 'delivers the deterministic English source for the literal "baby doll ada" turn with no config and no CLD3 (:unresolved)' do
+      expect(Marine::Llm::LanguageDetector).not_to receive(:new)
+      expect(Marine::Llm::TranslateResponseService).not_to receive(:new)
+      expect(Marine::Charge::FactPreservationValidator).not_to receive(:new)
+
+      expect(localize(trigger: 'baby doll ada', provider_language: nil, fallback_language: nil, language_resolved: true))
+        .to eq(english_text)
     end
   end
 

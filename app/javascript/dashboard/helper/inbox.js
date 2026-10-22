@@ -11,6 +11,9 @@ export const INBOX_TYPES = {
   SMS: 'Channel::Sms',
   INSTAGRAM: 'Channel::Instagram',
   TIKTOK: 'Channel::Tiktok',
+  // WIJAYA_CUSTOM_START wecom_channel
+  WECOM: 'Channel::Wecom',
+  // WIJAYA_CUSTOM_END wecom_channel
 };
 
 // Add providers here as they gain voice capability (e.g., WhatsApp Cloud, Twilio WhatsApp)
@@ -53,6 +56,9 @@ const INBOX_ICON_MAP_FILL = {
   [INBOX_TYPES.LINE]: 'i-ri-line-fill',
   [INBOX_TYPES.INSTAGRAM]: 'i-ri-instagram-fill',
   [INBOX_TYPES.TIKTOK]: 'i-ri-tiktok-fill',
+  // WIJAYA_CUSTOM_START wecom_channel
+  [INBOX_TYPES.WECOM]: 'i-ri-wechat-fill',
+  // WIJAYA_CUSTOM_END wecom_channel
 };
 
 const DEFAULT_ICON_FILL = 'i-ri-chat-1-fill';
@@ -68,6 +74,9 @@ const INBOX_ICON_MAP_LINE = {
   [INBOX_TYPES.LINE]: 'i-woot-line',
   [INBOX_TYPES.INSTAGRAM]: 'i-woot-instagram',
   [INBOX_TYPES.TIKTOK]: 'i-woot-tiktok',
+  // WIJAYA_CUSTOM_START wecom_channel
+  [INBOX_TYPES.WECOM]: 'i-ri-wechat-line',
+  // WIJAYA_CUSTOM_END wecom_channel
 };
 
 const DEFAULT_ICON_LINE = 'i-ri-chat-1-line';

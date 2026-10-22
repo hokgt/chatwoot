@@ -55,7 +55,7 @@ RSpec.describe 'Api::V1::Accounts::Marine::LlmSettings', type: :request do
     end
 
     context 'when no Marine config records exist (not seeded from installation_config.yml)' do
-      it 'returns safe defaults without any MARINE_* InstallationConfig rows' do
+      it 'returns safe defaults for both models without any MARINE_* InstallationConfig rows' do
         expect(InstallationConfig.where('name LIKE ?', 'MARINE_%')).to be_empty
 
         get "/api/v1/accounts/#{account.id}/marine/llm_settings",
@@ -63,33 +63,58 @@ RSpec.describe 'Api::V1::Accounts::Marine::LlmSettings', type: :request do
             as: :json
 
         expect(response).to have_http_status(:success)
-        expect(json_response[:provider]).to eq('openai')
-        expect(json_response[:model]).to eq('gpt-4.1-mini')
-        expect(json_response[:endpoint]).to eq('https://api.openai.com')
-        expect(json_response[:api_key_present]).to be(false)
-        expect(json_response[:configured]).to be(false)
+        %i[decision_maker_config response_generator_config].each do |key|
+          expect(json_response[key][:provider]).to eq('openai')
+          expect(json_response[key][:model]).to eq('gpt-4.1-mini')
+          expect(json_response[key][:api_endpoint]).to eq('https://api.openai.com')
+          expect(json_response[key][:api_key_present]).to be(false)
+          expect(json_response[key][:configured]).to be(false)
+        end
+        expect(json_response[:available_providers]).to be_an(Array)
       end
     end
 
-    context 'when it is an admin' do
+    context 'when only legacy settings exist' do
       before do
         set_config('MARINE_LLM_PROVIDER', 'openrouter')
         set_config('MARINE_OPEN_AI_API_KEY', 'sk-or-1234567890abcd')
         set_config('MARINE_OPEN_AI_MODEL', 'nvidia/nemotron')
       end
 
-      it 'returns masked settings without exposing the raw key' do
+      it 'populates the response generator and, via fallback, the decision maker with masked keys' do
         get "/api/v1/accounts/#{account.id}/marine/llm_settings",
             headers: admin.create_new_auth_token,
             as: :json
 
         expect(response).to have_http_status(:success)
-        expect(json_response[:provider]).to eq('openrouter')
-        expect(json_response[:api_key_present]).to be(true)
-        expect(json_response[:api_key_masked]).to eq('sk-or-...abcd')
+        %i[decision_maker_config response_generator_config].each do |key|
+          expect(json_response[key][:provider]).to eq('openrouter')
+          expect(json_response[key][:api_key_present]).to be(true)
+          expect(json_response[key][:api_key_masked]).to eq('sk-or-...abcd')
+        end
         expect(response.body).not_to include('sk-or-1234567890abcd')
-        expect(json_response[:supports_embeddings]).to be(false)
-        expect(json_response[:available_providers]).to be_an(Array)
+      end
+    end
+
+    context 'when the two models are configured independently' do
+      before do
+        set_config('MARINE_LLM_PROVIDER', 'openrouter')
+        set_config('MARINE_OPEN_AI_API_KEY', 'sk-or-response-key-99')
+        set_config('MARINE_DECISION_LLM_PROVIDER', 'gemini')
+        set_config('MARINE_DECISION_LLM_MODEL', 'gemini-2.5-flash')
+        set_config('MARINE_DECISION_LLM_API_KEY', 'gem-decision-key-77')
+      end
+
+      it 'returns each model with its own provider and masked key' do
+        get "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(json_response[:decision_maker_config][:provider]).to eq('gemini')
+        expect(json_response[:decision_maker_config][:model]).to eq('gemini-2.5-flash')
+        expect(json_response[:response_generator_config][:provider]).to eq('openrouter')
+        expect(response.body).not_to include('gem-decision-key-77')
+        expect(response.body).not_to include('sk-or-response-key-99')
       end
     end
   end
@@ -98,7 +123,7 @@ RSpec.describe 'Api::V1::Accounts::Marine::LlmSettings', type: :request do
     context 'when it is an agent' do
       it 'is not authorized' do
         put "/api/v1/accounts/#{account.id}/marine/llm_settings",
-            params: { provider: 'gemini' },
+            params: { response_generator_config: { provider: 'gemini' } },
             headers: agent.create_new_auth_token,
             as: :json
 
@@ -107,31 +132,207 @@ RSpec.describe 'Api::V1::Accounts::Marine::LlmSettings', type: :request do
     end
 
     context 'when it is an admin' do
-      it 'persists provider, model, endpoint and api key' do
+      it 'persists the response generator to the legacy runtime keys' do
         put "/api/v1/accounts/#{account.id}/marine/llm_settings",
-            params: { provider: 'gemini', model: 'gemini-2.0-flash', endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai',
-                      api_key: 'gem-secret-key-123' },
+            params: { response_generator_config: {
+              provider: 'gemini', model: 'gemini-2.0-flash',
+              api_endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai', api_key: 'gem-secret-key-123'
+            } },
             headers: admin.create_new_auth_token,
             as: :json
 
         expect(response).to have_http_status(:success)
         expect(InstallationConfig.find_by(name: 'MARINE_LLM_PROVIDER').value).to eq('gemini')
         expect(InstallationConfig.find_by(name: 'MARINE_OPEN_AI_MODEL').value).to eq('gemini-2.0-flash')
+        expect(InstallationConfig.find_by(name: 'MARINE_OPEN_AI_ENDPOINT').value).to eq('https://generativelanguage.googleapis.com/v1beta/openai')
         expect(InstallationConfig.find_by(name: 'MARINE_OPEN_AI_API_KEY').value).to eq('gem-secret-key-123')
-        expect(json_response[:api_key_masked]).to be_present
         expect(response.body).not_to include('gem-secret-key-123')
       end
 
-      it 'keeps the existing key when api_key is blank' do
-        set_config('MARINE_OPEN_AI_API_KEY', 'sk-existing-key-9999')
+      it 'persists the decision maker to its own keys without touching runtime keys' do
+        set_config('MARINE_LLM_PROVIDER', 'openrouter')
+        set_config('MARINE_OPEN_AI_MODEL', 'nvidia/nemotron')
+        set_config('MARINE_OPEN_AI_API_KEY', 'sk-or-runtime-key-9')
 
         put "/api/v1/accounts/#{account.id}/marine/llm_settings",
-            params: { provider: 'openai', model: 'gpt-4.1-mini', api_key: '' },
+            params: { decision_maker_config: {
+              provider: 'gemini', model: 'gemini-2.5-flash', api_key: 'gem-decision-key-456'
+            } },
             headers: admin.create_new_auth_token,
             as: :json
 
         expect(response).to have_http_status(:success)
-        expect(InstallationConfig.find_by(name: 'MARINE_OPEN_AI_API_KEY').value).to eq('sk-existing-key-9999')
+        expect(InstallationConfig.find_by(name: 'MARINE_DECISION_LLM_PROVIDER').value).to eq('gemini')
+        expect(InstallationConfig.find_by(name: 'MARINE_DECISION_LLM_API_KEY').value).to eq('gem-decision-key-456')
+        # Runtime keys unchanged — decision maker is not wired into the runner.
+        expect(InstallationConfig.find_by(name: 'MARINE_LLM_PROVIDER').value).to eq('openrouter')
+        expect(InstallationConfig.find_by(name: 'MARINE_OPEN_AI_API_KEY').value).to eq('sk-or-runtime-key-9')
+      end
+
+      it 'keeps each existing key when its api_key is blank, independently' do
+        set_config('MARINE_OPEN_AI_API_KEY', 'sk-response-existing-9999')
+        set_config('MARINE_DECISION_LLM_API_KEY', 'gem-decision-existing-7777')
+
+        put "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            params: {
+              response_generator_config: { provider: 'openai', model: 'gpt-4.1-mini', api_key: '' },
+              decision_maker_config: { provider: 'gemini', api_key: '' }
+            },
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(InstallationConfig.find_by(name: 'MARINE_OPEN_AI_API_KEY').value).to eq('sk-response-existing-9999')
+        expect(InstallationConfig.find_by(name: 'MARINE_DECISION_LLM_API_KEY').value).to eq('gem-decision-existing-7777')
+      end
+
+      it 'preserves an existing embedding configuration it never writes' do
+        set_config('MARINE_EMBEDDING_MODEL', 'text-embedding-3-large')
+
+        put "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            params: { response_generator_config: { provider: 'openai', model: 'gpt-4.1-mini' } },
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(InstallationConfig.find_by(name: 'MARINE_EMBEDDING_MODEL').value).to eq('text-embedding-3-large')
+      end
+
+      it 'seeds the decision maker key from the fallback and keeps it after a same-request response change' do
+        set_config('MARINE_OPEN_AI_API_KEY', 'sk-legacy-fallback-1')
+
+        put "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            params: {
+              # No decision key supplied; the response key is rotated in the SAME request.
+              decision_maker_config: { provider: 'gemini' },
+              response_generator_config: { api_key: 'sk-rotated-2' }
+            },
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:success)
+        # The decision maker seeds from the OLD fallback (written before the response), not the new key.
+        expect(InstallationConfig.find_by(name: 'MARINE_DECISION_LLM_API_KEY').value).to eq('sk-legacy-fallback-1')
+        expect(InstallationConfig.find_by(name: 'MARINE_OPEN_AI_API_KEY').value).to eq('sk-rotated-2')
+      end
+
+      it 'rejects an unknown provider with 422 without persisting anything' do
+        set_config('MARINE_OPEN_AI_API_KEY', 'sk-response-existing-9999')
+
+        put "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            params: { response_generator_config: { provider: 'not-a-provider', api_key: 'sk-new-key' } },
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(InstallationConfig.find_by(name: 'MARINE_LLM_PROVIDER')).to be_nil
+        expect(InstallationConfig.find_by(name: 'MARINE_OPEN_AI_API_KEY').value).to eq('sk-response-existing-9999')
+      end
+
+      it 'persists a valid decision maker api_mode' do
+        put "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            params: { decision_maker_config: {
+              provider: 'openrouter', model: 'typesafe/jev-1.13', api_mode: 'openrouter_decisions', api_key: 'sk-or-decisions-key'
+            } },
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(InstallationConfig.find_by(name: 'MARINE_DECISION_LLM_API_MODE').value).to eq('openrouter_decisions')
+        expect(json_response[:decision_maker_config][:api_mode]).to eq('openrouter_decisions')
+      end
+
+      it 'accepts the explicit chat_completions mode for both cards' do
+        put "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            params: {
+              decision_maker_config: { provider: 'openai', api_mode: 'chat_completions', api_key: 'sk-d' },
+              response_generator_config: { provider: 'openai', api_mode: 'chat_completions', api_key: 'sk-r' }
+            },
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:success)
+      end
+
+      it 'rejects an unknown api_mode with 422 without persisting anything' do
+        put "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            params: { decision_maker_config: { provider: 'openrouter', api_mode: 'bogus_mode', api_key: 'sk-or-key' } },
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(InstallationConfig.find_by(name: 'MARINE_DECISION_LLM_API_MODE')).to be_nil
+        expect(InstallationConfig.find_by(name: 'MARINE_DECISION_LLM_PROVIDER')).to be_nil
+      end
+
+      it 'rejects openrouter_decisions with a non-openrouter provider (422)' do
+        put "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            params: { decision_maker_config: { provider: 'gemini', api_mode: 'openrouter_decisions', api_key: 'gem-key' } },
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(InstallationConfig.find_by(name: 'MARINE_DECISION_LLM_API_MODE')).to be_nil
+      end
+
+      it 'rejects a provider switch away from openrouter when the stored mode is openrouter_decisions and no mode is submitted (422)' do
+        set_config('MARINE_DECISION_LLM_PROVIDER', 'openrouter')
+        set_config('MARINE_DECISION_LLM_API_MODE', 'openrouter_decisions')
+
+        put "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            params: { decision_maker_config: { provider: 'gemini', api_key: 'gem-key' } },
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        # The stored decisions mode and provider are left untouched by the rejected write.
+        expect(InstallationConfig.find_by(name: 'MARINE_DECISION_LLM_PROVIDER').value).to eq('openrouter')
+      end
+
+      it 'allows a provider change alone while the stored mode is chat completions' do
+        set_config('MARINE_DECISION_LLM_PROVIDER', 'openrouter')
+
+        put "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            params: { decision_maker_config: { provider: 'gemini', api_key: 'gem-key' } },
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:success)
+        expect(InstallationConfig.find_by(name: 'MARINE_DECISION_LLM_PROVIDER').value).to eq('gemini')
+      end
+
+      it 'rejects a non-chat mode submitted for the response generator (422)' do
+        put "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            params: { response_generator_config: { provider: 'openrouter', api_mode: 'openrouter_decisions', api_key: 'sk-or-key' } },
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(InstallationConfig.find_by(name: 'MARINE_LLM_PROVIDER')).to be_nil
+      end
+
+      it 'rejects a malformed nested payload with 422, not a 500' do
+        put "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            params: { response_generator_config: 'gemini' },
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+      end
+
+      it 'rolls back a valid target when the other target is invalid (atomic)' do
+        put "/api/v1/accounts/#{account.id}/marine/llm_settings",
+            params: {
+              decision_maker_config: { provider: 'gemini', api_key: 'gem-decision-key-456' },
+              response_generator_config: { provider: 'not-a-provider' }
+            },
+            headers: admin.create_new_auth_token,
+            as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        # The valid decision-maker write must not have persisted.
+        expect(InstallationConfig.find_by(name: 'MARINE_DECISION_LLM_PROVIDER')).to be_nil
+        expect(InstallationConfig.find_by(name: 'MARINE_DECISION_LLM_API_KEY')).to be_nil
       end
     end
   end
@@ -140,7 +341,7 @@ RSpec.describe 'Api::V1::Accounts::Marine::LlmSettings', type: :request do
     context 'when it is an agent' do
       it 'is not authorized' do
         post "/api/v1/accounts/#{account.id}/marine/llm_settings/test",
-             params: { provider: 'openai', api_key: 'sk-test' },
+             params: { target: 'response_generator', config: { provider: 'openai', api_key: 'sk-test' } },
              headers: agent.create_new_auth_token,
              as: :json
 
@@ -149,17 +350,106 @@ RSpec.describe 'Api::V1::Accounts::Marine::LlmSettings', type: :request do
     end
 
     context 'when it is an admin' do
-      it 'delegates to the connection test service and returns the result' do
+      it 'tests the decision maker with its submitted config' do
         service = instance_double(Marine::Llm::ConnectionTestService, call: { ok: true, message: 'pong', error: nil })
-        allow(Marine::Llm::ConnectionTestService).to receive(:new).and_return(service)
+        expect(Marine::Llm::ConnectionTestService).to receive(:new)
+          .with(hash_including(provider: 'gemini', api_key: 'gem-test-123', model: 'gemini-2.5-flash'))
+          .and_return(service)
 
         post "/api/v1/accounts/#{account.id}/marine/llm_settings/test",
-             params: { provider: 'openai', api_key: 'sk-test-123', model: 'gpt-4.1-mini' },
+             params: { target: 'decision_maker', config: { provider: 'gemini', api_key: 'gem-test-123', model: 'gemini-2.5-flash' } },
              headers: admin.create_new_auth_token,
              as: :json
 
         expect(response).to have_http_status(:success)
         expect(json_response[:ok]).to be(true)
+      end
+
+      it 'passes the submitted api_mode through to the connection test' do
+        service = instance_double(Marine::Llm::ConnectionTestService, call: { ok: true, message: 'ok', error: nil })
+        expect(Marine::Llm::ConnectionTestService).to receive(:new)
+          .with(hash_including(provider: 'openrouter', model: 'typesafe/jev-1.13', api_mode: 'openrouter_decisions'))
+          .and_return(service)
+
+        post "/api/v1/accounts/#{account.id}/marine/llm_settings/test",
+             params: { target: 'decision_maker', config: {
+               provider: 'openrouter', api_key: 'sk-or-key', model: 'typesafe/jev-1.13', api_mode: 'openrouter_decisions'
+             } },
+             headers: admin.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:success)
+      end
+
+      it 'rejects an unknown api_mode on test with 422 and never builds the service' do
+        expect(Marine::Llm::ConnectionTestService).not_to receive(:new)
+
+        post "/api/v1/accounts/#{account.id}/marine/llm_settings/test",
+             params: { target: 'decision_maker', config: { provider: 'openrouter', api_key: 'sk-or-key', api_mode: 'bogus' } },
+             headers: admin.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(json_response[:ok]).to be(false)
+      end
+
+      it 'falls back to the stored key for that target when the submitted key is blank' do
+        set_config('MARINE_DECISION_LLM_API_KEY', 'gem-stored-decision-key')
+
+        service = instance_double(Marine::Llm::ConnectionTestService, call: { ok: true, message: 'pong', error: nil })
+        expect(Marine::Llm::ConnectionTestService).to receive(:new)
+          .with(hash_including(api_key: 'gem-stored-decision-key'))
+          .and_return(service)
+
+        post "/api/v1/accounts/#{account.id}/marine/llm_settings/test",
+             params: { target: 'decision_maker', config: { provider: 'gemini', api_key: '' } },
+             headers: admin.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:success)
+      end
+
+      it 'rejects a missing or invalid target with 422' do
+        post "/api/v1/accounts/#{account.id}/marine/llm_settings/test",
+             params: { config: { provider: 'openai', api_key: 'sk-test' } },
+             headers: admin.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(json_response[:ok]).to be(false)
+
+        post "/api/v1/accounts/#{account.id}/marine/llm_settings/test",
+             params: { target: 'bogus', config: { provider: 'openai', api_key: 'sk-test' } },
+             headers: admin.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+      end
+
+      it 'rejects an unknown provider on test with 422 and never builds the service' do
+        expect(Marine::Llm::ConnectionTestService).not_to receive(:new)
+
+        post "/api/v1/accounts/#{account.id}/marine/llm_settings/test",
+             params: { target: 'decision_maker', config: { provider: 'not-a-provider', api_key: 'sk-test' } },
+             headers: admin.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(json_response[:ok]).to be(false)
+      end
+
+      it 'rejects testing a non-openrouter provider against the stored decisions mode (422) without building the service' do
+        set_config('MARINE_DECISION_LLM_PROVIDER', 'openrouter')
+        set_config('MARINE_DECISION_LLM_API_MODE', 'openrouter_decisions')
+        expect(Marine::Llm::ConnectionTestService).not_to receive(:new)
+
+        post "/api/v1/accounts/#{account.id}/marine/llm_settings/test",
+             params: { target: 'decision_maker', config: { provider: 'gemini', api_key: 'gem-key' } },
+             headers: admin.create_new_auth_token,
+             as: :json
+
+        expect(response).to have_http_status(:unprocessable_entity)
+        expect(json_response[:ok]).to be(false)
       end
     end
   end

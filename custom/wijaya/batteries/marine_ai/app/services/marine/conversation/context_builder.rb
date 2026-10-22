@@ -50,13 +50,21 @@ class Marine::Conversation::ContextBuilder
   # Structured, in-memory context API. `history` is an ordered Array of { role:, content: }
   # (role 'user' for incoming, 'assistant' for outgoing — the direction mapping existing
   # consumers expect); `trigger` is the bounded current-turn String; `phase` is a symbol.
-  Result = Struct.new(:history, :trigger, :phase, keyword_init: true) do
+  # `fresh_window` is true only when the trigger OPENS a fresh native messaging window
+  # (a returning customer, all pre-window history excluded) — the single lifecycle signal
+  # the trusted-memory re-engagement path may key on, proven from existing messaging-window
+  # semantics with no new persisted state.
+  Result = Struct.new(:history, :trigger, :phase, :advisory_memory, :fresh_window, keyword_init: true) do
     def opening?
       phase == PHASE_OPENING
     end
 
     def follow_up?
       phase == PHASE_FOLLOW_UP
+    end
+
+    def fresh_window?
+      fresh_window == true
     end
   end
 
@@ -66,7 +74,8 @@ class Marine::Conversation::ContextBuilder
   end
 
   def build
-    Result.new(history: history, trigger: trigger, phase: phase)
+    Result.new(history: history, trigger: trigger, phase: phase, advisory_memory: advisory_memory,
+               fresh_window: new_interaction_window?)
   end
 
   private
@@ -81,11 +90,19 @@ class Marine::Conversation::ContextBuilder
   # aged unresolved topic can never be revived by generation. A channel with no window policy, no
   # anchor, or a lookup failure falls closed to the full bounded history below.
   def history
-    return [] if new_interaction_window?
-
-    prior_messages.reverse.map do |message|
-      { role: role_for(message), content: bounded(message.content, MAX_HISTORY_MESSAGE_CHARS) }
+    if new_interaction_window?
+      []
+    else
+      prior_messages.reverse.map do |message|
+        { role: role_for(message), content: bounded(message.content, MAX_HISTORY_MESSAGE_CHARS) }
+      end
     end
+  end
+
+  # Kept structurally separate from canonical public history so product intent,
+  # domain/security, scenario selection, and authority paths cannot consume it.
+  def advisory_memory
+    Marine::Memory::Reader.new(conversation: conversation).advisory_envelope
   end
 
   def prior_messages

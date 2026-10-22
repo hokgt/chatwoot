@@ -8,6 +8,14 @@ class Public::Api::V1::Inboxes::MessagesController < Public::Api::V1::InboxesCon
   def create
     @message = @conversation.messages.new(message_params)
     build_attachment
+    # WIJAYA_CUSTOM_START whatsapp_web_inbox
+    if defined?(Wijaya::Batteries::Core::Hooks)
+      Wijaya::Batteries::Core::Hooks.dispatch(
+        :whatsapp_web_inbox, :apply_public_inbound_message_attributes,
+        default: nil, message: @message, channel: @inbox_channel, params: params
+      )
+    end
+    # WIJAYA_CUSTOM_END whatsapp_web_inbox
     @message.save!
   end
 

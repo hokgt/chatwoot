@@ -2,6 +2,9 @@
 import { useI18n } from 'vue-i18n';
 import { useStoreGetters } from 'dashboard/composables/store';
 import { computed } from 'vue';
+// WIJAYA_CUSTOM_START wecom_channel
+import { wecomReadableChannelName } from '@wijaya/wecom_channel/frontend/helpers/wecomInbox';
+// WIJAYA_CUSTOM_END wecom_channel
 
 const props = defineProps({
   channelType: {
@@ -44,6 +47,13 @@ const twilioChannelName = () => {
 };
 
 const readableChannelName = computed(() => {
+  // WIJAYA_CUSTOM_START wecom_channel
+  const wecomName = wecomReadableChannelName({
+    t,
+    channelType: props.channelType,
+  });
+  if (wecomName) return wecomName;
+  // WIJAYA_CUSTOM_END wecom_channel
   if (props.channelType === 'Channel::Api') {
     return globalConfig.value.apiChannelName || t('INBOX_MGMT.CHANNELS.API');
   }

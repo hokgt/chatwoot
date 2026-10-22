@@ -82,4 +82,30 @@ RSpec.describe Marine::Catalog::VariantResolver do
         .to raise_error(Marine::Catalog::Errors::CatalogUnavailableError)
     end
   end
+
+  # Legacy path end-to-end through the REAL VariantRepository, with only the low-level Connection
+  # boundary faked (it honors the exact predicate the repository emits). A lower-case explicit child
+  # code resolves the authoritative DB code — proving the resolver carries the row code, never the input.
+  describe 'case-insensitive explicit child code through the real repository' do
+    subject(:resolver) { described_class.new(variant_repository: Marine::Catalog::VariantRepository.new) }
+
+    before do
+      allow(Marine::Catalog::Config).to receive(:configured?).and_return(true)
+      allow(Marine::Catalog::Config).to receive(:qualified_table).and_return('marine_ai.item')
+      allow(Marine::Catalog::Config).to receive(:schema).and_return('marine_ai')
+      allow(Marine::Catalog::Connection).to receive(:select) do |sql, params|
+        family = params[0]
+        candidates = params[1..]
+        case_insensitive = sql.include?('LOWER(item_code)')
+        [{ item_code: 'LF-3', variant_of: 'LF', disabled: false }]
+          .select { |r| r[:variant_of] == family && candidates.any? { |c| case_insensitive ? r[:item_code].casecmp?(c) : r[:item_code] == c } }
+          .map { |r| { 'code' => r[:item_code] } }
+      end
+    end
+
+    it 'resolves the row-derived code LF-3 for a lower-case lf-3 input' do
+      expect(resolver.resolve(family_code: 'LF', explicit_child_code: 'lf-3'))
+        .to eq(status: :resolved, code: 'LF-3')
+    end
+  end
 end

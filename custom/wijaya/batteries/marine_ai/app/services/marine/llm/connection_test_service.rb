@@ -10,25 +10,44 @@ class Marine::Llm::ConnectionTestService
   TEST_TIMEOUT = 5
   TEST_PROMPT = 'ping'.freeze
 
-  def initialize(provider:, api_key:, endpoint: nil, model: nil)
+  def initialize(provider:, api_key:, endpoint: nil, model: nil, api_mode: nil)
     @provider = provider.to_s.presence || Marine::Llm::ProviderConfig::DEFAULT_PROVIDER
     @api_key = api_key.to_s
     @endpoint = endpoint.to_s
     @model = model.to_s
+    @api_mode = api_mode.to_s.presence || Marine::Llm::SettingsStore::DEFAULT_API_MODE
   end
 
   def call
     return failure('API key is required') if @api_key.blank?
     return failure('Model is required') if resolved_model.blank?
 
-    chat = context.chat(model: resolved_model, provider: rubyllm_provider, assume_model_exists: true)
-    response = chat.ask(TEST_PROMPT)
-    success(response.content)
+    decisions_mode? ? test_decisions : test_chat
   rescue StandardError => e
     failure(e.message)
   end
 
   private
+
+  def decisions_mode?
+    @api_mode == 'openrouter_decisions'
+  end
+
+  # Unchanged chat/completions path: RubyLLM against the OpenAI-compatible endpoint.
+  def test_chat
+    chat = context.chat(model: resolved_model, provider: rubyllm_provider, assume_model_exists: true)
+    response = chat.ask(TEST_PROMPT)
+    success(response.content)
+  end
+
+  # OpenRouter Decisions models cannot use chat/completions; delegate to the
+  # dedicated Decisions client, which already returns a sanitized result hash.
+  def test_decisions
+    outcome = Marine::Llm::OpenrouterDecisionsClient.new(
+      api_key: @api_key, endpoint: endpoint, model: resolved_model, timeout: TEST_TIMEOUT
+    ).test_connection
+    outcome[:ok] ? success(outcome[:message]) : failure(outcome[:error])
+  end
 
   def provider_info
     @provider_info ||= Marine::Llm::ProviderConfig.provider_info(@provider)

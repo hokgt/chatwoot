@@ -114,6 +114,11 @@ RSpec.describe Marine::Catalog::ProductFlowStateStore do
       expect(store.update!(status: 'haxx')['status']).to eq('active')
       expect(store.update!(status: 'completed')['status']).to eq('completed')
     end
+
+    it 'persists only a bounded language code and drops malformed values' do
+      expect(store.start!(current_intent: 'stock', customer_language: 'ID')['customer_language']).to eq('id')
+      expect(store.update!(customer_language: 'not a language')).not_to have_key('customer_language')
+    end
   end
 
   describe 'original and current intent' do

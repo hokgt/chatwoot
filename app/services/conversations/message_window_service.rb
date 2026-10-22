@@ -68,3 +68,9 @@ class Conversations::MessageWindowService
     @last_incoming_message ||= @conversation.messages.where(account_id: @conversation.account_id).incoming&.last
   end
 end
+
+# WIJAYA_CUSTOM_START wecom_channel
+if defined?(Wijaya::Batteries::WecomChannel::MessageWindowExtension)
+  Conversations::MessageWindowService.prepend(Wijaya::Batteries::WecomChannel::MessageWindowExtension)
+end
+# WIJAYA_CUSTOM_END wecom_channel
