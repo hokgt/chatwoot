@@ -1,30 +1,37 @@
 module Wijaya::Marine::Hooks
   module_function
 
-  # Consolidated claim used by MessageTemplates::HookExecutionService. Returns
-  # true when Marine is handling this conversation — in which case the native
-  # welcome/OOO/email-collect templates must be suppressed — and, when the
-  # triggering message is a genuine inbound turn, schedules the Marine response.
-  # Returns false (native templates run) for non-Marine inboxes.
-  #
-  # should_process_marine_response? already implies marine_handling_conversation?
-  # (it is that predicate plus message.incoming?), so scheduling only fires for
-  # inbound turns while suppression covers every message Marine is handling —
-  # byte-for-byte with the previous four inline guards.
+  # Consolidated claim used by MessageTemplates::HookExecutionService. The return value decides
+  # whether the native welcome/OOO/email-collect templates are suppressed (true) or allowed to run
+  # (false). Returns false for non-Marine inboxes. Otherwise it delegates the decision to
+  # after_message_template_trigger, which suppresses only when Marine is genuinely owning this
+  # message (intentional silence, or a VERIFIED Marine enqueue) and lets eligible native templates
+  # run on a definitive enqueue failure.
   def claim_message_templates!(conversation:, inbox:, message:)
     return false unless marine_handling_conversation?(conversation: conversation, inbox: inbox)
 
     after_message_template_trigger(conversation: conversation, inbox: inbox, message: message)
-    true
   end
 
+  # Returns the claim decision: true suppresses native templates, false lets native template
+  # eligibility run. When Marine is intentionally silent for this message (not an inbound turn, or
+  # an active handoff) suppression is kept so native automation — including during a human handoff —
+  # never re-activates. (Resolved/snoozed conversations never reach here: marine_handling_conversation?
+  # returns false for them upstream in claim_message_templates!, so native templates run.) When a
+  # Marine response is scheduled, suppression is kept ONLY if the primary enqueue is verified
+  # (see primary_enqueue_verified?); a definitive
+  # enqueue failure returns false so an eligible native template can run. An exception leaves the
+  # broker's acceptance unknown, so suppression is kept (true) and the sanitized exception is
+  # recorded through the existing tracker — never both a native template and a possibly-enqueued
+  # Marine reply.
   def after_message_template_trigger(conversation:, inbox:, message:)
     reset_expired_handoff(conversation, inbox, message)
-    return unless should_process_marine_response?(conversation, inbox, message)
+    return true unless should_process_marine_response?(conversation, inbox, message)
 
-    schedule_marine_response(conversation, message)
+    primary_enqueue_verified?(schedule_marine_response(conversation, message))
   rescue StandardError => e
     ChatwootExceptionTracker.new(e, account: conversation.account).capture_exception
+    true
   end
 
   # A handoff keeps Marine silent only for the applicable ACTIVE channel messaging window.
@@ -142,5 +149,30 @@ module Wijaya::Marine::Hooks
     true
   rescue StandardError
     false
+  end
+
+  # Claim decision for native-template suppression: distinguishes a VERIFIED primary enqueue
+  # (true — suppress) from a DEFINITIVE failure (false — let native template eligibility run).
+  # This is deliberately stricter than primary_enqueue_succeeded? (which gates the fire-and-forget
+  # shadows and stays as-is): native suppression requires real proof the job reached the broker.
+  # ActiveJob returns false from perform_later when a before_enqueue callback halts; otherwise it
+  # returns the job, which carries #enqueue_error on adapter failure and #successfully_enqueued?.
+  # For a Sidekiq-backed job successfully_enqueued? alone is not proof — the adapter sets
+  # #provider_job_id (the JID) only on a real push, so a blank JID is a definitive failure. In
+  # production (Rails 7.1 ActiveJob + Sidekiq) perform_later always returns false or a job exposing
+  # this API, so the branches above fully decide the real path. A truthy object exposing none of the
+  # API is unverifiable rather than a definitive failure; it is the ambiguous outcome, so it keeps
+  # suppression (true) to avoid a duplicate native + possibly-enqueued Marine reply. Any raise
+  # bubbles to the caller, which also treats it as ambiguous (suppress + sanitized tracking).
+  def primary_enqueue_verified?(scheduled)
+    return false unless scheduled
+    return false if scheduled.respond_to?(:enqueue_error) && !scheduled.enqueue_error.nil?
+
+    if scheduled.respond_to?(:successfully_enqueued?)
+      return false unless scheduled.successfully_enqueued?
+      return scheduled.provider_job_id.present? if scheduled.respond_to?(:provider_job_id)
+    end
+
+    true
   end
 end
