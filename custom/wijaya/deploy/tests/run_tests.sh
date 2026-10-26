@@ -90,6 +90,22 @@ if [[ "${1:-}" == "compose" ]]; then
     version) echo "Docker Compose version vFAKE"; exit 0 ;;
     config)
       if [[ "${FAKE_CONFIG_EMPTY:-0}" == "1" ]]; then exit 0; fi
+      # Historical config_files proof renders the trusted OLD base from stdin and the labelled
+      # on-disk docker-compose.deploy.<shortsha>.yaml separately. Model those two renders from the
+      # YAML inputs themselves so image-only legacy drift and one extra non-image change are real
+      # regression fixtures rather than pre-canned JSON. This branch is selected only for stdin or
+      # a historical short-SHA base; normal deploy/rollback renders keep using FAKE_CONFIG_JSON_FILE.
+      _first_f=""; _prev=""
+      for _a in "$@"; do
+        if [[ "$_prev" == "-f" ]]; then _first_f="$_a"; break; fi
+        _prev="$_a"
+      done
+      if [[ "${WIJAYA_HISTORICAL_COMPOSE_PROOF:-0}" == 1 ]]; then
+        if [[ "$_first_f" == "-" ]]; then _historical_yaml="$(cat)"; else _historical_yaml="$(cat "$_first_f")"; fi
+        python3 -c 'import json,sys,yaml; print(json.dumps(yaml.safe_load(sys.stdin.read()), sort_keys=True, separators=(",",":")))' \
+          <<<"$_historical_yaml"
+        exit 0
+      fi
       count=0
       if [[ -n "${FAKE_CONFIG_COUNT_FILE:-}" ]]; then
         count="$(cat "$FAKE_CONFIG_COUNT_FILE" 2>/dev/null || echo 0)"
@@ -693,7 +709,7 @@ fi
 
 # Static wiring: the pre-image gate must sit between image validation and recreate_services.
 pre_gate_line="$(grep -n 'gate_sop_sandbox_pre_image "$json"' "$DEPLOY_SH" | head -1 | cut -d: -f1 || true)"
-recreate_line="$(grep -nF '( recreate_services )' "$DEPLOY_SH" | head -1 | cut -d: -f1 || true)"
+recreate_line="$(grep -n '^    recreate_services$' "$DEPLOY_SH" | head -1 | cut -d: -f1 || true)"
 if [[ -n "${pre_gate_line:-}" && -n "${recreate_line:-}" && "$pre_gate_line" -lt "$recreate_line" ]]; then
   ok "pre-image SOP sandbox gate is wired BEFORE recreate_services (compose up) in main()"
 else
@@ -941,27 +957,43 @@ run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" FAKE_DRIFT_SHA='ddddddddddddddd
   || { bad "OLD non-ancestry case (rc=$RC up=$([[ -f "$UP_MARKER" ]] && echo yes || echo no) receipt=$([[ -f "$APPJSON" ]] && echo yes || echo no))"; cat "$WORK/out.log"; }
 
 # Historical current runtime config_files (Finding 2): a container created by the OLD scheme labels
-# its base as docker-compose.deploy.<shortsha>.yaml. That form is accepted ONLY when its bytes
-# equal the trusted base blob at the running (OLD) commit.
+# its base as docker-compose.deploy.<shortsha>.yaml. Reproduce the real legacy artifact: its ONLY
+# difference from the trusted OLD commit is the app-image scalar inherited by base/rails/sidekiq.
+# The immutable OLD image ID plus embedded OLD commit independently prove image identity, so this
+# image-only difference is normalized in memory and accepted.
 HIST_BASE="$REPO_ROOT/docker-compose.deploy.$(printf '%s' "$OLD_GIT_SHA" | cut -c1-10).yaml"
 git -C "$REPO_ROOT" show "$OLD_GIT_SHA:docker-compose.deploy.yaml" >"$HIST_BASE"
+python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); s=p.read_text(); old="    image: ${MARINE_DEPLOY_APP_IMAGE:-chatwoot-wijaya:devbot-3998c33fae}"; assert s.count(old)==1; p.write_text(s.replace(old,"    image: chatwoot-wijaya:devbot-legacy-old",1))' "$HIST_BASE"
 rm -rf "$REPO_ROOT/custom/wijaya/deploy/.receipts"
 run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" FAKE_CURRENT_BASE_LABEL="$HIST_BASE"
 [[ "$RC" == 0 && -f "$APPJSON" && -f "$UP_MARKER" ]] \
-  && grep -q 'current runtime config_files is an allowlisted base+catalog pair' "$WORK/out.log" \
-  && ok "historical docker-compose.deploy.<shortsha>.yaml current label is accepted when its bytes equal the trusted runtime blob" \
-  || { bad "historical label accept case (rc=$RC)"; cat "$WORK/out.log"; }
+  && grep -q 'legacy app image scalar normalized to the proven immutable image ID' "$WORK/out.log" \
+  && ok "historical image-line-only base is accepted when immutable OLD image ID + embedded SHA prove identity" \
+  || { bad "historical image-only label accept case (rc=$RC)"; cat "$WORK/out.log"; }
 
-# A historical <shortsha> base whose bytes do NOT equal the trusted runtime blob is refused.
+# One additional non-image semantic change must still fail closed with exact rc=1, zero compose-up
+# calls, and zero receipt writes.
 HIST_BAD="$REPO_ROOT/docker-compose.deploy.badc0ffee0.yaml"
-printf 'version: "3"\nservices: {}\n# tampered historical base\n' >"$HIST_BAD"
+cp "$HIST_BASE" "$HIST_BAD"
+python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); s=p.read_text(); old="    restart: always"; assert old in s; p.write_text(s.replace(old,"    restart: unless-stopped",1))' "$HIST_BAD"
 rm -rf "$REPO_ROOT/custom/wijaya/deploy/.receipts"
 run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" FAKE_CURRENT_BASE_LABEL="$HIST_BAD"
-[[ "$RC" != 0 && ! -f "$UP_MARKER" && ! -f "$APPJSON" ]] \
-  && grep -q 'current runtime base compose bytes do not equal the trusted blob at the running commit' "$WORK/out.log" \
-  && ok "tampered historical <shortsha> base label is refused before receipt write" \
-  || { bad "historical label reject case (rc=$RC)"; cat "$WORK/out.log"; }
+[[ "$RC" == 1 && ! -f "$UP_MARKER" && ! -f "$APPJSON" ]] \
+  && grep -q 'differs from the trusted running-commit composition beyond the app image scalar' "$WORK/out.log" \
+  && ok "historical image-line normalization rejects one extra non-image change with rc=1 before receipt/up" \
+  || { bad "historical extra-drift refusal (rc=$RC)"; cat "$WORK/out.log"; }
 rm -f "$HIST_BAD"
+
+# A known-good runtime proof failure must never be swallowed by Bash conditional/! status semantics:
+# exact rc=1, no recreation, and no receipt write.
+rm -rf "$REPO_ROOT/custom/wijaya/deploy/.receipts"
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" \
+  FAKE_CURRENT_BASE_LABEL="$HIST_BASE" \
+  FAKE_PROBE_OUT='MARINE_PROBE:GREET=error UNREL=unrelated DCONV=0 DMSG=0 DRESP=0 ROLLBACK=1'
+[[ "$RC" == 1 && ! -f "$UP_MARKER" && ! -f "$APPJSON" ]] \
+  && grep -q 'current app runtime failed its known-good health proof (status 1)' "$WORK/out.log" \
+  && ok "known-good proof refusal returns exact rc=1 with zero receipt writes and zero compose-up calls" \
+  || { bad "known-good proof exact-status case (rc=$RC)"; cat "$WORK/out.log"; }
 
 # Both rails and sidekiq config_files labels must match each other (mixed app runtime refused).
 rm -rf "$REPO_ROOT/custom/wijaya/deploy/.receipts"
@@ -1434,9 +1466,9 @@ jq -cn --argjson schema_version 1 --arg created_at '2026-10-26T00:00:00Z' \
     app_image_id:$image,services:["rails","sidekiq"],overlay_fingerprints:{base:$base,catalog:$catalog}}' \
   | python3 "$RECEIPT_HELPER" write
 run_app_rollback
-[[ "$RC" != 0 && ! -f "$UP_MARKER" ]] \
+[[ "$RC" == 1 && ! -f "$UP_MARKER" ]] \
   && grep -q 'materialized catalog overlay bytes differ from the rollback receipt fingerprint' "$WORK/out.log" \
-  && ok "rollback refuses when the materialized target-commit asset bytes differ from the receipt fingerprint, before compose up" \
+  && ok "rollback refusal returns exact rc=1 when the target-commit asset differs from the receipt fingerprint, before compose up" \
   || { bad "receipt fingerprint mismatch refusal (rc=$RC)"; cat "$WORK/out.log"; }
 
 # Receipt strictness: malformed JSON, symlink, loose mode, and non-integer schema_version.

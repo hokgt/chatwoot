@@ -111,6 +111,19 @@ log()  { printf '[deploy] %s\n' "$*" >&2; }
 ok()   { printf '[deploy] PASS %s\n' "$*" >&2; }
 die()  { printf '[deploy] FAIL %s\n' "$*" >&2; exit 1; }
 
+# Run a lifecycle gate with errexit active, but capture its exact status without placing the gate
+# itself in an if/! or &&/|| test context. Bash disables `set -e` inside functions/subshells used as
+# conditional commands; a nested FAIL could therefore be logged and then accidentally fall through
+# to a later successful command. The caller reads RUN_CAPTURED_STATUS after this helper returns.
+RUN_CAPTURED_STATUS=0
+run_capturing_status() {
+  set +e
+  ( set -e; "$@" )
+  RUN_CAPTURED_STATUS=$?
+  set -e
+  return 0
+}
+
 # ===========================================================================
 # EXCLUSIVE LIFECYCLE LOCK — established BEFORE any readiness/git/repo/project/
 # tool/receipt/runtime state read below.
@@ -810,14 +823,38 @@ prove_app_service_compose_source() { # <svc> <cid> -> echoes 40-hex source sha
     return 0
   fi
   label="$("$DOCKER" inspect --format '{{ index .Config.Labels "com.docker.compose.project.config_files" }}' "$cid" 2>/dev/null || true)"
-  _historical_config_files_proof "$svc" "$label" "$runtime_sha"
+  _historical_config_files_proof "$svc" "$label" "$runtime_sha" "$runtime_id"
   printf '%s' "$runtime_sha"
 }
 
-# Historical (pre-stdin-scheme) proof for one app service's config_files label: it must be an
-# allowlisted base+catalog pair whose on-disk bytes equal the trusted git blobs at <sha>.
-_historical_config_files_proof() { # <who> <config_files-label> <sha>
-  local who="$1" label="$2" sha="$3" entry kind base_path='' cat_path='' want_base want_cat
+# Canonicalize a rendered historical app composition after replacing ONLY the app-image scalar on
+# base/rails/sidekiq with the separately proven immutable OLD image ID. No other field is removed.
+_canonicalize_historical_app_render() { # <rendered-json> <immutable-image-id>
+  local json="$1" image_id="$2"
+  [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "historical compose proof requires an immutable app image ID"
+  jq -S -c --arg image "$image_id" '
+    if ((.services.base | type) != "object") or
+       ((.services.rails | type) != "object") or
+       ((.services.sidekiq | type) != "object") then
+      error("missing historical app service")
+    else
+      .services.base.image = $image |
+      .services.rails.image = $image |
+      .services.sidekiq.image = $image
+    end
+  ' <<<"$json" 2>/dev/null
+}
+
+# Historical (pre-stdin-scheme) proof for one app service's config_files label. The catalog overlay
+# remains byte-for-byte bound to the trusted OLD commit. The base is rendered twice with the same
+# catalog: once from the trusted git blob on stdin and once from the historical on-disk file. Both
+# canonical rendered configs are then compared after replacing ONLY base/rails/sidekiq image values
+# with the independently proven immutable OLD image ID. This admits the real legacy default-tag-only
+# difference without admitting any additional base/catalog semantic drift. Nothing rendered is
+# printed or persisted.
+_historical_config_files_proof() { # <who> <config_files-label> <sha> <immutable-image-id>
+  local who="$1" label="$2" sha="$3" image_id="$4" entry kind base_path='' cat_path='' want_cat
+  local base_rel trusted_json actual_json trusted_canonical actual_canonical
   while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
     kind="$(_classify_config_file "$entry")"
@@ -829,14 +866,28 @@ _historical_config_files_proof() { # <who> <config_files-label> <sha>
   done < <(printf '%s\n' "$label" | tr ',' '\n')
   [[ -n "$base_path" && -n "$cat_path" ]] \
     || die "$who has neither the Wijaya compose provenance labels nor an allowlisted config_files base+catalog pair"
-  want_base="$(git_blob_fingerprint "$sha" "$BASE_COMPOSE")"
+  [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "$who historical compose proof has no immutable app image ID"
   want_cat="$(git_blob_fingerprint "$sha" "$CATALOG_OVERLAY")"
   [[ -f "$base_path" ]] || die "$who base compose file is missing on disk: ${base_path##*/}"
   [[ -f "$cat_path" ]]  || die "$who catalog overlay is missing on disk: ${cat_path##*/}"
-  [[ "$(sha256_of "$base_path")" == "$want_base" ]] \
-    || die "$who base compose bytes do not equal the trusted blob at the running commit"
   [[ "$(sha256_of "$cat_path")" == "$want_cat" ]] \
     || die "$who catalog overlay bytes do not equal the trusted blob at the running commit"
+
+  base_rel="$(overlay_repo_relpath "$BASE_COMPOSE")"
+  trusted_json="$(
+    git -C "$REPO_ROOT" show "${sha}:${base_rel}" 2>/dev/null \
+      | WIJAYA_HISTORICAL_COMPOSE_PROOF=1 "$DOCKER" compose --project-directory "$REPO_ROOT" -f - -f "$cat_path" config --format json 2>/dev/null
+  )" || die "$who trusted historical compose could not be rendered"
+  actual_json="$(
+    WIJAYA_HISTORICAL_COMPOSE_PROOF=1 "$DOCKER" compose --project-directory "$REPO_ROOT" -f "$base_path" -f "$cat_path" config --format json 2>/dev/null
+  )" || die "$who historical on-disk compose could not be rendered"
+  [[ -n "$trusted_json" && -n "$actual_json" ]] || die "$who historical compose render was empty"
+  trusted_canonical="$(_canonicalize_historical_app_render "$trusted_json" "$image_id")" \
+    || die "$who trusted historical compose could not be canonicalized"
+  actual_canonical="$(_canonicalize_historical_app_render "$actual_json" "$image_id")" \
+    || die "$who historical on-disk compose could not be canonicalized"
+  [[ "$actual_canonical" == "$trusted_canonical" ]] \
+    || die "$who historical base compose differs from the trusted running-commit composition beyond the app image scalar"
 }
 
 # Finding 2 — prove BOTH app services' compose provenance after recreation and require their proven
@@ -1288,8 +1339,8 @@ gate_current_runtime_config_files() {
   runtime_sha="$(read_image_embedded_sha "$runtime_id" 'running app')"
   [[ "$(git -C "$REPO_ROOT" cat-file -t "$runtime_sha" 2>/dev/null || true)" == 'commit' ]] \
     || die "running app embedded commit is not an exact commit object in this repository"
-  _historical_config_files_proof "current runtime" "$rails_label" "$runtime_sha"
-  ok "current runtime config_files is an allowlisted base+catalog pair matching the blobs at the running commit"
+  _historical_config_files_proof "current runtime" "$rails_label" "$runtime_sha" "$runtime_id"
+  ok "current runtime config_files is an allowlisted base+catalog pair matching the trusted running-commit composition (legacy app image scalar normalized to the proven immutable image ID)"
 }
 
 read_image_embedded_sha() { # <image-id> <label>
@@ -1348,10 +1399,12 @@ capture_app_receipt() {
   # Finding 2 — capture the running app image identity BEFORE the (slow) known-good health proof,
   # re-read it AFTER, and require it unchanged: the receipt must pin a runtime that did not move
   # out from under the proof.
-  local id_before id_after app_id old_sha created json
+  local id_before id_after app_id old_sha created json proof_status
   id_before="$(running_app_image_id)"
-  ( prove_current_runtime_healthy ) \
-    || die "current app runtime failed its known-good health proof; refusing to overwrite the rollback receipt. Recover with: custom/wijaya/deploy/deploy.sh --rollback"
+  run_capturing_status prove_current_runtime_healthy
+  proof_status="$RUN_CAPTURED_STATUS"
+  [[ "$proof_status" -eq 0 ]] \
+    || die "current app runtime failed its known-good health proof (status $proof_status); refusing to overwrite the rollback receipt. Recover with: custom/wijaya/deploy/deploy.sh --rollback"
   id_after="$(running_app_image_id)"
   [[ "$id_before" == "$id_after" ]] \
     || die "running app image ID changed during the known-good health proof (refusing to receipt a moving runtime)"
@@ -1449,7 +1502,7 @@ rollback_preflight() { # <resolved-json>
 }
 
 rollback_from_receipt() {
-  local since st=0 json
+  local since st json
   load_rollback_receipt
   # Finding 4 — an automatic rollback must target the OLD image, distinct from the NEW image just
   # attempted; otherwise there is nothing to roll back to.
@@ -1470,7 +1523,8 @@ rollback_from_receipt() {
   rollback_preflight "$json"
   capture_app_compose_config "$RB_TARGET_SHA" "$json"
   since="$(date +%s)"
-  recreate_services || st=$?
+  run_capturing_status recreate_services
+  st="$RUN_CAPTURED_STATUS"
   [[ "$st" -eq 0 ]] || die "rollback compose up failed (status $st)"
   ok "services recreated from the rollback receipt (prior immutable app image ID pinned, no build)"
   health_gate "$since"
@@ -1583,18 +1637,22 @@ main() {
   # rollback to the receipt (the pre-deploy known-good) and still exits with the ORIGINAL failure
   # status — even if the rollback itself fails. The rollback never triggers another rollback (no
   # lifecycle recursion), and the receipt is preserved unchanged for manual recovery.
-  local deploy_status=0
-  ( recreate_services ) || deploy_status=$?
+  local deploy_status rollback_status
+  run_capturing_status recreate_services
+  deploy_status="$RUN_CAPTURED_STATUS"
   if [[ "$deploy_status" -eq 0 ]]; then
-    ( health_gate "$since" ) || deploy_status=$?
+    run_capturing_status health_gate "$since"
+    deploy_status="$RUN_CAPTURED_STATUS"
   fi
   if [[ "$deploy_status" -ne 0 ]]; then
     log "deployment failed (status $deploy_status); attempting a single receipt-backed rollback to the app pre-deploy known-good"
     ROLLBACK_DISTINCT_FROM="$APP_VERIFIED_IMAGE_ID"
-    if ( rollback_from_receipt ); then
+    run_capturing_status rollback_from_receipt
+    rollback_status="$RUN_CAPTURED_STATUS"
+    if [[ "$rollback_status" -eq 0 ]]; then
       log "automatic rollback to the app pre-deploy known-good completed"
     else
-      log "automatic rollback failed; manual intervention required (receipt retained: ${RECEIPT_FILE##*/})"
+      log "automatic rollback failed; manual intervention required (status $rollback_status; receipt retained: ${RECEIPT_FILE##*/})"
     fi
     exit "$deploy_status"
   fi

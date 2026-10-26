@@ -261,7 +261,7 @@ if [[ -f "$CANONICAL" ]]; then
   # captured/pinned, and the capture happens before recreation.
   app_gate_call_line="$(grep -nE '^[[:space:]]{2}validate_app_image_provenance_before_recreate "\$json"$' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
   app_capture_line="$(grep -nF 'capture_app_compose_config "$APP_EXPECTED_GIT_SHA" "$json"' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
-  app_recreate_call_line="$(grep -nF '( recreate_services )' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  app_recreate_call_line="$(grep -nF 'run_capturing_status recreate_services' "$CANONICAL" | tail -1 | cut -d: -f1 || true)"
   if [[ -z "$app_gate_call_line" || -z "$app_capture_line" || -z "$app_recreate_call_line" \
      || "$app_gate_call_line" -ge "$app_capture_line" || "$app_capture_line" -ge "$app_recreate_call_line" ]]; then
     err "app provenance gate -> in-memory capture/pin -> recreate ordering is invalid"
@@ -346,7 +346,9 @@ if [[ -f "$CANONICAL" ]]; then
     err "lifecycle-lock gate must precede readiness validation, repo resolution, cd, and argument parsing (no pre-lock state read)"
   fi
   grep -q 'exit "\$deploy_status"' "$CANONICAL" || err "automatic rollback must preserve original status"
-  grep -qF 'if ( rollback_from_receipt ); then' "$CANONICAL" || err "automatic rollback must use fixed app.json"
+  grep -qF 'run_capturing_status rollback_from_receipt' "$CANONICAL" || err "automatic rollback must capture failure status without conditional errexit suppression"
+  grep -qF 'run_capturing_status prove_current_runtime_healthy' "$CANONICAL" || err "known-good proof must capture failure status without conditional errexit suppression"
+  grep -q '^_canonicalize_historical_app_render()' "$CANONICAL" || err "historical compose proof must narrowly normalize the app image scalar"
   grep -q '^  gate_app_runtime_image_identity$' "$CANONICAL" || err "post-health must verify rails+sidekiq image identity"
   # Exact commit authority (type == commit, HEAD == trusted origin/devbot, ancestry) with no fetch.
   grep -q '^validate_exact_commit_authority()' "$CANONICAL" || err "forward deploy must prove exact commit authority"
@@ -361,7 +363,7 @@ if [[ -f "$CANONICAL" ]]; then
     err "obsolete multi-scope/path-override/snapshot rollback machinery remains"
   fi
   cap_line="$(grep -n '^  capture_app_receipt$' "$CANONICAL" | cut -d: -f1)"
-  rec_line="$(grep -n -F -- '( recreate_services )' "$CANONICAL" | cut -d: -f1)"
+  rec_line="$(grep -nF 'run_capturing_status recreate_services' "$CANONICAL" | tail -1 | cut -d: -f1)"
   [[ -n "$cap_line" && -n "$rec_line" && "$cap_line" -lt "$rec_line" ]] \
     || err "app.json must be durable before compose up"
 
