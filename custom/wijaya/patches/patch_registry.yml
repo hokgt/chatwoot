@@ -2604,7 +2604,11 @@ patches:
       MARINE_SOP_IMAGE to the verified immutable ID so the pre-image gate,
       compose up and post-runtime checks all use the same image (no TOCTOU).
     custom_files:
+      # Fixed repo-local receipt directory is ignored; receipts are runtime state, never source.
+      - .gitignore
       - custom/wijaya/deploy/deploy.sh
+      # Battery-owned canonical-JSON / O_NOFOLLOW / atomic-fsync receipt helper.
+      - custom/wijaya/deploy/receipt.py
       - custom/wijaya/scripts/check_deploy_contract.sh
       - custom/wijaya/scripts/marine_domain_boundary_monitor.sh
       - custom/wijaya/batteries/marine_ai/deploy/sop_sandbox_gate.sh

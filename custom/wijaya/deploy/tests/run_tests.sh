@@ -13,19 +13,50 @@
 set -euo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(git -C "$TESTS_DIR" rev-parse --show-toplevel 2>/dev/null || ( cd "$TESTS_DIR/../../../.." && pwd ))"
+SOURCE_ROOT="$(git -C "$TESTS_DIR" rev-parse --show-toplevel 2>/dev/null || ( cd "$TESTS_DIR/../../../.." && pwd ))"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+# Every deploy/rollback invocation runs from a disposable repository COPY. The production script
+# has no receipt-path override, and the fake docker cannot mutate a real Compose project.
+REPO_ROOT="$WORK/repo"
+mkdir -p "$REPO_ROOT/custom/wijaya/deploy/tests" \
+  "$REPO_ROOT/custom/wijaya/scripts" \
+  "$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy"
+cp "$SOURCE_ROOT/custom/wijaya/deploy/deploy.sh" "$REPO_ROOT/custom/wijaya/deploy/deploy.sh"
+cp "$SOURCE_ROOT/custom/wijaya/deploy/receipt.py" "$REPO_ROOT/custom/wijaya/deploy/receipt.py"
+cp "$SOURCE_ROOT/custom/wijaya/scripts/marine_domain_boundary_monitor.sh" "$REPO_ROOT/custom/wijaya/scripts/marine_domain_boundary_monitor.sh"
+cp "$SOURCE_ROOT/docker-compose.deploy.yaml" "$REPO_ROOT/docker-compose.deploy.yaml"
+cp "$SOURCE_ROOT/custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml" \
+  "$SOURCE_ROOT/custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml" \
+  "$SOURCE_ROOT/custom/wijaya/batteries/marine_ai/deploy/sop_sandbox_gate.sh" \
+  "$SOURCE_ROOT/custom/wijaya/batteries/marine_ai/deploy/wijaya_sop_sandbox.c" \
+  "$SOURCE_ROOT/custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing" \
+  "$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy/"
+(
+  cd "$REPO_ROOT"
+  git init -q -b devbot
+  git config user.email tests@example.invalid
+  git config user.name deploy-tests
+  git remote add origin git@github.com:hokgt/chatwoot.git
+  # Two real commits: the first is the OLD pre-deploy ancestor, the second is the trusted HEAD.
+  git add . && git commit -qm fixture-base
+  git commit -q --allow-empty -m fixture-head
+  # Materialize the trusted remote tracking tip WITHOUT any network fetch (disposable copy only),
+  # so the exact-commit-authority gate can prove HEAD == origin/devbot.
+  git update-ref refs/remotes/origin/devbot HEAD
+)
+
 DEPLOY_SH="$REPO_ROOT/custom/wijaya/deploy/deploy.sh"
+RECEIPT_HELPER="$REPO_ROOT/custom/wijaya/deploy/receipt.py"
 MONITOR_SH="$REPO_ROOT/custom/wijaya/scripts/marine_domain_boundary_monitor.sh"
-CONTRACT_SH="$REPO_ROOT/custom/wijaya/scripts/check_deploy_contract.sh"
+CONTRACT_SH="$SOURCE_ROOT/custom/wijaya/scripts/check_deploy_contract.sh"
 BASE_COMPOSE="$REPO_ROOT/docker-compose.deploy.yaml"
 CATALOG_OVERLAY="$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml"
 SOP_OVERLAY="$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-sop-worker.yml"
 SOP_SANDBOX_GATE="$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy/sop_sandbox_gate.sh"
 SOP_SANDBOX_C="$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy/wijaya_sop_sandbox.c"
 SOP_DOCKERFILE="$REPO_ROOT/custom/wijaya/batteries/marine_ai/deploy/Dockerfile.sop-processing"
-
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 
 pass=0
 fail=0
@@ -65,24 +96,116 @@ if [[ "${1:-}" == "compose" ]]; then
         count=$((count+1)); printf '%s\n' "$count" >"$FAKE_CONFIG_COUNT_FILE"
       fi
       json="$(cat "${FAKE_CONFIG_JSON_FILE:?}")"
-      # Mirror Compose interpolation for the dedicated app-image pin. A negative
-      # fixture can deliberately ignore the pin to prove deploy.sh fails closed.
-      if [[ -n "${MARINE_DEPLOY_APP_IMAGE:-}" && "${FAKE_IGNORE_APP_PIN:-0}" != "1" ]]; then
-        json="$(jq --arg img "$MARINE_DEPLOY_APP_IMAGE" '.services.rails.image = $img | .services.sidekiq.image = $img' <<<"$json")"
-      elif [[ -n "${FAKE_TAG_CHANGED_IMAGE:-}" && "$count" -ge 3 ]]; then
-        json="$(jq --arg img "$FAKE_TAG_CHANGED_IMAGE" '.services.rails.image = $img | .services.sidekiq.image = $img' <<<"$json")"
-      fi
+      # Finding 2 — the app (rails+sidekiq) image is pinned by deploy.sh IN the captured bytes via an
+      # in-memory jq transform, NOT via Compose interpolation, so a render never pins the app image.
+      # Only the SOP worker is still pinned through an exported interpolation variable.
       if [[ -n "${MARINE_SOP_IMAGE:-}" ]]; then
         json="$(jq --arg img "$MARINE_SOP_IMAGE" '.services["marine_sop_worker"].image = $img' <<<"$json")"
+      fi
+      # Finding 2 adversarial trap: when armed, a render at/after the given 1-based index returns a
+      # RETARGETED app image. Armed BEYOND the single post-materialization render it must NEVER fire,
+      # proving there is no post-verification re-render for an adversary to hijack.
+      if [[ -n "${FAKE_RETARGET_ON_RENDER:-}" && "$count" -ge "$FAKE_RETARGET_ON_RENDER" ]]; then
+        json="$(jq '.services.rails.image = "hokgt-chatwoot:retargeted-after-gate" | .services.sidekiq.image = "hokgt-chatwoot:retargeted-after-gate"' <<<"$json")"
       fi
       printf '%s\n' "$json"
       exit 0 ;;
     up)      : "${FAKE_UP_MARKER:?}"
-              printf 'up MARINE_DEPLOY_APP_IMAGE=%s MARINE_SOP_IMAGE=%s argv=%s\n' \
-                "${MARINE_DEPLOY_APP_IMAGE:-}" "${MARINE_SOP_IMAGE:-}" "$*" >>"$FAKE_UP_MARKER"
+              if [[ "${FAKE_REQUIRE_RECEIPT:-0}" == 1 && ! -f "${FAKE_RECEIPT_FILE:?}" ]]; then
+                exit 91
+              fi
+              # Finding 2 — a receipt-backed app recreation feeds its fully-resolved config on stdin
+              # (-f -). Read those captured bytes ONCE (they are the exact in-memory config deploy.sh
+              # fed, so Compose never reopens a mutable asset path), then stash the injected Wijaya
+              # provenance labels so a later `inspect` can echo them for the health gate.
+              _stdin=0; for _a in "$@"; do [[ "$_a" == "-" ]] && _stdin=1; done
+              _captured=""
+              if [[ "$_stdin" == 1 ]]; then
+                _captured="$(cat)"
+                [[ -n "${FAKE_CAPTURED_COMPOSE_FILE:-}" ]] && printf '%s' "$_captured" >"$FAKE_CAPTURED_COMPOSE_FILE"
+                # Adversarial seam: mutate a persistent asset at up-time (AFTER deploy captured its
+                # config in memory). The captured bytes read above cannot change — proving the stdin
+                # bytes, not the mutable asset path, are what Compose consumes.
+                [[ -n "${FAKE_MUTATE_ASSET_BEFORE_UP:-}" ]] && printf '\n# mutated-at-up-time\n' >>"$FAKE_MUTATE_ASSET_BEFORE_UP"
+              fi
+              # Record the resolved -f overlay files so the config_files label inspect can echo
+              # exactly what compose was invoked with. Only a FILE-based recreation (SOP worker)
+              # carries asset paths; a stdin app recreation carries none.
+              if [[ -n "${FAKE_CONFIG_FILES_FILE:-}" && "$_stdin" == 0 ]]; then
+                : >"$FAKE_CONFIG_FILES_FILE"; _p=""
+                for _a in "$@"; do
+                  [[ "$_p" == "-f" ]] && printf '%s\n' "$_a" >>"$FAKE_CONFIG_FILES_FILE"
+                  _p="$_a"
+                done
+              fi
+              # Finding 2 — a stdin app recreation carries NO MARINE_DEPLOY_APP_IMAGE env (the image
+              # is pinned IN the captured bytes via jq). Model the app image Compose will run from the
+              # captured rails image; a file-based (SOP-only) recreation has no app image.
+              _app_img=""
+              if [[ "$_stdin" == 1 && -n "$_captured" ]]; then
+                _app_img="$(jq -r '.services.rails.image // empty' <<<"$_captured" 2>/dev/null || true)"
+              fi
+              printf 'up MARINE_DEPLOY_APP_IMAGE=%s MARINE_SOP_IMAGE=%s MARINE_SOP_SOURCE_REVISION=%s argv=%s\n' \
+                "$_app_img" "${MARINE_SOP_IMAGE:-}" "${MARINE_SOP_SOURCE_REVISION:-}" "$*" >>"$FAKE_UP_MARKER"
+              # Model "running image == last deployed image": record the pinned ids so a later
+              # `inspect {{.Image}}` reflects what this up recreated (lets post-up health gates and
+              # rollback see the newly-running runtime).
+              if [[ -n "${FAKE_RUNTIME_STATE_FILE:-}" ]]; then
+                printf 'app=%s\nsop=%s\n' "$_app_img" "${MARINE_SOP_IMAGE:-}" >"$FAKE_RUNTIME_STATE_FILE"
+                # Stash the injected Wijaya compose provenance labels (stdin recreation only) so the
+                # new runtime models the stdin scheme for later inspect.
+                if [[ "$_stdin" == 1 && -n "$_captured" ]]; then
+                  _rev="$(jq -r '.services.rails.labels["com.wijaya.chatwoot.compose-source-revision"] // empty' <<<"$_captured" 2>/dev/null || true)"
+                  _hash="$(jq -r '.services.rails.labels["com.wijaya.chatwoot.compose-config-sha256"] // empty' <<<"$_captured" 2>/dev/null || true)"
+                  printf 'rev=%s\nhash=%s\n' "$_rev" "$_hash" >>"$FAKE_RUNTIME_STATE_FILE"
+                fi
+              fi
+              # Optional seam: fail the FIRST compose up (crash model) so the deploy must
+              # auto-roll-back once and preserve the original status; later rollback up succeeds.
+              if [[ "${FAKE_UP_FAIL_FIRST:-0}" == 1 && "$(wc -l <"$FAKE_UP_MARKER")" == 1 ]]; then
+                exit "${FAKE_UP_FAIL_STATUS:-42}"
+              fi
+              # Optional seam: fail the ROLLBACK (2nd) compose up so a rollback-compose failure can
+              # be exercised; the original deploy status must still be preserved.
+              if [[ "${FAKE_ROLLBACK_UP_FAIL:-0}" == 1 && "$(wc -l <"$FAKE_UP_MARKER")" == 2 ]]; then
+                exit "${FAKE_ROLLBACK_UP_FAIL_STATUS:-55}"
+              fi
+              exit 0 ;;
+    ps)      if [[ "${FAKE_PS_IDS:-0}" == "1" ]]; then
+                svc="${args[${#args[@]}-1]}"
+                if [[ ! -f "${FAKE_UP_MARKER:-/nonexistent}" && "$svc" == "${FAKE_MISSING_BEFORE_UP:-}" ]]; then
+                  exit 0
+                fi
+                printf 'fake-%s\n' "$svc"
+              fi
               exit 0 ;;
     *) exit 0 ;;
   esac
+elif [[ "${1:-}" == "exec" ]]; then
+  # Healthy-path sentinels so a deploy/rollback can be driven THROUGH the known-good capture
+  # proof and the post-deploy health gate in tests: catalog-reference gate, domain-boundary
+  # probe, catalog password-file probe, SOP child-sandbox gate, SOP parent-health probe, SOP
+  # binaries/langs, and the SOP runtime /app/.git_sha read. A test can force an unhealthy
+  # branch by overriding the relevant FAKE_* sentinel.
+  case "$*" in
+    *CatalogDomainReference*)   printf '%s\n' "${FAKE_CATALOG_GATE_OUT:-MARINE_CATALOG_GATE:PASS}" ;;
+    *DomainBoundaryGuard*)
+      # Fail the domain-boundary probe only when the compose-up count equals FAKE_PROBE_FAIL_ON_UPS
+      # (1 = the forward post-up health gate; 2 = the rollback health gate). The pre-up known-good
+      # proof runs at count 0 and stays healthy.
+      _ups="$(wc -l <"${FAKE_UP_MARKER:-/nonexistent}" 2>/dev/null || echo 0)"; _ups="${_ups//[^0-9]/}"
+      if [[ -n "${FAKE_PROBE_FAIL_ON_UPS:-}" && "${_ups:-0}" == "$FAKE_PROBE_FAIL_ON_UPS" ]]; then
+        printf 'MARINE_PROBE:GREET=error UNREL=unrelated DCONV=0 DMSG=0 DRESP=0 ROLLBACK=1\n'
+      else
+        printf '%s\n' "${FAKE_PROBE_OUT:-MARINE_PROBE:GREET=allow UNREL=unrelated DCONV=0 DMSG=0 DRESP=0 ROLLBACK=1}"
+      fi ;;
+    *WIJAYA_SOP_PARENT*)        printf '%s\n' "${FAKE_SOP_PARENT_OUT:-WIJAYA_SOP_PARENT:PASS}" ;;
+    *"tesseract --list-langs"*) printf 'eng\nind\n' ;;
+    *" sh -s"*)                 printf '%s\n' "${FAKE_RUNTIME_SOP_GATE_OUT:-WIJAYA_SOP_GATE:PASS}" ;;
+    *"/app/.git_sha"*)          printf '%s\n' "${FAKE_SOP_GIT_SHA:-}" ;;
+    *printenv*)                 printf '%s\n' "${FAKE_CATALOG_ENV_PATH:-/run/secrets/marine_catalog_pg_password}" ;;
+  esac
+  exit 0
 elif [[ "${1:-}" == "run" ]]; then
   # docker run invocations from deploy.sh: the embedded /app/.git_sha provenance
   # read (from the exact image ID) and the pre-image SOP sandbox gate. Both are
@@ -95,11 +218,75 @@ elif [[ "${1:-}" == "run" ]]; then
   # argv — proving each gate reads the immutable ID it resolved, not a shared tag.
   case "$*" in
     *"${FAKE_SOP_ID:-__nosopid__}"*'/app/.git_sha'*) printf '%s\n' "${FAKE_SOP_GIT_SHA:-}"; exit 0 ;;
+    # A specific image id can embed a DRIFTED sha (distinct from the rest) so a rollback target
+    # whose embedded .git_sha no longer matches its receipt can be exercised while the running
+    # (reciprocal) image still reads a valid sha.
+    *"${FAKE_DRIFT_IMAGE:-__nodrift__}"*'/app/.git_sha'*) printf '%s\n' "${FAKE_DRIFT_SHA:-}"; exit 0 ;;
     *'/app/.git_sha'*) printf '%s\n' "${FAKE_APP_GIT_SHA:-}"; exit 0 ;;
     *) printf '%s\n' "${FAKE_PRE_IMAGE_GATE_OUT:-WIJAYA_SOP_GATE:PASS}"; exit 0 ;;
   esac
+elif [[ "${1:-}" == "inspect" ]]; then
+  # Runtime inspects used by the health gate: runtime image identity, the config_files label
+  # (echoed from the recorded -f overlay list), and the catalog mount read-only flag.
+  fmt="${3:-}"; ref="${4:-}"
+  st_app=""; st_sop=""; st_rev=""; st_hash=""
+  if [[ -n "${FAKE_RUNTIME_STATE_FILE:-}" && -f "${FAKE_RUNTIME_STATE_FILE:-}" ]]; then
+    st_app="$(sed -n 's/^app=//p' "$FAKE_RUNTIME_STATE_FILE")"
+    st_sop="$(sed -n 's/^sop=//p' "$FAKE_RUNTIME_STATE_FILE")"
+    st_rev="$(sed -n 's/^rev=//p' "$FAKE_RUNTIME_STATE_FILE")"
+    st_hash="$(sed -n 's/^hash=//p' "$FAKE_RUNTIME_STATE_FILE")"
+  fi
+  case "$fmt" in
+    '{{.Image}}')
+      case "$ref" in
+        fake-rails)             echo "${st_app:-${FAKE_RUNTIME_RAILS_IMAGE:-}}" ;;
+        fake-sidekiq)           echo "${st_app:-${FAKE_RUNTIME_SIDEKIQ_IMAGE:-}}" ;;
+        fake-marine_sop_worker) echo "${st_sop:-${FAKE_RUNTIME_SOP_IMAGE:-}}" ;;
+      esac ;;
+    '{{.Config.Image}}')
+      case "$ref" in
+        fake-rails|fake-sidekiq) echo "${MARINE_DEPLOY_APP_IMAGE:-${FAKE_APP_REF:-}}" ;;
+        fake-marine_sop_worker) echo "${MARINE_SOP_IMAGE:-${FAKE_SOP_REF:-}}" ;;
+      esac ;;
+    *'com.wijaya.chatwoot.compose-source-revision'*)
+      # Finding 2 — a stdin-scheme app runtime carries the injected source-revision label; model it
+      # on rails/sidekiq only (SOP worker never carries it).
+      case "$ref" in fake-rails|fake-sidekiq) printf '%s\n' "$st_rev" ;; *) true ;; esac ;;
+    *'com.wijaya.chatwoot.compose-config-sha256'*)
+      case "$ref" in fake-rails|fake-sidekiq) printf '%s\n' "$st_hash" ;; *) true ;; esac ;;
+    *config_files*)
+      # Finding 2 — a stdin app recreation carries NO config_files provenance (its rails/sidekiq
+      # runtime proves provenance via the Wijaya labels above), so emit nothing for an app service
+      # once the stdin scheme is in effect (st_rev set). Otherwise model the ALREADY-running runtime
+      # per service: rails/sidekiq carry the base+catalog pair (FAKE_CURRENT_BASE_LABEL injects a
+      # historical <shortsha> base path for the historical-label test); the SOP worker carries the
+      # recorded file-based overlay list (base+catalog+SOP).
+      case "$ref" in
+        fake-rails)
+          [[ -n "$st_rev" ]] || printf '%s\n%s\n' "${FAKE_CURRENT_BASE_LABEL:-${MARINE_DEPLOY_BASE_COMPOSE:-}}" "${MARINE_DEPLOY_CATALOG_OVERLAY:-}" ;;
+        fake-sidekiq)
+          [[ -n "$st_rev" ]] || printf '%s\n%s\n' "${FAKE_SIDEKIQ_CURRENT_BASE_LABEL:-${FAKE_CURRENT_BASE_LABEL:-${MARINE_DEPLOY_BASE_COMPOSE:-}}}" "${MARINE_DEPLOY_CATALOG_OVERLAY:-}" ;;
+        *)
+          if [[ -n "${FAKE_CONFIG_FILES_FILE:-}" && -s "${FAKE_CONFIG_FILES_FILE:-}" ]]; then
+            cat "$FAKE_CONFIG_FILES_FILE"
+          else
+            printf '%s\n%s\n%s\n' "${MARINE_DEPLOY_BASE_COMPOSE:-}" "${MARINE_DEPLOY_CATALOG_OVERLAY:-}" "${MARINE_DEPLOY_SOP_OVERLAY:-}"
+          fi ;;
+      esac ;;
+    # Current-SOP-provenance proof reads the running worker container's labels.
+    *'org.opencontainers.image.revision'*) [[ "$ref" == fake-marine_sop_worker ]] && echo "${FAKE_RUNTIME_SOP_SOURCE:-}" || true ;;
+    *'com.wijaya.chatwoot.base-image'*)    [[ "$ref" == fake-marine_sop_worker ]] && echo "${FAKE_RUNTIME_SOP_BASE:-}" || true ;;
+    *'com.wijaya.chatwoot.role'*)          [[ "$ref" == fake-marine_sop_worker ]] && echo "${FAKE_RUNTIME_SOP_ROLE:-}" || true ;;
+    *'com.wijaya.chatwoot.overlay'*)       [[ "$ref" == fake-marine_sop_worker ]] && echo "${FAKE_RUNTIME_SOP_OVERLAY:-}" || true ;;
+    *Mounts*) echo "${FAKE_MOUNT_RW:-false}" ;;
+  esac
+  exit 0
 elif [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
   : "${FAKE_IMAGE_MARKER:?}"
+  # A configured image can be simulated as absent locally (rollback must refuse to build).
+  if [[ -n "${FAKE_ABSENT_IMAGE:-}" ]]; then
+    for a in "$@"; do [[ "$a" == "$FAKE_ABSENT_IMAGE" ]] && exit 1; done
+  fi
   if [[ "${3:-}" != "--format" ]]; then exit 0; fi
   fmt="${4:-}"; ref="${5:-}"
   # Record the exact resolved ref + format so tests can prove label inspects
@@ -120,12 +307,35 @@ elif [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
     case "$fmt" in *'.Id'*) echo "${FAKE_SIDEKIQ_ID:-}" ;; esac
   elif [[ "$ref" == "${FAKE_APP_REF:-}" ]]; then
     case "$fmt" in *'.Id'*) echo "${FAKE_APP_ID:-}" ;; esac
+  elif [[ "$ref" == sha256:* ]]; then
+    # A bare immutable image ID resolves to itself (rollback re-verification inspects the
+    # exact pinned prior ID, never a tag). Specific FAKE_* refs above still win. The running SOP
+    # image ID also answers its provenance labels for the current-SOP-provenance proof.
+    case "$fmt" in
+      *'.Id'*) echo "$ref" ;;
+      *'org.opencontainers.image.revision'*) [[ "$ref" == "${FAKE_RUNTIME_SOP_IMAGE:-}" ]] && echo "${FAKE_RUNTIME_SOP_SOURCE:-}" || true ;;
+      *'com.wijaya.chatwoot.base-image'*)    [[ "$ref" == "${FAKE_RUNTIME_SOP_IMAGE:-}" ]] && echo "${FAKE_RUNTIME_SOP_BASE:-}" || true ;;
+      *'com.wijaya.chatwoot.role'*)          [[ "$ref" == "${FAKE_RUNTIME_SOP_IMAGE:-}" ]] && echo "${FAKE_RUNTIME_SOP_ROLE:-}" || true ;;
+    esac
   fi
   exit 0
 fi
 exit 0
 FAKE
 chmod +x "$FAKE_DOCKER"
+
+# A fake curl that always reports HTTP 200, so the known-good capture proof + post-deploy health
+# gate can be driven green without any real HTTP. (A "dead" variant is created later for the
+# public-HTTP retry unit test.)
+cat >"$WORK/curl_ok" <<'C'
+#!/usr/bin/env bash
+printf '200'; exit 0
+C
+chmod +x "$WORK/curl_ok"
+
+# Valid 64-hex immutable image IDs for the running (pre-deploy) runtime captured by the receipt.
+APP_RUNTIME_ID='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+SOP_RUNTIME_ID='sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
 
 # --- Secret fixtures --------------------------------------------------------
 SECRET_OK="$WORK/secret_ok"
@@ -225,9 +435,9 @@ if [[ "$rc" != "0" && ! -f "$UP_MARKER" && ! -f "$IMAGE_MARKER" ]]; then
 else
   bad "dummy-overlay omission case (rc=$rc, up=$([[ -f "$UP_MARKER" ]] && echo yes || echo no), img=$([[ -f "$IMAGE_MARKER" ]] && echo yes || echo no))"; cat "$WORK/out.log"
 fi
-grep -q "missing MARINE_CATALOG_PG_PASSWORD_FILE" "$WORK/out.log" \
-  && ok "dummy-overlay case reports the missing catalog env contract" \
-  || bad "dummy-overlay missing-env message"
+grep -q "compose overlay is outside the repository (cannot bind to a git commit): dummy_overlay.yml" "$WORK/out.log" \
+  && ok "dummy-overlay case is rejected because forward app assets must be commit-keyed" \
+  || bad "dummy-overlay trusted-asset refusal message"
 
 # 3) NEGATIVE: mount present but NOT read-only → fails, no up.
 CFG_RW="$WORK/cfg_rw.json"; make_config "$CFG_RW" false "$SECRET_OK"
@@ -364,7 +574,13 @@ run_deploy_sop_deploy() { # <gate-output> <config-json> [<embedded-git-sha>]
       FAKE_SOP_ROLE='marine_sop_worker' \
       FAKE_SOP_GIT_SHA="$git_sha" \
       FAKE_APP_GIT_SHA="$FULL_SHA" \
-      bash "$DEPLOY_SH" --deploy --with-sop-worker >"$WORK/out.log" 2>&1 || RC=$?
+      FAKE_CONFIG_FILES_FILE="$WORK/cfgfiles.$CALLN" FAKE_RUNTIME_STATE_FILE="$WORK/sopstate.$CALLN" \
+      FAKE_PS_IDS=1 FAKE_RUNTIME_RAILS_IMAGE="$APP_RUNTIME_ID" FAKE_RUNTIME_SIDEKIQ_IMAGE="$APP_RUNTIME_ID" \
+      FAKE_RUNTIME_SOP_IMAGE="$SOP_RUNTIME_ID" FAKE_MOUNT_RW=false \
+      FAKE_RUNTIME_SOP_SOURCE="$FULL_SHA" FAKE_RUNTIME_SOP_BASE='hokgt-chatwoot:test' \
+      FAKE_RUNTIME_SOP_ROLE='marine_sop_worker' FAKE_RUNTIME_SOP_OVERLAY="$SOP_OVERLAY_ID" \
+      MARINE_CURL="$WORK/curl_ok" "MARINE_MONITOR_LOG_CMD=printf ''" \
+      bash "$DEPLOY_SH" --deploy --with-sop-worker --service marine_sop_worker >"$WORK/out.log" 2>&1 || RC=$?
 }
 
 run_deploy_sop_deploy 'WIJAYA_SOP_GATE:FAIL:pre-image' "$CFG_SOP_OK"
@@ -477,7 +693,7 @@ fi
 
 # Static wiring: the pre-image gate must sit between image validation and recreate_services.
 pre_gate_line="$(grep -n 'gate_sop_sandbox_pre_image "$json"' "$DEPLOY_SH" | head -1 | cut -d: -f1 || true)"
-recreate_line="$(grep -n '^  recreate_services$' "$DEPLOY_SH" | head -1 | cut -d: -f1 || true)"
+recreate_line="$(grep -nF '( recreate_services )' "$DEPLOY_SH" | head -1 | cut -d: -f1 || true)"
 if [[ -n "${pre_gate_line:-}" && -n "${recreate_line:-}" && "$pre_gate_line" -lt "$recreate_line" ]]; then
   ok "pre-image SOP sandbox gate is wired BEFORE recreate_services (compose up) in main()"
 else
@@ -550,8 +766,10 @@ rc=0
 echo "== deploy.sh app-image provenance gate + immutable pin (G2) =="
 
 APP_FULL_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-APP_IMAGE_ID='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-APP_IMAGE_ID_B='sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+APP_IMAGE_ID='sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+APP_IMAGE_ID_B='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+# A REAL ancestor commit (HEAD~1) so the forward deploy's OLD-runtime ancestry check is satisfied.
+OLD_GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD~1)"
 
 run_deploy_app() { # <embedded-sha> <default|rails|sidekiq> <config> [extra env...]
   local embedded="$1" target="$2" cfg="$3"; shift 3
@@ -562,44 +780,210 @@ run_deploy_app() { # <embedded-sha> <default|rails|sidekiq> <config> [extra env.
     *) bad "invalid run_deploy_app target: $target"; return 1 ;;
   esac
   CALLN=$((CALLN+1)); UP_MARKER="$WORK/up.$CALLN"; IMAGE_MARKER="$WORK/img.$CALLN"; RUN_MARKER="$WORK/run.$CALLN"
-  CONFIG_COUNT_FILE="$WORK/config-count.$CALLN"
-  rm -f "$UP_MARKER" "$IMAGE_MARKER" "$RUN_MARKER" "$CONFIG_COUNT_FILE"; RC=0
+  CONFIG_COUNT_FILE="$WORK/config-count.$CALLN"; CAPTURED="$WORK/captured.$CALLN"
+  rm -f "$UP_MARKER" "$IMAGE_MARKER" "$RUN_MARKER" "$CONFIG_COUNT_FILE" "$CAPTURED"; RC=0
   env DOCKER="$FAKE_DOCKER" \
       MARINE_DEPLOY_BASE_COMPOSE="$BASE_COMPOSE" \
       MARINE_DEPLOY_CATALOG_OVERLAY="$CATALOG_OVERLAY" \
       MARINE_DEPLOY_SOP_OVERLAY="$SOP_OVERLAY" \
       FAKE_CONFIG_JSON_FILE="$cfg" FAKE_CONFIG_COUNT_FILE="$CONFIG_COUNT_FILE" \
+      FAKE_CAPTURED_COMPOSE_FILE="$CAPTURED" \
       FAKE_UP_MARKER="$UP_MARKER" FAKE_IMAGE_MARKER="$IMAGE_MARKER" FAKE_RUN_MARKER="$RUN_MARKER" \
       FAKE_APP_REF='hokgt-chatwoot:test' FAKE_APP_ID="$APP_IMAGE_ID" FAKE_APP_GIT_SHA="$embedded" \
+      FAKE_DRIFT_IMAGE="$APP_IMAGE_ID_B" FAKE_DRIFT_SHA="$OLD_GIT_SHA" \
+      FAKE_CONFIG_FILES_FILE="$WORK/cfgfiles.$CALLN" FAKE_RUNTIME_STATE_FILE="$WORK/runstate.$CALLN" \
+      FAKE_PS_IDS=1 FAKE_RUNTIME_RAILS_IMAGE="$APP_IMAGE_ID_B" FAKE_RUNTIME_SIDEKIQ_IMAGE="$APP_IMAGE_ID_B" \
+      FAKE_MOUNT_RW=false MARINE_CURL="$WORK/curl_ok" "MARINE_MONITOR_LOG_CMD=printf ''" \
       "$@" bash "$DEPLOY_SH" "${deploy_args[@]}" >"$WORK/out.log" 2>&1 || RC=$?
 }
 
-# Default deployment: BOTH selected services are independently verified, then the
-# exact ID is pinned into the re-rendered config used by fake compose up.
+# Default deployment: BOTH selected services are independently verified (2 embedded reads),
+# the pre-deploy known-good is captured from the running runtime (1 more embedded read), then
+# the verified immutable ID is pinned into the ONE rendered config IN MEMORY (jq, no re-render) and
+# fed to fake compose up on stdin. A fully-healthy runtime drives it all the way to a successful
+# (rc 0) deploy with ONE compose up.
 run_deploy_app "$APP_FULL_SHA" default "$CFG_OK"
+# Finding 2 — the forward app lifecycle renders Compose EXACTLY ONCE total: the single
+# post-materialization render (from the trusted commit-keyed assets) that is captured and pinned in
+# memory. The pre-materialization preflight render is gone — generic existence/env/secret checks
+# that need no render run before materialization, and the ONE render is the trusted post-materialize
+# one. pin_app_image_for_recreate's second render is gone too.
+renders="$(cat "$CONFIG_COUNT_FILE" 2>/dev/null || echo 0)"
+# NEW target embedded sha reads: 2 pre-up (rails+sidekiq provenance gate) + 2 post-up (rails+sidekiq
+# compose-provenance label gate binds the injected revision to the embedded runtime SHA) = 4.
 app_reads="$(grep -c -- "--network none --entrypoint cat $APP_IMAGE_ID /app/.git_sha" "$RUN_MARKER" || true)"
-if [[ "$app_reads" == 2 && -f "$UP_MARKER" ]] \
-   && grep -q "MARINE_DEPLOY_APP_IMAGE=$APP_IMAGE_ID" "$UP_MARKER"; then
-  ok "default rails+sidekiq path verifies both services and recreates with the verified immutable ID"
+# OLD runtime embedded sha is read twice: once for the current-runtime config_files blob proof,
+# once to record it in the receipt.
+old_reads="$(grep -c -- "--network none --entrypoint cat $APP_IMAGE_ID_B /app/.git_sha" "$RUN_MARKER" || true)"
+up_count="$(grep -c 'MARINE_DEPLOY_APP_IMAGE=' "$UP_MARKER" 2>/dev/null || echo 0)"
+APPJSON="$REPO_ROOT/custom/wijaya/deploy/.receipts/app.json"
+ASSET_DIR="$REPO_ROOT/custom/wijaya/deploy/.receipts/assets/$APP_FULL_SHA"
+ASSET_BASE_F="$ASSET_DIR/docker-compose.deploy.yaml"
+ASSET_CAT_F="$ASSET_DIR/docker-compose.marine-catalog.yml"
+DEF_CAPTURED="$WORK/captured.$CALLN"
+if [[ "$RC" == 0 && "$app_reads" == 4 && "$old_reads" == 2 && "$up_count" == 1 ]] \
+   && [[ "$(jq -r '.app_image_id' "$APPJSON")" == "$APP_IMAGE_ID_B" ]] \
+   && [[ "$(jq -r '.target_git_sha' "$APPJSON")" == "$OLD_GIT_SHA" ]] \
+   && grep -q "MARINE_DEPLOY_APP_IMAGE=$APP_IMAGE_ID" "$UP_MARKER" \
+   && grep -qF -- '--project-directory' "$UP_MARKER" \
+   && grep -qF -- '-f - up' "$UP_MARKER" \
+   && [[ -f "$ASSET_BASE_F" && -f "$ASSET_CAT_F" ]] \
+   && [[ -s "$DEF_CAPTURED" ]] \
+   && [[ "$(jq -r '.services.rails.image' "$DEF_CAPTURED")" == "$APP_IMAGE_ID" ]] \
+   && [[ "$(jq -r '.services.sidekiq.image' "$DEF_CAPTURED")" == "$APP_IMAGE_ID" ]] \
+   && [[ "$(jq -r '.services.rails.labels["com.wijaya.chatwoot.compose-source-revision"]' "$DEF_CAPTURED")" == "$APP_FULL_SHA" ]] \
+   && [[ "$(jq -r '.services.rails.environment["MARINE_CATALOG_PG_PASSWORD_FILE"]' "$DEF_CAPTURED")" == "/run/secrets/marine_catalog_pg_password" ]] \
+   && [[ "$(jq -r '.services.rails.volumes[0].read_only' "$DEF_CAPTURED")" == "true" ]] \
+   && [[ "$(jq -r '.services.sidekiq.volumes[0].read_only' "$DEF_CAPTURED")" == "true" ]] \
+   && [[ "$renders" == 1 ]] \
+   && grep -q 'catalog service/mount contract validated on the captured bytes' "$WORK/out.log"; then
+  ok "app deploy renders Compose exactly once (after materialization), verifies NEW target, receipts OLD before up, pins+validates the captured bytes (image + catalog mount/service) in memory, and recreates the pair on stdin (-f -, --project-directory repo)"
 else
-  bad "default app pin case (rc=$RC reads=$app_reads up=$([[ -f "$UP_MARKER" ]] && echo yes || echo no))"; cat "$WORK/out.log"
+  bad "default app pin case (rc=$RC new_reads=$app_reads old_reads=$old_reads up_count=$up_count renders=$renders)"; cat "$WORK/out.log"
 fi
 
-# Rails-only and Sidekiq-only each verify exactly the selected service and retain
-# the same immutable pin without requiring the unselected service.
+# Changed-after-materialization cannot alter the Compose input: the persistent HEAD assets are
+# immutable (O_EXCL place-asset), and compose up consumed those exact files — so editing the
+# working-tree overlays afterward can never change what was deployed. Prove the asset bytes equal
+# the HEAD blob regardless of a subsequent working-tree edit.
+printf '\n# tampered-after-deploy\n' >>"$CATALOG_OVERLAY"
+blob_cat="$(git -C "$REPO_ROOT" show "$APP_FULL_SHA:custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml" | sha256sum | cut -d' ' -f1)"
+asset_cat="$(sha256sum "$ASSET_CAT_F" | cut -d' ' -f1)"
+[[ "$asset_cat" == "$blob_cat" && "$asset_cat" != "$(sha256sum "$CATALOG_OVERLAY" | cut -d' ' -f1)" ]] \
+  && ok "materialized asset is immutable: a post-deploy working-tree edit does not change the deployed Compose input" \
+  || bad "materialized asset immutability (asset=$asset_cat blob=$blob_cat)"
+git -C "$REPO_ROOT" checkout -q -- custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml
+
+# Finding 2 — mutate the mutable WORKING TREE BEFORE/AROUND materialization and prove it cannot
+# affect the single trusted render: the forward app deploy materializes (and renders from) only the
+# commit-keyed asset taken from the HEAD git blob, so a working-tree edit present during the deploy
+# never reaches the materialized asset or the captured config fed to compose up.
+rm -rf "$REPO_ROOT/custom/wijaya/deploy/.receipts"
+# Model the already-running OLD runtime with stdin-era provenance labels, so its health proof is
+# bound to trusted git blobs rather than the mutable working-tree config_files fallback.
+wt_old_base_fp="$(git -C "$REPO_ROOT" show "$OLD_GIT_SHA:docker-compose.deploy.yaml" | sha256sum | cut -d' ' -f1)"
+wt_old_cat_fp="$(git -C "$REPO_ROOT" show "$OLD_GIT_SHA:custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml" | sha256sum | cut -d' ' -f1)"
+wt_old_config_hash="$(printf '%s\n%s\n' "$wt_old_base_fp" "$wt_old_cat_fp" | sha256sum | cut -d' ' -f1)"
+WT_RUNTIME_STATE="$WORK/wt-runtime-state"
+printf 'app=%s\nrev=%s\nhash=%s\n' "$APP_IMAGE_ID_B" "$OLD_GIT_SHA" "$wt_old_config_hash" >"$WT_RUNTIME_STATE"
+printf '\n# working-tree-poison-before-materialize\n' >>"$CATALOG_OVERLAY"
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" FAKE_RUNTIME_STATE_FILE="$WT_RUNTIME_STATE"
+WT_CAPTURED="$WORK/captured.$CALLN"
+WT_ASSET="$REPO_ROOT/custom/wijaya/deploy/.receipts/assets/$APP_FULL_SHA/docker-compose.marine-catalog.yml"
+wt_blob_cat="$(git -C "$REPO_ROOT" show "$APP_FULL_SHA:custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml" | sha256sum | cut -d' ' -f1)"
+git -C "$REPO_ROOT" checkout -q -- custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml
+if [[ "$RC" == 0 && -s "$WT_CAPTURED" && -f "$WT_ASSET" ]] \
+   && [[ "$(sha256sum "$WT_ASSET" | cut -d' ' -f1)" == "$wt_blob_cat" ]] \
+   && ! grep -q 'working-tree-poison-before-materialize' "$WT_ASSET" \
+   && ! grep -q 'working-tree-poison-before-materialize' "$WT_CAPTURED"; then
+  ok "a working-tree edit present before/around materialization never reaches the materialized asset or the captured config (render is only from the commit-keyed blob)"
+else
+  bad "working-tree poison before materialization leaked (rc=$RC)"; cat "$WORK/out.log"
+fi
+rm -rf "$REPO_ROOT/custom/wijaya/deploy/.receipts"
+
+# Finding 2 adversarial (check-to-use): mutate the PERSISTENT asset AFTER config capture but BEFORE
+# compose up, and prove the EXACT captured bytes are fed on stdin — Compose never reopens the mutable
+# asset path. The fake up (which runs only after deploy.sh has captured its config in memory)
+# appends a marker to the materialized catalog asset, then records the stdin it received. The
+# recorded stdin must NOT contain the marker (captured before the mutation) while the asset on disk
+# MUST (it was mutated), and up must have used -f -. Health still passes (rc 0) because the custom
+# labels are validated against the trusted git blobs, never the mutated asset.
+rm -rf "$REPO_ROOT/custom/wijaya/deploy/.receipts"
+MUT_ASSET="$REPO_ROOT/custom/wijaya/deploy/.receipts/assets/$APP_FULL_SHA/docker-compose.marine-catalog.yml"
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" FAKE_MUTATE_ASSET_BEFORE_UP="$MUT_ASSET"
+MUT_CAPTURED="$WORK/captured.$CALLN"
+if [[ "$RC" == 0 && -s "$MUT_CAPTURED" ]] \
+   && grep -qF -- '-f - up' "$UP_MARKER" \
+   && [[ "$(jq -r '.services.rails.image' "$MUT_CAPTURED")" == "$APP_IMAGE_ID" ]] \
+   && ! grep -q 'mutated-at-up-time' "$MUT_CAPTURED" \
+   && grep -q 'mutated-at-up-time' "$MUT_ASSET"; then
+  ok "compose up consumes the EXACT captured config via stdin; a post-capture asset mutation cannot change what is deployed"
+else
+  bad "stdin captured-config adversarial case (rc=$RC captured=$([[ -s "$MUT_CAPTURED" ]] && echo yes || echo no))"; cat "$WORK/out.log"
+fi
+rm -rf "$REPO_ROOT/custom/wijaya/deploy/.receipts"
+
+# Same-ID refusal: if the running (OLD) runtime already IS the verified NEW target image, the
+# deploy is a no-op and MUST be refused BEFORE any receipt write and BEFORE any compose up — so
+# the genuine pre-deploy known-good receipt is never overwritten with a reciprocal no-op.
+rm -rf "$REPO_ROOT/custom/wijaya/deploy/.receipts"
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" \
+  FAKE_RUNTIME_RAILS_IMAGE="$APP_IMAGE_ID" FAKE_RUNTIME_SIDEKIQ_IMAGE="$APP_IMAGE_ID"
+if [[ "$RC" != 0 && ! -f "$UP_MARKER" && ! -f "$APPJSON" ]] \
+   && grep -q 'already equals the verified target image ID' "$WORK/out.log"; then
+  ok "no-op deploy (running image already equals NEW target) is refused before receipt write and before up"
+else
+  bad "same-ID refusal case (rc=$RC up=$([[ -f "$UP_MARKER" ]] && echo yes || echo no) receipt=$([[ -f "$APPJSON" ]] && echo yes || echo no))"; cat "$WORK/out.log"
+fi
+
+# Exact-commit authority negatives (Finding 3). All git reads are of pre-existing refs/objects;
+# the fixture only ever LOCALLY updates its disposable copy's tracking ref (never a fetch).
+# (a) HEAD must equal the live trusted tip origin/devbot.
+git -C "$REPO_ROOT" update-ref refs/remotes/origin/devbot "$OLD_GIT_SHA"
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK"
+[[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'does not equal the live trusted remote tip' "$WORK/out.log" \
+  && ok "HEAD not equal to the trusted tip origin/devbot fails before any up" \
+  || { bad "trusted-tip mismatch case (rc=$RC)"; cat "$WORK/out.log"; }
+# (b) The trusted ref must be present (no fetch is ever performed to create it).
+git -C "$REPO_ROOT" update-ref -d refs/remotes/origin/devbot
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK"
+[[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'trusted remote ref refs/remotes/origin/devbot is unavailable' "$WORK/out.log" \
+  && ok "missing trusted remote ref fails closed (deploy never fetches)" \
+  || { bad "missing trusted ref case (rc=$RC)"; cat "$WORK/out.log"; }
+git -C "$REPO_ROOT" update-ref refs/remotes/origin/devbot HEAD   # restore trusted tip == HEAD
+# (c) The captured OLD runtime commit must be real ancestor history, not an arbitrary 40-hex.
+rm -rf "$REPO_ROOT/custom/wijaya/deploy/.receipts"
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" FAKE_DRIFT_SHA='dddddddddddddddddddddddddddddddddddddddd'
+[[ "$RC" != 0 && ! -f "$UP_MARKER" && ! -f "$APPJSON" ]] \
+  && grep -q 'not an exact commit object in this repository' "$WORK/out.log" \
+  && ok "OLD runtime embedded commit that is not real repository history fails before receipt write" \
+  || { bad "OLD non-ancestry case (rc=$RC up=$([[ -f "$UP_MARKER" ]] && echo yes || echo no) receipt=$([[ -f "$APPJSON" ]] && echo yes || echo no))"; cat "$WORK/out.log"; }
+
+# Historical current runtime config_files (Finding 2): a container created by the OLD scheme labels
+# its base as docker-compose.deploy.<shortsha>.yaml. That form is accepted ONLY when its bytes
+# equal the trusted base blob at the running (OLD) commit.
+HIST_BASE="$REPO_ROOT/docker-compose.deploy.$(printf '%s' "$OLD_GIT_SHA" | cut -c1-10).yaml"
+git -C "$REPO_ROOT" show "$OLD_GIT_SHA:docker-compose.deploy.yaml" >"$HIST_BASE"
+rm -rf "$REPO_ROOT/custom/wijaya/deploy/.receipts"
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" FAKE_CURRENT_BASE_LABEL="$HIST_BASE"
+[[ "$RC" == 0 && -f "$APPJSON" && -f "$UP_MARKER" ]] \
+  && grep -q 'current runtime config_files is an allowlisted base+catalog pair' "$WORK/out.log" \
+  && ok "historical docker-compose.deploy.<shortsha>.yaml current label is accepted when its bytes equal the trusted runtime blob" \
+  || { bad "historical label accept case (rc=$RC)"; cat "$WORK/out.log"; }
+
+# A historical <shortsha> base whose bytes do NOT equal the trusted runtime blob is refused.
+HIST_BAD="$REPO_ROOT/docker-compose.deploy.badc0ffee0.yaml"
+printf 'version: "3"\nservices: {}\n# tampered historical base\n' >"$HIST_BAD"
+rm -rf "$REPO_ROOT/custom/wijaya/deploy/.receipts"
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" FAKE_CURRENT_BASE_LABEL="$HIST_BAD"
+[[ "$RC" != 0 && ! -f "$UP_MARKER" && ! -f "$APPJSON" ]] \
+  && grep -q 'current runtime base compose bytes do not equal the trusted blob at the running commit' "$WORK/out.log" \
+  && ok "tampered historical <shortsha> base label is refused before receipt write" \
+  || { bad "historical label reject case (rc=$RC)"; cat "$WORK/out.log"; }
+rm -f "$HIST_BAD"
+
+# Both rails and sidekiq config_files labels must match each other (mixed app runtime refused).
+rm -rf "$REPO_ROOT/custom/wijaya/deploy/.receipts"
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" FAKE_SIDEKIQ_CURRENT_BASE_LABEL="$HIST_BASE"
+[[ "$RC" != 0 && ! -f "$UP_MARKER" && ! -f "$APPJSON" ]] \
+  && grep -q 'rails and sidekiq config_files labels disagree' "$WORK/out.log" \
+  && ok "divergent rails/sidekiq current config_files labels are refused before receipt write" \
+  || { bad "mixed config_files label case (rc=$RC)"; cat "$WORK/out.log"; }
+rm -f "$HIST_BASE"
+
+# Service-scoped app deploys are REFUSED: rails and sidekiq always deploy together so a
+# receipt (and its rollback) can never pin a half-updated app runtime. Only --service
+# marine_sop_worker is permitted. Rejection happens at argument parsing, before any up.
 run_deploy_app "$APP_FULL_SHA" rails "$CFG_OK"
-rails_reads="$(grep -c -- "--network none --entrypoint cat $APP_IMAGE_ID /app/.git_sha" "$RUN_MARKER" || true)"
-[[ "$rails_reads" == 1 && -f "$UP_MARKER" ]] \
-  && grep -qE 'argv=.* up .* rails$' "$UP_MARKER" \
-  && ok "rails-only path verifies/pins Rails before its recreate" \
-  || { bad "rails-only app pin case (rc=$RC reads=$rails_reads)"; cat "$WORK/out.log"; }
+[[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'service-scoped app deploy is not allowed' "$WORK/out.log" \
+  && ok "--service rails is refused (rails+sidekiq deploy together), before any up" \
+  || { bad "service-scoped rails deploy was not refused (rc=$RC)"; cat "$WORK/out.log"; }
 
 run_deploy_app "$APP_FULL_SHA" sidekiq "$CFG_OK"
-sidekiq_reads="$(grep -c -- "--network none --entrypoint cat $APP_IMAGE_ID /app/.git_sha" "$RUN_MARKER" || true)"
-[[ "$sidekiq_reads" == 1 && -f "$UP_MARKER" ]] \
-  && grep -qE 'argv=.* up .* sidekiq$' "$UP_MARKER" \
-  && ok "sidekiq-only path verifies/pins Sidekiq before its recreate" \
-  || { bad "sidekiq-only app pin case (rc=$RC reads=$sidekiq_reads)"; cat "$WORK/out.log"; }
+[[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'service-scoped app deploy is not allowed' "$WORK/out.log" \
+  && ok "--service sidekiq is refused (rails+sidekiq deploy together), before any up" \
+  || { bad "service-scoped sidekiq deploy was not refused (rc=$RC)"; cat "$WORK/out.log"; }
 
 # Two selected services resolving to different immutable IDs must fail before up.
 CFG_APP_SPLIT="$WORK/cfg_app_split.json"
@@ -613,25 +997,24 @@ else
   bad "different app IDs were not blocked (rc=$RC)"; cat "$WORK/out.log"
 fi
 
-# Simulate the mutable tag changing for the post-verification render. The dedicated
-# immutable pin must win, and fake up must still receive the originally verified ID.
-run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" \
-  FAKE_TAG_CHANGED_IMAGE='hokgt-chatwoot:retargeted-after-gate'
-if [[ -f "$UP_MARKER" ]] \
-   && grep -q "MARINE_DEPLOY_APP_IMAGE=$APP_IMAGE_ID" "$UP_MARKER" \
+# Finding 2 (single-render TOCTOU closure): arm a tag retarget on a hypothetical SECOND render. The
+# forward app lifecycle renders only ONCE (the single post-materialization render), so a trap armed
+# beyond that single render must NEVER fire — the captured stdin bytes stay pinned to the verified
+# immutable ID and no retargeted tag ever reaches the captured config or compose up. This replaces
+# the former export+re-render pin tests: there is no post-verification re-render left to hijack.
+rm -rf "$REPO_ROOT/custom/wijaya/deploy/.receipts"
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" FAKE_RETARGET_ON_RENDER=2
+SR_CAPTURED="$WORK/captured.$CALLN"; SR_RENDERS="$(cat "$CONFIG_COUNT_FILE" 2>/dev/null || echo 0)"
+if [[ "$RC" == 0 && "$SR_RENDERS" == 1 && -s "$SR_CAPTURED" ]] \
+   && [[ "$(jq -r '.services.rails.image' "$SR_CAPTURED")" == "$APP_IMAGE_ID" ]] \
+   && [[ "$(jq -r '.services.sidekiq.image' "$SR_CAPTURED")" == "$APP_IMAGE_ID" ]] \
+   && ! grep -q 'retargeted-after-gate' "$SR_CAPTURED" \
    && ! grep -q 'retargeted-after-gate' "$UP_MARKER"; then
-  ok "tag retarget after verification cannot change the immutable image used for recreation"
+  ok "no post-verification Compose re-render exists: a retarget armed beyond the single render never reaches the captured bytes (renders=1, captured pinned to the verified immutable ID)"
 else
-  bad "tag-retarget TOCTOU case (rc=$RC)"; cat "$WORK/out.log"
+  bad "single-render TOCTOU closure case (rc=$RC renders=$SR_RENDERS)"; cat "$WORK/out.log"
 fi
-
-# If re-rendering ignores the exported pin, fail closed before compose up.
-run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" FAKE_IGNORE_APP_PIN=1
-if [[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'rendered image is not bound' "$WORK/out.log"; then
-  ok "rendered config that ignores the immutable app pin fails BEFORE compose up"
-else
-  bad "ignored app pin was not blocked (rc=$RC)"; cat "$WORK/out.log"
-fi
+rm -rf "$REPO_ROOT/custom/wijaya/deploy/.receipts"
 
 # Existing fail-closed provenance outcomes remain covered.
 run_deploy_app '0000000000000000000000000000000000000000' default "$CFG_OK"
@@ -920,6 +1303,325 @@ grep -q 'log_collection_error' "$WORK/mon.log" && grep -q 'log collection failed
 grep -q 'RAWLEAK' "$WORK/mon.log" \
   && { bad "monitor leaked raw log input/error on collection failure"; cat "$WORK/mon.log"; } \
   || ok "monitor does not dump raw log input/error on collection failure"
+
+echo "== minimal app-only receipt-backed rollback =="
+
+RECEIPT_DIR="$REPO_ROOT/custom/wijaya/deploy/.receipts"
+APPJSON="$RECEIPT_DIR/app.json"
+LOCKFILE="$RECEIPT_DIR/.lock"
+
+mk_app_receipt() {
+  rm -rf "$RECEIPT_DIR"
+  python3 "$RECEIPT_HELPER" ensure
+  local base_fp catalog_fp
+  base_fp="$(sha256sum "$BASE_COMPOSE" | cut -d' ' -f1)"
+  catalog_fp="$(sha256sum "$CATALOG_OVERLAY" | cut -d' ' -f1)"
+  jq -cn --argjson schema_version 1 --arg created_at '2026-10-26T00:00:00Z' \
+    --arg target "$OLD_GIT_SHA" --arg image "$APP_IMAGE_ID_B" \
+    --arg base "$base_fp" --arg catalog "$catalog_fp" \
+    '{schema_version:$schema_version,created_at:$created_at,target_git_sha:$target,
+      app_image_id:$image,services:["rails","sidekiq"],
+      overlay_fingerprints:{base:$base,catalog:$catalog}}' \
+    | python3 "$RECEIPT_HELPER" write
+}
+
+run_app_rollback() {
+  CALLN=$((CALLN+1)); UP_MARKER="$WORK/up.rb.$CALLN"; IMAGE_MARKER="$WORK/img.rb.$CALLN"
+  RUN_MARKER="$WORK/run.rb.$CALLN"; RB_STATE="$WORK/state.rb.$CALLN"; RB_CFGFILES="$WORK/cfg.rb.$CALLN"
+  RB_CAPTURED="$WORK/captured.rb.$CALLN"; RB_COUNT="$WORK/config-count.rb.$CALLN"
+  rm -f "$UP_MARKER" "$IMAGE_MARKER" "$RUN_MARKER" "$RB_STATE" "$RB_CFGFILES" "$RB_CAPTURED" "$RB_COUNT"; RC=0
+  env DOCKER="$FAKE_DOCKER" \
+    MARINE_DEPLOY_BASE_COMPOSE="$BASE_COMPOSE" MARINE_DEPLOY_CATALOG_OVERLAY="$CATALOG_OVERLAY" \
+    MARINE_DEPLOY_SOP_OVERLAY="$SOP_OVERLAY" FAKE_CONFIG_JSON_FILE="$CFG_OK" \
+    FAKE_CAPTURED_COMPOSE_FILE="$RB_CAPTURED" FAKE_CONFIG_COUNT_FILE="$RB_COUNT" \
+    FAKE_UP_MARKER="$UP_MARKER" FAKE_IMAGE_MARKER="$IMAGE_MARKER" FAKE_RUN_MARKER="$RUN_MARKER" \
+    FAKE_APP_REF='hokgt-chatwoot:test' FAKE_APP_ID="$APP_IMAGE_ID" FAKE_APP_GIT_SHA="$OLD_GIT_SHA" \
+    FAKE_CONFIG_FILES_FILE="$RB_CFGFILES" FAKE_RUNTIME_STATE_FILE="$RB_STATE" FAKE_PS_IDS=1 \
+    FAKE_RUNTIME_RAILS_IMAGE="$APP_IMAGE_ID" \
+    FAKE_RUNTIME_SIDEKIQ_IMAGE='sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' \
+    FAKE_MOUNT_RW=false MARINE_CURL="$WORK/curl_ok" "MARINE_MONITOR_LOG_CMD=printf ''" \
+    "$@" bash "$DEPLOY_SH" --rollback >"$WORK/out.log" 2>&1 || RC=$?
+}
+
+# Recreation failure: receipt exists before first up, one rollback uses OLD, original RC survives.
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" \
+  FAKE_UP_FAIL_FIRST=1 FAKE_UP_FAIL_STATUS=42 FAKE_REQUIRE_RECEIPT=1 FAKE_RECEIPT_FILE="$APPJSON"
+lines="$(wc -l <"$UP_MARKER" 2>/dev/null || printf 0)"
+if [[ "$RC" == 42 && "$lines" == 2 && -f "$APPJSON" ]] \
+   && sed -n '1p' "$UP_MARKER" | grep -q "MARINE_DEPLOY_APP_IMAGE=$APP_IMAGE_ID" \
+   && sed -n '2p' "$UP_MARKER" | grep -q "MARINE_DEPLOY_APP_IMAGE=$APP_IMAGE_ID_B" \
+   && grep -q "^app=$APP_IMAGE_ID_B$" "$WORK/runstate.$CALLN"; then
+  ok "failed NEW recreation writes receipt before up, rolls back exactly once to OLD, restores OLD, and preserves rc=42"
+else bad "automatic rollback contract (rc=$RC lines=$lines)"; cat "$WORK/out.log"; fi
+
+# Post-up HEALTH failure (NEW recreation succeeds, forward health gate fails): auto-roll-back once
+# to OLD and exit with the original (health) failure status; the rollback itself is healthy.
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" \
+  FAKE_REQUIRE_RECEIPT=1 FAKE_RECEIPT_FILE="$APPJSON" FAKE_PROBE_FAIL_ON_UPS=1
+lines="$(wc -l <"$UP_MARKER" 2>/dev/null || printf 0)"
+if [[ "$RC" == 1 && "$lines" == 2 && -f "$APPJSON" ]] \
+   && sed -n '1p' "$UP_MARKER" | grep -q "MARINE_DEPLOY_APP_IMAGE=$APP_IMAGE_ID" \
+   && sed -n '2p' "$UP_MARKER" | grep -q "MARINE_DEPLOY_APP_IMAGE=$APP_IMAGE_ID_B" \
+   && grep -q "^app=$APP_IMAGE_ID_B$" "$WORK/runstate.$CALLN" \
+   && grep -q 'automatic rollback to the app pre-deploy known-good completed' "$WORK/out.log"; then
+  ok "post-up health failure auto-rolls-back to OLD (healthy) and preserves the original failure status"
+else bad "post-up health failure rollback (rc=$RC lines=$lines)"; cat "$WORK/out.log"; fi
+
+# Rollback COMPOSE failure: the forward up fails (42), the rollback up also fails; the original
+# deploy status (42) must be preserved and the receipt retained for manual recovery.
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" \
+  FAKE_UP_FAIL_FIRST=1 FAKE_UP_FAIL_STATUS=42 FAKE_ROLLBACK_UP_FAIL=1 FAKE_ROLLBACK_UP_FAIL_STATUS=55 \
+  FAKE_REQUIRE_RECEIPT=1 FAKE_RECEIPT_FILE="$APPJSON"
+if [[ "$RC" == 42 && -f "$APPJSON" ]] \
+   && grep -q 'rollback compose up failed' "$WORK/out.log" \
+   && grep -q 'automatic rollback failed; manual intervention required' "$WORK/out.log"; then
+  ok "rollback compose failure preserves the ORIGINAL deploy status (42) and retains the receipt"
+else bad "rollback compose failure (rc=$RC)"; cat "$WORK/out.log"; fi
+
+# Rollback HEALTH failure: the forward up fails (42), the rollback up succeeds but its health gate
+# fails; the original deploy status (42) must still be preserved.
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" \
+  FAKE_UP_FAIL_FIRST=1 FAKE_UP_FAIL_STATUS=42 FAKE_PROBE_FAIL_ON_UPS=2 \
+  FAKE_REQUIRE_RECEIPT=1 FAKE_RECEIPT_FILE="$APPJSON"
+if [[ "$RC" == 42 && -f "$APPJSON" ]] \
+   && grep -q 'automatic rollback failed; manual intervention required' "$WORK/out.log"; then
+  ok "rollback health failure preserves the ORIGINAL deploy status (42) and retains the receipt"
+else bad "rollback health failure (rc=$RC)"; cat "$WORK/out.log"; fi
+
+# Explicit rollback does not inspect/capture the split/missing current app and keeps app.json
+# stable. It recreates from the immutable per-commit assets it materializes for the receipt's
+# target SHA (with --project-directory the repo), so the container config_files labels stay valid.
+RB_ASSET_DIR="$REPO_ROOT/custom/wijaya/deploy/.receipts/assets/$OLD_GIT_SHA"
+mk_app_receipt
+receipt_before="$(sha256sum "$APPJSON" | cut -d' ' -f1)"
+run_app_rollback FAKE_MISSING_BEFORE_UP=rails
+receipt_after="$(sha256sum "$APPJSON" | cut -d' ' -f1)"
+# Finding 2 — the rollback lifecycle renders Compose EXACTLY ONCE (after materialization): no
+# preflight pre-render and no pin/capture re-render, so the total render count is 1.
+rb_renders="$(cat "$RB_COUNT" 2>/dev/null || echo 0)"
+if [[ "$RC" == 0 && "$receipt_before" == "$receipt_after" && "$rb_renders" == 1 ]] \
+   && grep -q "MARINE_DEPLOY_APP_IMAGE=$APP_IMAGE_ID_B" "$UP_MARKER" \
+   && grep -qF -- '--project-directory' "$UP_MARKER" \
+   && grep -qF -- '-f - up' "$UP_MARKER" \
+   && grep -q "^app=$APP_IMAGE_ID_B$" "$RB_STATE" \
+   && [[ -f "$RB_ASSET_DIR/docker-compose.deploy.yaml" && -f "$RB_ASSET_DIR/docker-compose.marine-catalog.yml" ]] \
+   && [[ -s "$RB_CAPTURED" ]] \
+   && [[ "$(jq -r '.services.rails.image' "$RB_CAPTURED")" == "$APP_IMAGE_ID_B" ]] \
+   && [[ "$(jq -r '.services.sidekiq.image' "$RB_CAPTURED")" == "$APP_IMAGE_ID_B" ]] \
+   && [[ "$(jq -r '.services.rails.labels["com.wijaya.chatwoot.compose-source-revision"]' "$RB_CAPTURED")" == "$OLD_GIT_SHA" ]] \
+   && [[ "$(jq -r '.services.rails.environment["MARINE_CATALOG_PG_PASSWORD_FILE"]' "$RB_CAPTURED")" == "/run/secrets/marine_catalog_pg_password" ]] \
+   && [[ "$(jq -r '.services.rails.volumes[0].read_only' "$RB_CAPTURED")" == "true" ]] \
+   && [[ "$(jq -r '.services.sidekiq.volumes[0].read_only' "$RB_CAPTURED")" == "true" ]]; then
+  ok "explicit rollback renders Compose once after materialization, pins OLD in memory, leaves receipt unchanged, validates the captured catalog mount/service contract, and recreates from the captured target-commit config on stdin"
+else bad "explicit app rollback (rc=$RC rb_renders=$rb_renders)"; cat "$WORK/out.log"; fi
+
+# Repeated rollback is idempotent and still uses OLD.
+run_app_rollback
+[[ "$RC" == 0 && "$(sha256sum "$APPJSON" | cut -d' ' -f1)" == "$receipt_before" ]] \
+  && grep -q "MARINE_DEPLOY_APP_IMAGE=$APP_IMAGE_ID_B" "$UP_MARKER" \
+  && ok "repeated explicit rollback is idempotent (no reciprocal receipt)" \
+  || { bad "repeated explicit rollback (rc=$RC)"; cat "$WORK/out.log"; }
+
+# Receipt-fingerprint mismatch fails closed before mutation: rollback materializes the target
+# commit's immutable asset and refuses when its bytes do not match the receipt fingerprint. (The
+# working tree is irrelevant now — rollback uses the git blob, not the working-tree file.)
+rm -rf "$RECEIPT_DIR"; python3 "$RECEIPT_HELPER" ensure
+mismatch_base_fp="$(sha256sum "$BASE_COMPOSE" | cut -d' ' -f1)"
+jq -cn --argjson schema_version 1 --arg created_at '2026-10-26T00:00:00Z' \
+  --arg target "$OLD_GIT_SHA" --arg image "$APP_IMAGE_ID_B" --arg base "$mismatch_base_fp" \
+  --arg catalog 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' \
+  '{schema_version:$schema_version,created_at:$created_at,target_git_sha:$target,
+    app_image_id:$image,services:["rails","sidekiq"],overlay_fingerprints:{base:$base,catalog:$catalog}}' \
+  | python3 "$RECEIPT_HELPER" write
+run_app_rollback
+[[ "$RC" != 0 && ! -f "$UP_MARKER" ]] \
+  && grep -q 'materialized catalog overlay bytes differ from the rollback receipt fingerprint' "$WORK/out.log" \
+  && ok "rollback refuses when the materialized target-commit asset bytes differ from the receipt fingerprint, before compose up" \
+  || { bad "receipt fingerprint mismatch refusal (rc=$RC)"; cat "$WORK/out.log"; }
+
+# Receipt strictness: malformed JSON, symlink, loose mode, and non-integer schema_version.
+receipt_rejected() {
+  local label="$1" needle="$2"
+  run_app_rollback
+  [[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q "$needle" "$WORK/out.log" \
+    && ok "$label receipt is rejected before compose up" \
+    || { bad "$label receipt rejection (rc=$RC)"; cat "$WORK/out.log"; }
+}
+mk_app_receipt; printf 'not-json\n' >"$APPJSON"; chmod 600 "$APPJSON"
+receipt_rejected malformed 'strict canonical validation'
+mk_app_receipt; mv "$APPJSON" "$RECEIPT_DIR/real.json"; ln -s real.json "$APPJSON"
+receipt_rejected symlink 'strict canonical validation'
+mk_app_receipt; chmod 644 "$APPJSON"
+receipt_rejected loose-mode 'strict canonical validation'
+mk_app_receipt
+python3 - "$APPJSON" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['schema_version']=True
+open(p,'w').write(json.dumps(d,sort_keys=True,separators=(',',':'))+'\n')
+PY
+chmod 600 "$APPJSON"
+receipt_rejected wrong-type 'strict canonical validation'
+
+# The fixed lock gates app preflight/state reads.
+mk_app_receipt
+exec 9>"$LOCKFILE"; flock -n 9 || bad "could not hold fixture lifecycle lock"
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK"
+if [[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'lifecycle lock held' "$WORK/out.log" \
+   && ! grep -q 'required tools present' "$WORK/out.log" \
+   && ! grep -q 'compose overlays resolved' "$WORK/out.log"; then
+  ok "app lifecycle lock is acquired before tooling, preflight, and runtime reads"
+else bad "lock ordering (rc=$RC)"; cat "$WORK/out.log"; fi
+flock -u 9; exec 9>&-
+
+# Retained-lock ordering (runtime discriminator): with the lifecycle lock HELD, an app --deploy
+# must refuse AT THE LOCK before it validates ANY readiness tunable or performs any other
+# top-level read. A poisoned readiness tunable would abort with its own distinctive message if
+# validate_readiness_tunables (the FIRST top-level read) ran before the lock; a correct ordering
+# never reaches it — the lock refusal wins. This fails if any top-level readiness/git/repo/
+# project/tool/state read precedes the lock re-exec.
+mk_app_receipt
+exec 9>"$LOCKFILE"; flock -n 9 || bad "could not hold fixture lifecycle lock (readiness-ordering)"
+run_deploy_app "$APP_FULL_SHA" default "$CFG_OK" MARINE_PUBLIC_HTTP_MAX_ATTEMPTS=not-a-number
+if [[ "$RC" != 0 && ! -f "$UP_MARKER" ]] \
+   && grep -q 'lifecycle lock held' "$WORK/out.log" \
+   && ! grep -q 'MARINE_PUBLIC_HTTP_MAX_ATTEMPTS must be a positive integer' "$WORK/out.log" \
+   && ! grep -q 'required tools present' "$WORK/out.log" \
+   && ! grep -q 'compose overlays resolved' "$WORK/out.log"; then
+  ok "lifecycle lock is taken BEFORE readiness-tunable validation and every other top-level read (held lock beats a poisoned tunable)"
+else bad "readiness-before-lock ordering (rc=$RC)"; cat "$WORK/out.log"; fi
+flock -u 9; exec 9>&-
+
+# Retained-lock ordering (static): the lifecycle-lock gate must be invoked at the very TOP of the
+# entrypoint — before readiness-tunable validation, the git repo-root resolution, the working-dir
+# change, and argument parsing. A read that precedes the gate reintroduces the ordering violation.
+gate_line="$(grep -nF 'enter_lifecycle_lock_before_any_read "$@"' "$DEPLOY_SH" | tail -1 | cut -d: -f1 || true)"
+readiness_call_line="$(grep -nxF 'validate_readiness_tunables' "$DEPLOY_SH" | head -1 | cut -d: -f1 || true)"
+repo_resolve_line="$(grep -nF 'REPO_ROOT="$(resolve_repo_root)"' "$DEPLOY_SH" | head -1 | cut -d: -f1 || true)"
+cd_line="$(grep -nF 'cd "$REPO_ROOT"' "$DEPLOY_SH" | head -1 | cut -d: -f1 || true)"
+parse_line="$(grep -nxF 'parse_args "$@"' "$DEPLOY_SH" | head -1 | cut -d: -f1 || true)"
+if [[ -n "$gate_line" && -n "$readiness_call_line" && -n "$repo_resolve_line" && -n "$cd_line" && -n "$parse_line" \
+   && "$gate_line" -lt "$readiness_call_line" && "$gate_line" -lt "$repo_resolve_line" \
+   && "$gate_line" -lt "$cd_line" && "$gate_line" -lt "$parse_line" ]]; then
+  ok "lock gate precedes readiness validation, git repo resolution, cd, and argument parsing (no pre-lock state read)"
+else
+  bad "lock-gate static ordering (gate=$gate_line readiness=$readiness_call_line repo=$repo_resolve_line cd=$cd_line parse=$parse_line)"
+fi
+
+# Finding 1 — the inherited lock fd is bound to the ORIGINAL canonical lock identity (dev+ino)
+# exported by lock-exec, validated BEFORE owner/type/mode/flock and NEVER re-derived from the
+# pathname at verify time. The helper refuses anything whose dev/ino differs from that exported
+# original, and a replaced/hard-linked .lock pathname can never redefine the expected identity.
+mk_app_receipt
+read LOCK_DEV LOCK_INO < <(python3 -c 'import os,sys;st=os.stat(sys.argv[1]);print(st.st_dev,st.st_ino)' "$LOCKFILE")
+vfd() { MARINE_LIFECYCLE_LOCK_DEV="$LOCK_DEV" MARINE_LIFECYCLE_LOCK_INO="$LOCK_INO" python3 "$RECEIPT_HELPER" verify-inherited-fd "$@"; }
+# (c0) a missing exported original identity is refused outright (there is no identity to bind to).
+rc=0; MARINE_LIFECYCLE_LOCK_DEV= MARINE_LIFECYCLE_LOCK_INO= python3 "$RECEIPT_HELPER" verify-inherited-fd 8 8<"$LOCKFILE" >"$WORK/vfd0.log" 2>&1 || rc=$?
+[[ "$rc" != 0 ]] && grep -q 'missing-original-lock-identity' "$WORK/vfd0.log" \
+  && ok "verify-inherited-fd refuses when the exported original lock identity is absent" \
+  || { bad "missing original identity not refused (rc=$rc)"; cat "$WORK/vfd0.log"; }
+# (c1) a closed fd is rejected via fstat EBADF (never reopening the lock pathname).
+rc=0; vfd 7 7>&- >"$WORK/vfd1.log" 2>&1 || rc=$?
+[[ "$rc" != 0 ]] && grep -q 'closed-or-invalid-lock-fd' "$WORK/vfd1.log" \
+  && ok "verify-inherited-fd rejects a closed/invalid fd without reopening the lock pathname" \
+  || { bad "closed inherited fd not rejected (rc=$rc)"; cat "$WORK/vfd1.log"; }
+# (c2) a live, owned, regular 0644 fd is NOT the original lock inode — rejected on the dev+ino
+# binding (before the mode check), proving a forged marker cannot point at a non-lock file.
+FORGED="$WORK/forged_lock"; : >"$FORGED"; chmod 644 "$FORGED"
+rc=0; vfd 7 7<"$FORGED" >"$WORK/vfd2.log" 2>&1 || rc=$?
+[[ "$rc" != 0 ]] && grep -q 'inherited-fd-not-original-lock' "$WORK/vfd2.log" \
+  && ok "verify-inherited-fd rejects a forged non-lock inherited fd on the original dev+ino binding" \
+  || { bad "forged non-lock inherited fd not rejected (rc=$rc)"; cat "$WORK/vfd2.log"; }
+# (c3) the genuine held 0600 lock fd is ACCEPTED (proves the check is not a blanket deny).
+rc=0
+exec 8<>"$LOCKFILE"; flock -n 8 || bad "could not hold lock for verify-inherited-fd accept case"
+vfd 8 >"$WORK/vfd3.log" 2>&1 || rc=$?
+[[ "$rc" == 0 ]] && grep -q 'inherited-lock-fd=8' "$WORK/vfd3.log" \
+  && ok "verify-inherited-fd accepts the genuine held 0600 lock fd (original dev+ino match + flock, no pathname redefine)" \
+  || { bad "genuine held lock fd rejected (rc=$rc)"; cat "$WORK/vfd3.log"; }
+flock -u 8; exec 8>&-
+# (c4) an UNRELATED owner-only 0600 regular file passes owner/type/mode but is NOT the original lock
+# inode — rejected on the dev+ino binding.
+UNREL_LOCK="$WORK/unrelated_0600_regular"; : >"$UNREL_LOCK"; chmod 600 "$UNREL_LOCK"
+rc=0; vfd 7 7<"$UNREL_LOCK" >"$WORK/vfd4.log" 2>&1 || rc=$?
+[[ "$rc" != 0 ]] && grep -q 'inherited-fd-not-original-lock' "$WORK/vfd4.log" \
+  && ok "verify-inherited-fd rejects an unrelated 0600 regular file (dev+ino != original lock)" \
+  || { bad "unrelated 0600 regular fd not bound to the original lock (rc=$rc)"; cat "$WORK/vfd4.log"; }
+# (c5) a 0600 memfd (anonymous, owner-only, regular) is likewise rejected: its device+inode can
+# never equal the original lock. The forged fd is created then exec's the real helper so the genuine
+# verify-inherited-fd command receives it as an inherited fd (exported original passed via env).
+rc=0; MARINE_LIFECYCLE_LOCK_DEV="$LOCK_DEV" MARINE_LIFECYCLE_LOCK_INO="$LOCK_INO" python3 - "$RECEIPT_HELPER" >"$WORK/vfd5.log" 2>&1 <<'PY' || rc=$?
+import os, sys
+fd = os.memfd_create("marine-forged-lock", 0)
+os.fchmod(fd, 0o600)
+os.set_inheritable(fd, True)
+os.execv(sys.executable, [sys.executable, sys.argv[1], "verify-inherited-fd", str(fd)])
+PY
+[[ "$rc" != 0 ]] && grep -q 'inherited-fd-not-original-lock' "$WORK/vfd5.log" \
+  && ok "verify-inherited-fd rejects a 0600 memfd (dev+ino != original lock)" \
+  || { bad "0600 memfd not bound to the original lock (rc=$rc)"; cat "$WORK/vfd5.log"; }
+# (c6) Adversarial replacement race (Finding 1): AFTER lock-exec captured the ORIGINAL dev+ino, an
+# attacker replaces/hard-links the canonical .lock pathname to an unrelated 0600 file AND points the
+# forged inherited fd at that same file. Re-deriving identity from the pathname would ACCEPT (fd ==
+# re-opened path); binding to the exported original REJECTS, because the forged file's dev+ino differ
+# from the original.
+UNREL_ATTACK="$WORK/attacker_0600"; : >"$UNREL_ATTACK"; chmod 600 "$UNREL_ATTACK"
+rm -f "$LOCKFILE"; ln "$UNREL_ATTACK" "$LOCKFILE"
+rc=0; vfd 7 7<"$UNREL_ATTACK" >"$WORK/vfd6.log" 2>&1 || rc=$?
+[[ "$rc" != 0 ]] && grep -q 'inherited-fd-not-original-lock' "$WORK/vfd6.log" \
+  && ok "verify-inherited-fd binds to the ORIGINAL exported dev+ino: a .lock swapped/hard-linked to a forged 0600 file (matching the forged fd) is still rejected" \
+  || { bad "original-identity binding against pathname replacement (rc=$rc)"; cat "$WORK/vfd6.log"; }
+mk_app_receipt
+read LOCK_DEV LOCK_INO < <(python3 -c 'import os,sys;st=os.stat(sys.argv[1]);print(st.st_dev,st.st_ino)' "$LOCKFILE")
+# (c7) Canonical-path corroboration: even with a GENUINE inherited lock fd, if the canonical .lock
+# pathname has been swapped to a different inode, verify fails closed — the pathname can never
+# redefine the expected (original) identity.
+exec 8<>"$LOCKFILE"; flock -n 8 || bad "could not hold lock for canonical-swap case"
+SWAP="$WORK/swapped_canonical_0600"; : >"$SWAP"; chmod 600 "$SWAP"
+rm -f "$LOCKFILE"; ln "$SWAP" "$LOCKFILE"
+rc=0; vfd 8 >"$WORK/vfd7.log" 2>&1 || rc=$?
+flock -u 8; exec 8>&-
+[[ "$rc" != 0 ]] && grep -q 'canonical-lock-path-replaced' "$WORK/vfd7.log" \
+  && ok "verify-inherited-fd fails closed when the canonical .lock pathname is swapped from the original inode even with a genuine fd (pathname never redefines expected identity)" \
+  || { bad "canonical path replacement not detected (rc=$rc)"; cat "$WORK/vfd7.log"; }
+mk_app_receipt
+
+# deploy.sh must VALIDATE the inherited fd, not trust the numeric marker: a forged
+# MARINE_LIFECYCLE_LOCK_FD pointing at a non-lock (0644) fd is refused before any read/up.
+FORGED2="$WORK/forged_marker_fd"; : >"$FORGED2"; chmod 644 "$FORGED2"
+CALLN=$((CALLN+1)); UP_MARKER="$WORK/up.forged.$CALLN"; rm -f "$UP_MARKER"; RC=0
+env DOCKER="$FAKE_DOCKER" MARINE_DEPLOY_BASE_COMPOSE="$BASE_COMPOSE" \
+    MARINE_DEPLOY_CATALOG_OVERLAY="$CATALOG_OVERLAY" MARINE_DEPLOY_SOP_OVERLAY="$SOP_OVERLAY" \
+    FAKE_CONFIG_JSON_FILE="$CFG_OK" FAKE_UP_MARKER="$UP_MARKER" \
+    MARINE_LIFECYCLE_LOCK_FD=6 \
+    bash "$DEPLOY_SH" --deploy 6<"$FORGED2" >"$WORK/out.log" 2>&1 || RC=$?
+if [[ "$RC" != 0 && ! -f "$UP_MARKER" ]] \
+   && grep -q 'inherited lifecycle lock fd failed validation' "$WORK/out.log" \
+   && ! grep -q 'required tools present' "$WORK/out.log"; then
+  ok "deploy.sh refuses a forged inherited lock-fd marker (validates the fd, never trusts the number) before any read/up"
+else bad "forged inherited marker not refused (rc=$RC)"; cat "$WORK/out.log"; fi
+
+# SOP-only remains receipt-less; combined and rollback+SOP requests fail closed.
+mk_app_receipt
+receipt_before="$(sha256sum "$APPJSON" | cut -d' ' -f1)"
+run_deploy_sop_deploy 'WIJAYA_SOP_GATE:PASS' "$CFG_SOP_OK"
+[[ "$RC" == 0 && "$(sha256sum "$APPJSON" | cut -d' ' -f1)" == "$receipt_before" ]] \
+  && ok "SOP-only deploy behavior remains receipt-less and does not alter app.json" \
+  || { bad "SOP-only receipt isolation (rc=$RC)"; cat "$WORK/out.log"; }
+CALLN=$((CALLN+1)); UP_MARKER="$WORK/up.combined.$CALLN"; rm -f "$UP_MARKER"; RC=0
+env DOCKER="$FAKE_DOCKER" FAKE_UP_MARKER="$UP_MARKER" bash "$DEPLOY_SH" --deploy --with-sop-worker >"$WORK/out.log" 2>&1 || RC=$?
+[[ "$RC" != 0 && ! -f "$UP_MARKER" ]] && grep -q 'atomic cross-scope rollback is unavailable' "$WORK/out.log" \
+  && ok "combined app+SOP deploy is rejected because atomic cross-scope rollback is unsupported" \
+  || { bad "combined deploy rejection (rc=$RC)"; cat "$WORK/out.log"; }
+RC=0
+env DOCKER="$FAKE_DOCKER" FAKE_UP_MARKER="$UP_MARKER" bash "$DEPLOY_SH" --rollback --with-sop-worker >"$WORK/out.log" 2>&1 || RC=$?
+[[ "$RC" != 0 ]] && grep -q -- '--rollback is app-only' "$WORK/out.log" \
+  && ok "--rollback rejects SOP flags/service selection" \
+  || { bad "rollback SOP rejection (rc=$RC)"; cat "$WORK/out.log"; }
+
+# Production source has no receipt/test-mode path override and no multi-scope receipt machinery.
+if ! grep -qE 'MARINE_DEPLOY_(RECEIPT_DIR|TEST_MODE)|combined\.json|sop\.json|materialize_overlay|roll-forward' "$DEPLOY_SH"; then
+  ok "production deploy source exposes only fixed app.json/lock and no multi-scope state machine"
+else bad "obsolete/path-overridable receipt machinery remains"; fi
 
 echo "-------------------------------------------"
 echo "PASS=$pass FAIL=$fail"

@@ -108,3 +108,6 @@ Procfile.worktree
 # Local deployment backups/config snapshots
 .env.bak-*
 backups/
+
+# Canonical deployment rollback receipts (owner-only; never committed, hold no secrets)
+custom/wijaya/deploy/.receipts/

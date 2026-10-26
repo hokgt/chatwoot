@@ -230,26 +230,41 @@ if [[ -f "$CANONICAL" ]]; then
   fi
 fi
 
-# 4d) G2 — app image provenance and TOCTOU closure. Require the exact runtime
-# invocation order and the dedicated app-only Compose interpolation variable.
+# 4d) G2 — app image provenance with a SINGLE post-materialization Compose render. The config is
+# rendered once (from the materialized immutable assets); the verified immutable image ID is pinned
+# into those EXACT bytes IN MEMORY via jq (no second `docker compose config` render) and the
+# captured bytes are validated before `compose up` consumes them on stdin — so the mutable tag is
+# never re-rendered after verification (no TOCTOU).
 if [[ -f "$CANONICAL" ]]; then
   grep -qE '^[[:space:]]{4}image:[[:space:]]+\$\{MARINE_DEPLOY_APP_IMAGE:-chatwoot-wijaya:devbot-[0-9a-f]{10}\}[[:space:]]*$' docker-compose.deploy.yaml \
     || err "base deploy compose app image must use the exact dedicated immutable-image interpolation"
-  app_gate_call_line="$(grep -nE '^[[:space:]]{2}validate_app_image_provenance_before_recreate "\$json"$' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
-  app_pin_call_line="$(grep -nE '^[[:space:]]{4}pin_app_image_for_recreate$' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
-  app_json_bind_line="$(grep -nE '^[[:space:]]{4}json="\$APP_PINNED_CONFIG_JSON"$' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
-  app_recreate_call_line="$(grep -nE '^[[:space:]]{2}recreate_services$' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
-  if [[ -z "$app_gate_call_line" || -z "$app_pin_call_line" || -z "$app_json_bind_line" || -z "$app_recreate_call_line" \
-     || "$app_gate_call_line" -ge "$app_pin_call_line" || "$app_pin_call_line" -ge "$app_json_bind_line" \
-     || "$app_json_bind_line" -ge "$app_recreate_call_line" ]]; then
-    err "app provenance gate -> immutable pin -> pinned config -> recreate ordering is invalid"
+  # The obsolete export+re-render pin machinery must be gone: pinning is an in-memory jq transform of
+  # the single rendered config, not a second Compose render (for app deploy OR rollback).
+  if grep -qE 'pin_app_image_for_recreate|pin_rollback_image|APP_PINNED_CONFIG_JSON|export MARINE_DEPLOY_APP_IMAGE=' "$CANONICAL"; then
+    err "obsolete export+re-render app pin machinery remains (the single rendered config must be jq-pinned in memory)"
   fi
-  app_export_line="$(grep -nE '^[[:space:]]{2}export MARINE_DEPLOY_APP_IMAGE="\$APP_VERIFIED_IMAGE_ID"$' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
-  app_rerender_line="$(grep -nE '^[[:space:]]{2}APP_PINNED_CONFIG_JSON="\$\(resolve_config_json\)"$' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
-  app_assert_line="$(grep -n 'rendered image is not bound to the verified immutable app image ID' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
-  if [[ -z "$app_export_line" || -z "$app_rerender_line" || -z "$app_assert_line" \
-     || "$app_export_line" -ge "$app_rerender_line" || "$app_rerender_line" -ge "$app_assert_line" ]]; then
-    err "app pin helper must export the verified ID, re-render Compose, then assert selected service images"
+  # capture_app_compose_config must NOT re-render Compose; it transforms the passed-in JSON only.
+  if awk '/^capture_app_compose_config\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$CANONICAL" | grep -q 'resolve_config_json'; then
+    err "capture_app_compose_config must not re-render Compose (no resolve_config_json inside the capture)"
+  fi
+  # capture pins BOTH app services to the verified immutable ID in memory and re-validates the strict
+  # catalog service/mount contract on the EXACT captured bytes fed to compose up.
+  grep -qE '\.services\.rails\.image[[:space:]]+= \$img' "$CANONICAL" \
+    || err "capture must pin the rails image to the verified immutable ID in memory (jq)"
+  grep -qE '\.services\.sidekiq\.image[[:space:]]+= \$img' "$CANONICAL" \
+    || err "capture must pin the sidekiq image to the verified immutable ID in memory (jq)"
+  if ! awk '/^capture_app_compose_config\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$CANONICAL" \
+       | grep -qF 'validate_service_catalog_contract "$captured"'; then
+    err "capture must re-validate the catalog service/mount contract on the captured bytes"
+  fi
+  # Ordering: the provenance gate resolves the immutable ID BEFORE the single-render config is
+  # captured/pinned, and the capture happens before recreation.
+  app_gate_call_line="$(grep -nE '^[[:space:]]{2}validate_app_image_provenance_before_recreate "\$json"$' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  app_capture_line="$(grep -nF 'capture_app_compose_config "$APP_EXPECTED_GIT_SHA" "$json"' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  app_recreate_call_line="$(grep -nF '( recreate_services )' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  if [[ -z "$app_gate_call_line" || -z "$app_capture_line" || -z "$app_recreate_call_line" \
+     || "$app_gate_call_line" -ge "$app_capture_line" || "$app_capture_line" -ge "$app_recreate_call_line" ]]; then
+    err "app provenance gate -> in-memory capture/pin -> recreate ordering is invalid"
   fi
 fi
 
@@ -273,6 +288,112 @@ while IFS= read -r f; do
     err "competing deployment/recreation entrypoint bypasses the canonical script: $f"
   fi
 done < <( { git ls-files -- 'custom/wijaya'; git ls-files --others --exclude-standard -- 'custom/wijaya'; } | sort -u )
+
+# 6) Minimal APP-only receipt-backed rollback contract (static; no Docker/mutation).
+RECEIPT_DIR_REL='custom/wijaya/deploy/.receipts'
+RECEIPT_HELPER_REL='custom/wijaya/deploy/receipt.py'
+git check-ignore -q "$RECEIPT_DIR_REL/app.json" \
+  || err "fixed receipt directory '$RECEIPT_DIR_REL/' is not git-ignored"
+git check-ignore -q "$RECEIPT_DIR_REL/assets/deadbeef/docker-compose.deploy.yaml" \
+  || err "persistent per-commit compose assets under '$RECEIPT_DIR_REL/assets/' are not git-ignored"
+[[ -s "$RECEIPT_HELPER_REL" ]] || err "receipt helper missing: $RECEIPT_HELPER_REL"
+if [[ -s "$RECEIPT_HELPER_REL" ]]; then
+  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$RECEIPT_HELPER_REL" 2>/dev/null \
+    || err "receipt helper has Python syntax errors"
+  # Receipt helper hardening: openat/O_NOFOLLOW directory-fd operations, atomic fsync writes,
+  # strict canonical JSON, the lifecycle lock-exec, and the persistent-asset materializer.
+  for needle in O_NOFOLLOW O_DIRECTORY 'st_uid != os.getuid()' 'type(obj["schema_version"]) is not int' \
+                sort_keys=True 'os.fsync(fd)' \
+                'os.rename(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)' 'os.fsync(dir_fd)' \
+                'APP_SERVICES = ["rails", "sidekiq"]' 'fcntl.flock' 'os.set_inheritable' \
+                MARINE_LIFECYCLE_LOCK_FD 'def lock_exec' 'def place_asset' 'def verify_inherited_fd' \
+                MARINE_LIFECYCLE_LOCK_DEV MARINE_LIFECYCLE_LOCK_INO \
+                'st.st_dev != int(exp_dev) or st.st_ino != int(exp_ino)' \
+                'canon.st_dev != int(exp_dev) or canon.st_ino != int(exp_ino)' \
+                inherited-fd-not-original-lock canonical-lock-path-replaced; do
+    grep -qF "$needle" "$RECEIPT_HELPER_REL" || err "receipt helper is missing required contract: $needle"
+  done
+  grep -qF 'RECEIPT_FILE = os.path.join(RECEIPT_DIR, "app.json")' "$RECEIPT_HELPER_REL" \
+    || err "receipt helper must use only fixed app.json"
+fi
+
+if [[ -f "$CANONICAL" ]]; then
+  grep -q -- '--rollback' "$CANONICAL" || err "canonical entrypoint must expose --rollback"
+  grep -q "RECEIPT_APP_NAME='app.json'" "$CANONICAL" || err "rollback must use fixed app.json"
+  grep -q '^capture_app_receipt()' "$CANONICAL" || err "app deploy must capture current known-good runtime"
+  grep -q '^rollback_from_receipt()' "$CANONICAL" || err "app rollback implementation missing"
+  grep -q '^assert_rollback_overlays_match()' "$CANONICAL" || err "rollback must reject receipt overlay drift"
+  grep -q '^materialize_commit_assets()' "$CANONICAL" || err "deploy/rollback must materialize immutable per-commit compose assets"
+  grep -q '^gate_current_runtime_config_files()' "$CANONICAL" || err "forward deploy must prove the current runtime's config_files provenance"
+  grep -qF -- '--project-directory' "$CANONICAL" || err "materialized assets must run with --project-directory the repo"
+  grep -q '^recheck_forward_overlays()' "$CANONICAL" || err "forward deploy must recheck HEAD/assets before up"
+  grep -q 'enter_lifecycle_lock' "$CANONICAL" || err "app lifecycle lock missing"
+  grep -q 'lock-exec' "$CANONICAL" || err "lifecycle lock must be acquired through the openat/no-follow helper"
+  grep -q 'MARINE_LIFECYCLE_LOCK_FD' "$CANONICAL" || err "lifecycle lock must re-exec under an inherited locked fd"
+  # Retained-lock ordering: the lock gate must run at the very TOP, before readiness validation,
+  # git repo-root resolution, the working-dir change, and argument parsing — so no readiness/git/
+  # repo/project/tool/state read ever precedes the lock re-exec.
+  grep -q 'verify-inherited-fd' "$CANONICAL" \
+    || err "second pass must VALIDATE the inherited locked fd (verify-inherited-fd), not trust the numeric marker"
+  lk_gate_line="$(grep -nF 'enter_lifecycle_lock_before_any_read "$@"' "$CANONICAL" | tail -1 | cut -d: -f1 || true)"
+  lk_readiness_line="$(grep -nxF 'validate_readiness_tunables' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  lk_repo_line="$(grep -nF 'REPO_ROOT="$(resolve_repo_root)"' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  lk_cd_line="$(grep -nF 'cd "$REPO_ROOT"' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  lk_parse_line="$(grep -nxF 'parse_args "$@"' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  if [[ -z "$lk_gate_line" || -z "$lk_readiness_line" || -z "$lk_repo_line" || -z "$lk_cd_line" || -z "$lk_parse_line" \
+     || "$lk_gate_line" -ge "$lk_readiness_line" || "$lk_gate_line" -ge "$lk_repo_line" \
+     || "$lk_gate_line" -ge "$lk_cd_line" || "$lk_gate_line" -ge "$lk_parse_line" ]]; then
+    err "lifecycle-lock gate must precede readiness validation, repo resolution, cd, and argument parsing (no pre-lock state read)"
+  fi
+  grep -q 'exit "\$deploy_status"' "$CANONICAL" || err "automatic rollback must preserve original status"
+  grep -qF 'if ( rollback_from_receipt ); then' "$CANONICAL" || err "automatic rollback must use fixed app.json"
+  grep -q '^  gate_app_runtime_image_identity$' "$CANONICAL" || err "post-health must verify rails+sidekiq image identity"
+  # Exact commit authority (type == commit, HEAD == trusted origin/devbot, ancestry) with no fetch.
+  grep -q '^validate_exact_commit_authority()' "$CANONICAL" || err "forward deploy must prove exact commit authority"
+  grep -q 'cat-file -t' "$CANONICAL" || err "commit authority must assert the object type is exactly commit"
+  grep -q 'refs/remotes/origin/devbot' "$CANONICAL" || err "HEAD must equal the live trusted tip origin/devbot"
+  grep -q 'merge-base --is-ancestor' "$CANONICAL" || err "OLD runtime commit must be proven ancestry"
+  grep -q 'already equals the verified target image ID' "$CANONICAL" || err "no-op same-ID deploy must be refused before receipt write"
+  grep -q 'ROLLBACK_DISTINCT_FROM' "$CANONICAL" || err "automatic rollback must target OLD distinct from NEW"
+  grep -q 'combined app + SOP deploy is not supported' "$CANONICAL" || err "combined app+SOP must fail closed"
+  grep -q -- '--rollback is app-only' "$CANONICAL" || err "rollback must reject SOP selection"
+  if grep -qE 'MARINE_DEPLOY_(RECEIPT_DIR|TEST_MODE)|combined\.json|sop\.json|materialize_overlay|roll-forward' "$CANONICAL"; then
+    err "obsolete multi-scope/path-override/snapshot rollback machinery remains"
+  fi
+  cap_line="$(grep -n '^  capture_app_receipt$' "$CANONICAL" | cut -d: -f1)"
+  rec_line="$(grep -n -F -- '( recreate_services )' "$CANONICAL" | cut -d: -f1)"
+  [[ -n "$cap_line" && -n "$rec_line" && "$cap_line" -lt "$rec_line" ]] \
+    || err "app.json must be durable before compose up"
+
+  # 7) Finding 2 — Compose asset check-to-use closure. The app (rails+sidekiq) recreation must feed
+  #    the captured, fully-resolved compose config to `compose up` on stdin (-f -), never reopening a
+  #    mutable asset path; health must validate the injected non-secret source-revision/config-hash
+  #    labels against the embedded runtime SHA + trusted git blobs, with config_files only a one-time
+  #    historical fallback; and the captured config must never be persisted to disk or printed.
+  grep -q '^capture_app_compose_config()' "$CANONICAL" || err "app deploy must capture the resolved compose config in memory"
+  grep -q '^compose_source_config_hash()' "$CANONICAL" || err "config-hash label must be recomputable from the trusted git blobs"
+  grep -q '^gate_app_compose_provenance()' "$CANONICAL" || err "health must validate the injected compose provenance labels"
+  grep -q '^prove_app_service_compose_source()' "$CANONICAL" || err "health must prove app compose source from the injected labels"
+  grep -q '^_historical_config_files_proof()' "$CANONICAL" || err "config_files provenance must survive only as a one-time historical fallback"
+  grep -q "COMPOSE_SOURCE_REVISION_LABEL='com.wijaya.chatwoot.compose-source-revision'" "$CANONICAL" \
+    || err "deploy must inject the non-secret compose source-revision label"
+  grep -q "COMPOSE_CONFIG_HASH_LABEL='com.wijaya.chatwoot.compose-config-sha256'" "$CANONICAL" \
+    || err "deploy must inject the non-secret compose config-hash label"
+  grep -qF -- '-f - up -d --no-deps --force-recreate --no-build' "$CANONICAL" \
+    || err "app recreation must feed the captured compose config to compose up on stdin (-f -)"
+  grep -qF 'capture_app_compose_config "$RB_TARGET_SHA"' "$CANONICAL" \
+    || err "rollback must recreate from the captured target-commit compose config (stdin)"
+  # The captured config stays in memory: fed to compose up via a pipe, never redirected to a file.
+  grep -qF -- 'printf '\''%s'\'' "$APP_CAPTURED_COMPOSE" \' "$CANONICAL" \
+    || err "captured compose config must be piped to compose up, not materialized to a file"
+  if grep -qE '\$APP_CAPTURED_COMPOSE"[[:space:]]*>' "$CANONICAL"; then
+    err "captured compose config must never be written to a file (no resolved-config persistence)"
+  fi
+  # Ordering: both the app pin (capture) and the receipt must be durable before recreation.
+  capture_cfg_line="$(grep -nF 'capture_app_compose_config "$APP_EXPECTED_GIT_SHA"' "$CANONICAL" | head -1 | cut -d: -f1 || true)"
+  [[ -n "$capture_cfg_line" && -n "$rec_line" && "$capture_cfg_line" -lt "$rec_line" ]] \
+    || err "forward deploy must capture the compose config before recreation"
+fi
 
 if [[ "$fail" -ne 0 ]]; then
   exit 1

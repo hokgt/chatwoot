@@ -41,7 +41,7 @@ RSpec.describe 'Wijaya native seams fail open when Core::Hooks is undefined' do
       allow(service).to receive_messages(
         should_send_out_of_office_message?: true,
         should_send_greeting?: false,
-        conversation: instance_double(Conversation),
+        conversation: instance_double(Conversation, pending?: false),
         inbox: instance_double(Inbox, enable_email_collect: false)
       )
       # The Enterprise override wraps trigger_templates (super) with a Captain-response

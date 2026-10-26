@@ -64,6 +64,14 @@ file) for the in-memory `PG.connect` call only. It is never persisted, logged, e
 returned through the API. Deliver it the same way as the provisioning secret — a read-only
 file mounted into the containers — and keep the file out of version control.
 
+## Catalog freshness — NOT VERIFIED
+
+Catalog freshness is **NOT VERIFIED**. `marine_ai.projection_revision` is per-entity evidence,
+not an authoritative global successful-publication authority, so it cannot establish global
+catalog freshness or completeness. The runtime read-only role remains item-only. Rollout cannot
+claim freshness closure until the external producer exposes an authoritative singleton
+successful-publication revision plus a `completed_at` timestamp with atomic publication semantics.
+
 ## Deployment (MANDATORY when Marine is enabled)
 
 The catalog secret is required by **both** the `rails` and `sidekiq` services: rails and
@@ -84,7 +92,18 @@ custom/wijaya/deploy/deploy.sh --check
 
 # recreate rails+sidekiq (base + mandatory catalog overlay, no build, no migrations)
 custom/wijaya/deploy/deploy.sh --deploy
+
+# restore the prior verified immutable images from the canonical receipt
+custom/wijaya/deploy/deploy.sh --rollback
 ```
+
+A deploy writes a versioned, secret-free pending receipt before recreation and promotes it
+only after the unchanged runtime gates pass. Verified receipts live in the ignored repo-local
+`custom/wijaya/deploy/.receipts/` directory (`0700`; files `0600`). Rollback refuses malformed,
+unknown-version, symlinked, wrong-owner/permission, missing-image, SHA-mismatched, mixed-image,
+or compose-overlay-drifted receipts; it retains the mandatory catalog overlay and recreates
+with `--no-deps --force-recreate --no-build`. A failed deploy attempts that receipt-backed
+rollback once and still exits with the original deploy failure status.
 
 The catalog overlay lives at
 `custom/wijaya/batteries/marine_ai/deploy/docker-compose.marine-catalog.yml` and is
