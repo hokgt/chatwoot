@@ -6,9 +6,12 @@
 # initializer. No loader creates the CustomRoles namespace, so this nested
 # declaration is its sole creator; a compact form raises `uninitialized constant
 # Wijaya::Batteries::CustomRoles` (one of the exact CI collection failures).
+require Rails.root.join('custom/wijaya/batteries/custom_roles/follow_up_provenance')
+
 module Wijaya
   module Batteries
     module CustomRoles
+      # rubocop:disable Metrics/ModuleLength
       module Hooks
         CONVERSATION_MANAGE = 'conversation_manage'
         CONVERSATION_UNASSIGNED_MANAGE = 'conversation_unassigned_manage'
@@ -72,6 +75,46 @@ module Wijaya
 
         def conversation_allowed?(conversation, user, account)
           Conversations::PermissionFilterService.new(account.conversations, user, account).perform.exists?(id: conversation.id)
+        end
+
+        # Conversation-bound composer/copilot AI task authorization. The Marine tasks
+        # battery controller and the native Captain tasks_controller touchpoint call
+        # this BEFORE any service instantiation / transcript read / LLM boundary, so
+        # AI composer endpoints enforce exactly the same conversation visibility as
+        # direct conversation access (ConversationsController#conversation):
+        #   - a required display id that is blank, unknown, or cross-account ->
+        #     ActiveRecord::RecordNotFound (404)
+        #   - custom-role agents -> explicit 403 conversation_forbidden_response
+        #     (role-scoped through Enterprise::ConversationPolicy#show?)
+        #   - everyone else (administrator / agent bot / inbox / team access) ->
+        #     Pundit::NotAuthorizedError (401), mirroring `authorize(record, :show?)`
+        #     with the exact ApplicationController#pundit_user shape.
+        # Returns the authorized Conversation, nil when `required:` is false and the
+        # display id is blank (context-free rewrite path), or the :denied symbol
+        # once the custom-role 403 response was rendered (a before_action halts on
+        # render; an action-body caller must return).
+        def authorize_composer_conversation!(controller:, display_id:, required: true)
+          return nil if display_id.blank? && !required
+
+          conversation = Current.account.conversations.find_by!(display_id: display_id)
+
+          policy = composer_conversation_policy(conversation)
+          return conversation if policy.show?
+
+          if explicit_conversation_forbidden_response?(account_user: Current.account_user, action_name: controller.action_name)
+            controller.render json: conversation_forbidden_response, status: :forbidden
+            return :denied
+          end
+
+          raise Pundit::NotAuthorizedError, policy: policy, record: conversation
+        end
+
+        # ConversationPolicy built with the exact pundit_user shape
+        # ApplicationController#pundit_user uses, so enterprise/custom-role
+        # prepends stay in play identically to Pundit's own authorize path.
+        def composer_conversation_policy(conversation)
+          user_context = { user: Current.user, account: Current.account, account_user: Current.account_user }
+          ::ConversationPolicy.new(user_context, conversation)
         end
 
         def filter_by_permissions(accessible_conversations:, permissions:, user:)
@@ -145,6 +188,7 @@ module Wijaya
           agent.current_account_user.update!(custom_role_id: custom_role_id)
         end
       end
+      # rubocop:enable Metrics/ModuleLength
     end
   end
 end

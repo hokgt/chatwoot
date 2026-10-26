@@ -17,7 +17,12 @@ class Marine::Assistant < ApplicationRecord
   has_many :messages, as: :sender, dependent: :nullify
 
   store_accessor :config, :temperature, :feature_faq, :feature_memory, :feature_contact_attributes, :product_name, :welcome_message,
-                 :handoff_message, :resolution_message, :instructions
+                 :handoff_message, :resolution_message, :instructions, :language, :memory_idle_timeout_hours
+
+  MEMORY_IDLE_TIMEOUT_DEFAULT = 2
+  MEMORY_IDLE_TIMEOUT_RANGE = (1..24)
+  # Operator-only Development override key; never exposed through the assistants UI/API permit list.
+  MEMORY_IDLE_TIMEOUT_TEST_MINUTES_RANGE = (5..60)
 
   validates :name, :description, :account_id, presence: true
 
@@ -31,6 +36,25 @@ class Marine::Assistant < ApplicationRecord
   def available_agent_tools = []
 
   def available_tool_ids = []
+
+  def memory_idle_timeout_hours
+    value = config.to_h['memory_idle_timeout_hours']
+    integer = Integer(value, exception: false)
+    MEMORY_IDLE_TIMEOUT_RANGE.cover?(integer) ? integer : MEMORY_IDLE_TIMEOUT_DEFAULT
+  end
+
+  # Canonical idle-window duration shared by the delayed enqueue (ResponseBuilderJob#schedule_idle_summary)
+  # and the idle eligibility check (ContactNotesService#idle?). A valid integer
+  # memory_idle_timeout_test_minutes (5..60) shortens the window for Development testing; any
+  # other value falls back to the public memory_idle_timeout_hours contract above.
+  def memory_idle_duration
+    raw = config.to_h['memory_idle_timeout_test_minutes']
+    # Strict integer typing: ONLY raw.is_a?(Integer) may activate the override. Every string
+    # representation ('5', ' 5 ', '+5', '05', '0x3c'), Float, boolean, or nil falls back.
+    return raw.minutes if raw.is_a?(Integer) && MEMORY_IDLE_TIMEOUT_TEST_MINUTES_RANGE.cover?(raw)
+
+    memory_idle_timeout_hours.hours
+  end
 
   def push_event_data
     { id: id, name: name, avatar_url: avatar_url.presence || default_avatar_url, description: description, created_at: created_at,

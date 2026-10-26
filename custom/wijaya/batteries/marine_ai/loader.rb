@@ -70,7 +70,6 @@ module Wijaya
         require_dependency ROOT.join('app/models/concerns/wijaya/marine/account_extensions').to_s
         require_dependency ROOT.join('app/models/concerns/wijaya/marine/inbox_extensions').to_s
         require_dependency ROOT.join('app/models/concerns/wijaya/marine/user_extensions').to_s
-        require_dependency ROOT.join('app/models/concerns/wijaya/marine/conversation_extensions').to_s
         require_dependency ROOT.join('app/models/concerns/wijaya/marine/active_storage_analysis_guard').to_s
         require_dependency ROOT.join('app/services/wijaya/marine/hooks').to_s
       end
@@ -80,7 +79,6 @@ module Wijaya
           Account.include Wijaya::Marine::AccountExtensions unless Account < Wijaya::Marine::AccountExtensions
           Inbox.include Wijaya::Marine::InboxExtensions unless Inbox < Wijaya::Marine::InboxExtensions
           User.include Wijaya::Marine::UserExtensions unless User < Wijaya::Marine::UserExtensions
-          Conversation.include Wijaya::Marine::ConversationExtensions unless Conversation < Wijaya::Marine::ConversationExtensions
           unless ActiveStorage::Attachment < Wijaya::Marine::ActiveStorageAnalysisGuard
             # Prepend inside the guarded to_prepare block, mirroring the sibling include calls above; an
             # on_load hook here would change load timing and break that consistency.

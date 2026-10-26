@@ -3,6 +3,16 @@
 require 'rails_helper'
 
 RSpec.describe Marine::Documents::Sop::ExtractionService do
+  # Blocker 2: this spec opens a REAL CommandRunner workspace (no external command is
+  # executed — the extractor is doubled), so it runs under the explicit safe test
+  # contract like every other spec that instantiates the runner outside the sandbox.
+  around do |example|
+    ENV['MARINE_SOP_SANDBOX_TEST_ONLY'] = '1'
+    example.run
+  ensure
+    ENV.delete('MARINE_SOP_SANDBOX_TEST_ONLY')
+  end
+
   # Regression for the production async PNG blocker: real image/PDF bytes contain byte
   # sequences that are NOT valid UTF-8, so streaming the ActiveStorage download into a
   # text-mode sink raised Encoding::UndefinedConversionError immediately after download.

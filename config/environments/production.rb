@@ -43,7 +43,10 @@ Rails.application.configure do
   config.active_storage.service = ENV.fetch('ACTIVE_STORAGE_SERVICE', 'local').to_sym
 
   # Force all access to the app over SSL, use Strict-Transport-Security, and use secure cookies.
-  config.force_ssl = ActiveModel::Type::Boolean.new.cast(ENV.fetch('FORCE_SSL', false))
+  # WIJAYA_CUSTOM_START proxy_https
+  require Rails.root.join('custom/wijaya/batteries/proxy_https/policy')
+  Wijaya::Batteries::ProxyHttps::Policy.apply!(config)
+  # WIJAYA_CUSTOM_END proxy_https
 
   # Use the lowest log level to ensure availability of diagnostic information
   # when problems arise.

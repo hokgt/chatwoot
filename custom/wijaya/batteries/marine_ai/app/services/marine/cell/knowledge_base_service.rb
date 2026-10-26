@@ -18,6 +18,13 @@ class Marine::Cell::KnowledgeBaseService
     retriever.retrieve(query, limit: limit)
   end
 
+  # Batch-safe approved, assistant-scoped CANDIDATE load (Phase 3 product-description binding): the
+  # approved responses whose question OR answer contains one of `keys`, in one bounded query. Candidate
+  # retrieval only — the caller re-verifies exact identity before binding.
+  def approved_mentioning(keys)
+    retriever.approved_mentioning(keys)
+  end
+
   private
 
   attr_reader :assistant

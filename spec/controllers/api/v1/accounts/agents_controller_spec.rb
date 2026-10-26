@@ -66,7 +66,9 @@ RSpec.describe 'Agents API', type: :request do
       it 'deletes the agent and user object if associated with only one account' do
         expect(account.users).to include(other_agent)
 
-        perform_enqueued_jobs(only: DeleteObjectJob) do
+        # Perform the whole enqueued chain (Agents::DestroyJob then the DeleteObjectJob it enqueues
+        # last) so the serialized user deletion actually runs.
+        perform_enqueued_jobs do
           delete "/api/v1/accounts/#{account.id}/agents/#{other_agent.id}",
                  headers: admin.create_new_auth_token,
                  as: :json
@@ -74,13 +76,14 @@ RSpec.describe 'Agents API', type: :request do
 
         expect(response).to have_http_status(:success)
         expect(account.reload.users).not_to include(other_agent)
+        expect(User.exists?(other_agent.id)).to be(false)
       end
 
       it 'deletes only the agent object when user is associated with multiple accounts' do
         other_account = create(:account)
         create(:account_user, account_id: other_account.id, user_id: other_agent.id)
 
-        perform_enqueued_jobs(only: DeleteObjectJob) do
+        perform_enqueued_jobs do
           delete "/api/v1/accounts/#{account.id}/agents/#{other_agent.id}",
                  headers: admin.create_new_auth_token,
                  as: :json
@@ -88,7 +91,24 @@ RSpec.describe 'Agents API', type: :request do
 
         expect(response).to have_http_status(:success)
         expect(account.reload.users).not_to include(other_agent)
+        expect(User.exists?(other_agent.id)).to be(true) # preserved: still belongs to other_account
         expect(other_agent.account_users.count).to eq(1) # Should only be associated with other_account now
+      end
+
+      # WIJAYA deferred_auto_assignment — the deletion race fix: the controller/callback path must
+      # NOT enqueue a sibling DeleteObjectJob alongside Agents::DestroyJob (which could FK-clear
+      # conversations.assignee_id before the job captured deletion provenance). The User deletion is
+      # enqueued ONLY by Agents::DestroyJob, after its provenance/unassignment/dispatch — so from the
+      # request the race is structurally impossible.
+      it 'does not enqueue a sibling DeleteObjectJob from the controller (serialized, no provenance race)' do
+        delete "/api/v1/accounts/#{account.id}/agents/#{other_agent.id}",
+               headers: admin.create_new_auth_token,
+               as: :json
+
+        expect(response).to have_http_status(:success)
+        enqueued = enqueued_jobs.map { |job| job[:job] }
+        expect(enqueued).to include(Agents::DestroyJob)
+        expect(enqueued).not_to include(DeleteObjectJob)
       end
     end
   end

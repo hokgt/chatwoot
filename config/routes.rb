@@ -590,6 +590,14 @@ Rails.application.routes.draw do
         end
 
         resources :csat_survey, only: [:show, :update]
+        # WIJAYA_CUSTOM_START whatsapp_web_inbox
+        begin
+          require Rails.root.join('custom/wijaya/batteries/whatsapp_web_inbox/public_routes').to_s
+          Wijaya::Batteries::WhatsappWebInbox::PublicRoutes.draw(self)
+        rescue StandardError, ScriptError => e
+          Rails.logger.error("[Wijaya] whatsapp_web public routes failed: #{e.class}")
+        end
+        # WIJAYA_CUSTOM_END whatsapp_web_inbox
       end
     end
   end
@@ -629,6 +637,14 @@ Rails.application.routes.draw do
   post 'webhooks/instagram', to: 'webhooks/instagram#events'
   post 'webhooks/tiktok', to: 'webhooks/tiktok#events'
   post 'webhooks/shopify', to: 'webhooks/shopify#events'
+  # WIJAYA_CUSTOM_START wecom_channel
+  begin
+    require Rails.root.join('custom/wijaya/batteries/wecom_channel/routes').to_s
+    Wijaya::Batteries::WecomChannel::Routes.draw(self)
+  rescue StandardError, ScriptError => e
+    Rails.logger.error("[Wijaya] wecom routes failed: #{e.class}")
+  end
+  # WIJAYA_CUSTOM_END wecom_channel
 
   namespace :twitter do
     resource :callback, only: [:show]

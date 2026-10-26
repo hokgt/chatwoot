@@ -189,3 +189,8 @@ class Api::V1::Accounts::InboxesController < Api::V1::Accounts::BaseController
 end
 
 Api::V1::Accounts::InboxesController.prepend_mod_with('Api::V1::Accounts::InboxesController')
+# WIJAYA_CUSTOM_START wecom_channel
+if defined?(Wijaya::Batteries::WecomChannel::InboxesControllerExtension)
+  Api::V1::Accounts::InboxesController.prepend(Wijaya::Batteries::WecomChannel::InboxesControllerExtension)
+end
+# WIJAYA_CUSTOM_END wecom_channel

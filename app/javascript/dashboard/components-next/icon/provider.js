@@ -14,6 +14,9 @@ const channelTypeIconMap = {
   'Channel::Whatsapp': 'i-woot-whatsapp',
   'Channel::Instagram': 'i-woot-instagram',
   'Channel::Tiktok': 'i-woot-tiktok',
+  // WIJAYA_CUSTOM_START wecom_channel
+  'Channel::Wecom': 'i-ri-wechat-fill',
+  // WIJAYA_CUSTOM_END wecom_channel
 };
 
 const providerIconMap = {

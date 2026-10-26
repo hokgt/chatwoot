@@ -1,0 +1,259 @@
+{
+  "feature": "wecom_channel",
+  "files": [
+    {
+      "path": "config/routes.rb",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "  post 'webhooks/shopify', to: 'webhooks/shopify#events'\n",
+          "block": "  # WIJAYA_CUSTOM_START wecom_channel\n  begin\n    require Rails.root.join('custom/wijaya/batteries/wecom_channel/routes').to_s\n    Wijaya::Batteries::WecomChannel::Routes.draw(self)\n  rescue StandardError, ScriptError => e\n    Rails.logger.error(\"[Wijaya] wecom routes failed: #{e.class}\")\n  end\n  # WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/jobs/send_reply_job.rb",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "    message = Message.find(message_id)\n",
+          "block": "    # WIJAYA_CUSTOM_START wecom_channel\n    return if Wijaya::Batteries::Core::Hooks.dispatch(:wecom_channel, :send_reply, default: false, message: message)\n\n    # WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/models/account.rb",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "  has_many :web_widgets, dependent: :destroy_async, class_name: '::Channel::WebWidget'\n",
+          "block": "  # WIJAYA_CUSTOM_START wecom_channel\n  has_many :wecom_channels, dependent: :destroy_async, class_name: '::Channel::Wecom'\n  # WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/services/conversations/message_window_service.rb",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "end\n\n",
+          "block": "# WIJAYA_CUSTOM_START wecom_channel\nif defined?(Wijaya::Batteries::WecomChannel::MessageWindowExtension)\n  Conversations::MessageWindowService.prepend(Wijaya::Batteries::WecomChannel::MessageWindowExtension)\nend\n# WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/controllers/api/v1/accounts/inboxes_controller.rb",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "Api::V1::Accounts::InboxesController.prepend_mod_with('Api::V1::Accounts::InboxesController')\n",
+          "block": "# WIJAYA_CUSTOM_START wecom_channel\nif defined?(Wijaya::Batteries::WecomChannel::InboxesControllerExtension)\n  Api::V1::Accounts::InboxesController.prepend(Wijaya::Batteries::WecomChannel::InboxesControllerExtension)\nend\n# WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/views/api/v1/models/_inbox.json.jbuilder",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "json.reauthorization_required resource.channel.try(:reauthorization_required?) if resource.tiktok?\n\n",
+          "block": "## WIJAYA_CUSTOM_START wecom_channel\n## WeCom Attributes (corp_id/open_kfid only; secret/token/encoding_aes_key are never exposed)\nif resource.channel_type == 'Channel::Wecom'\n  json.corp_id resource.channel.try(:corp_id)\n  json.open_kfid resource.channel.try(:open_kfid)\nend\n## WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/components-next/icon/provider.js",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "  'Channel::Tiktok': 'i-woot-tiktok',\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  'Channel::Wecom': 'i-ri-wechat-fill',\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/components/widgets/ChannelItem.vue",
+      "expected_blocks": 2,
+      "blocks": [
+        {
+          "anchor": "// WIJAYA_CUSTOM_END whatsapp_web_inbox\n",
+          "block": "// WIJAYA_CUSTOM_START wecom_channel\nimport { isWecomChannelKey } from '@wijaya/wecom_channel/frontend/channel/wecomChannel';\n// WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "  // WIJAYA_CUSTOM_END whatsapp_web_inbox\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  if (isWecomChannelKey(key)) {\n    return true;\n  }\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/helper/inbox.js",
+      "expected_blocks": 3,
+      "blocks": [
+        {
+          "anchor": "  TIKTOK: 'Channel::Tiktok',\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  WECOM: 'Channel::Wecom',\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "  [INBOX_TYPES.TIKTOK]: 'i-ri-tiktok-fill',\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  [INBOX_TYPES.WECOM]: 'i-ri-wechat-fill',\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "  [INBOX_TYPES.TIKTOK]: 'i-woot-tiktok',\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  [INBOX_TYPES.WECOM]: 'i-ri-wechat-line',\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/i18n/locale/en/index.js",
+      "expected_blocks": 2,
+      "blocks": [
+        {
+          "anchor": "// WIJAYA_CUSTOM_END whatsapp_web_inbox\n",
+          "block": "// WIJAYA_CUSTOM_START wecom_channel\nimport wecomInbox from '@wijaya/wecom_channel/frontend/i18n/wecomInbox.json';\n// WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "  // WIJAYA_CUSTOM_END whatsapp_web_inbox\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  ...wecomInbox,\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelFactory.vue",
+      "expected_blocks": 2,
+      "blocks": [
+        {
+          "anchor": "// WIJAYA_CUSTOM_END whatsapp_web_inbox\n",
+          "block": "// WIJAYA_CUSTOM_START wecom_channel\nimport CreateWecomInbox from '@wijaya/wecom_channel/frontend/CreateWecomInbox.vue';\nimport { WECOM_CHANNEL_KEY } from '@wijaya/wecom_channel/frontend/channel/wecomChannel';\n// WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "  // WIJAYA_CUSTOM_END whatsapp_web_inbox\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  [WECOM_CHANNEL_KEY]: CreateWecomInbox,\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/routes/dashboard/settings/inbox/components/ChannelName.vue",
+      "expected_blocks": 2,
+      "blocks": [
+        {
+          "anchor": "import { computed } from 'vue';\n",
+          "block": "// WIJAYA_CUSTOM_START wecom_channel\nimport { wecomReadableChannelName } from '@wijaya/wecom_channel/frontend/helpers/wecomInbox';\n// WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "const readableChannelName = computed(() => {\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  const wecomName = wecomReadableChannelName({\n    t,\n    channelType: props.channelType,\n  });\n  if (wecomName) return wecomName;\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/routes/dashboard/settings/inbox/ChannelList.vue",
+      "expected_blocks": 6,
+      "blocks": [
+        {
+          "anchor": "// WIJAYA_CUSTOM_END whatsapp_web_inbox\n",
+          "block": "// WIJAYA_CUSTOM_START wecom_channel\nimport { buildWecomChannelCard } from '@wijaya/wecom_channel/frontend/channel/wecomChannel';\n// WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "  // WIJAYA_CUSTOM_END whatsapp_web_inbox\n\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  channels.push(buildWecomChannelCard({ t }));\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "import { ref, computed, onMounted } from 'vue';\n",
+          "block": "// WIJAYA_CUSTOM_START wecom_channel\nimport { watch } from 'vue';\n// WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "const channelList = computed(() => {\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  if (!globalConfig.value) return [];\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "const initializeEnabledFeatures = async () => {\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  if (!currentAccount.value?.features) return;\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "onMounted(() => {\n  initializeEnabledFeatures();\n});\n",
+          "block": "// WIJAYA_CUSTOM_START wecom_channel\nwatch(() => currentAccount.value?.features, initializeEnabledFeatures);\n// WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/routes/dashboard/settings/inbox/Settings.vue",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "      // WIJAYA_CUSTOM_END whatsapp_web_inbox\n\n",
+          "block": "      // WIJAYA_CUSTOM_START wecom_channel\n      if (this.isAWecomChannel) {\n        visibleToAllChannelTabs = [\n          ...visibleToAllChannelTabs,\n          {\n            key: 'configuration',\n            name: this.$t('INBOX_MGMT.TABS.CONFIGURATION'),\n          },\n        ];\n      }\n      // WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/routes/dashboard/settings/inbox/settingsPage/ConfigurationPage.vue",
+      "expected_blocks": 3,
+      "blocks": [
+        {
+          "anchor": "import { sanitizeAllowedDomains } from 'dashboard/helper/URLHelper';\n",
+          "block": "// WIJAYA_CUSTOM_START wecom_channel\nimport WecomConfigurationPanel from '@wijaya/wecom_channel/frontend/WecomConfigurationPanel.vue';\n// WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "    WhatsappReauthorize,\n",
+          "block": "    // WIJAYA_CUSTOM_START wecom_channel\n    WecomConfigurationPanel,\n    // WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "    />\n  </div>\n",
+          "block": "  <!-- WIJAYA_CUSTOM_START wecom_channel -->\n  <div v-else-if=\"isAWecomChannel\">\n    <WecomConfigurationPanel :inbox=\"inbox\" />\n  </div>\n  <!-- WIJAYA_CUSTOM_END wecom_channel -->\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/shared/mixins/inboxMixin.js",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "      return this.channelType === INBOX_TYPES.TIKTOK;\n    },\n",
+          "block": "    // WIJAYA_CUSTOM_START wecom_channel\n    isAWecomChannel() {\n      return this.channelType === INBOX_TYPES.WECOM;\n    },\n    // WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/components/widgets/conversation/ReplyBox.vue",
+      "expected_blocks": 1,
+      "blocks": [
+        {
+          "anchor": "    showFileUpload() {\n",
+          "block": "      // WIJAYA_CUSTOM_START wecom_channel\n      if (this.isAWecomChannel) return true;\n      // WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/dashboard/components/widgets/WootWriter/ReplyBottomPanel.vue",
+      "expected_blocks": 3,
+      "blocks": [
+        {
+          "anchor": "import { getAllowedFileTypesByChannel } from '@chatwoot/utils';\n",
+          "block": "// WIJAYA_CUSTOM_START wecom_channel\nimport { wecomAllowedFileTypes } from '@wijaya/wecom_channel/frontend/composer/wecomComposer';\n// WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "    showAudioRecorderButton() {\n      if (this.isEditorDisabled) return false;\n",
+          "block": "      // WIJAYA_CUSTOM_START wecom_channel\n      // WeCom supports image/video/file attachments only; no outbound voice/audio.\n      if (this.isAWecomChannel) return false;\n      // WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "    allowedFileTypes() {\n",
+          "block": "      // WIJAYA_CUSTOM_START wecom_channel\n      if (!this.isOnPrivateNote && this.isAWecomChannel) {\n        return wecomAllowedFileTypes();\n      }\n      // WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    },
+    {
+      "path": "app/javascript/shared/helpers/FileHelper.js",
+      "expected_blocks": 2,
+      "blocks": [
+        {
+          "anchor": "import { INBOX_TYPES } from 'dashboard/helper/inbox';\n",
+          "block": "// WIJAYA_CUSTOM_START wecom_channel\nimport { wecomFileTypeAllowance } from '@wijaya/wecom_channel/frontend/composer/wecomComposer';\n// WIJAYA_CUSTOM_END wecom_channel\n"
+        },
+        {
+          "anchor": "  if (!file || file.size === 0) return false;\n",
+          "block": "  // WIJAYA_CUSTOM_START wecom_channel\n  const wecomAllowance = wecomFileTypeAllowance(file, options);\n  if (wecomAllowance !== undefined) return wecomAllowance;\n  // WIJAYA_CUSTOM_END wecom_channel\n"
+        }
+      ]
+    }
+  ]
+}

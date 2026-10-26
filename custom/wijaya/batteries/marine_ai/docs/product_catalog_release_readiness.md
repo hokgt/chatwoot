@@ -79,6 +79,14 @@ names an existing custom tool or an unknown one: the scenario is created, no too
 (`tools` is `nil`), and no `422` is raised. Only the specs changed; no controller, model, or service
 runtime was modified.
 
+## Catalog freshness — NOT VERIFIED (rollout blocked)
+
+Catalog freshness is **NOT VERIFIED**. `marine_ai.projection_revision` is per-entity evidence,
+not an authoritative global successful-publication authority, so it cannot establish catalog
+freshness or completeness. The runtime read-only role remains item-only. Rollout cannot claim
+freshness closure until the external producer exposes an authoritative singleton
+successful-publication revision plus a `completed_at` timestamp with atomic publication semantics.
+
 ## Operational / runtime gates (UNVERIFIED — unavailable here)
 
 These are required for a true production GO and could **not** be exercised in this
@@ -98,6 +106,12 @@ environment. None were faked.
 
 ## Rollback posture
 
+- **Runtime image rollback**: the canonical development deploy entrypoint records only
+  verified-good immutable image IDs in owner-only, secret-free receipts under the ignored
+  `custom/wijaya/deploy/.receipts/` directory. `--rollback` strictly validates the prior
+  receipt and mandatory overlay fingerprints, pins those exact IDs, keeps the catalog
+  overlay, uses no build or dependency recreation, and re-runs the runtime gates. A failed
+  deploy attempts this rollback once while preserving the original deploy failure status.
 - **Commit order**: roll back **Phase 6 first, then Phase 5** — revert
   `2e55b4db1cceb4e72236f48953177f842dccac82` (native catalog delivery), then
   `0690dca9b6b2105c59ecb6032149379cc81d7920` (product orchestration runtime integration),

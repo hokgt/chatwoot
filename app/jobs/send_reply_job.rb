@@ -17,6 +17,10 @@ class SendReplyJob < ApplicationJob
 
   def perform(message_id)
     message = Message.find(message_id)
+    # WIJAYA_CUSTOM_START wecom_channel
+    return if Wijaya::Batteries::Core::Hooks.dispatch(:wecom_channel, :send_reply, default: false, message: message)
+
+    # WIJAYA_CUSTOM_END wecom_channel
     channel_name = message.conversation.inbox.channel.class.to_s
 
     return send_on_facebook_page(message) if channel_name == 'Channel::FacebookPage'

@@ -1,5 +1,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
+// WIJAYA_CUSTOM_START wecom_channel
+import { watch } from 'vue';
+// WIJAYA_CUSTOM_END wecom_channel
 import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 import { useMapGetter } from 'dashboard/composables/store';
@@ -7,6 +10,12 @@ import { useMapGetter } from 'dashboard/composables/store';
 import { useAccount } from 'dashboard/composables/useAccount';
 
 import ChannelItem from 'dashboard/components/widgets/ChannelItem.vue';
+// WIJAYA_CUSTOM_START whatsapp_web_inbox
+import { buildWhatsappWebChannelCard } from '@wijaya/whatsapp_web_inbox/frontend/channel/whatsappWebChannel';
+// WIJAYA_CUSTOM_END whatsapp_web_inbox
+// WIJAYA_CUSTOM_START wecom_channel
+import { buildWecomChannelCard } from '@wijaya/wecom_channel/frontend/channel/wecomChannel';
+// WIJAYA_CUSTOM_END wecom_channel
 
 const { t } = useI18n();
 const router = useRouter();
@@ -21,6 +30,9 @@ const hasTiktokConfigured = computed(() => {
 });
 
 const channelList = computed(() => {
+  // WIJAYA_CUSTOM_START wecom_channel
+  if (!globalConfig.value) return [];
+  // WIJAYA_CUSTOM_END wecom_channel
   const { apiChannelName } = globalConfig.value;
   const channels = [
     {
@@ -102,10 +114,21 @@ const channelList = computed(() => {
     icon: 'i-woot-whatsapp',
   });
 
+  // WIJAYA_CUSTOM_START whatsapp_web_inbox
+  channels.push(buildWhatsappWebChannelCard({ t }));
+  // WIJAYA_CUSTOM_END whatsapp_web_inbox
+
+  // WIJAYA_CUSTOM_START wecom_channel
+  channels.push(buildWecomChannelCard({ t }));
+  // WIJAYA_CUSTOM_END wecom_channel
+
   return channels;
 });
 
 const initializeEnabledFeatures = async () => {
+  // WIJAYA_CUSTOM_START wecom_channel
+  if (!currentAccount.value?.features) return;
+  // WIJAYA_CUSTOM_END wecom_channel
   enabledFeatures.value = currentAccount.value.features;
 };
 
@@ -120,6 +143,9 @@ const initChannelAuth = channel => {
 onMounted(() => {
   initializeEnabledFeatures();
 });
+// WIJAYA_CUSTOM_START wecom_channel
+watch(() => currentAccount.value?.features, initializeEnabledFeatures);
+// WIJAYA_CUSTOM_END wecom_channel
 </script>
 
 <template>

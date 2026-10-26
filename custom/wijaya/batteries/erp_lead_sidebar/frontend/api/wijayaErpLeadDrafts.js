@@ -19,6 +19,22 @@ class WijayaErpLeadDraftsAPI extends ApiClient {
     return axios.post(`${this.url}/${conversationId}/sync`, { fields });
   }
 
+  // Sets a sticky manual Lead Owner (server-validated against the live ERP User list).
+  setOwner(conversationId, owner) {
+    return axios.post(`${this.url}/${conversationId}/owner`, { owner });
+  }
+
+  // Clears the manual override so the owner follows the assigned agent again.
+  resetOwner(conversationId) {
+    return axios.post(`${this.url}/${conversationId}/owner`, { reset: true });
+  }
+
+  // Re-queues the ERP owner sync for the current desired owner (manual override or
+  // assignee) when a previous owner sync is still pending/failed on a linked Lead.
+  retryOwner(conversationId) {
+    return axios.post(`${this.url}/${conversationId}/owner`, { retry: true });
+  }
+
   options() {
     return axios.get(`${this.url}/options`);
   }

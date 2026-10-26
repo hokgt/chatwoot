@@ -3,3 +3,24 @@ en:
     custom_tool:
       slug_generation_failed: 'Unable to generate unique slug after 5 attempts'
       limit_exceeded: 'You can create a maximum of %{limit} custom tools per account'
+    catalog:
+      # price-display-v1 deterministic price_available fallback (English display facts:
+      # currency IDR, comma thousands grouping, lowercase unit). Built by PriceReplyComposer
+      # from the approved display facts; never embeds an illustrative amount.
+      price:
+        price_available: 'The price for %{product} is %{currency} %{amount} per %{uom}.'
+      # Checkpoint B — deterministic family price-RANGE fallback. Rendered by
+      # PriceRangeEvidenceRenderer from the frozen marine_evidence_v3 price_range Evidence alone
+      # (authoritative family code + already-formatted display currency/endpoints/unit only). The
+      # optional %{followup} carries the generic variant-selection question for the ask_variant_code
+      # presentation policy (empty for standalone); it never claims a catalog was shown.
+      price_range:
+        range_available: 'For %{product}, the price ranges from %{currency} %{min} to %{currency} %{max} per %{uom}.%{followup}'
+        single_available: 'For %{product}, the price is %{currency} %{amount} per %{uom}.%{followup}'
+        variant_followup: ' Which variant would you like?'
+      # Deterministic binary-stock fallback. Rendered by BinaryStockEvidenceRenderer from the frozen
+      # marine_evidence_v2 stock Evidence alone (validated variant code + binary status only); never
+      # surfaces a quantity, location, delivery time, or price.
+      stock:
+        available: '%{product} is currently in stock.'
+        unavailable: "I'm sorry, %{product} is currently out of stock."

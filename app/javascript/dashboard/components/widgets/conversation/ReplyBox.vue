@@ -286,6 +286,9 @@ export default {
       return MESSAGE_MAX_LENGTH.GENERAL;
     },
     showFileUpload() {
+      // WIJAYA_CUSTOM_START wecom_channel
+      if (this.isAWecomChannel) return true;
+      // WIJAYA_CUSTOM_END wecom_channel
       const { image_send: imageSend } =
         this.currentChat?.additional_attributes?.tiktok_capabilities ?? {};
       const tiktokAttachmentSupported = imageSend ?? true;

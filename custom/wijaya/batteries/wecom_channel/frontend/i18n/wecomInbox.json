@@ -1,0 +1,59 @@
+{
+  "WECOM_INBOX": {
+    "CHANNEL": {
+      "TITLE": "WeCom (微信客服)",
+      "DESCRIPTION": "Connect WeChat Customer Service (微信客服) so customer messages land in Chatwoot."
+    },
+    "CREATE": {
+      "TITLE": "WeCom (微信客服)",
+      "DESC": "Create a WeChat Customer Service channel. You will finish verification in the 微信客服 console after the inbox is created.",
+      "CHANNEL_NAME": {
+        "LABEL": "Inbox name",
+        "PLACEHOLDER": "e.g. WeChat Support",
+        "ERROR": "Please enter an inbox name."
+      },
+      "CORP_ID": {
+        "LABEL": "Corp ID",
+        "PLACEHOLDER": "Enter your WeCom Corp ID (企业ID)",
+        "ERROR": "Corp ID is required."
+      },
+      "TOKEN": {
+        "LABEL": "Token",
+        "PLACEHOLDER": "Enter the callback Token",
+        "ERROR": "Token is required."
+      },
+      "ENCODING_AES_KEY": {
+        "LABEL": "EncodingAESKey",
+        "PLACEHOLDER": "43-character EncodingAESKey",
+        "ERROR": "EncodingAESKey must be exactly 43 characters."
+      },
+      "SUBMIT_BUTTON": "Create WeCom inbox",
+      "API": {
+        "ERROR_MESSAGE": "Could not create the WeCom inbox. Please try again."
+      }
+    },
+    "CONFIG": {
+      "CALLBACK": {
+        "TITLE": "Callback URL",
+        "SUBTITLE": "Paste this URL into the 微信客服 console (开发配置 → 企业内部接入) to verify the callback. Verification needs only the Token and EncodingAESKey you entered."
+      },
+      "GUIDANCE": {
+        "TITLE": "Finish setup in the 微信客服 console",
+        "BODY": "1. Verify the callback URL above using your Token and EncodingAESKey. 2. After verification, WeCom reveals the Secret — save it below. 3. The Open KF ID is discovered automatically once the Secret is saved; set it manually only if you manage multiple KF accounts."
+      },
+      "SECRET": {
+        "LABEL": "微信客服 Secret",
+        "PLACEHOLDER": "Enter the Secret from the 微信客服 console"
+      },
+      "OPEN_KFID": {
+        "LABEL": "Open KF ID",
+        "PLACEHOLDER": "Optional — leave blank to auto-discover"
+      },
+      "SAVE_BUTTON": "Save",
+      "API": {
+        "SUCCESS_MESSAGE": "WeCom settings updated.",
+        "ERROR_MESSAGE": "Could not update WeCom settings. Please try again."
+      }
+    }
+  }
+}
